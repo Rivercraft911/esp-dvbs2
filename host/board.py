@@ -5,9 +5,11 @@
     python3 host/board.py membench --out results/2026-10-16-memory/runs.jsonl
     python3 host/board.py fecbench --out results/<date>-encoder/runs.jsonl
     python3 host/board.py "usbrx 4000000" --send 4000000     # payload ingress over USB
+    python3 host/board.py "dvbdump 4 20" --save dump.iq        # binary samples after a record
 
 Each record is printed, and with --out appended to a JSON-lines file together with the command
-and the host time. The firmware marks the end of every command with {"done": true}.
+and the host time. The firmware marks the end of every command with {"done": true}. A record
+with "binary_bytes": N is followed by exactly N raw bytes, which --save writes to a file.
 """
 from __future__ import annotations
 
@@ -95,8 +97,11 @@ def payload(n: int) -> bytes:
 
 
 def run(port: str, command: str, timeout: float = 30.0, reset: bool = False,
-        data: bytes = b"") -> list[dict]:
+        data: bytes = b"", save: pathlib.Path | None = None) -> list[dict]:
+    """Collect '@' records until done. Raw bytes announced by binary_bytes go to save, and the
+    record gains host_crc32 of what arrived. The deadline moves while bytes keep arriving."""
     link = open_port(port, reset)
+    sink, left, received = None, 0, 0
     try:
         link.reset_input_buffer()
         link.write(command.encode() + b"\n")
@@ -105,18 +110,38 @@ def run(port: str, command: str, timeout: float = 30.0, reset: bool = False,
             link.write(data)
         records, pending, deadline = [], b"", time.monotonic() + timeout
         while time.monotonic() < deadline:
-            pending += link.read(4096)
-            *lines, pending = pending.split(b"\n")
-            for line in lines:
-                line = line.strip()
+            chunk = link.read(65536)
+            if chunk:
+                deadline = max(deadline, time.monotonic() + 10)
+            pending += chunk
+            while pending:
+                if left:
+                    part, pending = pending[:left], pending[left:]
+                    sink.write(part)
+                    received = zlib.crc32(part, received)
+                    left -= len(part)
+                    if not left:
+                        sink.close()
+                        records[-1]["host_crc32"] = received
+                    continue
+                end = pending.find(b"\n")
+                if end < 0:
+                    break
+                line, pending = pending[:end].strip(), pending[end + 1:]
                 if not line.startswith(b"@"):
                     continue
                 record = json.loads(line[1:])
                 if record.get("done"):
                     return records
                 records.append(record)
+                if record.get("binary_bytes"):
+                    if save is None:
+                        raise ValueError("the board sends binary data: pass --save FILE")
+                    sink, left, received = open(save, "wb"), record["binary_bytes"], 0
         raise TimeoutError(f"no 'done' from the board within {timeout} s for {command!r}")
     finally:
+        if sink and not sink.closed:
+            sink.close()
         link.close()
 
 
@@ -129,10 +154,11 @@ def main() -> int:
     parser.add_argument("--send", type=int, default=0, metavar="N",
                         help="after the command, send N pattern bytes (for usbrx)")
     parser.add_argument("--out", type=pathlib.Path, help="append records to this JSON-lines file")
+    parser.add_argument("--save", type=pathlib.Path, help="write binary data from the board here")
     args = parser.parse_args()
 
     data = payload(args.send) if args.send else b""
-    records = run(args.port, args.command, args.timeout, args.reset, data)
+    records = run(args.port, args.command, args.timeout, args.reset, data, args.save)
     if data:
         for r in records:
             r["host_crc32"] = zlib.crc32(data)

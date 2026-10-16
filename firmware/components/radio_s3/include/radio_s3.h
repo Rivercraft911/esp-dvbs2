@@ -63,6 +63,25 @@ typedef enum {
 
 void radio_s3_set_chain(radio_s3_chain_t mode);
 
+/* Receives the samples the DAC would play, [first, first + count), from a bank that holds
+ * sample n at word n % RADIO_S3_BANK_WORDS. */
+typedef esp_err_t (*radio_s3_sink_fn)(const uint32_t *bank, uint64_t first, size_t count,
+                                      void *ctx);
+
+typedef struct {
+    uint32_t fills;
+    uint32_t max_fill_cycles;
+    uint32_t overlap_words;      /* lead and tail words compared at bank switches */
+    uint32_t overlap_mismatches; /* must be 0: the fill must depend on sample index only */
+} radio_s3_dry_stats_t;
+
+/* The same fill sequence as radio_s3_run, into the same bank memory, without the radio: bank
+ * j holds [j * STEP - LEAD, ... + BANK_WORDS) and plays [j * STEP, (j + 1) * STEP). At every
+ * switch both banks' shared lead and tail words are compared, then the played samples go to
+ * sink. No RF. Not timed against the DAC: the sink may be slow. */
+esp_err_t radio_s3_dry_run(radio_s3_fill_fn fill, void *ctx, uint64_t samples,
+                           radio_s3_sink_fn sink, void *sink_ctx, radio_s3_dry_stats_t *stats);
+
 /* One of the two 64 KiB DAC bank regions (n = 0 or 1), reserved at startup. Between
  * runs the CPU may use them as plain internal RAM; a run overwrites both. */
 uint32_t *radio_s3_bank(unsigned n);
