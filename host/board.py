@@ -3,6 +3,7 @@
 
     python3 host/board.py info
     python3 host/board.py membench --out results/2026-10-16-memory/runs.jsonl
+    python3 host/board.py "usbrx 4000000" --send 4000000     # payload ingress over USB
 
 Each record is printed, and with --out appended to a JSON-lines file together with the command
 and the host time. The firmware marks the end of every command with {"done": true}.
@@ -17,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import time
+import zlib
 
 import serial
 
@@ -59,11 +61,24 @@ def watchdog_reset(port: str) -> None:
     time.sleep(2.5)                        # boot and USB driver start
 
 
-def run(port: str, command: str, timeout: float = 30.0, reset: bool = False) -> list[dict]:
+def payload(n: int) -> bytes:
+    """n bytes of a fixed pseudo-random pattern (numpy-free so the host tool stays light)."""
+    out, x = bytearray(n), 2026
+    for i in range(n):
+        x = (x * 1103515245 + 12345) & 0x7FFFFFFF
+        out[i] = x >> 16 & 0xFF
+    return bytes(out)
+
+
+def run(port: str, command: str, timeout: float = 30.0, reset: bool = False,
+        data: bytes = b"") -> list[dict]:
     link = open_port(port, reset)
     try:
         link.reset_input_buffer()
         link.write(command.encode() + b"\n")
+        if data:
+            time.sleep(0.05)
+            link.write(data)
         records, pending, deadline = [], b"", time.monotonic() + timeout
         while time.monotonic() < deadline:
             pending += link.read(4096)
@@ -87,10 +102,16 @@ def main() -> int:
     parser.add_argument("--port", default=DEFAULT_PORT)
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--reset", action="store_true", help="restart the firmware first")
+    parser.add_argument("--send", type=int, default=0, metavar="N",
+                        help="after the command, send N pattern bytes (for usbrx)")
     parser.add_argument("--out", type=pathlib.Path, help="append records to this JSON-lines file")
     args = parser.parse_args()
 
-    records = run(args.port, args.command, args.timeout, args.reset)
+    data = payload(args.send) if args.send else b""
+    records = run(args.port, args.command, args.timeout, args.reset, data)
+    if data:
+        for r in records:
+            r["host_crc32"] = zlib.crc32(data)
     stamp = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
     for record in records:
         print(json.dumps(record))
