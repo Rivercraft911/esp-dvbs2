@@ -76,14 +76,16 @@ static void cmd_tx(char *args)
            "\"elapsed_samples\":%llu,\"elapsed_cycles\":%llu,\"fills\":%lu,"
            "\"switches\":%lu,\"late_fills\":%lu,\"late_switches\":%lu,"
            "\"max_fill_cycles\":%lu,\"max_switch_late_cycles\":%lu,"
-           "\"min_fill_slack_cycles\":%lu,\"fatal_late\":%lu,\"status\":\"%s\"",
+           "\"min_fill_slack_cycles\":%lu,\"fatal_late\":%lu,\"fe_base_index\":%lu,"
+           "\"fe_gain_index\":%lu,\"status\":\"%s\"",
            (unsigned long)freq, name, (unsigned long)seconds, (unsigned long)gain,
            RADIO_S3_DAC_RATE, RADIO_S3_BANK_WORDS, RADIO_S3_STEP_WORDS,
            (unsigned long long)s.elapsed_samples, (unsigned long long)s.elapsed_cycles,
            (unsigned long)s.fills, (unsigned long)s.switches, (unsigned long)s.late_fills,
            (unsigned long)s.late_switches, (unsigned long)s.max_fill_cycles,
            (unsigned long)s.max_switch_late_cycles, (unsigned long)s.min_fill_slack_cycles,
-           (unsigned long)s.fatal_late, esp_err_to_name(err));
+           (unsigned long)s.fatal_late, (unsigned long)s.fe_base_index,
+           (unsigned long)s.fe_gain_index, esp_err_to_name(err));
     if (err != ESP_OK) {
         printf(",\"error\":\"radio run failed\"");
     }

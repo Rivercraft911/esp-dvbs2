@@ -37,6 +37,8 @@ typedef struct {
     uint32_t max_switch_late_cycles;
     uint32_t min_fill_slack_cycles;
     uint32_t fatal_late;      /* Stopped after observing a missed safe-tail deadline. */
+    uint32_t fe_base_index;   /* Front-end gain base index found before keying. */
+    uint32_t fe_gain_index;   /* Gain slot selected after keying; must be 0. */
 } radio_s3_stats_t;
 
 /* Synchronous, exclusive run on core 1, 240 MHz. Valid requests are integer MHz

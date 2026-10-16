@@ -9,7 +9,7 @@
 //            CPU cannot access an owned bank, changing selection retains offset;
 //            physical bank3 contains ROM data and must never be granted.
 //   455-478: 0x60006000 force-TX1, base-index25:18, gain-index17:10;
-//            force_tx_gain writes slot0, so require base-index0 before keying.
+//            force_tx_gain writes slot0; the keying offset cancels the base index.
 //   1089-1121: analog 0x65:0[4] selects LO=PLL*5/6; clear for 2390..2450 MHz.
 //   1355-1365: TX I[9:0], Q[19:10], signed10; RX has the opposite order.
 //   1377-1386: vendor tuning/gain/chain entry points; Wi-Fi NULL/promiscuous setup.
@@ -164,18 +164,24 @@ static esp_err_t IRAM_ATTR __attribute__((noinline)) stream(run_t *run)
         return error;
     }
 
-    /* Slot0 is the one force_tx_gain programmed. Refuse an unexpected vendor
-     * base index rather than quietly keying with an unrelated power setting.
+    /* force_tx_gain programs gain memory slot 0, but the front end uses slot
+     * (offset + base index) & 0xff (FE_CTRL bits 25:18). ESP-IDF v6.1 leaves a
+     * nonzero base index after Wi-Fi start (2026-10-16), so cancel it with the
+     * offset and read the selected slot back before any sample plays. A wrong
+     * slot would key at a vendor power setting, so abort; cleanup unkeys.
      */
-    if (((REG_READ(FE_CTRL) >> 18) & 0xffU) != 0) {
-        return ESP_ERR_INVALID_STATE;
-    }
+    const uint32_t base = (REG_READ(FE_CTRL) >> 18) & 0xffU;
+    stats->fe_base_index = base;
     rom_pbus_workmode();
     rom_pbus_xpd_rx_on(0);
     rom_pbus_xpd_tx_on(1);
     force_tx_gain(gain_codes[run->gain], gain_baseband(run->gain), 0);
     direct_lo();
-    force_txon_mode(1, 0, 0);
+    force_txon_mode(1, 0, (uint8_t)(-base & 0xffU));
+    stats->fe_gain_index = (REG_READ(FE_CTRL) >> 10) & 0xffU;
+    if (stats->fe_gain_index != 0) {
+        return ESP_ERR_INVALID_STATE;
+    }
     REG_CLR_BIT(TONE_CTRL, 1U << 18);
     /* Keying can clear bank ownership, so grant only after keying. */
     REG_WRITE(BANK_USAGE, ownership | (1U << 2));
