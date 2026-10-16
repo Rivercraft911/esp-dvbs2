@@ -16,6 +16,7 @@ jobs:
       - run: python tests/test_tx_command.py
       - run: python tests/test_capture.py
       - run: python tests/test_onair.py
+      - run: python tests/test_ring.py
 
   firmware:
     runs-on: ubuntu-latest
