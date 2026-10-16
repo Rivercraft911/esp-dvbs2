@@ -70,6 +70,7 @@ the rate that would allow 20 Msym/s. [Run details](results/2026-10-16-shaper/REA
 | Encoder fast enough for 8PSK at 5 Msym/s | next, needs 2.3x |
 | Pulse shaping fast enough for 8PSK at 5 Msym/s (PIE, 1.78 cycles/sample) | done |
 | DAC bank streaming received on an SDR | done, [first RF](results/2026-10-16-radio/README.md) |
+| Whole chain on the chip, bank samples decoded by LeanDVB (radio off) | done, [dry run](results/2026-10-16-dryrun/README.md), 47 dB MER |
 | QPSK at 1 Msym/s decoded by a DVB-S2 receiver | |
 | 8PSK 2/3 at 5 Msym/s with the payload arriving over SPI | |
 
@@ -90,6 +91,8 @@ python3 host/board.py info --reset              # talk to the board
 python3 host/board.py membench --out results/<date>-<topic>/runs.jsonl
 python3 host/board.py fecbench --reset --timeout 120 --out results/<date>-encoder/runs.jsonl
 python3 tests/test_fecbench.py results/<date>-encoder/runs.jsonl
+python3 host/board.py "dvbdump 4 20" --save dump.iq   # the transmit samples over USB, radio off
+python3 host/onair.py dump.iq --rate 4000000 --scale 512   # LeanDVB decode and payload check
 python3 host/plots.py                           # redraw the figures from results/
 ```
 
