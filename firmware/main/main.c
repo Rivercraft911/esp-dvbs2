@@ -25,6 +25,7 @@
 #include "freertos/task.h"
 #include "sdkconfig.h"
 
+#include "fecbench.h"
 #include "membench.h"
 #include "radio_s3.h"
 #include "radio_signals.h"
@@ -88,7 +89,6 @@ static void cmd_tx(char *args)
     }
     printf("}\n");
 }
-#include "fecbench.h"
 
 static void cmd_info(void)
 {
