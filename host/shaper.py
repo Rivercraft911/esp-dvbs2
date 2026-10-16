@@ -7,7 +7,8 @@
 
 How samples are made. The DAC plays one 32-bit word per complex sample at 40 MS/s: signed 10-bit
 I in bits 9:0 and Q in bits 19:10 (esp-sdr-zephyr include/esp_sdr/esp_sdr_tx.h:84-88 at
-3214c16; confirmed on the board by the -1 MHz test signal in results/2026-10-16-radio). Output sample p of symbol n is
+3214c16; confirmed on the board by the -1 MHz test signal in results/2026-10-16-radio).
+Output sample p of symbol n is
 
     y[nN + p] = sum_{a=0}^{L-1} x[n - a] g[aN + p],    x = exp(j pi k / 4), k = 0..7,
 
@@ -168,12 +169,14 @@ class Profile:
 
 
 PROFILES = {p.name: p for p in (
+    Profile("8psk-n4-a20", 0.20, 4, "8psk"),
+    Profile("8psk-n4-a35", 0.35, 4, "8psk"),
     Profile("8psk-n8-a20", 0.20, 8, "8psk"),
     Profile("8psk-n8-a35", 0.35, 8, "8psk"),
     Profile("qpsk-n40-a20", 0.20, 40, "qpsk"),
     Profile("qpsk-n40-a35", 0.35, 40, "qpsk"),
 )}
-ON_DEVICE = ("8psk-n8-a20", "qpsk-n40-a20", "qpsk-n40-a35")    # profiles the firmware builds (shaper_taps.h)
+ON_DEVICE = ("8psk-n4-a20", "8psk-n4-a35", "8psk-n8-a20", "qpsk-n40-a20", "qpsk-n40-a35")
 
 
 # ---------------------------------------------------------------- symbols and samples
@@ -365,7 +368,7 @@ def formats(n, alphabet, span=L):
     symbol (4-byte DAC words), and PIE instructions per 4 output samples (adds fused into
     loads and stores). joint: one row per full history; per_axis: an I and a Q table of full
     per-axis histories combined with OR (8PSK rotated by pi/8 to 4 levels per axis); split:
-    this design, three windows of three symbols (128-byte or 512-byte blocks)."""
+    this design, three windows of three symbols (64-, 128- or 512-byte blocks)."""
     m = 8 if alphabet == "8psk" else 4
     levels = 4 if alphabet == "8psk" else 2
     p = Profile("", 0.2, n, alphabet)
@@ -376,8 +379,9 @@ def formats(n, alphabet, span=L):
 
 # ---------------------------------------------------------------- firmware
 
-# Device tests (firmware/main/membench.c): symbol counts that fill a 16380-word bank.
-TESTS = {"shape8": ("8psk-n8-a20", 2047), "shape40": ("qpsk-n40-a20", 409)}
+# Device tests (firmware/main/membench.c): symbol counts that nearly fill a 16380-word bank.
+TESTS = {"shape4": ("8psk-n4-a20", 4093), "shape4a35": ("8psk-n4-a35", 4093),
+         "shape8": ("8psk-n8-a20", 2047), "shape40": ("qpsk-n40-a20", 409)}
 SEED = 2026
 
 
@@ -449,7 +453,7 @@ def report():
               f"image {r['first_image_dbc']:.1f} dBc")
     print("table bytes for a 9-symbol span (joint rows / per-axis I and Q with OR / split sums,"
           " packed and padded) and PIE instructions per 4 samples:")
-    for n, alphabet in ((8, "8psk"), (8, "qpsk"), (40, "qpsk"), (40, "8psk")):
+    for n, alphabet in ((4, "8psk"), (8, "8psk"), (8, "qpsk"), (40, "qpsk"), (40, "8psk")):
         b = formats(n, alphabet)
         print(f"  {alphabet} N={n:2d}: {b['joint']:>13,d} / {b['per_axis']:>11,d} / "
               f"{b['split']:>7,d} ({b['split_padded']:,d}); ops {b['ops']}")

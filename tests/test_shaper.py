@@ -1,10 +1,11 @@
 """Checks for host/shaper.py and the firmware's table build and portable kernel.
 
 Run: python3 tests/test_shaper.py. The firmware check compiles firmware/main/shaper.c with the
-host C compiler (skipped if there is none); the PIE kernels can only be checked on the board
-(membench, then python3 host/shaper.py verify).
+host C compiler (skipped if there is none). An optional argument checks records from
+tests/shaper_pie.c running in QEMU; board checks use membench and host/shaper.py verify.
 """
 import pathlib
+import json
 import shutil
 import subprocess
 import sys
@@ -63,7 +64,7 @@ def test_model():
         assert np.array_equal(y, direct(p, sym)), p.name
         err = y - s.linear(p, sym)
         assert np.abs(np.r_[err.real, err.imag]).max() <= 1.5, p.name
-    print("model: table output equals a per-part sum computed from the taps (4 profiles, 52 "
+    print(f"model: table output equals a per-part sum computed from the taps ({len(s.PROFILES)} profiles, 52 "
           "symbols each); within 1.5 LSB of the exact filter (three roundings of 0.5)")
 
 
@@ -111,7 +112,12 @@ def test_firmware_c():
         subprocess.run([cc, "-O2", "-std=c11", "-Wall", "-Werror", f"-I{tmp}", f"-I{main}",
                         str(main / "shaper.c"), str(ROOT / "tests" / "shaper_host.c"),
                         "-o", str(exe)], check=True)
-        out = subprocess.run([str(exe)], check=True, capture_output=True, text=True).stdout
+        out = subprocess.run([str(exe), tmp], check=True, capture_output=True, text=True).stdout
+        for test, (name, count) in s.TESTS.items():
+            p = s.PROFILES[name]
+            got_words = np.fromfile(pathlib.Path(tmp) / f"{test}.bin", dtype=np.uint32)
+            want_words = np.r_[p.table.ravel(), s.shape(p, s.random_symbols(p, count + s.HISTORY, s.SEED))]
+            assert np.array_equal(got_words, want_words), test
     got = {k: int(v) for k, v in (line.split() for line in out.splitlines())}
     want = s.expected_checks()
     assert got == {k: v for k, v in want.items() if not k.endswith("_pie")}, (got, want)
@@ -119,6 +125,25 @@ def test_firmware_c():
           "words as the model (checks " + ", ".join(f"{k} {v}" for k, v in got.items()) + ")")
 
 
+def check_qemu(path):
+    records = [json.loads(line[1:]) for line in pathlib.Path(path).read_text().splitlines()
+               if line.startswith('@{"test":"shape4_pie"')]
+    want_cases = {(name, count, seed) for name in ("8psk-n4-a20", "8psk-n4-a35")
+                  for count in (1, 7, 13, 4093, 4095) for seed in (2026, 7, 0xffffffff)}
+    assert len(records) == len(want_cases), len(records)
+    for r in records:
+        want_cases.remove((r["profile"], r["symbols"], r["seed"]))
+        p = s.PROFILES[r["profile"]]
+        sym = s.random_symbols(p, s.HISTORY + r["symbols"], r["seed"])
+        assert r["mismatch"] == 0 and r["guards"] == 1, r
+        assert r["table_check"] == s.checksum(p.table.ravel()), r
+        assert r["check"] == s.checksum(s.shape(p, sym)), r
+    assert not want_cases
+    print(f"qemu: {len(records)} PIE/C word comparisons and table/output checks equal the model")
+
+
 if __name__ == "__main__":
     for fn in [v for k, v in dict(globals()).items() if k.startswith("test_")]:
         fn()
+    if len(sys.argv) > 1:
+        check_qemu(sys.argv[1])
