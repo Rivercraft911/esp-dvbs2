@@ -1,4 +1,4 @@
-"""DVB-S2 phase bytes to complex float32 baseband. No radio or board access.
+"""DVB-S2 phase bytes or complex symbols to complex float32 baseband. No hardware access.
 
 Phase p means exp(j*pi*p/4), as in dvbs2.py. RRC is root raised cosine, whose
 frequency response is the positive square root of the raised cosine in ETSI
@@ -59,7 +59,21 @@ def _pulse(t, alpha, span, hold):
 
 def shape(phases, symbol_rate, sample_rate, alpha=0.35, span=12, *, dac_rate=None,
           snr_db=None, frequency_offset=0.0, sample_rate_offset_ppm=0.0, seed=0):
-    """Shape phase bytes, then apply capture-clock error, CFO and complex AWGN.
+    """Shape QPSK/8PSK phase bytes. See shape_symbols for the channel conventions."""
+    phases = np.asarray(phases)
+    if phases.ndim != 1 or not len(phases):
+        raise ValueError("phases must be a nonempty one-dimensional array")
+    if not np.issubdtype(phases.dtype, np.integer) or np.any((phases < 0) | (phases > 7)):
+        raise ValueError("phase bytes must be integers from 0 through 7")
+    return shape_symbols(np.exp(1j * np.pi / 4 * phases), symbol_rate, sample_rate, alpha,
+                         span, dac_rate=dac_rate, snr_db=snr_db,
+                         frequency_offset=frequency_offset,
+                         sample_rate_offset_ppm=sample_rate_offset_ppm, seed=seed)
+
+
+def shape_symbols(symbols, symbol_rate, sample_rate, alpha=0.35, span=12, *, dac_rate=None,
+                  snr_db=None, frequency_offset=0.0, sample_rate_offset_ppm=0.0, seed=0):
+    """Shape complex symbols, then apply capture-clock error, CFO and complex AWGN.
 
     Rates and frequency_offset are in Hz (symbol_rate in symbols/s). Positive
     sample_rate_offset_ppm means the capture clock runs faster than sample_rate:
@@ -70,11 +84,9 @@ def shape(phases, symbol_rate, sample_rate, alpha=0.35, span=12, *, dac_rate=Non
     No amplitude normalization or clipping is applied. dac_rate adds the
     baseband response of an ideal DAC hold; it does not model DAC quantization.
     """
-    phases = np.asarray(phases)
-    if phases.ndim != 1 or not len(phases):
-        raise ValueError("phases must be a nonempty one-dimensional array")
-    if not np.issubdtype(phases.dtype, np.integer) or np.any((phases < 0) | (phases > 7)):
-        raise ValueError("phase bytes must be integers from 0 through 7")
+    symbols = np.asarray(symbols, np.complex128)
+    if symbols.ndim != 1 or not len(symbols) or not np.all(np.isfinite(symbols)):
+        raise ValueError("symbols must be a nonempty finite one-dimensional array")
     values = (symbol_rate, sample_rate, alpha, frequency_offset, sample_rate_offset_ppm)
     if not all(np.isfinite(v) for v in values) or symbol_rate <= 0 or sample_rate <= 0:
         raise ValueError("rates must be positive and all settings finite")
@@ -90,7 +102,6 @@ def shape(phases, symbol_rate, sample_rate, alpha=0.35, span=12, *, dac_rate=Non
         raise ValueError("snr_db must be finite, or None for no noise")
     sps = actual_rate / symbol_rate
     hold = 0 if dac_rate is None else symbol_rate / dac_rate
-    symbols = np.exp(1j * np.pi / 4 * phases)
     count = int(np.floor((len(symbols) - 1 + span + hold) * sps)) + 1
     ratio = Fraction(float(sps)).limit_denominator(100000)
     if ratio.numerator <= 100000 and abs(float(ratio) - sps) <= 1e-12 * sps:
@@ -153,6 +164,8 @@ def write_capture(path, samples, sample_rate, symbol_rate, alpha=0.35, **setting
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("phases", type=Path, help="uint8 phase bytes, each 0..7")
+    parser.add_argument("--complex-symbols", action="store_true",
+                        help="read little-endian complex float32 symbols instead of phase bytes")
     parser.add_argument("output", type=Path, help="raw .cfile or .sigmf-data")
     parser.add_argument("--symbol-rate", type=float, required=True, help="symbols/s")
     parser.add_argument("--sample-rate", type=float, required=True, help="nominal samples/s")
@@ -163,9 +176,11 @@ def main():
     parser.add_argument("--sample-rate-offset-ppm", type=float, default=0, help="capture clock ppm")
     parser.add_argument("--seed", type=int, default=0, help="noise RNG seed")
     args = parser.parse_args()
-    options = {k: v for k, v in vars(args).items() if k not in ("phases", "output")}
+    options = {k: v for k, v in vars(args).items()
+               if k not in ("phases", "output", "complex_symbols")}
     try:
-        samples = shape(np.fromfile(args.phases, np.uint8), **options)
+        function, dtype = (shape_symbols, "<c8") if args.complex_symbols else (shape, np.uint8)
+        samples = function(np.fromfile(args.phases, dtype), **options)
         write_capture(args.output, samples, **options)
     except ValueError as error:
         parser.error(str(error))

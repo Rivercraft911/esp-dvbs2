@@ -1,0 +1,37 @@
+{
+  "base_commit": "5b54d8d2ef684dbb0ed9f49c48616835e1ceef8c",
+  "branch": "exp/apsk-ref",
+  "evidence": "host simulation and independent software cross-checks",
+  "python": "3.13.2 (v3.13.2:4f8bb3947cf, Feb  4 2025, 11:51:10) [Clang 15.0.0 (clang-1500.3.9.4)]",
+  "platform": "macOS-15.7.9-arm64-arm-64bit-Mach-O",
+  "numpy": "2.2.5",
+  "scipy": "1.17.1",
+  "receiver_commit": "84c59e1c7a1a79338d5722d63f28640cc9d350f3",
+  "grdtv_commit": "aee9fd3f79389c4282a98e8d62c8405c73fd91df",
+  "sha256": {
+    "host/dvbs2.py": "60cb52ac70f06cdb1400adb194c3a8122e5743ebf366122c01367861a962cae2",
+    "host/iq.py": "bcc1dc54eeb32d0a1040d056aea2c028612437465cfaf4c6f5078752f4ed77f8",
+    "host/decode.py": "cbe8bbbade0b2fc18777c1a50a7ff4387e3659096517f4c927b4332a8d59b28f",
+    "tests/test_decode.py": "4461d0845425284cf048891d52c049b3890d0bd125234fde38a19c9254b4c038",
+    "tests/test_dvbs2_apsk.py": "567dbb0ab248ea59c8cb5f3b67b532b3cb27e56dc6e481d2e71442ed755dd4fc",
+    "tests/test_iq.py": "babd05234ed628d6156996bc007abca4f724f812b2c2786b185da54096594ce4",
+    "tests/data/apsk_digests.json": "80729a32c9dd841ac9affda5dc210f82b437897059eea34722e1a679a8705b41",
+    "notes/leansdr_apsk.cc": "055828fa266173b58376eb15bbaffdc20a35a82f662ed35c145769b3b2321cd6",
+    "notes/grdtv_apsk.cc": "911b0e1619318048ddeec6edbb4fdc7c5637dfa766ec25e3181291b0dde96524",
+    "notes/crosscheck_apsk.py": "21e1c693b9545ddf343e01236b484b5fb69a54bf652b00c88cbab31afaac062c"
+  },
+  "external": {
+    "receiver": {
+      "path": "/Users/river/Documents/stanford/SSI/esp-dvbs2/notes/leansdr/src/apps/leandvb",
+      "sha256": "5482ab74d714959498cf2ad8f177b195194c81850c4e479890bb2a4d695dcfa0"
+    },
+    "receiver_patch": {
+      "path": "/Users/river/Documents/stanford/SSI/esp-dvbs2/notes/leandvb-macos.patch",
+      "sha256": "254fa0166c632833479c40095d6751558620341583e6ce157f4725fd609f4f1e"
+    },
+    "standard_text": {
+      "path": "/Users/river/Documents/stanford/SSI/RP2350_IQ_Benchmark/docs/sources/en_30230701v010401p.txt",
+      "sha256": "2de8493d9c2ae0f993c744243479670d0a5aa4188cf7cc2386eb1e58dd34df56"
+    }
+  }
+}

@@ -63,10 +63,10 @@ the rate that would allow 20 Msym/s. [Run details](results/2026-10-16-shaper/REA
 
 | Step | State |
 |---|---|
-| Reference encoder in Python, matching gr-dtv and leansdr stage by stage | done |
+| Reference encoder in Python, matching gr-dtv and leansdr stage by stage | done, including [normal 16APSK/32APSK](results/2026-10-16-apsk-decode/README.md) |
 | Firmware scaffold and memory benchmarks on the ESP32-S3 | done |
 | DVB-S2 encoder in C on the S3, bit-exact with the reference | done, QPSK fast enough |
-| Offline IQ decoded by an independent DVB-S2 receiver | done, [40 cases](results/2026-10-16-decode/README.md), whole payloads match |
+| Offline IQ decoded by an independent DVB-S2 receiver | done, [40 PSK cases](results/2026-10-16-decode/README.md) and [56 APSK cases](results/2026-10-16-apsk-decode/README.md), whole payloads match |
 | Encoder fast enough for 8PSK at 5 Msym/s | next, needs 2.3x |
 | Pulse shaping fast enough for 8PSK at 5 Msym/s (PIE, 1.78 cycles/sample) | done |
 | DAC bank streaming received on an SDR | done, [first RF](results/2026-10-16-radio/README.md) |
@@ -82,6 +82,7 @@ The host IQ tools also need scipy. Independent loopback needs a separate local L
 ```sh
 python3 tests/test_dvbs2.py                     # reference encoder checks, no hardware
 python3 tests/test_dvbs2_8psk.py                # independent 8PSK standard-formula checks
+python3 tests/test_dvbs2_apsk.py                # normal 16APSK/32APSK formulas and stage digests
 python3 tests/test_dvbs2_c.py                   # compile with cc, compare every C stage
 python3 tests/test_fecbench.py                  # seeded benchmark frames and output CRCs
 python3 tests/test_iq.py                        # RRC waveform and capture formats, no hardware
