@@ -11,7 +11,7 @@ carrier is taken as the first tone minus 1 MHz (a DAC clock error of 50 ppm move
 that tone by only 50 Hz), and the image and LO leak are measured around it, not
 around the SDR center. Each line is integrated over +/-1 kHz so carrier drift
 during the capture stays inside.
-Float samples use full scale 1; int16 samples are divided by 32768. Power is
+Float samples use full scale 1; int16 samples default to 32768 (--scale 2048 for E200). Power is
 mean(|I+jQ|**2), in dBFS, never dBm. The SDR sample-rate argument is the time
 reference, so inferred DAC rate inherits its calibration error.
 
@@ -159,13 +159,15 @@ class TagIndex:
 
 
 class Capture:
-    def __init__(self, path: pathlib.Path, fmt: str):
+    def __init__(self, path: pathlib.Path, fmt: str, scale: float | None = None):
         dtype = {"i16": "<i2", "f32": "<f4"}[fmt]
         size = np.dtype(dtype).itemsize
         if path.stat().st_size % (2 * size):
             raise ValueError("capture ends in a partial I/Q sample")
         self.raw = np.memmap(path, mode="r", dtype=dtype).reshape(-1, 2)
-        self.scale = 32768.0 if fmt == "i16" else 1.0
+        self.scale = scale if scale is not None else (32768.0 if fmt == "i16" else 1.0)
+        if not math.isfinite(self.scale) or self.scale <= 0:
+            raise ValueError("full scale must be positive and finite")
         if len(self.raw) < 256:
             raise ValueError("capture needs at least 256 complex samples")
 
@@ -534,11 +536,12 @@ def main() -> int:
     parser.add_argument("--format", choices=("i16", "f32"), required=True)
     parser.add_argument("--rate", type=float, required=True, help="calibrated complex sample rate in samples/s")
     parser.add_argument("--signal", choices=("tone", "two", "tag", "lines"), required=True)
+    parser.add_argument("--scale", type=float, help="full scale, e.g. 2048 for E200 int16 captures")
     args = parser.parse_args()
     try:
         if not math.isfinite(args.rate) or args.rate <= 0:
             raise ValueError("sample rate must be positive and finite")
-        capture = Capture(args.capture, args.format)
+        capture = Capture(args.capture, args.format, args.scale)
         if args.signal == "tag":
             result = analyze_tag(capture, args.rate)
         elif args.signal == "lines":

@@ -195,6 +195,9 @@ def test_files():
             cap = c.Capture(path, fmt)
             assert len(cap) == 512
             assert np.allclose(cap.read(0, 512), .25 - .125j)
+        (expected * 2048).astype("<i2").tofile(path)
+        assert np.allclose(c.Capture(path, "i16", 2048).read(0, 512), .25 - .125j)
+        expect_error(lambda: c.Capture(path, "i16", 0))
         path.write_bytes(b"abc")
         expect_error(lambda: c.Capture(path, "i16"))
         (expected * np.nan).astype("<f4").tofile(path)

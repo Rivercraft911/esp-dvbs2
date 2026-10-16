@@ -4,26 +4,30 @@
     python3 host/board.py "dvbdump 4 20" --save dump.iq --out runs.jsonl
     python3 host/onair.py dump.iq --rate 4000000 --scale 512
     python3 host/onair.py capture.iq --rate 4000000 --scale 2048 --shift 55000
-    python3 host/onair.py dump.iq --rate 4000000 --scale 512 --mer      # dump only
+    python3 host/onair.py capture.iq --rate 4000000 --scale 2048 --auto-shift --mer
 
 The firmware (firmware/main/dvbtx.c) loops LOOP_FRAMES frames whose GCS payload is xorshift32
 bytes seeded with 2026, continued across frames. The decoded stream must contain one whole loop,
 starting at its first byte, bit for bit. Input is little-endian int16 I/Q; --scale is full scale
 (512 for the board's 10-bit words, 2048 for the E200's 12-bit ADC). --shift moves a carrier that
-sits that many Hz above the capture center back to 0 Hz before decoding. --mer compares a dump,
-which starts on the first sample of symbol 0, with the symbols host/dvbs2.py encodes from the
-same payload: RRC matched filter (roll-off 0.35, +-16 symbols), best delay in eighths of a
-sample and complex gain.
+sits that many Hz above the capture center back to 0 Hz before decoding. --auto-shift estimates
+it from a fourth-power carrier line. --mer recovers timing, clock drift, symbol-loop position
+and a linear carrier phase, then compares against the known symbols. Phase noise and channel
+distortion remain in the error. dump_mer() retains the original aligned-dump measurement.
 """
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import pathlib
 import sys
 import tempfile
 
 import numpy as np
+from scipy.ndimage import map_coordinates, spline_filter
+from scipy.optimize import minimize_scalar
+from scipy.signal import fftconvolve
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import decode  # noqa: E402
@@ -48,10 +52,11 @@ def payload(modcod: int, frames: int = LOOP_FRAMES) -> bytes:
     return bytes(out)
 
 
+@functools.lru_cache(maxsize=8)
 def symbols(modcod: int) -> np.ndarray:
     """One loop of PL frames as complex symbols, from the independent Python encoder."""
-    rate = dvbs2.RATES[modcod - 1]
     data = np.frombuffer(payload(modcod), np.uint8)
+    rate = dvbs2.RATES[modcod - 1]
     per_frame = len(data) // LOOP_FRAMES
     out = []
     for f in range(LOOP_FRAMES):
@@ -59,6 +64,162 @@ def symbols(modcod: int) -> np.ndarray:
         fec = dvbs2.fecframe(dvbs2.bbframe(bits, rate), rate)
         out.append(dvbs2.plframe_phases(fec, rate))
     return np.exp(1j * np.pi / 4 * np.concatenate(out).astype(float))
+
+
+def read_i16(path: pathlib.Path, scale: float) -> np.ndarray:
+    if not np.isfinite(scale) or scale <= 0:
+        raise ValueError("scale must be positive and finite")
+    if pathlib.Path(path).stat().st_size % 4:
+        raise ValueError("capture ends in a partial I/Q sample")
+    raw = np.fromfile(path, dtype="<i2").astype(float) / scale
+    return raw[0::2] + 1j * raw[1::2]
+
+
+def carrier_offset(z: np.ndarray, rate: float, symbol_rate: float = 1e6) -> float:
+    """QPSK fourth-power line, search +/-Rs/8 Hz; no assumption of a +55 kHz offset.
+
+    Raising exp(j*2*pi*f*n/Fs) to power four puts its line at 4*f Hz. QPSK
+    data has constant fourth power at symbol centers. A window limits leakage;
+    the ratio to the median periodogram rejects noise-only acquisitions.
+    """
+    if not np.isfinite(rate) or not np.isfinite(symbol_rate) or rate < 2 * symbol_rate or symbol_rate <= 0:
+        raise ValueError("need finite Fs >= 2*Rs > 0")
+    z = np.asarray(z, dtype=complex)[:262144]
+    if z.ndim != 1 or len(z) < 8192 or not np.all(np.isfinite(z)) or not np.any(z):
+        raise ValueError("carrier acquisition needs >=8192 finite, nonzero samples")
+    z = z - np.mean(z)
+    z /= np.sqrt(np.mean(abs(z)**2))
+    nfft = 1 << (len(z) - 1).bit_length()
+    power = abs(np.fft.fft(z**4 * np.hanning(len(z)), nfft))**2
+    freq = np.fft.fftfreq(nfft, 1 / rate)
+    search = np.flatnonzero(abs(freq) < symbol_rate / 2)
+    peak = int(search[np.argmax(power[search])])
+    if power[peak] < 100 * np.median(power[search]):
+        raise ValueError("no unambiguous QPSK fourth-power carrier line")
+    a, b, c = np.log(np.maximum(power[(peak + np.array([-1, 0, 1])) % nfft], 1e-100))
+    frac = .5 * (a - c) / (a - 2 * b + c)
+    return float((freq[peak] + frac * rate / nfft) / 4)
+
+
+def _sample(y: np.ndarray, times: np.ndarray, precise=False) -> np.ndarray:
+    if not precise:
+        return map_coordinates(y.real, [times], order=3, prefilter=False) + 1j * map_coordinates(
+            y.imag, [times], order=3, prefilter=False)
+    # Band-limited interpolation: 48-sample sinc, Kaiser beta 8.6. Normalize DC.
+    out = np.empty(len(times), complex)
+    for start in range(0, len(times), 16384):
+        t = times[start:start + 16384]
+        indices = np.floor(t).astype(int)[:, None] + np.arange(-23, 25)
+        d = t[:, None] - indices
+        w = np.sinc(d) * np.i0(8.6 * np.sqrt(np.maximum(0, 1 - (d / 24)**2))) / np.i0(8.6)
+        out[start:start + len(t)] = np.sum(y[indices] * w, axis=1) / np.sum(w, axis=1)
+    return out
+
+
+def recover_mer(z: np.ndarray, rate: float, symbol_rate: float = 1e6,
+                modcod: int = 4, shift: float | None = None) -> dict:
+    """Data-aided QPSK MER for an arbitrary interior of the firmware's frame loop.
+
+    Fit t[k] = t0 + k*s samples (one timing and clock fit over the capture), and
+    phi[k] = phi0 + omega*k rad (one carrier fit). No equalizer or per-symbol
+    phase correction is used. h = sum(conj(a)*r)/sum(|a|^2), and
+    MER = 10*log10(sum(|h*a|^2)/sum(|r-h*a|^2)), a from symbols().
+    Local 2048-symbol timing observations are gated at +/-500 ppm; all samples
+    inside the filter/endpoint guards contribute to the final error, not just
+    pilots or acquisition symbols. Reported clock error is relative to Fs/Rs.
+    """
+    z = np.asarray(z, dtype=complex)
+    coarse = carrier_offset(z, rate, symbol_rate) if shift is None else float(shift)
+    if (z.ndim != 1 or not np.isfinite(coarse) or not np.all(np.isfinite(z)) or not np.any(z)
+            or not np.isfinite(rate) or not np.isfinite(symbol_rate)
+            or rate < 2 * symbol_rate or symbol_rate <= 0):
+        raise ValueError("invalid capture, rates or carrier shift")
+    sps = rate / symbol_rate
+    if len(z) < 8192 * sps:
+        raise ValueError("MER needs at least 8192 symbols")
+    loop = symbols(modcod)
+    z = z * np.exp(-2j * np.pi * coarse / rate * np.arange(len(z)))
+    taps = iq.rrc(np.arange(-int(16 * sps), int(16 * sps) + 1) / sps, .35)
+    y = fftconvolve(z, taps / np.sqrt(np.sum(taps**2)), mode="same")
+    # Cache spline coefficients once; repeated interpolation must not refilter.
+    spline = spline_filter(y.real) + 1j * spline_filter(y.imag)
+    start = float(np.ceil(40 * sps))
+    k = np.arange(1024)
+
+    def eye(delay):
+        r = _sample(spline, start + delay + k * sps)
+        p = abs(r)**2
+        return np.mean(p**2) / np.mean(p)**2
+
+    grid = np.arange(16) * sps / 16
+    delay = grid[np.argmin([eye(d) for d in grid])]
+    delay = minimize_scalar(eye, bounds=(delay - sps / 16, delay + sps / 16),
+                            method="bounded").x
+    start += delay
+    # Circular correlation gives the symbol number within the eight-frame loop.
+    r = _sample(spline, start + k * sps)
+    corr = np.fft.ifft(np.fft.fft(loop) * np.conj(np.fft.fft(r, len(loop))))
+    offset = int(np.argmax(abs(corr)))
+    score = float(abs(corr[offset]) / np.sqrt(len(r) * np.vdot(r, r).real))
+    if score < .65:
+        raise ValueError(f"known-symbol acquisition failed (correlation {score:.3f})")
+    count = int((len(y) - 40 * sps - start) / sps)
+    points = []
+    predicted = 0.0
+    for first in range(0, count - 1023, 2048):
+        k = np.arange(first, min(first + 2048, count))
+        a = loop[(offset + k) % len(loop)]
+        if len(points) >= 2:
+            slope = (points[-1][1] - points[-2][1]) / (points[-1][0] - points[-2][0])
+            predicted = points[-1][1] + slope * (np.mean(k) - points[-1][0])
+        elif points:
+            predicted = points[-1][1]
+
+        def cost(d):
+            r = _sample(spline, start + k * sps + d)
+            h = np.vdot(a, r) / len(a)
+            return float(np.mean(abs(r - h * a)**2) / np.mean(abs(r)**2))
+
+        fit = minimize_scalar(cost, bounds=(predicted - .4 * sps, predicted + .4 * sps),
+                              method="bounded", options={"xatol": 1e-5})
+        if fit.fun > .5:
+            raise ValueError("lost known-symbol timing/carrier lock")
+        points.append((float(np.mean(k)), float(fit.x)))
+    centers, delays = np.array(points).T
+    drift, timing = np.polyfit(centers, delays, 1)
+    residual = float(np.max(abs(delays - (timing + drift * centers))))
+    if abs(drift / sps) > 500e-6 or residual > .1 * sps:
+        raise ValueError("clock fit outside +/-500 ppm or inconsistent timing observations")
+    k = np.arange(count)
+    times = start + timing + k * (sps + drift)
+    valid = (times >= 40 * sps) & (times < len(y) - 40 * sps)
+    k, times = k[valid], times[valid]
+    r = _sample(y, times, precise=True)
+    a = loop[(offset + k) % len(loop)]
+    # Average phase before unwrapping, so a noisy individual symbol cannot slip.
+    blocks = [slice(first, min(first + 1024, len(k))) for first in range(0, len(k), 1024)]
+    phase = np.unwrap([np.angle(np.vdot(a[b], r[b])) for b in blocks])
+    omega, phi = np.polyfit([np.mean(k[b]) for b in blocks], phase, 1)
+    r *= np.exp(-1j * (phi + omega * k))
+    h = np.vdot(a, r) / len(a)
+    error = float(np.mean(abs(r - h * a)**2))
+    signal = float(abs(h)**2)
+    if signal <= error or not np.isfinite(error):
+        raise ValueError("incoherent capture after carrier/timing fit")
+    return {"mer_db": float(10 * np.log10(signal / max(error, 1e-100))),
+            "carrier_offset_hz": float(coarse + omega * rate / (sps + drift) / (2 * np.pi)),
+            "coarse_carrier_offset_hz": coarse, "symbol_offset": offset,
+            "first_symbol_sample": float(start + timing), "samples_per_symbol": float(sps + drift),
+            "sample_clock_offset_ppm": float(drift / sps * 1e6),
+            "timing_fit_max_error_samples": residual, "acquisition_correlation": score,
+            "symbols": len(k), "phase_noise_tracked": False,
+            "method": "known symbols; RRC 0.35; affine timing; linear carrier; complex gain",
+            "scope": "capture interior, no channel equalization; Fs/Rs is the clock reference"}
+
+
+def capture_mer(path: pathlib.Path, rate: float, symbol_rate: float = 1e6,
+                scale: float = 2048, modcod: int = 4, shift: float | None = None) -> dict:
+    return recover_mer(read_i16(path, scale), rate, symbol_rate, modcod, shift)
 
 
 def dump_mer(path: pathlib.Path, rate: float, symbol_rate: float, scale: float, modcod: int) -> dict:
@@ -82,17 +243,14 @@ def dump_mer(path: pathlib.Path, rate: float, symbol_rate: float, scale: float, 
             g = np.vdot(r, a) / np.vdot(r, r)
             err = np.mean(np.abs(g * r - a) ** 2)
             if best is None or err < best[0]:
-                best = (err, delay - frac, g)
+                best = (err, delay + frac, g)
     err, delay, g = best
     return {"mer_db": float(-10 * np.log10(err)), "delay_samples": float(delay), "symbols": count - 200,
             "rms_per_branch": float(np.sqrt(np.mean(raw ** 2)) * scale)}
 
 
 def to_cf32(src: pathlib.Path, dst: pathlib.Path, rate: float, scale: float, shift: float) -> None:
-    raw = np.fromfile(src, dtype="<i2")
-    if raw.size % 2:
-        raise ValueError("capture ends in a partial I/Q sample")
-    z = (raw[0::2] + 1j * raw[1::2]) / scale
+    z = read_i16(src, scale)
     if shift:
         z = z * np.exp(-2j * np.pi * shift / rate * np.arange(z.size))
     z.astype(np.complex64).tofile(dst)
@@ -103,27 +261,44 @@ def main() -> int:
     parser.add_argument("capture", type=pathlib.Path, help="int16 I/Q, little-endian")
     parser.add_argument("--rate", type=float, required=True, help="sample rate, samples/s")
     parser.add_argument("--scale", type=float, required=True, help="int16 full scale")
-    parser.add_argument("--shift", type=float, default=0.0, help="carrier offset to remove, Hz")
+    shift_group = parser.add_mutually_exclusive_group()
+    shift_group.add_argument("--shift", type=float, help="carrier offset to remove, Hz")
+    shift_group.add_argument("--auto-shift", action="store_true", help="estimate the QPSK carrier offset")
     parser.add_argument("--modcod", type=int, default=4)
     parser.add_argument("--symbol-rate", type=float, default=1e6)
     parser.add_argument("--receiver", type=pathlib.Path, help="local patched leandvb executable")
     parser.add_argument("--log", type=pathlib.Path, help="save unabridged receiver diagnostics")
-    parser.add_argument("--mer", action="store_true", help="also measure MER of a dump")
+    parser.add_argument("--mer", action="store_true", help="also recover timing/carrier and measure MER")
+    parser.add_argument("--mer-only", action="store_true", help="measure MER without running LeanDVB")
     args = parser.parse_args()
-    expected = payload(args.modcod)
-    with tempfile.TemporaryDirectory() as tmp:
-        cf32 = pathlib.Path(tmp) / "capture.cfile"
-        to_cf32(args.capture, cf32, args.rate, args.scale, args.shift)
-        report, _ = decode.decode(cf32, sample_rate=args.rate, symbol_rate=args.symbol_rate,
-                                  alpha=0.35, receiver=args.receiver, expected=expected,
-                                  output=pathlib.Path(tmp) / "payload.bin", log=args.log)
-    report.update({"capture": str(args.capture), "shift_hz": args.shift, "scale": args.scale,
-                   "loop_frames": LOOP_FRAMES})
-    report.pop("command", None)
-    if args.mer:
-        report["mer"] = dump_mer(args.capture, args.rate, args.symbol_rate, args.scale, args.modcod)
-    print(json.dumps(report, sort_keys=True))
-    return 0 if report["frame_lock"] and report.get("payload_match") else 1
+    try:
+        mer = None
+        if args.mer or args.mer_only:
+            mer = capture_mer(args.capture, args.rate, args.symbol_rate, args.scale, args.modcod,
+                              args.shift)
+            shift = mer["carrier_offset_hz"]
+        else:
+            shift = (carrier_offset(read_i16(args.capture, args.scale), args.rate, args.symbol_rate)
+                     if args.auto_shift else (args.shift or 0.0))
+        report = {}
+        if not args.mer_only:
+            with tempfile.TemporaryDirectory() as tmp:
+                cf32 = pathlib.Path(tmp) / "capture.cfile"
+                to_cf32(args.capture, cf32, args.rate, args.scale, shift)
+                report, _ = decode.decode(cf32, sample_rate=args.rate, symbol_rate=args.symbol_rate,
+                                          alpha=0.35, receiver=args.receiver, expected=payload(args.modcod),
+                                          output=pathlib.Path(tmp) / "payload.bin", log=args.log)
+        report.update({"capture": str(args.capture), "shift_hz": shift, "scale": args.scale,
+                       "loop_frames": LOOP_FRAMES})
+        report.pop("command", None)
+        if mer is not None:
+            report["mer"] = mer
+        print(json.dumps(report, sort_keys=True, allow_nan=False))
+        return 0 if args.mer_only or (report["frame_lock"] and report.get("payload_match")
+                                     and report.get("status_complete")) else 1
+    except (OSError, ValueError, RuntimeError) as exc:
+        print(json.dumps({"error": str(exc)}))
+        return 2
 
 
 if __name__ == "__main__":
