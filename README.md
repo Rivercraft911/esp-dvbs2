@@ -46,7 +46,7 @@ moves to the S3's 128-bit vector instructions next. PSRAM reads at 59 MB/s, far 
 |---|---|
 | Reference encoder in Python, matching gr-dtv and leansdr stage by stage | done |
 | Firmware scaffold and memory benchmarks on the ESP32-S3 | done |
-| DVB-S2 encoder in C on the S3, bit-exact with the reference | next |
+| Portable C encoder, normal QPSK/8PSK, bit-exact with the reference on the host | done; S3 timing pending |
 | DAC bank streaming, received on an SDR through attenuators | next |
 | QPSK at 1 Msym/s decoded by a DVB-S2 receiver | |
 | 8PSK 2/3 at 5 Msym/s with the payload arriving over SPI | |
@@ -57,11 +57,23 @@ Needs ESP-IDF v6.1, an ESP32-S3 with 8 MB of PSRAM, Python 3 with numpy, pyseria
 
 ```sh
 python3 tests/test_dvbs2.py                     # reference encoder checks, no hardware
+python3 tests/test_dvbs2_8psk.py                # independent 8PSK standard-formula checks
+python3 tests/test_dvbs2_c.py                   # compile with cc, compare every C stage
+python3 tests/test_fecbench.py                  # seeded benchmark frames and output CRCs
 cd firmware && idf.py build flash && cd ..      # after sourcing ESP-IDF
 python3 host/board.py info --reset              # talk to the board
 python3 host/board.py membench --out results/<date>-<topic>/runs.jsonl
+python3 host/board.py fecbench --reset --timeout 120 --out results/<date>-encoder/runs.jsonl
+python3 tests/test_fecbench.py results/<date>-encoder/runs.jsonl
 python3 host/plots.py                           # redraw the figures from results/
 ```
+
+The C encoder accepts packed GCS bits or a continuous stream of 188-byte TS packets, with
+normal frames, pilots on/off, QPSK MODCOD 4–11 and 8PSK MODCOD 12–17. Its output is one phase
+byte per symbol: `p` means `exp(j p π/4)`, for `p = 0..7`. It uses SIS/CCM, roll-off 0.35 and
+PL scrambling code 0. `fecbench` reports each stage and total cycles for five frames per mode
+and input type, with a reproducible output CRC. The checker verifies every CRC and compares the
+largest sampled 8PSK 2/3 total with the 1,065,312-cycle budget at 5 Msym/s on one 240 MHz core.
 
 ## Where things are
 

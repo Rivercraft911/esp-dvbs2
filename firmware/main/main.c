@@ -4,6 +4,7 @@
 //
 //   info       chip, clocks, memory and firmware version
 //   membench   memory and bank-fill timing (membench.c)
+//   fecbench   normal-frame encoder correctness and stage timing (fecbench.c)
 
 #include <stdio.h>
 #include <string.h>
@@ -19,6 +20,7 @@
 #include "sdkconfig.h"
 
 #include "membench.h"
+#include "fecbench.h"
 
 static void cmd_info(void)
 {
@@ -55,6 +57,8 @@ void app_main(void)
             cmd_info();
         } else if (strcmp(line, "membench") == 0) {
             membench_run();
+        } else if (strcmp(line, "fecbench") == 0) {
+            fecbench_run();
         } else {
             printf("@{\"error\":\"unknown command\",\"line\":\"%.40s\"}\n", line);
         }

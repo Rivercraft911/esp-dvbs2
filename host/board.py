@@ -3,6 +3,7 @@
 
     python3 host/board.py info
     python3 host/board.py membench --out results/2026-10-16-memory/runs.jsonl
+    python3 host/board.py fecbench --out results/<date>-encoder/runs.jsonl
 
 Each record is printed, and with --out appended to a JSON-lines file together with the command
 and the host time. The firmware marks the end of every command with {"done": true}.
@@ -83,7 +84,7 @@ def run(port: str, command: str, timeout: float = 30.0, reset: bool = False) -> 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("command", help="firmware command line, e.g. info or membench")
+    parser.add_argument("command", help="firmware command line, e.g. info, membench or fecbench")
     parser.add_argument("--port", default=DEFAULT_PORT)
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--reset", action="store_true", help="restart the firmware first")
