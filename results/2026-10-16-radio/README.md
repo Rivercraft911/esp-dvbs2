@@ -20,8 +20,10 @@ same samples. In a 0.5 s tone capture (about 1400 switches), the tone's phase fo
   Then `b63393f`, and from 20:57 UTC `b63393f` plus the working-tree changes committed just before
   these results (diagnostic signals, the `chain` command). The build stamps `b63393f` for both:
   the version string is fixed when the build is configured, which happened on the clean tree.
-- RF path: board U.FL, pigtail, attenuators, E200 RX1. The attenuation value was set on the bench
-  (at least 30 dB per [docs/hardware.md](../../docs/hardware.md)) and is not recorded by the tools.
+- RF path, over the air: the board's output through an attenuator into an antenna, received by
+  the E200 on RX1 with a 433 MHz whip (corrected the same day; the first version of this file said
+  a cabled path). Neither the attenuation nor the distance was recorded, and the receive antenna
+  is far off resonance at 2.4 GHz.
 - Receiver: E200 (AD9364, PlutoSDR firmware v0.34) over Ethernet, libiio 0.25, RX LO 2420 MHz,
   manual gain, E200 transmit LO powered down. Settings were read back before capturing. Samples
   are 12-bit in int16, so amplitudes below are in ADC counts (full scale 2048).
@@ -103,11 +105,17 @@ where the +1 MHz image and the 2f1 - f2 product coincide.
 
 ## What is not shown yet
 
+- Over the air, comparisons inside one capture (image, carrier leak, branch balance, AM/PM,
+  bank continuity) hold, and the path was steady within a session (three keyings within
+  0.5 dB). Shapes across many megahertz do not: the receive antenna's response is unknown there,
+  so the filter edge, the two-tone tilt and lines far from the carrier need a cabled repeat.
 - The 40 Mchip/s tag could not be decoded (`captures.jsonl`, "tag timing lost a sample"). The
   transmit filters pass about +-10 MHz in both CW modes (12 to 18 dB down beyond +-12 MHz), and
-  the `cw40` variant (`esp_phy_cbw40m_en(true)` first) widens only the upper side. Per-sample
+  the `cw40` variant (`esp_phy_cbw40m_en(true)` first) widens only the upper side. The receive
+  antenna may shape this too. Per-sample
   continuity therefore rests on the tone phase above, not on the tag.
 - Lines at +-12.8 to 13.4 kHz from the tone at -32 to -35 dBc, cause unknown, and a line 6 MHz
-  above the carrier at about -31 dBc in the 20 MS/s captures, not traced to the board or the SDR.
+  above the carrier at about -31 dBc in the 20 MS/s captures, not traced to the board, the SDR or
+  other 2.4 GHz signals in the room.
 - The carrier sits 49 to 58 kHz above 2420 MHz (20 to 24 ppm, board and SDR crystals combined).
 - No power measurement in dBm; levels are SDR counts behind an unrecorded attenuation.
