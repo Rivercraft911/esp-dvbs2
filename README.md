@@ -70,9 +70,9 @@ the rate that would allow 20 Msym/s. [Run details](results/2026-10-16-shaper/REA
 |---|---|
 | Reference encoder in Python, matching gr-dtv and leansdr stage by stage | done, including [normal 16APSK/32APSK](results/2026-10-16-apsk-decode/README.md) |
 | Firmware scaffold and memory benchmarks on the ESP32-S3 | done |
-| DVB-S2 encoder in C on the S3, bit-exact with the reference | done, QPSK fast enough |
+| DVB-S2 encoder in C on the S3, bit-exact with the reference | done |
 | Offline IQ decoded by an independent DVB-S2 receiver | done, [40 PSK cases](results/2026-10-16-decode/README.md) and [56 APSK cases](results/2026-10-16-apsk-decode/README.md), whole payloads match |
-| Fast encoder (tables, whole words, PIE) in the transmitter | host and QEMU verified; board timing pending |
+| Encoder fast enough for 8PSK at 5 Msym/s (tables, whole words, PIE) | done, [214k cycles per 8PSK 2/3 frame](results/2026-10-16-fec-limit/README.md), 20% of a core |
 | Pulse shaping fast enough for 8PSK at 5 Msym/s (PIE, 1.78 cycles/sample) | done |
 | DAC bank streaming received on an SDR | done, [first RF](results/2026-10-16-radio/README.md) |
 | Whole chain on the chip, bank samples decoded by LeanDVB (radio off) | done, [dry run](results/2026-10-16-dryrun/README.md), 47 dB MER |
