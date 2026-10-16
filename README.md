@@ -40,13 +40,25 @@ moves to the S3's 128-bit vector instructions next. PSRAM reads at 59 MB/s, far 
 160 MB/s, so samples are made in internal RAM and PSRAM only holds payload.
 [Run details](results/2026-10-16-memory/README.md).
 
+## The encoder on the board
+
+![Encoder cycles per frame by stage on the ESP32-S3](docs/img/fecbench.png)
+
+The first C encoder matches the Python reference on every frame the board produced. It is
+written as plain bit-level loops, and that is already enough for QPSK at 1 Msym/s (27% of one
+core). 8PSK at 5 Msym/s needs it 2.3 times faster. Interleaving and mapping are the biggest slice.
+On the RP2350 the same kind of bit-level code, BCH and LDPC, ran 11 times faster once rewritten
+with tables and whole-word operations (4.1 M to 0.38 M cycles per frame).
+[Run details](results/2026-10-16-encoder/README.md).
+
 ## Status
 
 | Step | State |
 |---|---|
 | Reference encoder in Python, matching gr-dtv and leansdr stage by stage | done |
 | Firmware scaffold and memory benchmarks on the ESP32-S3 | done |
-| DVB-S2 encoder in C on the S3, bit-exact with the reference | next |
+| DVB-S2 encoder in C on the S3, bit-exact with the reference | done, QPSK fast enough |
+| Encoder fast enough for 8PSK at 5 Msym/s | next, needs 2.3x |
 | DAC bank streaming, received on an SDR through attenuators | next |
 | QPSK at 1 Msym/s decoded by a DVB-S2 receiver | |
 | 8PSK 2/3 at 5 Msym/s with the payload arriving over SPI | |
@@ -57,9 +69,14 @@ Needs ESP-IDF v6.1, an ESP32-S3 with 8 MB of PSRAM, Python 3 with numpy, pyseria
 
 ```sh
 python3 tests/test_dvbs2.py                     # reference encoder checks, no hardware
+python3 tests/test_dvbs2_8psk.py                # independent 8PSK standard-formula checks
+python3 tests/test_dvbs2_c.py                   # compile with cc, compare every C stage
+python3 tests/test_fecbench.py                  # seeded benchmark frames and output CRCs
 cd firmware && idf.py build flash && cd ..      # after sourcing ESP-IDF
 python3 host/board.py info --reset              # talk to the board
 python3 host/board.py membench --out results/<date>-<topic>/runs.jsonl
+python3 host/board.py fecbench --reset --timeout 120 --out results/<date>-encoder/runs.jsonl
+python3 tests/test_fecbench.py results/<date>-encoder/runs.jsonl
 python3 host/plots.py                           # redraw the figures from results/
 ```
 

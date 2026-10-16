@@ -4,6 +4,7 @@
 //
 //   info       chip, clocks, memory and firmware version
 //   membench   memory and bank-fill timing (membench.c)
+//   fecbench   normal-frame encoder correctness and stage timing (fecbench.c)
 //   usbrx N    receive N bytes over USB as fast as the host sends them; report the rate
 
 #include <stdio.h>
@@ -22,6 +23,7 @@
 #include "sdkconfig.h"
 
 #include "membench.h"
+#include "fecbench.h"
 
 static void cmd_info(void)
 {
@@ -92,6 +94,8 @@ void app_main(void)
             cmd_info();
         } else if (strcmp(line, "membench") == 0) {
             membench_run();
+        } else if (strcmp(line, "fecbench") == 0) {
+            fecbench_run();
         } else if (strncmp(line, "usbrx ", 6) == 0) {
             cmd_usbrx((unsigned)strtoul(line + 6, NULL, 10));
         } else {

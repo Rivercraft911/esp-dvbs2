@@ -68,6 +68,40 @@ def fig_membench():
     save_figure(fig, IMG / "membench")
 
 
+def fig_fecbench():
+    """Median cycles per frame by stage for the plain C encoder, against the 5 Msym/s budget."""
+    rows = {}
+    for line in (ROOT / "results" / "2026-10-16-encoder" / "runs.jsonl").read_text().splitlines():
+        r = json.loads(line)
+        if r.get("event") == "frame" and r["input"] == "gcs":
+            rows.setdefault(f"{r['modulation'].upper()} {r['rate']}", []).append(r["cycles"])
+    picks = ["QPSK 2/3", "8PSK 2/3"]
+    stages = [(("bb", "bb_scramble"), "BB framing", "white", None), (("bch",), "BCH", "#d9d9d9", None),
+              (("ldpc",), "LDPC", "#9a9a9a", None), (("interleave_map",), "interleave + map", "white", "////"),
+              (("pl",), "PL framing", "white", "...")]
+    budget = 240e6 * 22194 / 5e6 / 1e3          # one core, 8PSK frame at 5 Msym/s, thousands
+    fig, ax = plt.subplots(figsize=(WIDTH, 2.1))
+    for y, name in enumerate(reversed(picks)):
+        frames = rows[name]
+        left = 0.0
+        for keys, label, color, hatch in stages:
+            k = sorted(sum(f[key] for key in keys) for f in frames)[len(frames) // 2] / 1e3
+            ax.barh(y, k, 0.5, left=left, color=color, hatch=hatch, edgecolor=INK, lw=0.5,
+                    label=label if y == 0 else None)
+            left += k
+        ax.text(left + 25, y, f"{left / 1e3:.2f} M", va="center", fontsize=7.5, color=INK)
+    ax.axvline(budget, color=RED, ls="--", lw=0.8)
+    ax.text(budget + 25, -0.42, "one core's budget per frame at 5 Msym/s", fontsize=7.5, color=RED)
+    ax.set_yticks(range(len(picks)), list(reversed(picks)))
+    ax.tick_params(axis="y", right=False)
+    ax.set_xlim(0, 2900)
+    ax.set_ylim(-0.55, 1.5)
+    ax.set_xlabel("cycles per normal frame, median of 5, thousands")
+    ax.legend(loc="lower center", bbox_to_anchor=(0.5, 1.0), ncol=5, fontsize=7, handlelength=1.6)
+    save_figure(fig, IMG / "fecbench")
+
+
 if __name__ == "__main__":
     fig_membench()
+    fig_fecbench()
     print("wrote", IMG.relative_to(ROOT))
