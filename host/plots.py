@@ -101,7 +101,32 @@ def fig_fecbench():
     save_figure(fig, IMG / "fecbench")
 
 
+def fig_shaper():
+    """Real DVB-S2 pulse shaping into one DAC bank: plain C against the PIE vector kernels."""
+    t = latest(ROOT / "results" / "2026-10-16-shaper" / "runs.jsonl")
+    rows = [("8PSK, 8 samples/symbol, C", t["shape8_c"]), ("8PSK, 8 samples/symbol, PIE", t["shape8_pie"]),
+            ("QPSK, 40 samples/symbol, C", t["shape40_c"]), ("QPSK, 40 samples/symbol, PIE", t["shape40_pie"])]
+    fig, ax = plt.subplots(figsize=(WIDTH, 2.2))
+    for y, (label, r) in enumerate(reversed(rows)):
+        us = r["us_per_bank"]
+        pie = "PIE" in label
+        ax.barh(y, us, 0.55, color="#d9d9d9" if pie else "white", edgecolor=INK, lw=0.6,
+                hatch=None if pie else "////")
+        ax.text(max(us, SWITCH_US) + 12, y, f"{us:.0f} µs, {r['cycles_per_word']:.2f} cycles/sample",
+                va="center", fontsize=7.5, color=INK)
+    for x, label in ((SWITCH_US, "deadline at 40 MS/s"), (SWITCH_US / 2, "at 80 MS/s")):
+        ax.axvline(x, color=RED, ls="--", lw=0.8)
+        ax.text(x + 8, 3.48, label, fontsize=7.5, color=RED)
+    ax.set_yticks(range(len(rows)), [r[0] for r in reversed(rows)])
+    ax.tick_params(axis="y", right=False)
+    ax.set_xlim(0, 1450)
+    ax.set_ylim(-0.6, 3.8)
+    ax.set_xlabel("time to shape one 16380-sample DAC bank on one core (µs)")
+    save_figure(fig, IMG / "shaper")
+
+
 if __name__ == "__main__":
     fig_membench()
+    fig_shaper()
     fig_fecbench()
     print("wrote", IMG.relative_to(ROOT))

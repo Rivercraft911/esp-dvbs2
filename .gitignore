@@ -22,3 +22,4 @@ __pycache__/
 *.sigmf-data
 
 .DS_Store
+.vscode/

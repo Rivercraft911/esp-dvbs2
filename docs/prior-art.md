@@ -1,7 +1,8 @@
 # Prior art
 
 The radio tricks this project relies on were found by others. Their findings are cited here;
-none of their code is used, since several licences do not allow reuse in an Apache-2.0 project.
+none of their code is incorporated into this repository, since several licences do not allow
+reuse in an Apache-2.0 project. Independent receivers run as separate, locally installed tools.
 Facts below were read from each project's source and documents on 2026-10-16.
 
 | Project | Chip | What it showed | Licence |
@@ -13,13 +14,20 @@ Facts below were read from each project's source and documents on 2026-10-16.
 | [eSpDR](https://github.com/h0m3us3r/eSpDR) | S3 | Receiver; [issue 3](https://github.com/h0m3us3r/eSpDR/issues/3) documents the DAC channel and the PLL tuning register. | 0BSD |
 | [esp32-sdr-trx](https://github.com/jochenhammes/esp32-sdr-trx) (DA2JH) | S3 | Receiver for SDR++, and FM/SSB voice on 13 cm by steering the test tone 40,000 times per second. | 0BSD |
 | [ESP32SDR](https://github.com/lozaning/ESP32SDR) | S3 | Tone keying (OOK/FSK); reported that DAC replay did not radiate, which later work explains as a setup issue. | none stated |
+| [LeanSDR / LeanDVB](https://github.com/pabr/leansdr/tree/84c59e1c7a1a79338d5722d63f28640cc9d350f3) (pabr) | host | Independent DVB-S2 IQ receiver. `host/decode.py` runs a separate local executable; its BBFRAME output supports GCS payload comparison. Receiver source and local macOS/status patches stay in ignored `notes/`. | GPL-3.0-or-later |
 
 ## What this project takes from them
 
 - **Transmit path (esp-sdr-zephyr):** the S3's DAC engine loops a 16380-word SRAM bank at
-  40 MS/s. Each word is one complex sample: I in bits 19:10, Q in bits 9:0, both signed 10-bit.
+  40 MS/s. Each TX word is one complex sample: I in bits 9:0, Q in bits 19:10, both signed
+  10-bit. RX uses the opposite field order ([register notes, lines 1354–1362](https://github.com/cyber-murmel/esp-sdr-zephyr/blob/3214c16a7c9f136414cc5ae9d245ea290c98a6ce/doc/undocumented-registers-esp32s3.md#L1354-L1362)).
   The CPU fills the idle bank and switches banks at a scheduled time. With 64 lead and 2048 tail
   samples of overlap, a new bank is due every (16380 − 64 − 2048) / 40 MS/s = 356.7 µs.
+- **Bringing the transmitter up (esp-sdr-zephyr):** starting and then stopping the vendor CW
+  test tone turns the whole transmit chain on with the PHY's calibrated settings and leaves the
+  DAC on the data path ([esp_sdr_paced.c](https://github.com/cyber-murmel/esp-sdr-zephyr/blob/3214c16a7c9f136414cc5ae9d245ea290c98a6ce/lib/esp_sdr/src/esp_sdr_paced.c#L203-L232)).
+  Forcing the front end without it passed only the I branch on this board
+  ([results](../results/2026-10-16-radio/README.md)).
 - **Tuning:** the S3's PLL locks from about 1.8 to 2.8 GHz (esp-sdr-zephyr), which covers the
   13 cm band.
 - **Quality:** the measured 31.5 dB MER is far above what QPSK and 8PSK need, so the radio is not

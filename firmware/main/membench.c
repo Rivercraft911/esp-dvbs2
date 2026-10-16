@@ -17,7 +17,10 @@
 #include "esp_attr.h"
 #include "esp_cpu.h"
 #include "esp_heap_caps.h"
+#include "radio_s3.h"
 #include "sdkconfig.h"
+#include "shaper.h"
+#include "shaper_taps.h"
 
 #define BANK_WORDS 16380                  // one DAC bank
 #define ROW_WORDS 8                       // samples per symbol at 5 Msym/s, 40 MS/s
@@ -119,15 +122,76 @@ static void report(const char *test, uint32_t *cycles, unsigned words, unsigned 
         (cycles)[r_] = esp_cpu_get_cycle_count() - t0_;            \
     }
 
+// Pulse shaping (shaper.h): build a table, then fill a bank from the same symbols with the
+// portable and the PIE kernel. The bank is cleared in between, so both checks must equal the
+// host model's (python3 host/shaper.py verify) on their own. 8PSK at 8 samples/symbol is the
+// 5 Msym/s video case, QPSK at 40 samples/symbol the 1 Msym/s first milestone.
+static void shaper_bench(void)
+{
+    static const struct {
+        const char *name;
+        const int32_t *taps;
+        int n, bits, nsym;
+    } cases[] = {
+        {"shape8", shaper_taps_8psk_n8_a20, 8, 3, 2047},     // 16376 words
+        {"shape40", shaper_taps_qpsk_n40_a20, 40, 2, 409},   // 16360 words
+    };
+    const uint32_t internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    uint32_t *bank = radio_s3_bank(0);
+    uint8_t *sym = heap_caps_malloc(SHAPER_HISTORY + SYMBOLS, internal);
+    uint32_t *blocks = shaper_store;
+    if (!sym) {
+        printf("@{\"cmd\":\"membench\",\"error\":\"shaper allocation failed\"}\n");
+        goto done;
+    }
+    for (int c = 0; c < 2; ++c) {
+        const int n = cases[c].n, bits = cases[c].bits, nsym = cases[c].nsym;
+        const size_t words = shaper_table_words(n, bits);
+        char test[24];
+        uint32_t cycles[REPEATS];
+        shaper_table_t t;
+
+        TIME(cycles, shaper_build(&t, blocks, cases[c].taps, n, bits));
+        snprintf(test, sizeof test, "%s_build", cases[c].name);
+        report(test, cycles, 0, 0, checksum(blocks, words));
+
+        // xorshift32 phases, the first SHAPER_HISTORY as history: k = (x >> 16) & 7, or
+        // 2 ((x >> 16) & 3) + 1 for QPSK; byte 16 k.
+        uint32_t x = 2026;
+        for (int i = 0; i < SHAPER_HISTORY + nsym; ++i) {
+            x ^= x << 13, x ^= x >> 17, x ^= x << 5;
+            sym[i] = 16 * (bits == 3 ? (x >> 16) & 7 : 2 * ((x >> 16) & 3) + 1);
+        }
+        const uint8_t *s0 = sym + SHAPER_HISTORY;
+
+        memset(bank, 0, BANK_WORDS * 4);
+        TIME(cycles, shaper_fill_c(bank, s0, nsym, &t));
+        snprintf(test, sizeof test, "%s_c", cases[c].name);
+        report(test, cycles, nsym * n, 0, checksum(bank, nsym * n));
+
+        memset(bank, 0, BANK_WORDS * 4);
+        if (n == 8) {
+            TIME(cycles, shaper_fill8_pie(bank, s0, (nsym - 1) / 6, blocks));
+        } else {
+            TIME(cycles, shaper_fill40_pie(bank, s0, nsym, blocks));
+        }
+        snprintf(test, sizeof test, "%s_pie", cases[c].name);
+        report(test, cycles, nsym * n, 0, checksum(bank, nsym * n));
+    }
+done:
+    heap_caps_free(sym);
+}
+
 void membench_run(void)
 {
     const uint32_t internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
-    uint32_t *bank = heap_caps_aligned_alloc(16, BANK_WORDS * 4, internal);
+    // Both DAC bank regions, idle between radio runs: the bank and a 64 KiB copy target.
+    uint32_t *bank = radio_s3_bank(0);
     uint32_t *ti = heap_caps_aligned_alloc(16, ROWS * ROW_WORDS * 4, internal);
     uint32_t *tq = heap_caps_aligned_alloc(16, ROWS * ROW_WORDS * 4, internal);
     uint16_t *ii = heap_caps_malloc(SYMBOLS * 2, internal);
     uint16_t *iq = heap_caps_malloc(SYMBOLS * 2, internal);
-    uint32_t *chunk = heap_caps_aligned_alloc(16, 65536, internal);
+    uint32_t *chunk = radio_s3_bank(1);
     uint32_t *big = heap_caps_aligned_alloc(16, BIG, MALLOC_CAP_SPIRAM);
     if (!bank || !ti || !tq || !ii || !iq || !chunk) {
         printf("@{\"cmd\":\"membench\",\"error\":\"internal allocation failed\"}\n");
@@ -138,8 +202,8 @@ void membench_run(void)
     uint32_t x = 2026;
     for (int i = 0; i < ROWS * ROW_WORDS; ++i) {
         x ^= x << 13, x ^= x >> 17, x ^= x << 5;
-        ti[i] = x & 0x000FFC00u;  // I field, bits 19:10
-        tq[i] = x & 0x000003FFu;  // Q field, bits 9:0
+        ti[i] = x & 0x000003FFu;  // TX I field, bits 9:0 (RX uses the opposite order)
+        tq[i] = x & 0x000FFC00u;  // TX Q field, bits 19:10
     }
     for (int s = 0; s < SYMBOLS; ++s) {
         x ^= x << 13, x ^= x >> 17, x ^= x << 5;
@@ -170,6 +234,7 @@ void membench_run(void)
     report("psram_to_sram", cycles, 0, BIG, checksum(chunk, 16384));
 
 done:
-    heap_caps_free(bank), heap_caps_free(ti), heap_caps_free(tq), heap_caps_free(ii);
-    heap_caps_free(iq), heap_caps_free(chunk), heap_caps_free(big);
+    heap_caps_free(ti), heap_caps_free(tq), heap_caps_free(ii);
+    heap_caps_free(iq), heap_caps_free(big);
+    shaper_bench();
 }
