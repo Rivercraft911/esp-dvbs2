@@ -31,6 +31,51 @@ works. `idf.py flash` on the native port is unaffected.
   (iio context `hw_model: Analog Devices PlutoSDR Rev.C (Z7010-AD9364)`, `ad9361-phy,model: ad9364`,
   firmware v0.34), which supports up to 61.44 MS/s and 56 MHz of RF bandwidth.
 
+## Station identification
+
+[47 CFR §97.119(a)](https://www.ecfr.gov/current/title-47/chapter-I/subchapter-D/part-97/subpart-B/section-97.119)
+requires the assigned callsign on the transmitting channel “at the end of each communication,
+and at least every 10 minutes during a communication”. Paragraph (b)(1) permits CW and caps
+automatic ID at 20 WPM; (c) covers slash-separated indicators. Fetched 2026-10-16.
+The operator supplies an authorized assignment and required indicators. Syntax cannot establish that.
+
+`callsign <CALL>` accepts 3..23 ASCII characters with a letter and digit, allows single internal
+slashes, normalizes uppercase and commits to nonvolatile storage (NVS). `callsign` reads it,
+`callsign clear` erases it, and `info` reports it. Invalid syntax preserves the old value;
+storage faults disable RF without automatically erasing NVS. With no callsign, `tx` and `dvb`
+refuse before waveform/encoder setup, Wi-Fi startup or calibration. The public radio entry also
+refuses. Radio-off `dvbdump`, `dvbpace`, `membench` and `fecbench` still work.
+
+CW runs before/after each successful keyed run and repeats every 540 s of the nominal sample
+timeline. Requested RF seconds include both IDs and stay limited to 60 s; too-short runs fail
+before worker creation. Synthetic `N0CALL` takes 5.22 s per ID, leaving 19.56 s of data in a
+30 s run. With a callsign configured, `dvbpace` exercises the same wrapper, adding IDs to its
+requested **payload** duration so a 600 s test covers periodic ID. The payload clock pauses
+during CW; the bank schedule and DAC epoch continue. A fill/deadline fault stops immediately
+and cannot guarantee closing ID. Periodic CW requires DVB receiver reacquisition.
+
+The chosen +1 MHz tone, peak 128 DAC counts, avoids nominal DC leakage; include its offset
+when choosing the licensed channel. [ITU-R M.1677-1, Annex 1, Part I §§1–2, pp. 2–3](https://www.itu.int/dms_pubrec/itu-r/rec/m/r-rec-m.1677-1-200910-i!!pdf-e.pdf)
+supplies Morse characters/timing. PARIS has 50 dot units, giving 60 s/(20 × 50) = 60 ms dots.
+Edges use (1 − cos(πt/5 ms))/2, held every 10 µs and rounded to one DAC count. The **host FFT
+estimate** integrates −60.5 dBc from 1 to 50 kHz offset for one dot, versus −27.8 dBc for hard
+keying. See [ID host results](../results/2026-10-16-station-id/README.md) for the estimate and
+cycle model. Neither qualifies RF: startup transients, carrier leakage in spaces, data/CW
+boundary clicks, spectrum and deadlines with DAC/Wi-Fi traffic still need cabled measurements.
+
+Every nonempty GCS frame starts with 40 bytes: `ESP-DVBS2 ID=CALL`, spaces through byte 38,
+then LF at byte 39. Receivers read it at the start of each decoded BBFRAME data field.
+Seeded bytes keep their original positions; empty underrun frames stay empty. Verify with
+`host/onair.py ... --stream N --callsign CALL`. Omitting the callsign keeps legacy checks.
+The header is supplemental; CW is the intended regulatory ID. `host/bench.py` reads `info`,
+waits the modelled opening CW plus `--settle`, and forwards the callsign to analysis.
+
+`iddump [CALL]` never writes NVS or starts the radio. It dumps actual bank samples at 10 kS/s,
+intentionally aliasing +1 MHz to DC for envelope checks. Use `host/morse.py id.iq --rate 10000
+--tone 0 --expect CALL`. For isolated CW capture windows, use `--start`, `--seconds`, the actual
+sample rate, and `--tone` at +1 MHz plus carrier error, within about 100 Hz. Formats are `i16`
+and `f32`. See [coordinator commands and pass criteria](../results/2026-10-16-station-id/README.md#coordinator-checks-radio-off).
+
 ## Radio experiment
 
 Only the coordinator flashes or operates the board for `exp/radio`. Connect the attenuation
@@ -89,7 +134,7 @@ operator is on the air.
    with `--dry-run` replaced by `--authorize-tx`. Omitting the RF-path options prompts on a
    terminal; a noninteractive run refuses missing fields. The authorization applies to that
    one timed run. Neither command resets or flashes the board.
-5. Defaults send `dvb 2420 4 10 0 128`, wait 2 s after starting `board.py`, then request
+5. Defaults send `dvb 2420 4 30 0 128`, wait the configured opening CW duration plus 2 s after starting `board.py`, then request
    **one 4,000,000-sample buffer**, 1 s and 16,000,000 bytes of int16 I/Q. The generated
    capture command uses `iio_readdev -b 4000000 -s 4000000` (libiio v0.25
    [buffer creation and refill](https://github.com/analogdevicesinc/libiio/blob/v0.25/tests/iio_readdev.c#L398)).
@@ -110,13 +155,13 @@ operator is on the air.
    cannot directly stop firmware RF; keep the cable connected until the timed run has ended.
 
 For an initial tone instead, use `tx` with the same RF-path and libiio options and add
-`--bandwidth 4000000`. The default `tone128` and gain 0 command lasts 10 s; `host/capture.py`
+`--bandwidth 4000000`. The default `tone128` and gain 0 command lasts 30 s including its start/end IDs; `host/capture.py`
 reports tone/image/leak and envelope/phase statistics with full scale 2048, in dBFS, not dBm.
 For offline reanalysis (no devices are opened):
 
 ```sh
 python3 host/onair.py results/<date>-monday-cable/<run-id>.iq \
-  --rate 4000000 --scale 2048 --auto-shift --mer \
+  --rate 4000000 --scale 2048 --auto-shift --mer --callsign YOURCALL \
   --receiver /Users/river/Documents/stanford/SSI/esp-dvbs2/notes/leansdr/src/apps/leandvb
-python3 host/onair.py capture.iq --rate 4000000 --scale 2048 --auto-shift --mer-only
+python3 host/onair.py capture.iq --rate 4000000 --scale 2048 --auto-shift --mer-only --callsign YOURCALL
 ```

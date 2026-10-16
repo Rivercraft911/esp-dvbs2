@@ -38,6 +38,9 @@
 #include "freertos/task.h"
 #include "radio_s3.h"
 #include "ring.h"
+#include "station_id.h"
+#include "station_store.h"
+#include "station_commands.h"
 #include "shaper.h"
 #include "shaper_taps.h"
 
@@ -152,6 +155,7 @@ static void encoder_task(void *arg)
         for (size_t i = 0; i < bytes; ++i) {
             e->payload[i] = next_byte(&x);
         }
+        station_payload_header(e->payload, bytes, station_store_get());
         if (encode(e->fast, e->ws, e->payload, bytes, out, dvb.ring.frame_symbols)) {
             e->failed = true;
             goto done;
@@ -269,6 +273,7 @@ static void stop_encoder(void)
            enc.frames ? enc.cycles / enc.frames : 0, enc.frames ? enc.min_cycles : 0,
            enc.max_cycles, enc.failed ? "true" : "false", dvb.max_fill_cycles,
            (unsigned)internal, (unsigned)largest, (unsigned)lowest);
+    printf(",\"callsign\":\"%s\"", station_store_get());
     release();
 }
 
@@ -290,10 +295,15 @@ static void print_timing(const radio_s3_stats_t *s)
            s->fills, s->switches, s->late_fills, s->late_switches, s->max_fill_cycles,
            s->min_fill_slack_cycles, s->max_switch_late_cycles, s->fatal_late,
            s->elapsed_samples);
+    printf(",\"id_count\":%" PRIu32 ",\"id_samples\":%" PRIu32
+           ",\"planned_samples\":%" PRIu64, s->id_count, s->id_samples, s->planned_samples);
 }
 
 void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, unsigned level)
 {
+    if (!station_require("dvb")) {
+        return;
+    }
     const size_t symbols = start_encoder("dvb", modcod, level, 0);
     if (!symbols) {
         return;
@@ -306,6 +316,7 @@ void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, 
     printf(",\"fe_gain_index\":%" PRIu32, s.fe_gain_index);
     stop_encoder();
     printf(",\"status\":\"%s\"%s}\n", esp_err_to_name(err),
+           err == ESP_ERR_INVALID_ARG ? ",\"error\":\"duration too short for start/end ID\"" :
            err != ESP_OK ? ",\"error\":\"radio run failed\"" : "");
 }
 

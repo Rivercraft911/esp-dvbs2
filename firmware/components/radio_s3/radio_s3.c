@@ -27,6 +27,9 @@
 #include <string.h>
 
 #include "radio_s3.h"
+#include "station_id.h"
+#include "station_store.h"
+#include "esp_heap_caps.h"
 #include "esp_attr.h"
 #include "esp_cpu.h"
 #include "esp_pm.h"
@@ -131,7 +134,9 @@ typedef struct {
     esp_err_t error;
     bool watch_worker;
     radio_s3_chain_t chain;
-    uint64_t samples;               /* dry run only */
+    uint64_t samples;               /* exact sample count, including IDs */
+    bool identify;
+    bool limit_duration;
     radio_s3_sink_fn sink;
     void *sink_ctx;
     radio_s3_dry_stats_t *dry;
@@ -189,7 +194,7 @@ static inline __attribute__((always_inline)) esp_err_t schedule(run_t *run, uint
                                                                uint32_t ownership, bool keyed)
 {
     radio_s3_stats_t *stats = run->stats;
-    uint64_t total_samples = (uint64_t)run->seconds * RADIO_S3_DAC_RATE;
+    uint64_t total_samples = run->samples;
     esp_err_t error = ESP_OK;
     uint32_t irq;
     uint32_t previous = epoch;
@@ -589,6 +594,39 @@ static esp_err_t on_core1(TaskFunction_t task, run_t *run)
     }
     running = true;
     portEXIT_CRITICAL(&state_lock);
+    station_id_t *id = NULL;
+    if (run->identify) {
+        id = heap_caps_calloc(1, sizeof *id, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        if (!id) {
+            run->error = ESP_ERR_NO_MEM;
+            goto finished;
+        }
+        if (!station_id_init(id, station_store_get(), run->samples, run->fill, run->ctx)) {
+            run->error = ESP_ERR_INVALID_STATE;
+            goto finished;
+        }
+        if (run->limit_duration) {
+            // Keep the existing RF wall-time bound. Remove time for all IDs
+            // before starting the worker. If a future duration includes a
+            // periodic boundary, removal can suppress that repeat and finish
+            // up to one ID early; it can never exceed the requested duration.
+            while (id->total_samples > run->samples) {
+                uint64_t excess = id->total_samples - run->samples;
+                if (id->payload_samples <= excess ||
+                    !station_id_init(id, station_store_get(), id->payload_samples - excess,
+                                      run->fill, run->ctx)) {
+                    run->error = ESP_ERR_INVALID_ARG;
+                    goto finished;
+                }
+            }
+        }
+        run->samples = id->total_samples;
+        run->fill = station_id_fill;
+        run->ctx = id;
+        run->stats->id_samples = id->length;
+        run->stats->id_count = (id->total_samples - id->payload_samples) / id->length;
+        run->stats->planned_samples = id->total_samples;
+    }
     run->done = xSemaphoreCreateBinaryStatic(&done_storage);
     BaseType_t created = xTaskCreatePinnedToCore(task, "radio", 6144, run,
                                                 configMAX_PRIORITIES - 2, NULL, 1);
@@ -597,6 +635,8 @@ static esp_err_t on_core1(TaskFunction_t task, run_t *run)
     } else {
         run->error = ESP_ERR_NO_MEM;
     }
+finished:
+    heap_caps_free(id);
     portENTER_CRITICAL(&state_lock);
     running = false;
     portEXIT_CRITICAL(&state_lock);
@@ -624,7 +664,9 @@ esp_err_t radio_s3_paced_run(uint32_t seconds, radio_s3_fill_fn fill, void *ctx,
     }
     memset(stats, 0, sizeof *stats);
     stats->min_fill_slack_cycles = UINT32_MAX;
-    run_t run = {.seconds = seconds, .fill = fill, .ctx = ctx, .stats = stats};
+    run_t run = {.seconds = seconds, .samples = (uint64_t)seconds * RADIO_S3_DAC_RATE,
+                 .identify = station_store_get()[0] != 0,
+                 .fill = fill, .ctx = ctx, .stats = stats};
     esp_err_t error = on_core1(paced_worker, &run);
     if (stats->min_fill_slack_cycles == UINT32_MAX) {
         stats->min_fill_slack_cycles = 0;
@@ -639,9 +681,14 @@ esp_err_t radio_s3_run(uint32_t freq_mhz, uint8_t gain, uint32_t seconds,
             gain > RADIO_S3_GAIN_MAX || seconds == 0 || seconds > 60) {
         return ESP_ERR_INVALID_ARG;
     }
+    // Refuse before task creation, Wi-Fi init, calibration or any register access.
+    if (!station_store_get()[0]) {
+        return ESP_ERR_INVALID_STATE;
+    }
     memset(stats, 0, sizeof *stats);
     stats->min_fill_slack_cycles = UINT32_MAX;
     run_t run = {
+        .samples = (uint64_t)seconds * RADIO_S3_DAC_RATE, .identify = true, .limit_duration = true,
         .freq_mhz = freq_mhz, .gain = gain, .seconds = seconds,
         .fill = fill, .ctx = ctx, .stats = stats, .chain = chain,
     };

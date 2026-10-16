@@ -120,7 +120,17 @@ python3 host/plots.py                           # redraw the figures from result
 
 Operating outside the Wi-Fi channels needs an amateur radio licence, and the firmware is meant
 for licensed use in the 13 cm band. Bench tests go into a dummy load or through at least 30 dB
-of attenuation into a receiver. See [docs/hardware.md](docs/hardware.md).
+of attenuation into a receiver. Set `callsign <assigned CALL>` over `host/board.py` first;
+`callsign` reads it, `callsign clear` removes it, and `info` reports it. The setting survives
+reset. Without it, `tx` and `dvb` refuse before radio startup; radio-off commands still work.
+
+Each keyed run includes 20 WPM Morse at +1 MHz before and after its payload, with periodic
+ID every nine minutes. Requested seconds include both IDs and remain limited to 60 s; too-short runs refuse before RF.
+DVB payload frames also carry the callsign; add `--callsign CALL` to `host/onair.py` when checking
+them. `iddump CALL` and `host/morse.py` verify the CW samples without radio access.
+These mechanisms are host-tested; RF identification and bank timing still need board checks.
+See [docs/hardware.md](docs/hardware.md#station-identification) for the rule, limitations and
+radio-off coordinator commands.
 
 ## Licence
 
