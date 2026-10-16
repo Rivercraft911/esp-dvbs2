@@ -191,10 +191,17 @@ def check_records(records, expected):
                 assert (value == 0) == (stage in zero), (key, stage, value)
             assert cycles["total"] >= sum(cycles[s] for s in STAGES[:-1]), key
             active["frames"][key] = record
+        elif event == "pie_check":
+            assert active is not None and active["impl"] == "pie", "pie_check outside a pie run"
+            assert record["mismatch"] == 0, ("PIE stage differs from C (1 bb, 2 bch, 4 ldpc, "
+                                             "8 map+pl)", record)
+            active.setdefault("checked", set()).add(record["modcod"])
         elif event == "end":
             assert active is not None, "end without begin"
             assert record["frames_reported"] == len(expected)
             assert set(active["frames"]) == set(expected), "missing frames"
+            if active["impl"] == "pie":
+                assert active.get("checked") == {k[0] for k in expected}, "pie_check missing"
             runs.append(active)
             active = None
         else:
@@ -243,7 +250,7 @@ def report(runs):
                 fit = max(totals) < budget
                 if modcod == 13:
                     target_pass &= fit
-                if modcod == 13 and run["impl"] != "plain":
+                if modcod == 13 and run["impl"] == "pie":
                     target_pass &= max(totals) < TARGET
                 print(f"  {modulation} {rate:>4} {input_name}: cycles min/median/max "
                       f"{min(totals)}/{statistics.median(totals):.0f}/{max(totals)}, "
@@ -254,7 +261,7 @@ def report(runs):
                     for s in STAGES[:-1]))
     print(("PASS" if target_pass else "FAIL") +
           " encoder budget: every sampled 8PSK 2/3 GCS and TS frame < 1065312 cycles"
-          f" (5 Msym/s), and < {TARGET} cycles (20 Msym/s) for the c and pie runs")
+          f" (5 Msym/s), and < {TARGET} cycles (20 Msym/s) for pie runs")
     return target_pass
 
 

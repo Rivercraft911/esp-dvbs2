@@ -54,7 +54,7 @@ struct dvbs2_fast {
     uint8_t tail[16] __attribute__((aligned(16)));
     uint8_t header[90];
     uint8_t pilot_phases[22 * 36];
-    uint8_t crc8[256];
+    uint8_t crc8[4][256];       /* CRC-8 of v followed by k zero bytes */
     uint16_t prog[MAX_PROG];
     uint16_t cols[360];         /* parity column t after the transpose: row offset in block 0 */
     const dvbs2_mode *mode;
@@ -281,7 +281,12 @@ int dvbs2_fast_prepare(dvbs2_fast *f, const dvbs2_mode *mode, int pilots, unsign
         for (unsigned bit = 0; bit < 8; ++bit) {
             crc = (uint8_t)((crc << 1) ^ ((crc & 0x80) ? 0xd5 : 0));
         }
-        f->crc8[v] = crc;
+        f->crc8[0][v] = crc;
+    }
+    for (unsigned k = 1; k < 4; ++k) {
+        for (unsigned v = 0; v < 256; ++v) {
+            f->crc8[k][v] = f->crc8[0][f->crc8[k - 1][v]];
+        }
     }
     prepare_bch(f);
     if (prepare_ldpc(f) != 0) {
@@ -367,7 +372,7 @@ HOT int dvbs2_fast_bb_gcs(const dvbs2_fast *f, dvbs2_workspace *ws,
         return -1;
     }
     const size_t n = (dfl_bits + 7) / 8;
-    bb_header(ws->bits, f->crc8, 0x70, (unsigned)dfl_bits, 0, 0, 0);
+    bb_header(ws->bits, f->crc8[0], 0x70, (unsigned)dfl_bits, 0, 0, 0);
     bb_fill(f, ws->bits, payload, n);
     if (dfl_bits & 7) {
         /* Clear the unused low bits of the last data byte, then rescramble. */
@@ -392,7 +397,7 @@ HOT int dvbs2_fast_bb_ts(const dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_stat
         }
     }
     const unsigned syncd = ((188 - state->packet_pos) % 188) * 8;
-    bb_header(ws->bits, f->crc8, 0xf0, (unsigned)(input_bytes * 8), 1504, 0x47, syncd);
+    bb_header(ws->bits, f->crc8[0], 0xf0, (unsigned)(input_bytes * 8), 1504, 0x47, syncd);
     bb_fill(f, ws->bits, input, input_bytes);
     /* CRC-8 of each packet's 187 bytes after sync; the sync byte position
      * carries the previous packet's CRC. */
@@ -411,8 +416,14 @@ HOT int dvbs2_fast_bb_ts(const dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_stat
             run = input_bytes - k;
         }
         const uint8_t *p = input + k, *end = p + run;
+        /* Four bytes per step: CRC-8 is linear, so
+         * crc' = T3[crc ^ b0] ^ T2[b1] ^ T1[b2] ^ T0[b3], Tk = byte table^(k+1). */
+        const uint8_t *t0 = f->crc8[0], *t1 = f->crc8[1], *t2 = f->crc8[2], *t3 = f->crc8[3];
+        for (; end - p >= 4; p += 4) {
+            crc = t3[crc ^ p[0]] ^ t2[p[1]] ^ t1[p[2]] ^ t0[p[3]];
+        }
         while (p != end) {
-            crc = f->crc8[crc ^ *p++];
+            crc = t0[crc ^ *p++];
         }
         k += run;
         state->packet_pos = (uint16_t)((state->packet_pos + run) % 188);

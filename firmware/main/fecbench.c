@@ -6,7 +6,8 @@
 // Implementations, chosen per run so one image gives the A/B comparison:
 //   plain  the reference stages in dvbs2.c
 //   c      fast.c in portable C (bb_scramble is part of bb, so it reads 0)
-//   pie    fast.c with the ESP32-S3 vector kernels from pie.S
+//   pie    fast.c with the ESP32-S3 vector kernels from pie.S. Before the timed frames of each
+//          mode, a pie_check record compares every PIE stage with the C stage on one frame.
 // Preparing the fast tables for each mode happens before the warmup frame and is not timed.
 
 #include "fecbench.h"
@@ -130,6 +131,41 @@ static int encode(dvbs2_fast *f, dvbs2_workspace *ws, const dvbs2_mode *mode,
 static const char *const impl_names[] = {"plain", "c", "pie"};
 static unsigned impl;
 
+// Before timing a pie run: feed one GCS frame through each PIE stage and the portable C stage
+// from the same input. Returns a mask of stages that differ: 1 bb, 2 bch, 4 ldpc, 8 map + pl.
+static unsigned check_pie(dvbs2_fast *f, const dvbs2_mode *mode, unsigned pie,
+                          dvbs2_workspace *c, dvbs2_workspace *v, uint8_t *oc, uint8_t *ov,
+                          const uint8_t *payload)
+{
+    const size_t bits = (mode->kbch - 80) / 8 * 8, symbols = dvbs2_frame_symbols(mode, PILOTS);
+    const size_t length[3] = {mode->kbch / 8, mode->nbch / 8, DVBS2_FEC_BYTES};
+    unsigned bad = 0;
+    for (unsigned stage = 0; stage < 4; ++stage) {
+        for (unsigned use = 0; use < 2; ++use) {
+            dvbs2_workspace *ws = use ? v : c;
+            if (dvbs2_fast_prepare(f, mode, PILOTS, use ? pie : 0) != 0) {
+                return 15;
+            }
+            if (stage == 0) {
+                dvbs2_fast_bb_gcs(f, ws, payload, bits);
+            } else if (stage == 1) {
+                dvbs2_fast_bch(f, ws);
+            } else if (stage == 2) {
+                dvbs2_fast_ldpc(f, ws);
+            } else {
+                dvbs2_fast_map(f, ws, use ? ov : oc);
+                dvbs2_fast_pl(f, use ? ov : oc);
+            }
+        }
+        if (stage < 3 ? memcmp(c->bits, v->bits, length[stage]) != 0
+                      : memcmp(oc, ov, symbols) != 0) {
+            bad |= 1u << stage;
+        }
+        memcpy(v, c, sizeof *v);   // the next stage starts from the C result
+    }
+    return bad;
+}
+
 static void fecbench_task(void *waiter)
 {
     const uint32_t internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
@@ -137,9 +173,11 @@ static void fecbench_task(void *waiter)
     uint8_t *payload = heap_caps_malloc(DVBS2_FEC_BYTES, internal);
     uint8_t *output = heap_caps_malloc(DVBS2_MAX_SYMBOLS, internal);
     dvbs2_fast *fast = impl ? heap_caps_aligned_alloc(16, dvbs2_fast_size(), internal) : NULL;
+    dvbs2_workspace *ws2 = impl == 2 ? heap_caps_aligned_alloc(16, sizeof *ws2, internal) : NULL;
+    uint8_t *output2 = impl == 2 ? heap_caps_malloc(DVBS2_MAX_SYMBOLS, internal) : NULL;
     const unsigned pie = impl == 2 ? DVBS2_PIE_BB | DVBS2_PIE_BCH | DVBS2_PIE_LDPC | DVBS2_PIE_MAP
                                    : 0;
-    if (!ws || !payload || !output || (impl && !fast)) {
+    if (!ws || !payload || !output || (impl && !fast) || (impl == 2 && (!ws2 || !output2))) {
         printf("@{\"cmd\":\"fecbench\",\"error\":\"internal allocation failed\"}\n");
         goto done;
     }
@@ -186,6 +224,15 @@ static void fecbench_task(void *waiter)
                 goto done;
             }
             fill_payload(payload, payload_bytes, input, 0, &state);
+            if (impl == 2 && input == 0) {
+                const unsigned mismatch = check_pie(fast, mode, pie, ws, ws2, output, output2,
+                                                    payload);
+                printf("@{\"cmd\":\"fecbench\",\"event\":\"pie_check\",\"modcod\":%u,"
+                       "\"mismatch\":%u}\n", mode->modcod, mismatch);
+                if (dvbs2_fast_prepare(fast, mode, PILOTS, pie) != 0) {
+                    goto done;
+                }
+            }
             if (encode(fast, ws, mode, input ? &ts : NULL, payload, output, cycles, &total) != 0) {
                 printf("@{\"cmd\":\"fecbench\",\"error\":\"warmup encode failed\","
                        "\"modcod\":%u,\"input\":\"%s\"}\n", mode->modcod, input ? "ts" : "gcs");
@@ -225,6 +272,8 @@ static void fecbench_task(void *waiter)
     printf("@{\"cmd\":\"fecbench\",\"event\":\"end\",\"frames_reported\":%u}\n", reported);
 
 done:
+    heap_caps_free(output2);
+    heap_caps_free(ws2);
     heap_caps_free(fast);
     heap_caps_free(output);
     heap_caps_free(payload);

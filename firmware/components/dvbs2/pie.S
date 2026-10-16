@@ -224,10 +224,12 @@ dvbs2_pie_rows:
     add a8, a8, a2
     ee.ld.128.usar.ip q3, a8, 16
     ee.vld.128.ip q4, a8, 16
-    ee.src.q.ld.ip q5, a8, 16, q3, q4   /* q3 = W0, q5 = third block */
-    ee.src.q.ld.ip q6, a8, 0, q4, q5    /* q4 = W1, q6 = fourth block */
-    ee.src.q q5, q5, q6                 /* W2 */
+    ee.vld.128.ip q5, a8, 16
+    ee.src.q q3, q3, q4                 /* W0 */
+    ee.vld.128.ip q6, a8, 0
+    ee.src.q q4, q4, q5                 /* W1 */
     ee.xorq q0, q0, q3
+    ee.src.q q5, q5, q6                 /* W2 */
     ee.xorq q1, q1, q4
     ee.xorq q2, q2, q5
 7:
@@ -516,22 +518,23 @@ dvbs2_pie_run:
     wur.sar_byte a6
     ee.zero.q q0                        /* vector -1 */
     srli a8, a5, 1
+    ee.vld.128.ip q2, a2, 16            /* 8 group indices, one pair ahead */
     loopnez a8, 18f
-    ee.vld.128.ip q2, a2, 16            /* 8 group indices */
     ee.ldxq.32 q1, q2, a3, 0, 0
     ee.ldxq.32 q1, q2, a3, 1, 1
     ee.ldxq.32 q1, q2, a3, 2, 2
     ee.ldxq.32 q1, q2, a3, 3, 3
+    ee.ldxq.32 q3, q2, a3, 0, 4
+    ee.ldxq.32 q3, q2, a3, 1, 5
     ee.srcq.128.st.incp q0, q1, a4
-    ee.ldxq.32 q0, q2, a3, 0, 4
-    ee.ldxq.32 q0, q2, a3, 1, 5
-    ee.ldxq.32 q0, q2, a3, 2, 6
-    ee.ldxq.32 q0, q2, a3, 3, 7
-    ee.srcq.128.st.incp q1, q0, a4
+    ee.ldxq.32 q3, q2, a3, 2, 6
+    ee.ldxq.32 q3, q2, a3, 3, 7
+    ee.vld.128.ip q2, a2, 16
+    ee.srcq.128.st.incp q1, q3, a4
+    ee.orq q0, q3, q3
 18:
     bbci a5, 0, 20f
-    ee.vld.128.ip q2, a2, 16            /* odd vector count: one more */
-    ee.ldxq.32 q1, q2, a3, 0, 0
+    ee.ldxq.32 q1, q2, a3, 0, 0         /* odd vector count: one more */
     ee.ldxq.32 q1, q2, a3, 1, 1
     ee.ldxq.32 q1, q2, a3, 2, 2
     ee.ldxq.32 q1, q2, a3, 3, 3
