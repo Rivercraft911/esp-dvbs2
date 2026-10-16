@@ -125,7 +125,7 @@ static void report(const char *test, uint32_t *cycles, unsigned words, unsigned 
 // Pulse shaping (shaper.h): build a table, then fill a bank from the same symbols with the
 // portable and the PIE kernel. The bank is cleared in between, so both checks must equal the
 // host model's (python3 host/shaper.py verify) on their own. 8PSK at 8 samples/symbol is the
-// 5 Msym/s video case, QPSK at 40 samples/symbol the 1 Msym/s first milestone.
+// 5 Msym/s video case, 4 samples/symbol is 10 Msym/s, and QPSK at 40 is 1 Msym/s.
 static void shaper_bench(void)
 {
     static const struct {
@@ -133,18 +133,20 @@ static void shaper_bench(void)
         const int32_t *taps;
         int n, bits, nsym;
     } cases[] = {
+        {"shape4", shaper_taps_8psk_n4_a20, 4, 3, 4093},   // 16372 words, 6 * 682 + 1 symbols
+        {"shape4a35", shaper_taps_8psk_n4_a35, 4, 3, 4093},
         {"shape8", shaper_taps_8psk_n8_a20, 8, 3, 2047},     // 16376 words
         {"shape40", shaper_taps_qpsk_n40_a20, 40, 2, 409},   // 16360 words
     };
     const uint32_t internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     uint32_t *bank = radio_s3_bank(0);
-    uint8_t *sym = heap_caps_malloc(SHAPER_HISTORY + SYMBOLS, internal);
+    uint8_t *sym = heap_caps_malloc(SHAPER_HISTORY + BANK_WORDS / 4, internal);
     uint32_t *blocks = shaper_store;
     if (!sym) {
         printf("@{\"cmd\":\"membench\",\"error\":\"shaper allocation failed\"}\n");
         goto done;
     }
-    for (int c = 0; c < 2; ++c) {
+    for (unsigned c = 0; c < sizeof cases / sizeof cases[0]; ++c) {
         const int n = cases[c].n, bits = cases[c].bits, nsym = cases[c].nsym;
         const size_t words = shaper_table_words(n, bits);
         char test[24];
@@ -170,7 +172,9 @@ static void shaper_bench(void)
         report(test, cycles, nsym * n, 0, checksum(bank, nsym * n));
 
         memset(bank, 0, BANK_WORDS * 4);
-        if (n == 8) {
+        if (n == 4) {
+            TIME(cycles, shaper_fill4_pie(bank, s0, (nsym - 1) / 6, blocks));
+        } else if (n == 8) {
             TIME(cycles, shaper_fill8_pie(bank, s0, (nsym - 1) / 6, blocks));
         } else {
             TIME(cycles, shaper_fill40_pie(bank, s0, nsym, blocks));

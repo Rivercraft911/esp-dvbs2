@@ -9,6 +9,88 @@
 // epilogue stores the last. Instructions are ordered so that no loaded register is read by the
 // next instruction (load results arrive one cycle later than ALU results, TRM table 1.7-2).
 
+    .section .iram1.shaper4, "ax"
+    .global shaper_fill4_pie
+    .type   shaper_fill4_pie, @function
+    .align  4
+
+// One symbol at 4 samples/symbol. Like symbol8, six pointers rotate through the three parts.
+// S already holds part 2 of this symbol. Prefetch part 2 of the next symbol into N between
+// the part-0 load and its consumer, hiding the load-use stall without reading another symbol.
+// That final prefetch stays within the table even on the last symbol. R is replaced by the
+// current window's part-0 pointer after its part-2 row has been read. P advances through part 1.
+// Nine instructions per symbol, plus one symbol-pointer advance per six symbols.
+// Alignment: TRM v1.8 1.5.3, pp48-49. Fused add/load and add/store: 1.8.74-75, pp150-151.
+// Load defines at M (2), add/store uses at E (1): table 1.7-2, pp68-69, so an independent
+// instruction between the load and its consumer avoids the interlock (1.7.1, pp65-66).
+    .macro  symbol4 R, P, next, S, N, off
+    l8ui            a8, a3, \off
+    ee.vld.128.ip   q1, \P, 16
+    addx8           a6, a6, a8
+    and             a9, a6, a7
+    addx4           \R, a9, a5                  // 64 bytes/window, a9 = 16 * window
+    ee.vadds.s32.ld.incp q2, \R, \S, \S, q1
+    ee.vld.128.ip   \N, \next, 16
+    ee.vadds.s32.st.incp q4, a2, \S, \S, q2
+    ee.xorq         q4, \S, q7
+    .endm
+
+    .macro  window4 reg, off, part
+    l8ui            a8, a9, \off
+    addx8           a6, a6, a8
+    and             a8, a6, a7
+    addx4           \reg, a8, a5
+    addi            \reg, \reg, \part
+    .endm
+
+// void shaper_fill4_pie(uint32_t *dst, const uint8_t *sym, int groups, const uint32_t *blocks)
+// a2 dst, a3 sym, a4 groups >= 0, a5 blocks. Makes 6 * groups + 1 symbols.
+shaper_fill4_pie:
+    entry           a1, 32
+    movi            a8, 0x80200
+    ee.movi.32.q    q7, a8, 0
+    ee.movi.32.q    q7, a8, 1
+    ee.movi.32.q    q7, a8, 2
+    ee.movi.32.q    q7, a8, 3
+    movi            a7, 0x1ff0
+    movi            a6, 0
+    addi            a9, a3, -8
+    l8ui            a8, a9, 0
+    addx8           a6, a6, a8
+    l8ui            a8, a9, 1
+    addx8           a6, a6, a8
+    window4         a15, 2, 32
+    window4         a10, 3, 32
+    window4         a11, 4, 32
+    window4         a12, 5, 16
+    window4         a13, 6, 16
+    window4         a14, 7, 16
+    // Symbol 0, without a store. Preload symbol 1's part 2 (a table row, no symbol read).
+    ee.vld.128.ip   q0, a15, 16
+    l8ui            a8, a3, 0
+    ee.vld.128.ip   q1, a12, 16
+    addx8           a6, a6, a8
+    and             a9, a6, a7
+    addx4           a15, a9, a5
+    ee.vadds.s32.ld.incp q2, a15, q0, q0, q1
+    ee.vld.128.ip   q3, a10, 16
+    ee.vadds.s32    q0, q0, q2
+    ee.xorq         q4, q0, q7
+    addi            a3, a3, 1
+    loopnez         a4, .Lend4
+    symbol4         a10, a13, a11, q3, q0, 0
+    symbol4         a11, a14, a12, q0, q3, 1
+    symbol4         a12, a15, a13, q3, q0, 2
+    symbol4         a13, a10, a14, q0, q3, 3
+    symbol4         a14, a11, a15, q3, q0, 4
+    symbol4         a15, a12, a10, q0, q3, 5
+    addi            a3, a3, 6
+.Lend4:
+    ee.vst.128.ip   q4, a2, 16
+    retw
+    .size   shaper_fill4_pie, . - shaper_fill4_pie
+
+
     .section .iram1.shaper8, "ax"
     .global shaper_fill8_pie
     .type   shaper_fill8_pie, @function

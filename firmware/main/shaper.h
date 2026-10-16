@@ -16,7 +16,7 @@
 
 typedef struct {
     uint32_t *blocks;      // window w's parts 0, 1, 2 at blocks + w * block_words
-    uint16_t n;            // samples per symbol
+    uint16_t n;            // samples per symbol, a multiple of 4 in 4..40
     uint16_t block_words;  // 3 * n rounded up to a power of two
     uint8_t bits;          // bits per symbol code: 3 (eight phases) or 2 (QPSK)
 } shaper_table_t;
@@ -25,8 +25,8 @@ typedef struct {
 size_t shaper_table_words(int n, int bits);
 
 // Static table storage in internal RAM, large enough for any table here (8PSK at 8 samples/symbol
-// is the largest, 16384 words). Static because once the DAC banks are reserved the largest free
-// internal heap block is exactly 64 KiB, too small for a 64 KiB aligned allocation.
+// is the largest, 16384 words). Static storage avoids a contiguous 64 KiB heap allocation
+// after the DAC banks are reserved. An 8PSK table at 4 samples/symbol uses the first 8192 words.
 #define SHAPER_STORE_WORDS 16384
 extern uint32_t shaper_store[SHAPER_STORE_WORDS];
 
@@ -34,10 +34,14 @@ extern uint32_t shaper_store[SHAPER_STORE_WORDS];
 // shaper_table_words() words).
 void shaper_build(shaper_table_t *t, uint32_t *blocks, const int32_t *taps, int n, int bits);
 
-// Portable kernel: nsym symbols -> nsym * t->n words.
+// Portable kernel: nsym >= 0 symbols -> nsym * t->n words, n a multiple of 4 in 4..40.
 void shaper_fill_c(uint32_t *dst, const uint8_t *sym, int nsym, const shaper_table_t *t);
 
 // PIE kernels (shaper_pie.S), dst 16-byte aligned, tables from shaper_build().
+// 4 samples/symbol, 3-bit codes: groups >= 0, 6 * groups + 1 symbols -> (6 * groups + 1) * 4
+// words. For other lengths use C for the last 0..5 symbols. Each 64-byte window block holds
+// three 16-byte part rows followed by 16 bytes of padding; every PIE load is aligned.
+void shaper_fill4_pie(uint32_t *dst, const uint8_t *sym, int groups, const uint32_t *blocks);
 // 8 samples/symbol, 3-bit codes: 6 * groups + 1 symbols -> (6 * groups + 1) * 8 words.
 void shaper_fill8_pie(uint32_t *dst, const uint8_t *sym, int groups, const uint32_t *blocks);
 // 40 samples/symbol, 2-bit codes (QPSK): nsym >= 1 symbols -> nsym * 40 words.
