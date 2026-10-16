@@ -54,3 +54,69 @@ The first tests use 2390–2450 MHz, in the US 13 cm amateur allocation. Transmi
 an amateur licence, and running the radio outside Wi-Fi channels means the module's Wi-Fi
 certification does not cover it. Keep the antenna off and the signal in a cable until a licensed
 operator is on the air.
+
+## Monday checklist
+
+1. Give this session exclusive ownership of the board and SDR. Connect the board U.FL to an
+   SMA pigtail, then **30–40 dB of attenuators**, then coax to E200 **RX1**. Leave antennas off.
+   Record each attenuator in path order and describe the whole cable path. Do not count an
+   unmeasured cable loss as attenuation. Explicitly record whether anything radiates.
+2. Use the already flashed `dvb` firmware. Its command sends QPSK at 1 Msym/s, with eight
+   repeated normal frames, pilots and roll-off 0.35 (`firmware/main/dvbtx.c:3`,
+   `firmware/main/dvbtx.c:9`, `firmware/main/dvbtx.c:31`, `firmware/main/dvbtx.c:32`).
+   Start with MODCOD 4, peak 128 and board gain 0. Peak 128 is the initial setting suggested
+   by the recorded amplitude sweep, not a calibrated RF power
+   ([radio results, Drive level](../results/2026-10-16-radio/README.md#drive-level)).
+3. Set E200 LO 2420 MHz, sample rate 4 MS/s, bandwidth 2 MHz, manual gain 0 dB, port
+   `A_BALANCED`. These are starting settings for the cabled test. The ADI driver documents
+   RX1 and the separate RX/TX LOs under
+   [General attribute naming convention](https://analogdevicesinc.github.io/linux/drivers/iio-transceiver/ad9361/#general-attribute-naming-convention).
+   `host/sdr.py` powers down `altvoltage1`, verifies all eight requested attributes, and
+   requires scan channels I/Q at indices 0/1 with `le:S12/16>>0`. Any mismatch stops the run.
+4. From the checkout being tested, first print the plan. Replace **20 10** and the cable
+   description with the actual installed path. Use the framework Python if IDF is activated:
+
+   ```sh
+   /Library/Frameworks/Python.framework/Versions/3.13/bin/python3 host/bench.py dvb \
+     --topic monday-cable --attenuation 20 10 \
+     --cable 'U.FL-SMA pigtail -> 20 dB -> 10 dB -> SMA coax -> E200 RX1; no antennas' \
+     --radiates no --dry-run \
+     --libiio /Users/river/Documents/stanford/SSI/esp-dvbs2/notes/libiio \
+     --receiver /Users/river/Documents/stanford/SSI/esp-dvbs2/notes/leansdr/src/apps/leandvb
+   ```
+
+   After checking the path and frequency under your amateur licence, run the **same command**
+   with `--dry-run` replaced by `--authorize-tx`. Omitting the RF-path options prompts on a
+   terminal; a noninteractive run refuses missing fields. The authorization applies to that
+   one timed run. Neither command resets or flashes the board.
+5. Defaults send `dvb 2420 4 10 0 128`, wait 2 s after starting `board.py`, then request
+   **one 4,000,000-sample buffer**, 1 s and 16,000,000 bytes of int16 I/Q. The generated
+   capture command uses `iio_readdev -b 4000000 -s 4000000` (libiio v0.25
+   [buffer creation and refill](https://github.com/analogdevicesinc/libiio/blob/v0.25/tests/iio_readdev.c#L398)).
+   Settings are read back again immediately before acquisition. The firmware has no RF-start
+   acknowledgement; the 2 s settle is an assumption to check on Monday. The tool refuses
+   capture if the board has already ended or the planned TX time remaining is too short.
+6. Check the final JSON status and both `results/<local-date>-monday-cable/runs.jsonl` and
+   `captures.jsonl`. They retain the RF path, board `info` and timed-command records,
+   host revision/tool hashes, read-backs, libiio versions, capture times/hash, and analysis.
+   Keep the local `.iq`, `.iq.json`, board log and receiver log with the run. A successful
+   DVB run requires known-symbol MER recovery, LeanDVB frame lock and a complete eight-frame
+   payload match, plus a successful board result without late fills or fatal deadlines.
+   MER is modulation error ratio, the fitted reference-symbol power divided by residual
+   error power. Carrier offset and a constant clock error are removed; phase noise and
+   channel distortion remain. This estimator is qualified with synthetic signals and saved
+   radio-off dumps, not RF captures. A single-buffer file length does not prove RF continuity.
+   On errors, the tool waits for the finite board command and records its outcome. Ctrl-C
+   cannot directly stop firmware RF; keep the cable connected until the timed run has ended.
+
+For an initial tone instead, use `tx` with the same RF-path and libiio options and add
+`--bandwidth 4000000`. The default `tone128` and gain 0 command lasts 10 s; `host/capture.py`
+reports tone/image/leak and envelope/phase statistics with full scale 2048, in dBFS, not dBm.
+For offline reanalysis (no devices are opened):
+
+```sh
+python3 host/onair.py results/<date>-monday-cable/<run-id>.iq \
+  --rate 4000000 --scale 2048 --auto-shift --mer \
+  --receiver /Users/river/Documents/stanford/SSI/esp-dvbs2/notes/leansdr/src/apps/leandvb
+python3 host/onair.py capture.iq --rate 4000000 --scale 2048 --auto-shift --mer-only
+```
