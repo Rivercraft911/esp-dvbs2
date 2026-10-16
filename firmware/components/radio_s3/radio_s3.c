@@ -151,9 +151,14 @@ static void direct_lo(void)
     regi2c_ctrl_write_reg_mask(0x65, 0, 0, 4, 4, 0);
 }
 
+uint32_t *radio_s3_bank(unsigned n)
+{
+    return (uint32_t *)(n == 0 ? 0x3fcd0000 : 0x3fcc0000);
+}
+
 static esp_err_t IRAM_ATTR fill_bank(run_t *run, unsigned bank, uint64_t start)
 {
-    uint32_t *base = (uint32_t *)(bank == 0 ? 0x3fcd0000 : 0x3fcc0000);
+    uint32_t *base = radio_s3_bank(bank);
     size_t offset = start % RADIO_S3_BANK_WORDS;
     size_t first_count = RADIO_S3_BANK_WORDS - offset;
     uint32_t before = cycles();

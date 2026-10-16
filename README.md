@@ -51,6 +51,15 @@ On the RP2350 the same kind of bit-level code, BCH and LDPC, ran 11 times faster
 with tables and whole-word operations (4.1 M to 0.38 M cycles per frame).
 [Run details](results/2026-10-16-encoder/README.md).
 
+## Pulse shaping at 1.78 cycles per sample
+
+![Time to shape one DAC bank with plain C and with the PIE vector unit](docs/img/shaper.png)
+
+Real 8PSK samples, a 9-symbol root-raised-cosine pulse, go into a DAC bank at 1.78 cycles per
+sample using the S3's 128-bit vector instructions. Each sample is the sum of three table words,
+so the whole 8PSK table fits in 64 KiB. That is 34% of one core at 40 MS/s, and 59% at 80 MS/s,
+the rate that would allow 20 Msym/s. [Run details](results/2026-10-16-shaper/README.md).
+
 ## Status
 
 | Step | State |
@@ -58,7 +67,9 @@ with tables and whole-word operations (4.1 M to 0.38 M cycles per frame).
 | Reference encoder in Python, matching gr-dtv and leansdr stage by stage | done |
 | Firmware scaffold and memory benchmarks on the ESP32-S3 | done |
 | DVB-S2 encoder in C on the S3, bit-exact with the reference | done, QPSK fast enough |
+| Offline IQ decoded by an independent DVB-S2 receiver | done, [40 cases](results/2026-10-16-decode/README.md), whole payloads match |
 | Encoder fast enough for 8PSK at 5 Msym/s | next, needs 2.3x |
+| Pulse shaping fast enough for 8PSK at 5 Msym/s (PIE, 1.78 cycles/sample) | done |
 | DAC bank streaming, received on an SDR through attenuators | next |
 | QPSK at 1 Msym/s decoded by a DVB-S2 receiver | |
 | 8PSK 2/3 at 5 Msym/s with the payload arriving over SPI | |
@@ -66,12 +77,15 @@ with tables and whole-word operations (4.1 M to 0.38 M cycles per frame).
 ## Build and run
 
 Needs ESP-IDF v6.1, an ESP32-S3 with 8 MB of PSRAM, Python 3 with numpy, pyserial and matplotlib.
+The host IQ tools also need scipy. Independent loopback needs a separate local LeanDVB build.
 
 ```sh
 python3 tests/test_dvbs2.py                     # reference encoder checks, no hardware
 python3 tests/test_dvbs2_8psk.py                # independent 8PSK standard-formula checks
 python3 tests/test_dvbs2_c.py                   # compile with cc, compare every C stage
 python3 tests/test_fecbench.py                  # seeded benchmark frames and output CRCs
+python3 tests/test_iq.py                        # RRC waveform and capture formats, no hardware
+python3 tests/test_decode.py                    # receiver output parsing and failure checks
 cd firmware && idf.py build flash && cd ..      # after sourcing ESP-IDF
 python3 host/board.py info --reset              # talk to the board
 python3 host/board.py membench --out results/<date>-<topic>/runs.jsonl

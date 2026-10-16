@@ -11,6 +11,10 @@ jobs:
           python-version: "3.12"
       - run: pip install numpy
       - run: python tests/test_dvbs2.py
+      - run: python tests/test_shaper.py
+      - run: python tests/test_radio.py
+      - run: python tests/test_tx_command.py
+      - run: python tests/test_capture.py
 
   firmware:
     runs-on: ubuntu-latest

@@ -63,5 +63,9 @@ typedef enum {
 
 void radio_s3_set_chain(radio_s3_chain_t mode);
 
+/* One of the two 64 KiB DAC bank regions (n = 0 or 1), reserved at startup. Between
+ * runs the CPU may use them as plain internal RAM; a run overwrites both. */
+uint32_t *radio_s3_bank(unsigned n);
+
 esp_err_t radio_s3_run(uint32_t freq_mhz, uint8_t gain, uint32_t seconds,
                        radio_s3_fill_fn fill, void *ctx, radio_s3_stats_t *stats);

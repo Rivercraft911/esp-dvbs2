@@ -18,8 +18,8 @@ same samples. In a 0.5 s tone capture (about 1400 switches), the tone's phase fo
 - Board: ESP32-S3 rev 0.2, 240 MHz. Firmware `eb2788f` for the first run, which stopped before
   keying (`ESP_ERR_INVALID_STATE`: the front end's gain base index was 160, fixed in `b63393f`).
   Then `b63393f`, and from 20:57 UTC `b63393f` plus the working-tree changes committed just before
-  these results (diagnostic signals, the `chain` command). The build stamps `b63393f` for both
-  because the version string does not mark a dirty tree.
+  these results (diagnostic signals, the `chain` command). The build stamps `b63393f` for both:
+  the version string is fixed when the build is configured, which happened on the clean tree.
 - RF path: board U.FL, pigtail, attenuators, E200 RX1. The attenuation value was set on the bench
   (at least 30 dB per [docs/hardware.md](../../docs/hardware.md)) and is not recorded by the tools.
 - Receiver: E200 (AD9364, PlutoSDR firmware v0.34) over Ethernet, libiio 0.25, RX LO 2420 MHz,
