@@ -1,21 +1,22 @@
-"""DVB-S2 reference transmitter, QPSK only: user bits -> BBFRAME -> FECFRAME -> PLFRAME symbols.
+"""DVB-S2 reference transmitter: user bits -> BBFRAME -> FECFRAME -> PLFRAME symbols.
 
 This is the readable model the firmware must match bit for bit. Standard: ETSI EN 302 307-1
 V1.4.1 (2014-11); clause, table and figure numbers refer to it. Code tables: dvbs2_tables.py,
 generated from the standard's PDF by gen_tables.py. Carried over from the RP2350 benchmark,
 where tests/test_dvbs2.py checked it against gr-dtv and leansdr stage by stage.
 
-Scope: QPSK (MODCOD 1-11, Table 12), normal (64 800 bit) and short (16 200 bit) FECFRAMEs,
-pilots on/off, any PL scrambling code n (default 0). Not implemented: 8PSK/APSK and the bit
-interleaver (5.3.3), dummy PLFRAMEs (5.5.1), ISSY and null-packet deletion (Annex D), multiple
-streams, ACM, pulse shaping (5.6).
+Scope: QPSK (MODCOD 1-11) and 8PSK (MODCOD 12-17, Table 12), normal (64 800 bit) and short
+(16 200 bit) FECFRAMEs, pilots on/off, any PL scrambling code n (default 0). Not implemented:
+APSK, dummy PLFRAMEs (5.5.1), ISSY and null-packet deletion (Annex D), multiple streams, ACM,
+pulse shaping (5.6).
 
 Conventions
 * Bit arrays are numpy uint8 0/1 in transmission order; index 0 is the first bit sent (the
   standard's MSB).
-* A symbol is a bit pair (bI, bQ) with I = (1 - 2 bI)/sqrt2, Q = (1 - 2 bQ)/sqrt2. Every PLFRAME symbol (data, pi/2-BPSK header, pilot, after
-  PL scrambling) is one of these four points (see plheader, insert_pilots, pl_scramble), so two
-  bits per symbol describe the frame.
+* The QPSK API uses bit pairs (bI, bQ), I = (1 - 2 bI)/sqrt2, Q = (1 - 2 bQ)/sqrt2.
+* The common QPSK/8PSK API uses a uint8 phase index p: exp(j p pi/4), p = 0..7. All data,
+  pi/2-BPSK header and pilot symbols lie on these eight points, before and after PL scrambling.
+  One phase byte per symbol also selects the pulse shaper's eight possible input symbols.
 
 Mode adaptation for file transfer: Generic Continuous Stream (GCS). MATYPE-1 = 01 1 1 0 0 RO
 (Table 3: TS/GS = 01 generic continuous, SIS, CCM, ISSYI off, NPD off, roll-off), MATYPE-2 = 0
@@ -40,6 +41,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from dvbs2_tables import BCH_PARAMS, BCH_POLYS, LDPC, Q  # noqa: E402
 
 RATES = ("1/4", "1/3", "2/5", "1/2", "3/5", "2/3", "3/4", "4/5", "5/6", "8/9", "9/10")
+PSK8_RATES = ("3/5", "2/3", "3/4", "5/6", "8/9", "9/10")
 Code = namedtuple("Code", "rate short kbch nbch t n q modcod rows")
 
 
@@ -51,6 +53,15 @@ def code(rate, short=False):
     rows = tuple(np.array(r) for r in LDPC[(f, rate)])
     n = 16200 if short else 64800
     return Code(rate, short, kbch, nbch, t, n, Q[f][rate], RATES.index(rate) + 1, rows)
+
+
+def modcod(rate, modulation="qpsk"):
+    """Table 12: QPSK MODCOD 1..11, 8PSK 12..17 (there is no 8PSK rate 4/5)."""
+    if modulation == "qpsk":
+        return RATES.index(rate) + 1
+    if modulation == "8psk":
+        return PSK8_RATES.index(rate) + 12
+    raise ValueError(f"unsupported modulation: {modulation}")
 
 
 def int_bits(v, n):
@@ -231,11 +242,36 @@ def fecframe(bbf, rate, short=False):
 
 # ---------------------------------------------------------- mapping and PL framing (5.4, 5.5)
 
+def bit_interleave(fec, rate, modulation="8psk"):
+    """5.3.3, Table 8, Figures 7/8: 8PSK writes three columns, then reads each row.
+    For rate 3/5 read columns 3, 2, 1; for all other rates read 1, 2, 3. Thus the first FEC bit
+    is the third symbol bit for rate 3/5 and the first otherwise. QPSK has no interleaver."""
+    modcod(rate, modulation)
+    fec = np.asarray(fec)
+    if modulation == "qpsk":
+        return fec.copy()
+    assert len(fec) in (16200, 64800)
+    columns = fec.reshape(3, -1)
+    return (columns[::-1] if rate == "3/5" else columns).T.ravel()
+
+
 def qpsk_map(fec):
     """5.4.1, Figure 9: bits 2k and 2k+1 form symbol k; the first sets the I sign, the second
     the Q sign, 0 -> positive: 00 (+,+), 01 (+,-), 10 (-,+), 11 (-,-), times 1/sqrt2. The bits
     are used unchanged."""
     return fec[0::2].copy(), fec[1::2].copy()
+
+
+def psk8_map(interleaved):
+    """5.4.2, Figure 10: interleaved triples, MSB first, -> unit-energy phase in pi/4 units.
+    At phases 0..7 the labels are 001, 000, 100, 110, 010, 011, 111, 101."""
+    b = np.asarray(interleaved, np.uint8).reshape(-1, 3)
+    return np.array([1, 0, 4, 5, 2, 7, 3, 6], np.uint8)[4 * b[:, 0] + 2 * b[:, 1] + b[:, 2]]
+
+
+def qpsk_phases(bI, bQ):
+    """QPSK sign bits -> phase in pi/4 units (Figure 9): 00=1, 01=7, 10=3, 11=5."""
+    return np.array([1, 7, 3, 5], np.uint8)[2 * np.asarray(bI) + np.asarray(bQ)]
 
 
 SOF = 0x18D2E82                                   # 5.5.2.1, 26 bits
@@ -325,10 +361,32 @@ def plframe(fec, rate, short=False, pilots=True, n=0):
             np.concatenate([hQ, bQ]).astype(np.uint8))
 
 
-def plframe_length(short, pilots):
-    """QPSK PLFRAME symbols: 90 (S + 1) + 36 int((S-1)/16) with pilots, S = 360 or 90 slots
-    (Figure 13, Table 11)."""
-    S = 90 if short else 360
+def plframe_phases(fec, rate, short=False, pilots=True, n=0, modulation="qpsk"):
+    """QPSK/8PSK PLFRAME as uint8 phase indices p, symbol = exp(j p pi/4).
+    The interleaver applies only to 8PSK (5.3.3); 90-symbol slots, 36 pilots after each 16
+    slots except the last, then phase += 2 R_n modulo 8 (5.5). The header is not scrambled."""
+    mc = modcod(rate, modulation)
+    assert len(fec) == code(rate, short).n
+    if modulation == "8psk":
+        phases = psk8_map(bit_interleave(fec, rate))
+    else:
+        phases = qpsk_phases(*qpsk_map(fec))
+    if pilots:
+        S = len(phases) // 90
+        out = np.ones(len(phases) + 36 * ((S - 1) // 16), np.uint8)  # pi/4 pilot phase
+        k = np.arange(len(phases))
+        out[k + 36 * (k // 1440)] = phases
+        phases = out
+    phases = (phases + 2 * pl_scrambling_sequence(len(phases), n)) & 7
+    return np.concatenate([qpsk_phases(*plheader(mc, short, pilots)), phases])
+
+
+def plframe_length(short, pilots, modulation="qpsk"):
+    """Figure 13, Table 11: 90 (S+1) + 36 floor((S-1)/16) symbols with pilots.
+    S = nldpc/(90 etaMOD), etaMOD = 2 (QPSK) or 3 (8PSK); normal 8PSK with pilots = 22194."""
+    if modulation not in ("qpsk", "8psk"):
+        raise ValueError(f"unsupported modulation: {modulation}")
+    S = (16200 if short else 64800) // (90 * (3 if modulation == "8psk" else 2))
     return 90 * (S + 1) + (36 * ((S - 1) // 16) if pilots else 0)
 
 
@@ -343,8 +401,24 @@ def transmit(data, rate, short=False, pilots=True, n=0, ro=0.35):
     return np.concatenate([f[0] for f in frames]), np.concatenate([f[1] for f in frames])
 
 
+def transmit_phases(data, rate, short=False, pilots=True, n=0, ro=0.35, modulation="qpsk"):
+    """User bits -> GCS PLFRAMEs in phase-index form. Final DATA FIELD is zero-padded (5.2.1)."""
+    modcod(rate, modulation)
+    dfl = code(rate, short).kbch - 80
+    frames = []
+    for k in range(0, max(len(data), 1), dfl):
+        fec = fecframe(bbframe(data[k:k + dfl], rate, short, ro), rate, short)
+        frames.append(plframe_phases(fec, rate, short, pilots, n, modulation))
+    return np.concatenate(frames)
+
+
 # ---------------------------------------------------------- output
 
 def symbols(bI, bQ):
     """Complex symbols (I + jQ), unit energy."""
     return ((1.0 - 2.0 * bI) + 1j * (1.0 - 2.0 * bQ)) / np.sqrt(2)
+
+
+def symbols_from_phases(phases):
+    """Phase indices p -> unit-energy complex symbols exp(j p pi/4)."""
+    return np.exp(1j * np.pi / 4 * np.asarray(phases))

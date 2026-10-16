@@ -3,6 +3,8 @@
 
     python3 host/board.py info
     python3 host/board.py membench --out results/2026-10-16-memory/runs.jsonl
+    python3 host/board.py fecbench --out results/<date>-encoder/runs.jsonl
+    python3 host/board.py "usbrx 4000000" --send 4000000     # payload ingress over USB
 
 Each record is printed, and with --out appended to a JSON-lines file together with the command
 and the host time. The firmware marks the end of every command with {"done": true}.
@@ -17,8 +19,10 @@ import shutil
 import subprocess
 import sys
 import time
+import zlib
 
 import serial
+from serial.tools import list_ports
 
 DEFAULT_PORT = "/dev/cu.usbmodem101"
 
@@ -30,12 +34,13 @@ def open_port(port: str, reset: bool) -> serial.Serial:
     the port opens, so assert them first, then release RTS before DTR so that the change is never
     seen as a reset. Each RTS change re-sends DTR so the new line state reaches the device.
 
-    An RTS reset from macOS left GPIO0 low and the chip in its bootloader (strap register 0x23,
-    2026-10-16), so reset=True restarts the firmware with esptool's watchdog reset instead, which
-    does not use DTR or RTS.
+    An RTS reset through this port from macOS left GPIO0 low and the chip in its bootloader (strap
+    register 0x23, 2026-10-16). So reset=True pulls EN low through the board's USB-UART bridge if
+    it is plugged in, and otherwise uses esptool's watchdog reset.
     """
     if reset:
-        watchdog_reset(port)
+        bridge = bridge_port()
+        en_reset(bridge) if bridge else watchdog_reset(port)
     link = serial.Serial()
     link.port, link.baudrate, link.timeout = port, 115200, 0.1
     link.rts = link.dtr = True
@@ -44,6 +49,27 @@ def open_port(port: str, reset: bool) -> serial.Serial:
     link.dtr = link.dtr
     link.dtr = False
     return link
+
+
+def bridge_port() -> str | None:
+    """The board's second USB port: a WCH USB-UART bridge (VID 0x1A86) on UART0, if connected."""
+    for p in list_ports.comports():
+        if p.vid == 0x1A86:
+            return p.device
+    return None
+
+
+def en_reset(bridge: str) -> None:
+    """Hardware reset through the bridge's auto-reset circuit: RTS high with DTR low pulls EN
+    low; equal levels leave EN and GPIO0 alone, so the chip restarts into the firmware."""
+    with serial.Serial() as link:
+        link.port, link.baudrate = bridge, 115200
+        link.dtr = link.rts = False
+        link.open()
+        link.dtr, link.rts = False, True
+        time.sleep(0.1)
+        link.rts = False
+    time.sleep(2.5)                        # boot and USB driver start
 
 
 def watchdog_reset(port: str) -> None:
@@ -59,11 +85,24 @@ def watchdog_reset(port: str) -> None:
     time.sleep(2.5)                        # boot and USB driver start
 
 
-def run(port: str, command: str, timeout: float = 30.0, reset: bool = False) -> list[dict]:
+def payload(n: int) -> bytes:
+    """n bytes of a fixed pseudo-random pattern (numpy-free so the host tool stays light)."""
+    out, x = bytearray(n), 2026
+    for i in range(n):
+        x = (x * 1103515245 + 12345) & 0x7FFFFFFF
+        out[i] = x >> 16 & 0xFF
+    return bytes(out)
+
+
+def run(port: str, command: str, timeout: float = 30.0, reset: bool = False,
+        data: bytes = b"") -> list[dict]:
     link = open_port(port, reset)
     try:
         link.reset_input_buffer()
         link.write(command.encode() + b"\n")
+        if data:
+            time.sleep(0.05)
+            link.write(data)
         records, pending, deadline = [], b"", time.monotonic() + timeout
         while time.monotonic() < deadline:
             pending += link.read(4096)
@@ -83,14 +122,20 @@ def run(port: str, command: str, timeout: float = 30.0, reset: bool = False) -> 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("command", help="firmware command line, e.g. info or membench")
+    parser.add_argument("command", help="firmware command line, e.g. info, membench or fecbench")
     parser.add_argument("--port", default=DEFAULT_PORT)
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--reset", action="store_true", help="restart the firmware first")
+    parser.add_argument("--send", type=int, default=0, metavar="N",
+                        help="after the command, send N pattern bytes (for usbrx)")
     parser.add_argument("--out", type=pathlib.Path, help="append records to this JSON-lines file")
     args = parser.parse_args()
 
-    records = run(args.port, args.command, args.timeout, args.reset)
+    data = payload(args.send) if args.send else b""
+    records = run(args.port, args.command, args.timeout, args.reset, data)
+    if data:
+        for r in records:
+            r["host_crc32"] = zlib.crc32(data)
     stamp = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
     for record in records:
         print(json.dumps(record))
