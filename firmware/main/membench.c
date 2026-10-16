@@ -138,8 +138,8 @@ void membench_run(void)
     uint32_t x = 2026;
     for (int i = 0; i < ROWS * ROW_WORDS; ++i) {
         x ^= x << 13, x ^= x >> 17, x ^= x << 5;
-        ti[i] = x & 0x000FFC00u;  // I field, bits 19:10
-        tq[i] = x & 0x000003FFu;  // Q field, bits 9:0
+        ti[i] = x & 0x000003FFu;  // TX I field, bits 9:0 (RX uses the opposite order)
+        tq[i] = x & 0x000FFC00u;  // TX Q field, bits 19:10
     }
     for (int s = 0; s < SYMBOLS; ++s) {
         x ^= x << 13, x ^= x >> 17, x ^= x << 5;

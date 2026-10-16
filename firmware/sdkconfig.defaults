@@ -13,3 +13,9 @@ CONFIG_SPIRAM_IGNORE_NOTFOUND=y
 # Commands and results over the chip's own USB port.
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 CONFIG_FREERTOS_HZ=1000
+
+# Required vendor force-TX/gain entry points for the radio experiment.
+CONFIG_ESP_PHY_ENABLE_CERT_TEST=y
+
+# Full calibration each run; no PHY cache reads or writes during this experiment.
+CONFIG_ESP_PHY_CALIBRATION_AND_DATA_STORAGE=n

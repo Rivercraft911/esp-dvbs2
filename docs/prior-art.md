@@ -17,7 +17,8 @@ Facts below were read from each project's source and documents on 2026-10-16.
 ## What this project takes from them
 
 - **Transmit path (esp-sdr-zephyr):** the S3's DAC engine loops a 16380-word SRAM bank at
-  40 MS/s. Each word is one complex sample: I in bits 19:10, Q in bits 9:0, both signed 10-bit.
+  40 MS/s. Each TX word is one complex sample: I in bits 9:0, Q in bits 19:10, both signed
+  10-bit. RX uses the opposite field order ([register notes, lines 1354–1362](https://github.com/cyber-murmel/esp-sdr-zephyr/blob/3214c16a7c9f136414cc5ae9d245ea290c98a6ce/doc/undocumented-registers-esp32s3.md#L1354-L1362)).
   The CPU fills the idle bank and switches banks at a scheduled time. With 64 lead and 2048 tail
   samples of overlap, a new bank is due every (16380 − 64 − 2048) / 40 MS/s = 356.7 µs.
 - **Tuning:** the S3's PLL locks from about 1.8 to 2.8 GHz (esp-sdr-zephyr), which covers the
