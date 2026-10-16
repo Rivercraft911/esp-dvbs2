@@ -1,0 +1,24 @@
+# Local agent instructions (see AGENTS.md on your machine; not published)
+AGENTS.md
+CLAUDE.md
+notes/
+
+# ESP-IDF build output and local config
+firmware/build/
+firmware/sdkconfig
+firmware/sdkconfig.old
+firmware/managed_components/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# Large or private inputs
+*.pdf
+*.cfile
+*.iq
+*.sigmf-data
+
+.DS_Store
