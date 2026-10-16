@@ -9,7 +9,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 # Extract just the two parser functions so this safety check needs no simulated
 # RTOS, USB or Wi-Fi stack. Every tested branch is compiled from main.c itself.
 source = (ROOT / "firmware/main/main.c").read_text()
-parser = source[source.index("static bool number("):source.index("static void cmd_info(")]
+parser = (source[source.index("static bool number("):source.index("static void cmd_dvb(")] +
+          source[source.index("static void cmd_tx("):source.index("static void cmd_info(")])
 invalid = [
     "", "2400", "2400 tone", "2400 tone 1 0 extra", "2400 unknown 1 0",
     "2389 tone 1 0", "2451 tone 1 0", "-2400 tone 1 0", "nan tone 1 0",
