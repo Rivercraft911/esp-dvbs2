@@ -1,0 +1,4 @@
+{"host_time": "2026-10-16T19:54:00+00:00", "command": "info", "cmd": "info", "firmware": "cd30c89", "idf": "v6.1", "cores": 2, "revision": 2, "cpu_mhz": 240, "psram_bytes": 8388608, "free_internal": 377367, "free_psram": 8386192}
+{"host_time": "2026-10-16T19:54:08+00:00", "command": "usbrx 4000000", "cmd": "usbrx", "bytes": 4000000, "requested": 4000000, "us": 6927578, "mbit_per_s": 4.619, "crc32": 1392576442, "host_crc32": 1392576442}
+{"host_time": "2026-10-16T19:54:15+00:00", "command": "usbrx 4000000", "cmd": "usbrx", "bytes": 4000000, "requested": 4000000, "us": 6934037, "mbit_per_s": 4.615, "crc32": 1392576442, "host_crc32": 1392576442}
+{"host_time": "2026-10-16T19:54:23+00:00", "command": "usbrx 4000000", "cmd": "usbrx", "bytes": 4000000, "requested": 4000000, "us": 6936659, "mbit_per_s": 4.613, "crc32": 1392576442, "host_crc32": 1392576442}
