@@ -82,6 +82,9 @@ extern void set_chanfreq(uint16_t mhz, uint8_t bandwidth);
 extern void phy_set_freq(uint16_t mhz, int16_t khz);
 extern void force_tx_gain(uint16_t gain, uint16_t baseband, uint8_t digital);
 extern void force_txon_mode(uint8_t enable, uint8_t mode, uint8_t offset);
+extern void stop_tx_tone(unsigned int enable);
+extern void esp_phy_wifi_tx_tone(uint32_t start, uint32_t chan, uint32_t backoff);
+extern void esp_phy_cbw40m_en(bool en);
 
 static const uint8_t gain_codes[] = {
     0, 16, 32, 48, 49, 81, 82, 115, 87, 119, 107, 95, 111, 127, 127, 127, 127, 127,
@@ -96,6 +99,25 @@ static uint16_t gain_baseband(unsigned gain)
 
 static portMUX_TYPE state_lock = portMUX_INITIALIZER_UNLOCKED;
 static bool running;
+static radio_s3_chain_t chain = RADIO_S3_CHAIN_CW_GAIN;
+
+void radio_s3_set_chain(radio_s3_chain_t mode)
+{
+    chain = mode;
+}
+
+/* Nearest 2.4 GHz Wi-Fi channel, for the vendor CW call (channels 1..13). */
+static uint32_t cw_channel(uint32_t mhz)
+{
+    int chan = ((int)mhz - 2407 + 2) / 5;
+    return chan < 1 ? 1 : chan > 13 ? 13 : (uint32_t)chan;
+}
+
+/* Vendor CW backoff in 0.25 dB: gain 17 is full power, each step 2 dB less. */
+static uint32_t cw_backoff(unsigned gain)
+{
+    return (RADIO_S3_GAIN_MAX - gain) * 8;
+}
 static StaticSemaphore_t done_storage;
 
 typedef struct {
@@ -108,6 +130,7 @@ typedef struct {
     SemaphoreHandle_t done;
     esp_err_t error;
     bool watch_worker;
+    radio_s3_chain_t chain;
 } run_t;
 
 static inline uint32_t IRAM_ATTR cycles(void)
@@ -172,16 +195,40 @@ static esp_err_t IRAM_ATTR __attribute__((noinline)) stream(run_t *run)
      */
     const uint32_t base = (REG_READ(FE_CTRL) >> 18) & 0xffU;
     stats->fe_base_index = base;
+    stats->chain = run->chain;
+    if (run->chain != RADIO_S3_CHAIN_FORCED) {
+        /* The vendor CW turns the whole chain on with its calibrated settings.
+         * Stopping the tone hands the DAC to the data path and keeps the chain
+         * keyed (esp-sdr-zephyr 3214c16 lib/esp_sdr/src/esp_sdr_paced.c:203-232).
+         * Only the PLL moves afterwards; another channel setup would undo it.
+         */
+        esp_phy_cbw40m_en(run->chain == RADIO_S3_CHAIN_CW40);
+        esp_phy_wifi_tx_tone(1, cw_channel(run->freq_mhz), cw_backoff(run->gain));
+        stop_tx_tone(1);
+        phy_set_freq(run->freq_mhz, 0);
+        direct_lo();
+        if (run->chain != RADIO_S3_CHAIN_CW_GAIN) {
+            stats->fe_gain_index = (REG_READ(FE_CTRL) >> 10) & 0xffU;
+            goto keyed;
+        }
+        /* Then pin the gain as the forced path does: fixed slot 0, vendor power
+         * tracking off. */
+        force_tx_gain(gain_codes[run->gain], gain_baseband(run->gain), 0);
+        force_txon_mode(1, 0, (uint8_t)(-base & 0xffU));
+        goto check_slot;
+    }
     rom_pbus_workmode();
     rom_pbus_xpd_rx_on(0);
     rom_pbus_xpd_tx_on(1);
     force_tx_gain(gain_codes[run->gain], gain_baseband(run->gain), 0);
     direct_lo();
     force_txon_mode(1, 0, (uint8_t)(-base & 0xffU));
+check_slot:
     stats->fe_gain_index = (REG_READ(FE_CTRL) >> 10) & 0xffU;
     if (stats->fe_gain_index != 0) {
         return ESP_ERR_INVALID_STATE;
     }
+keyed:
     REG_CLR_BIT(TONE_CTRL, 1U << 18);
     /* Keying can clear bank ownership, so grant only after keying. */
     REG_WRITE(BANK_USAGE, ownership | (1U << 2));
@@ -380,6 +427,9 @@ cleanup:
     if (started) {
         REG_WRITE(DAC_CTRL, 0);
         REG_WRITE(ADC_CTRL, 0);
+        if (run->chain != RADIO_S3_CHAIN_FORCED) {
+            esp_phy_wifi_tx_tone(0, cw_channel(run->freq_mhz), cw_backoff(run->gain));
+        }
         force_txon_mode(0, 0, 0);
         REG_CLR_BIT(FE_CTRL, 1U << 1);
         REG_CLR_BIT(TONE_CTRL, 1U << 18);
@@ -438,7 +488,7 @@ esp_err_t radio_s3_run(uint32_t freq_mhz, uint8_t gain, uint32_t seconds,
     stats->min_fill_slack_cycles = UINT32_MAX;
     run_t run = {
         .freq_mhz = freq_mhz, .gain = gain, .seconds = seconds,
-        .fill = fill, .ctx = ctx, .stats = stats,
+        .fill = fill, .ctx = ctx, .stats = stats, .chain = chain,
         .done = xSemaphoreCreateBinaryStatic(&done_storage),
     };
     BaseType_t created = xTaskCreatePinnedToCore(worker, "radio", 6144, &run,

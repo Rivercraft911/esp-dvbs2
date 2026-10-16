@@ -3,9 +3,14 @@
 
     python3 host/capture.py tone.iq --format i16 --rate 61440000 --signal tone
     python3 host/capture.py tag.iq --format f32 --rate 61440000 --signal tag
+    python3 host/capture.py zero.iq --format i16 --rate 4000000 --signal lines
 
 Tone offsets are relative to the SDR capture center; tune it to the requested
-TX frequency. The tone search allows +/-100 kHz of carrier error.
+TX frequency. The tone search allows +/-100 kHz of carrier error. The board's
+carrier is taken as the first tone minus 1 MHz (a DAC clock error of 50 ppm moves
+that tone by only 50 Hz), and the image and LO leak are measured around it, not
+around the SDR center. Each line is integrated over +/-1 kHz so carrier drift
+during the capture stays inside.
 Float samples use full scale 1; int16 samples are divided by 32768. Power is
 mean(|I+jQ|**2), in dBFS, never dBm. The SDR sample-rate argument is the time
 reference, so inferred DAC rate inherits its calibration error.
@@ -196,6 +201,7 @@ def spectrum(capture, rate: float, signal: str) -> dict:
     freqs = np.fft.fftshift(np.fft.fftfreq(nfft, 1 / rate))
     resolution = rate / nfft
     expected = [1e6] if signal == "tone" else [1e6, 3e6]
+    width = max(4 * resolution, 1000.0)
     if any(abs(f) + 100000 >= rate / 2 for f in expected):
         raise ValueError("sample rate does not cover the expected tones")
     def peak_offset(peak):
@@ -209,34 +215,99 @@ def spectrum(capture, rate: float, signal: str) -> dict:
     dominant_peak = int(np.argmax(psd))
     dominant_offset = peak_offset(dominant_peak)
     excluded = np.zeros(nfft, dtype=bool)
-    tones = []
+    tones, carrier = [], 0.0
     for f in expected:
-        region = np.flatnonzero(abs(freqs - f) < 100000)
+        region = np.flatnonzero(abs(freqs - carrier - f) < 100000)
         peak = int(region[np.argmax(psd[region])])
         if psd[peak] < psd[dominant_peak] * .001:
             raise ValueError(f"expected {f:g} Hz tone absent; dominant component is {dominant_offset:g} Hz")
         offset = peak_offset(peak)
-        mask = abs(freqs - offset) <= 4 * resolution
+        if not tones:
+            carrier = offset - f
+        mask = abs(freqs - offset) <= width
         excluded |= mask
         tone_power = float(psd[mask].sum())
-        image_mask = abs(freqs + offset) <= 4 * resolution
+        image_mask = abs(freqs - (2 * carrier - offset)) <= width
         image = float(psd[image_mask].sum())
         tones.append({"offset_hz": offset, "power_dbfs": _db(tone_power),
                       "image_dbc": _db(image / tone_power)})
     reference = max(10 ** (x["power_dbfs"] / 10) for x in tones)
-    dc_mask = abs(freqs) <= 4 * resolution
+    dc_mask = abs(freqs) <= width
     dc = float(psd[dc_mask].sum())
-    excluded |= dc_mask
+    lo_mask = abs(freqs - carrier) <= width
+    lo = float(psd[lo_mask].sum())
+    excluded |= dc_mask | lo_mask
     # A spur is integrated over the same 9-bin width as a carrier, not one bin.
     integrated = np.convolve(psd, np.ones(9), mode="same")
     excluded = np.convolve(excluded.astype(np.int8), np.ones(9), mode="same") > 0
     peak = int(np.argmax(np.where(excluded, -1, integrated)))
     return {"signal": signal, "samples": len(capture), "sample_rate_hz": rate,
             "total_power_dbfs": _db(power_sum / used), "fft_bin_hz": resolution,
-            "dominant_offset_hz": dominant_offset,
-            "tones": tones, "dc_dbc": _db(dc / reference),
+            "dominant_offset_hz": dominant_offset, "carrier_offset_hz": carrier,
+            "integration_hz": width,
+            "tones": tones, "lo_dbc": _db(lo / reference), "dc_dbc": _db(dc / reference),
             "strongest_spur_hz": float(freqs[peak]),
             "strongest_spur_dbc": _db(float(integrated[peak]) / reference)}
+
+
+def modulation(capture, rate: float, offset: float, limit: int = 1 << 22) -> dict:
+    """Envelope (AM) and phase (PM) wander of one tone: shift it to 0 Hz, keep +-60 kHz,
+    remove a quadratic phase trend (frequency drift), then report rms values and the
+    three strongest AM lines between 200 Hz and 60 kHz. Uses the first `limit` samples."""
+    z = capture.read(0, min(len(capture), limit))
+    n = len(z)
+    t = np.arange(n) / rate
+    spectrum_ = np.fft.fft(z * np.exp(-2j * np.pi * offset * t))
+    freqs = np.fft.fftfreq(n, 1 / rate)
+    spectrum_[abs(freqs) > 60000] = 0
+    tone = np.fft.ifft(spectrum_)
+    envelope = abs(tone)
+    if envelope.mean() <= 0:
+        raise ValueError("tone has zero envelope")
+    phase = np.unwrap(np.angle(tone))
+    k = np.arange(n)
+    phase -= np.polyval(np.polyfit(k, phase, 2), k)
+    am = envelope / envelope.mean() - 1
+    lines = abs(np.fft.rfft(am * np.hanning(n))) ** 2
+    line_freqs = np.fft.rfftfreq(n, 1 / rate)
+    band = np.flatnonzero((line_freqs > 200) & (line_freqs < 60000))
+    top = band[np.argsort(lines[band])[-3:][::-1]]
+    return {"am_rms_pct": float(100 * am.std()), "pm_rms_deg": float(np.degrees(phase.std())),
+            "am_lines_hz": [float(line_freqs[i]) for i in top]}
+
+
+def lines(capture, rate: float, block: float = 0.01) -> dict:
+    """Amplitudes at the board carrier and carrier +-1, +-2 MHz, for the diagnostic signals.
+
+    The carrier is placed from the strongest line within 100 kHz of 0, +1 MHz or -1 MHz
+    (minus that MHz). Each amplitude is the median over `block`-second coherent blocks of
+    the best match within +-300 Hz, so drift does not smear it. Full scale is 1.
+    """
+    z = capture.read(0, len(capture))
+    n = len(z)
+    spectrum_ = abs(np.fft.fft(z * np.hanning(n)))
+    freqs = np.fft.fftfreq(n, 1 / rate)
+    best = None
+    for k in (0, 1, -1):
+        region = np.flatnonzero(abs(freqs - k * 1e6) < 100000)
+        peak = region[np.argmax(spectrum_[region])]
+        if best is None or spectrum_[peak] > best[0]:
+            best = (spectrum_[peak], freqs[peak] - k * 1e6)
+    carrier = float(best[1])
+    size = max(256, int(block * rate))
+    t = np.arange(n) / rate
+    out = {"carrier_offset_hz": carrier, "block_s": size / rate}
+    for k in (-2, -1, 0, 1, 2):
+        f = carrier + k * 1e6
+        if abs(f) >= rate / 2 - 100000:
+            continue
+        amps = []
+        for start in range(0, n - size + 1, size):
+            seg, tt = z[start:start + size], t[start:start + size]
+            amps.append(max(abs(np.mean(seg * np.exp(-2j * np.pi * (f + d) * tt)))
+                            for d in range(-300, 301, 25)))
+        out[f"{k:+d}MHz"] = float(np.median(amps))
+    return out
 
 
 def _carrier(z: np.ndarray) -> tuple[float, float]:
@@ -462,13 +533,19 @@ def main() -> int:
     parser.add_argument("capture", type=pathlib.Path)
     parser.add_argument("--format", choices=("i16", "f32"), required=True)
     parser.add_argument("--rate", type=float, required=True, help="calibrated complex sample rate in samples/s")
-    parser.add_argument("--signal", choices=("tone", "two", "tag"), required=True)
+    parser.add_argument("--signal", choices=("tone", "two", "tag", "lines"), required=True)
     args = parser.parse_args()
     try:
         if not math.isfinite(args.rate) or args.rate <= 0:
             raise ValueError("sample rate must be positive and finite")
         capture = Capture(args.capture, args.format)
-        result = analyze_tag(capture, args.rate) if args.signal == "tag" else spectrum(capture, args.rate, args.signal)
+        if args.signal == "tag":
+            result = analyze_tag(capture, args.rate)
+        elif args.signal == "lines":
+            result = lines(capture, args.rate)
+        else:
+            result = spectrum(capture, args.rate, args.signal)
+            result["modulation"] = modulation(capture, args.rate, result["tones"][0]["offset_hz"])
         print(json.dumps(result, allow_nan=False))
         return 0 if args.signal != "tag" or result["continuity_pass"] else 1
     except (ValueError, OSError) as error:

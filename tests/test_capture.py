@@ -158,11 +158,32 @@ def test_spectrum():
     assert abs(tone["image_dbc"] + 40) < .02
     assert abs(result["strongest_spur_dbc"] + 40) < .02
     assert abs(result["dc_dbc"] - 20 * np.log10(.0005 / .25)) < .02
+    # A 55 kHz carrier offset: image and LO leak sit around the carrier, not the SDR center.
+    cfo = 55000.0
+    shifted = (.25 * np.exp(2j * np.pi * (cfo + 1e6) * t) + .0025 * np.exp(2j * np.pi * (cfo - 1e6) * t)
+               + .00025 * np.exp(2j * np.pi * cfo * t) + .0005)
+    moved = c.spectrum(ArrayCapture(shifted), rate, "tone")
+    assert abs(moved["carrier_offset_hz"] - cfo) < 2
+    assert abs(moved["tones"][0]["image_dbc"] + 40) < .05
+    assert abs(moved["lo_dbc"] + 60) < .05
+    assert abs(moved["dc_dbc"] - 20 * np.log10(.0005 / .25)) < .05
+    # 10 % AM at 610 Hz and 5 degrees of 13 kHz PM on that tone.
+    tt = np.arange(1 << 20) / rate
+    wobbly = ((1 + .1 * np.cos(2 * np.pi * 610 * tt)) * .25
+              * np.exp(1j * (2 * np.pi * (cfo + 1e6) * tt + np.radians(5) * np.sqrt(2) * np.sin(2 * np.pi * 13000 * tt))))
+    m = c.modulation(ArrayCapture(wobbly), rate, cfo + 1e6)
+    assert abs(m["am_rms_pct"] - 10 / np.sqrt(2)) < .1, m
+    assert abs(m["pm_rms_deg"] - 5) < .1, m
+    assert abs(m["am_lines_hz"][0] - 610) < 20, m
+    found = c.lines(ArrayCapture(shifted), rate, block=.005)
+    assert abs(found["carrier_offset_hz"] - cfo) < 100, found
+    assert abs(found["+1MHz"] - .25) < .002 and abs(found["-1MHz"] - .0025) < .0005, found
+    assert abs(found["+0MHz"] - .00025) < .0002, found
     z += .25 * np.exp(2j * np.pi * 3000000 * t)
     result = c.spectrum(ArrayCapture(z), rate, "two")
     assert len(result["tones"]) == 2
     assert abs(result["tones"][1]["offset_hz"] - 3000000) < 2
-    print("capture spectrum: fractional-bin tone offset, dBFS, image, DC, strongest spur and two tones")
+    print("capture spectrum: fractional-bin tone offset, dBFS, image and LO around the carrier, AM/PM, line amplitudes, DC, strongest spur and two tones")
 
 
 def test_files():

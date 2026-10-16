@@ -4,7 +4,8 @@
 //
 //   info       chip, clocks, memory and firmware version
 //   membench   memory and bank-fill timing (membench.c)
-//   tx <integer MHz> <tone|two|tag> <1..60 seconds> [0..17 gain, default 0]
+//   chain <forced|cw|cw40|cwgain>  how tx turns the transmit chain on (default cwgain)
+//   tx <integer MHz> <tone|two|tag|...> <1..60 seconds> [0..17 gain, default 0]
 //   fecbench   normal-frame encoder correctness and stage timing (fecbench.c)
 //   usbrx N    receive N bytes over USB as fast as the host sends them; report the rate
 
@@ -66,7 +67,7 @@ static void cmd_tx(char *args)
         (level && !number(level, 0, RADIO_S3_GAIN_MAX, &gain)) || extra ||
         !radio_signal_init(&signal, name)) {
         printf("@{\"cmd\":\"tx\",\"error\":\"usage: tx <2390..2450 integer MHz> "
-               "<tone|two|tag> <1..60 seconds> [0..17 gain, default 0]\"}\n");
+               "<tone|tone<1..511>|two|tag|neg|low|ionly|qonly|zero|dci|dcq> <1..60 seconds> [0..17 gain, default 0]\"}\n");
         return;
     }
     radio_s3_stats_t s = {0};
@@ -77,7 +78,7 @@ static void cmd_tx(char *args)
            "\"switches\":%lu,\"late_fills\":%lu,\"late_switches\":%lu,"
            "\"max_fill_cycles\":%lu,\"max_switch_late_cycles\":%lu,"
            "\"min_fill_slack_cycles\":%lu,\"fatal_late\":%lu,\"fe_base_index\":%lu,"
-           "\"fe_gain_index\":%lu,\"status\":\"%s\"",
+           "\"fe_gain_index\":%lu,\"chain\":\"%s\",\"status\":\"%s\"",
            (unsigned long)freq, name, (unsigned long)seconds, (unsigned long)gain,
            RADIO_S3_DAC_RATE, RADIO_S3_BANK_WORDS, RADIO_S3_STEP_WORDS,
            (unsigned long long)s.elapsed_samples, (unsigned long long)s.elapsed_cycles,
@@ -85,7 +86,7 @@ static void cmd_tx(char *args)
            (unsigned long)s.late_switches, (unsigned long)s.max_fill_cycles,
            (unsigned long)s.max_switch_late_cycles, (unsigned long)s.min_fill_slack_cycles,
            (unsigned long)s.fatal_late, (unsigned long)s.fe_base_index,
-           (unsigned long)s.fe_gain_index, esp_err_to_name(err));
+           (unsigned long)s.fe_gain_index, (const char *[]){"forced", "cw", "cw40", "cwgain"}[s.chain & 3], esp_err_to_name(err));
     if (err != ESP_OK) {
         printf(",\"error\":\"radio run failed\"");
     }
@@ -174,6 +175,19 @@ void app_main(void)
             cmd_tx(line + 2);
             // cmd_tx tokenizes its arguments in place. Keep the completion record stable.
             strcpy(line, "tx");
+        } else if (strncmp(line, "chain ", 6) == 0) {
+            // How later tx runs turn the transmit chain on (radio_s3_set_chain).
+            static const char *const modes[] = {"forced", "cw", "cw40", "cwgain"};
+            size_t i = 0;
+            while (i < 4 && strcmp(line + 6, modes[i])) {
+                ++i;
+            }
+            if (i < 4) {
+                radio_s3_set_chain((radio_s3_chain_t)i);
+                printf("@{\"cmd\":\"chain\",\"chain\":\"%s\"}\n", modes[i]);
+            } else {
+                printf("@{\"cmd\":\"chain\",\"error\":\"usage: chain <forced|cw|cw40|cwgain>\"}\n");
+            }
         } else if (strcmp(line, "fecbench") == 0) {
             fecbench_run();
         } else if (strncmp(line, "usbrx ", 6) == 0) {

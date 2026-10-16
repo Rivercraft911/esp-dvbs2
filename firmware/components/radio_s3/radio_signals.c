@@ -6,6 +6,7 @@
 #include "radio_signals.h"
 
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 #ifdef __XTENSA__
@@ -49,22 +50,58 @@ static IRAM_ATTR uint32_t state_at(const radio_signal_t *signal, uint64_t n)
     return s;
 }
 
+// Periodic test words over 40 samples (1 MHz at 40 MS/s): I = di + ai cos p, Q = dq + aq sin p.
+// Besides the +1 MHz tone, these separate the two DAC branches when a spectrum looks wrong.
+static const struct {
+    const char *name;
+    int16_t ai, aq, di, dq;
+} tones[] = {
+    {"tone", 256, 256, 0, 0},   // +1 MHz
+    {"neg", 256, -256, 0, 0},   // -1 MHz
+    {"low", 64, 64, 0, 0},      // +1 MHz, 12 dB lower
+    {"ionly", 256, 0, 0, 0},
+    {"qonly", 0, 256, 0, 0},
+    {"zero", 0, 0, 0, 0},       // carrier leak only
+    {"dci", 0, 0, 200, 0},
+    {"dcq", 0, 0, 0, 200},
+};
+
 bool radio_signal_init(radio_signal_t *signal, const char *name)
 {
     signal->tag = strcmp(name, "tag") == 0;
-    if (!signal->tag && strcmp(name, "tone") && strcmp(name, "two")) {
-        return false;
-    }
-    if (!signal->tag) {
-        const bool two = strcmp(name, "two") == 0;
+    if (!strcmp(name, "two")) {
         for (unsigned n = 0; n < 40; ++n) {
             // fs=40 MHz: +1 MHz has phase 2*pi*n/40. Two equal +1,+3 MHz tones.
             const double p = 6.2831853071795864769 * n / 40;
-            const double i = two ? 128 * (cos(p) + cos(3 * p)) : 256 * cos(p);
-            const double q = two ? 128 * (sin(p) + sin(3 * p)) : 256 * sin(p);
-            signal->tone[n] = pack(lround(i), lround(q));
+            signal->tone[n] = pack(lround(128 * (cos(p) + cos(3 * p))),
+                                   lround(128 * (sin(p) + sin(3 * p))));
         }
         return true;
+    }
+    // "tone<amp>": the +1 MHz tone at amplitude 1..511, for drive-level sweeps.
+    int ai = 0, aq = 0, di = 0, dq = 0;
+    bool found = false;
+    if (!strncmp(name, "tone", 4) && name[4] >= '1' && name[4] <= '9' && strlen(name) <= 7) {
+        char *end;
+        long amp = strtol(name + 4, &end, 10);
+        found = !*end && amp <= 511;
+        ai = aq = (int)amp;
+    }
+    for (size_t t = 0; !found && t < sizeof tones / sizeof tones[0]; ++t) {
+        if (!strcmp(name, tones[t].name)) {
+            found = true;
+            ai = tones[t].ai, aq = tones[t].aq, di = tones[t].di, dq = tones[t].dq;
+        }
+    }
+    if (found) {
+        for (unsigned n = 0; n < 40; ++n) {
+            const double p = 6.2831853071795864769 * n / 40;
+            signal->tone[n] = pack(lround(di + ai * cos(p)), lround(dq + aq * sin(p)));
+        }
+        return true;
+    }
+    if (!signal->tag) {
+        return false;
     }
     // Eight future output bits depend only on the low byte of the initial state. Each row
     // saves eight DAC words and the feedback term of an eight-step state transition.

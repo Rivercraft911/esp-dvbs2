@@ -38,7 +38,8 @@ typedef struct {
     uint32_t min_fill_slack_cycles;
     uint32_t fatal_late;      /* Stopped after observing a missed safe-tail deadline. */
     uint32_t fe_base_index;   /* Front-end gain base index found before keying. */
-    uint32_t fe_gain_index;   /* Gain slot selected after keying; must be 0. */
+    uint32_t fe_gain_index;   /* Gain slot selected after keying; must be 0 when forced. */
+    uint32_t chain;           /* radio_s3_chain_t used for this run. */
 } radio_s3_stats_t;
 
 /* Synchronous, exclusive run on core 1, 240 MHz. Valid requests are integer MHz
@@ -48,5 +49,19 @@ typedef struct {
  * returns both banks to the CPU, unkeys TX, and stops/deinitializes Wi-Fi.
  * No RF operation happens until this function is called.
  */
+/* How later runs turn the transmit chain on (results/2026-10-16-radio).
+ * CW_GAIN (default): start and stop the vendor CW tone, which brings up both DAC
+ * branches with the PHY's calibrated settings, then pin gain slot 0 as FORCED does.
+ * CW: the CW bring-up alone, backoff (17 - gain) * 2 dB; the vendor power control
+ * stays on and the level varies between runs. CW40: CW in the vendor's 40 MHz
+ * channel mode. FORCED: front end and gain slot 0 forced directly; on the bench
+ * only the I branch reached the mixer and the carrier leak exceeded the signal.
+ */
+typedef enum {
+    RADIO_S3_CHAIN_FORCED, RADIO_S3_CHAIN_CW, RADIO_S3_CHAIN_CW40, RADIO_S3_CHAIN_CW_GAIN
+} radio_s3_chain_t;
+
+void radio_s3_set_chain(radio_s3_chain_t mode);
+
 esp_err_t radio_s3_run(uint32_t freq_mhz, uint8_t gain, uint32_t seconds,
                        radio_s3_fill_fn fill, void *ctx, radio_s3_stats_t *stats);
