@@ -11,6 +11,7 @@ jobs:
           python-version: "3.12"
       - run: pip install numpy
       - run: python tests/test_dvbs2.py
+      - run: python tests/test_shaper.py
 
   firmware:
     runs-on: ubuntu-latest
