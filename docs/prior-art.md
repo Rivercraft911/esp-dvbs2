@@ -36,6 +36,13 @@ stage digests, numerical symbol comparisons and file-loopback evidence are docum
   ([results](../results/2026-10-16-radio/README.md)).
 - **Tuning:** the S3's PLL locks from about 1.8 to 2.8 GHz (esp-sdr-zephyr), which covers the
   13 cm band.
+- **Filter controls (esp-sdr-zephyr):** BBTOP block `0x67` registers 4/5 control the receive
+  low-pass filter. Separate transmit pairs are 12/13 and 14/15, with codes in bits 5:0
+  ([register notes, lines 1189–1251](https://github.com/cyber-murmel/esp-sdr-zephyr/blob/3214c16a7c9f136414cc5ae9d245ea290c98a6ce/doc/undocumented-registers-esp32s3.md#L1189-L1251)).
+  Its reported response within about 3 dB through +/-18 MHz in bandwidth mode 2 is an
+  end-to-end measurement between two S3s, including both filters
+  ([hardware quirks, lines 56–65](https://github.com/cyber-murmel/esp-sdr-zephyr/blob/3214c16a7c9f136414cc5ae9d245ea290c98a6ce/doc/hardware-quirks.md#L56-L65)).
+  Our transmitter's cabled response remains unmeasured.
 - **Quality:** the measured 31.5 dB MER is far above what QPSK and 8PSK need, so the radio is not
   expected to limit this project's modulation.
 
