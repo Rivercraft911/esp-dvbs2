@@ -20,7 +20,8 @@
  * harmless inside that overlap, assuming the documented free-running DAC.
  *
  * The callback and its lookup tables must be in internal RAM/IRAM; no logging,
- * allocation, blocking or flash/PSRAM access during a fill. Return an error to
+ * allocation, blocking or flash access during a fill. PSRAM reads go through the
+ * data cache both cores share and count against the deadline. Return an error to
  * abort transmission. This is a deadline: 16380 words per 356.7 us at 240 MHz.
  */
 typedef esp_err_t (*radio_s3_fill_fn)(uint32_t *dst, uint64_t first_sample,
@@ -75,12 +76,19 @@ typedef struct {
     uint32_t overlap_mismatches; /* must be 0: the fill must depend on sample index only */
 } radio_s3_dry_stats_t;
 
-/* The same fill sequence as radio_s3_run, into the same bank memory, without the radio: bank
- * j holds [j * STEP - LEAD, ... + BANK_WORDS) and plays [j * STEP, (j + 1) * STEP). At every
- * switch both banks' shared lead and tail words are compared, then the played samples go to
- * sink. No RF. Not timed against the DAC: the sink may be slow. */
+/* The same fill sequence as radio_s3_run, into the same bank memory, on core 1, without the
+ * radio: bank j holds [j * STEP - LEAD, ... + BANK_WORDS) and plays [j * STEP, (j + 1) * STEP).
+ * At every switch both banks' shared lead and tail words are compared, then the played samples
+ * go to sink. No RF. Not timed against the DAC: the sink may be slow. */
 esp_err_t radio_s3_dry_run(radio_s3_fill_fn fill, void *ctx, uint64_t samples,
                            radio_s3_sink_fn sink, void *sink_ctx, radio_s3_dry_stats_t *stats);
+
+/* Radio off: radio_s3_run's bank schedule on core 1 for 1..600 seconds, the same fills into
+ * the same bank memory against the same cycle-counter deadlines, with no Wi-Fi, PHY, DAC or
+ * bank-ownership register access. Nothing is transmitted, so the DAC's own reads of the bank
+ * memory are absent. Stats as for radio_s3_run; the fe_* fields and chain stay 0. */
+esp_err_t radio_s3_paced_run(uint32_t seconds, radio_s3_fill_fn fill, void *ctx,
+                             radio_s3_stats_t *stats);
 
 /* One of the two 64 KiB DAC bank regions (n = 0 or 1), reserved at startup. Between
  * runs the CPU may use them as plain internal RAM; a run overwrites both. */

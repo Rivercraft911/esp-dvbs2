@@ -131,6 +131,10 @@ typedef struct {
     esp_err_t error;
     bool watch_worker;
     radio_s3_chain_t chain;
+    uint64_t samples;               /* dry run only */
+    radio_s3_sink_fn sink;
+    void *sink_ctx;
+    radio_s3_dry_stats_t *dry;
 } run_t;
 
 static inline uint32_t IRAM_ATTR cycles(void)
@@ -175,14 +179,109 @@ static esp_err_t IRAM_ATTR fill_bank(run_t *run, unsigned bank, uint64_t start)
     return error;
 }
 
-/* Return timing only against the original DAC epoch. Never reset the engine or
+/* The bank schedule from the DAC epoch on, shared by the radio and the paced run.
+ * Return timing only against the original DAC epoch. Never reset the engine or
  * move its epoch to conceal a missed switch. Aborting exposes the first fault.
+ * Both callers pass a constant `keyed` and the function is inlined into each, so
+ * the paced copy contains no register write at all.
  */
+static inline __attribute__((always_inline)) esp_err_t schedule(run_t *run, uint32_t epoch,
+                                                               uint32_t ownership, bool keyed)
+{
+    radio_s3_stats_t *stats = run->stats;
+    uint64_t total_samples = (uint64_t)run->seconds * RADIO_S3_DAC_RATE;
+    esp_err_t error = ESP_OK;
+    uint32_t irq;
+    uint32_t previous = epoch;
+    uint32_t target = epoch + STEP_CYCLES;
+    uint64_t handoff = RADIO_S3_STEP_WORDS;
+    unsigned next = 1;
+    for (;;) {
+        uint32_t now = cycles();
+        stats->elapsed_cycles += (uint32_t)(now - previous);
+        previous = now;
+        if (handoff >= total_samples) {
+            /* At most one bank interval remains, so the uint32 deadline is safe. */
+            uint32_t end = target - (uint32_t)((handoff - total_samples) * CYCLES_PER_SAMPLE);
+            wait_until(end);
+            break;
+        }
+
+        int32_t fill_late = (int32_t)(now - target);
+        if (fill_late > 0) {
+            stats->late_fills++;
+        } else if ((uint32_t)-fill_late < stats->min_fill_slack_cycles) {
+            stats->min_fill_slack_cycles = (uint32_t)-fill_late;
+        }
+        if (fill_late >= (int32_t)TAIL_LIMIT_CYCLES) {
+            stats->fatal_late++;
+            error = ESP_ERR_TIMEOUT;
+            break;
+        }
+
+        /* Half the lead is deliberate timing margin: aim 32 samples early;
+         * both banks contain the same samples for all 64 lead samples. Mask
+         * interrupts only for the final wait and register write (about 0.8 us).
+         */
+        wait_until(target - EARLY_SWITCH_CYCLES - 128);
+        irq = portSET_INTERRUPT_MASK_FROM_ISR();
+        wait_until(target - EARLY_SWITCH_CYCLES);
+        now = cycles();
+        if ((int32_t)(now - target) >= (int32_t)TAIL_LIMIT_CYCLES) {
+            portCLEAR_INTERRUPT_MASK_FROM_ISR(irq);
+            stats->fatal_late++;
+            error = ESP_ERR_TIMEOUT;
+            break;
+        }
+        if (keyed) {
+            REG_WRITE(BANK_USAGE, ownership | (next == 0 ? (1U << 2) : (1U << 1)));
+        }
+        now = cycles();
+        portCLEAR_INTERRUPT_MASK_FROM_ISR(irq);
+        stats->switches++;
+        int32_t late = (int32_t)(now - target);
+        if (late > 0) {
+            stats->late_switches++;
+            if ((uint32_t)late > stats->max_switch_late_cycles) {
+                stats->max_switch_late_cycles = late;
+            }
+        }
+        stats->elapsed_cycles += (uint32_t)(now - previous);
+        previous = now;
+        if (run->watch_worker) {
+            (void)esp_task_wdt_reset();
+        }
+        next ^= 1;
+        handoff += RADIO_S3_STEP_WORDS;
+        target += STEP_CYCLES;
+        if (handoff < total_samples) {
+            error = fill_bank(run, next, handoff - RADIO_S3_LEAD_WORDS);
+            if (error != ESP_OK) {
+                break;
+            }
+        }
+    }
+    /* Halt before any noncritical cleanup, including task-watchdog calls. */
+    if (keyed) {
+        REG_WRITE(DAC_CTRL, 0);
+    }
+    uint32_t now = cycles();
+    /* A long interrupt can also postpone the final stop past the active
+     * bank's overlap. Expose that fault even though no further switch follows.
+     */
+    if (error == ESP_OK && (int32_t)(now - target) >= (int32_t)TAIL_LIMIT_CYCLES) {
+        stats->fatal_late++;
+        error = ESP_ERR_TIMEOUT;
+    }
+    stats->elapsed_cycles += (uint32_t)(now - previous);
+    stats->elapsed_samples = stats->elapsed_cycles / CYCLES_PER_SAMPLE;
+    return error;
+}
+
 static esp_err_t IRAM_ATTR __attribute__((noinline)) stream(run_t *run)
 {
     radio_s3_stats_t *stats = run->stats;
     uint32_t ownership = REG_READ(BANK_USAGE) & ~0xfU;
-    uint64_t total_samples = (uint64_t)run->seconds * RADIO_S3_DAC_RATE;
     esp_err_t error = fill_bank(run, 0, 0);
     if (error != ESP_OK) {
         return error;
@@ -242,87 +341,57 @@ keyed:
     uint32_t epoch = cycles();
     REG_WRITE(DAC_CTRL, DAC_RUN | DAC_LOOP | RADIO_S3_BANK_WORDS);
     portCLEAR_INTERRUPT_MASK_FROM_ISR(irq);
+    return schedule(run, epoch, ownership, true);
+}
 
-    uint32_t previous = epoch;
-    uint32_t target = epoch + STEP_CYCLES;
-    uint64_t handoff = RADIO_S3_STEP_WORDS;
-    unsigned next = 1;
-    for (;;) {
-        uint32_t now = cycles();
-        stats->elapsed_cycles += (uint32_t)(now - previous);
-        previous = now;
-        if (handoff >= total_samples) {
-            /* At most one bank interval remains, so the uint32 deadline is safe. */
-            uint32_t end = target - (uint32_t)((handoff - total_samples) * CYCLES_PER_SAMPLE);
-            wait_until(end);
-            break;
-        }
-
-        int32_t fill_late = (int32_t)(now - target);
-        if (fill_late > 0) {
-            stats->late_fills++;
-        } else if ((uint32_t)-fill_late < stats->min_fill_slack_cycles) {
-            stats->min_fill_slack_cycles = (uint32_t)-fill_late;
-        }
-        if (fill_late >= (int32_t)TAIL_LIMIT_CYCLES) {
-            stats->fatal_late++;
-            error = ESP_ERR_TIMEOUT;
-            break;
-        }
-
-        /* Half the lead is deliberate timing margin: aim 32 samples early;
-         * both banks contain the same samples for all 64 lead samples. Mask
-         * interrupts only for the final wait and register write (about 0.8 us).
-         */
-        wait_until(target - EARLY_SWITCH_CYCLES - 128);
-        irq = portSET_INTERRUPT_MASK_FROM_ISR();
-        wait_until(target - EARLY_SWITCH_CYCLES);
-        now = cycles();
-        if ((int32_t)(now - target) >= (int32_t)TAIL_LIMIT_CYCLES) {
-            portCLEAR_INTERRUPT_MASK_FROM_ISR(irq);
-            stats->fatal_late++;
-            error = ESP_ERR_TIMEOUT;
-            break;
-        }
-        REG_WRITE(BANK_USAGE, ownership | (next == 0 ? (1U << 2) : (1U << 1)));
-        now = cycles();
-        portCLEAR_INTERRUPT_MASK_FROM_ISR(irq);
-        stats->switches++;
-        int32_t late = (int32_t)(now - target);
-        if (late > 0) {
-            stats->late_switches++;
-            if ((uint32_t)late > stats->max_switch_late_cycles) {
-                stats->max_switch_late_cycles = late;
-            }
-        }
-        stats->elapsed_cycles += (uint32_t)(now - previous);
-        previous = now;
-        if (run->watch_worker) {
-            (void)esp_task_wdt_reset();
-        }
-        next ^= 1;
-        handoff += RADIO_S3_STEP_WORDS;
-        target += STEP_CYCLES;
-        if (handoff < total_samples) {
-            error = fill_bank(run, next, handoff - RADIO_S3_LEAD_WORDS);
-            if (error != ESP_OK) {
-                break;
-            }
-        }
+/* Radio off: the fills of stream() into the same banks, against the same deadlines. */
+static esp_err_t IRAM_ATTR __attribute__((noinline)) paced(run_t *run)
+{
+    esp_err_t error = fill_bank(run, 0, 0);
+    if (error == ESP_OK) {
+        error = fill_bank(run, 1, RADIO_S3_STEP_WORDS - RADIO_S3_LEAD_WORDS);
     }
-    /* Halt before any noncritical cleanup, including task-watchdog calls. */
-    REG_WRITE(DAC_CTRL, 0);
-    uint32_t now = cycles();
-    /* A long interrupt can also postpone the final stop past the active
-     * bank's overlap. Expose that fault even though no further switch follows.
-     */
-    if (error == ESP_OK && (int32_t)(now - target) >= (int32_t)TAIL_LIMIT_CYCLES) {
-        stats->fatal_late++;
-        error = ESP_ERR_TIMEOUT;
+    if (error != ESP_OK) {
+        return error;
     }
-    stats->elapsed_cycles += (uint32_t)(now - previous);
-    stats->elapsed_samples = stats->elapsed_cycles / CYCLES_PER_SAMPLE;
-    return error;
+    uint32_t irq = portSET_INTERRUPT_MASK_FROM_ISR();
+    uint32_t epoch = cycles();
+    portCLEAR_INTERRUPT_MASK_FROM_ISR(irq);
+    return schedule(run, epoch, 0, false);
+}
+
+/* Streaming occupies core 1 without an idle tick. Transfer that core's watchdog
+ * subscription to the running task; watch_end restores it on every exit. A stuck
+ * fill or switch still trips the task watchdog.
+ */
+static esp_err_t watch_begin(run_t *run, bool *watch_idle, bool *watch_worker)
+{
+    TaskHandle_t idle = xTaskGetIdleTaskHandleForCore(1);
+    if (esp_task_wdt_status(idle) == ESP_OK) {
+        esp_err_t error = esp_task_wdt_delete(idle);
+        if (error != ESP_OK) {
+            return error;
+        }
+        *watch_idle = true;
+    }
+    esp_err_t error = esp_task_wdt_add(NULL);
+    if (error == ESP_OK) {
+        *watch_worker = true;
+        run->watch_worker = true;
+    } else if (error != ESP_ERR_INVALID_STATE) {
+        return error;
+    }
+    return ESP_OK;
+}
+
+static void watch_end(bool watch_idle, bool watch_worker)
+{
+    if (watch_worker) {
+        (void)esp_task_wdt_delete(NULL);
+    }
+    if (watch_idle) {
+        (void)esp_task_wdt_add(xTaskGetIdleTaskHandleForCore(1));
+    }
 }
 
 static void worker(void *arg)
@@ -332,7 +401,6 @@ static void worker(void *arg)
     bool started = false;
     bool watch_worker = false;
     bool watch_idle = false;
-    TaskHandle_t idle = xTaskGetIdleTaskHandleForCore(1);
 #if CONFIG_PM_ENABLE
     esp_pm_lock_handle_t cpu_lock = NULL;
     esp_pm_lock_handle_t sleep_lock = NULL;
@@ -408,22 +476,8 @@ static void worker(void *arg)
      */
     vTaskDelay(pdMS_TO_TICKS(3));
 
-    /* Streaming occupies core1 without an idle tick. Transfer that core's
-     * watchdog subscription to the producer, then restore it on every exit.
-     * A stuck fill/switch still trips the task watchdog.
-     */
-    if (esp_task_wdt_status(idle) == ESP_OK) {
-        error = esp_task_wdt_delete(idle);
-        if (error != ESP_OK) {
-            goto cleanup;
-        }
-        watch_idle = true;
-    }
-    error = esp_task_wdt_add(NULL);
-    if (error == ESP_OK) {
-        watch_worker = true;
-        run->watch_worker = true;
-    } else if (error != ESP_ERR_INVALID_STATE) {
+    error = watch_begin(run, &watch_idle, &watch_worker);
+    if (error != ESP_OK) {
         goto cleanup;
     }
     error = stream(run);
@@ -454,12 +508,7 @@ cleanup:
             error = deinitialized;
         }
     }
-    if (watch_worker) {
-        (void)esp_task_wdt_delete(NULL);
-    }
-    if (watch_idle) {
-        (void)esp_task_wdt_add(idle);
-    }
+    watch_end(watch_idle, watch_worker);
 #if CONFIG_PM_ENABLE
     if (sleep_lock) {
         (void)esp_pm_lock_release(sleep_lock);
@@ -475,25 +524,15 @@ cleanup:
     vTaskDelete(NULL);
 }
 
-esp_err_t radio_s3_dry_run(radio_s3_fill_fn fill, void *ctx, uint64_t samples,
-                           radio_s3_sink_fn sink, void *sink_ctx, radio_s3_dry_stats_t *stats)
+/* The dry run: the fill sequence of stream() and the samples the DAC would play. */
+static void dry_worker(void *arg)
 {
-    if (!fill || !sink || !stats || samples == 0) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    portENTER_CRITICAL(&state_lock);
-    if (running) {
-        portEXIT_CRITICAL(&state_lock);
-        return ESP_ERR_INVALID_STATE;
-    }
-    running = true;
-    portEXIT_CRITICAL(&state_lock);
-    memset(stats, 0, sizeof *stats);
-    radio_s3_stats_t timing = {0};
-    run_t run = {.fill = fill, .ctx = ctx, .stats = &timing};
-    esp_err_t error = fill_bank(&run, 0, 0);
+    run_t *run = arg;
+    radio_s3_dry_stats_t *stats = run->dry;
+    const uint64_t samples = run->samples;
+    esp_err_t error = fill_bank(run, 0, 0);
     if (error == ESP_OK) {
-        error = fill_bank(&run, 1, RADIO_S3_STEP_WORDS - RADIO_S3_LEAD_WORDS);
+        error = fill_bank(run, 1, RADIO_S3_STEP_WORDS - RADIO_S3_LEAD_WORDS);
     }
     for (uint64_t j = 0; error == ESP_OK && j * RADIO_S3_STEP_WORDS < samples; ++j) {
         const uint32_t *now = radio_s3_bank(j & 1), *next = radio_s3_bank((j + 1) & 1);
@@ -504,17 +543,92 @@ esp_err_t radio_s3_dry_run(radio_s3_fill_fn fill, void *ctx, uint64_t samples,
         }
         stats->overlap_words += RADIO_S3_LEAD_WORDS + RADIO_S3_TAIL_WORDS;
         const uint64_t left = samples - j * RADIO_S3_STEP_WORDS;
-        error = sink(now, j * RADIO_S3_STEP_WORDS,
-                     left < RADIO_S3_STEP_WORDS ? (size_t)left : RADIO_S3_STEP_WORDS, sink_ctx);
+        error = run->sink(now, j * RADIO_S3_STEP_WORDS,
+                          left < RADIO_S3_STEP_WORDS ? (size_t)left : RADIO_S3_STEP_WORDS,
+                          run->sink_ctx);
         if (error == ESP_OK && (j + 1) * RADIO_S3_STEP_WORDS < samples) {
-            error = fill_bank(&run, j & 1, (j + 2) * RADIO_S3_STEP_WORDS - RADIO_S3_LEAD_WORDS);
+            error = fill_bank(run, j & 1, (j + 2) * RADIO_S3_STEP_WORDS - RADIO_S3_LEAD_WORDS);
         }
     }
-    stats->fills = timing.fills;
-    stats->max_fill_cycles = timing.max_fill_cycles;
+    stats->fills = run->stats->fills;
+    stats->max_fill_cycles = run->stats->max_fill_cycles;
+    run->error = error;
+    xSemaphoreGive(run->done);
+    vTaskDelete(NULL);
+}
+
+/* The paced run: stream()'s schedule with the radio off. */
+static void paced_worker(void *arg)
+{
+    run_t *run = arg;
+    bool watch_worker = false;
+    bool watch_idle = false;
+    esp_err_t error = esp_clk_cpu_freq() == 240000000 ? ESP_OK : ESP_ERR_INVALID_STATE;
+#if CONFIG_PM_ENABLE
+    error = ESP_ERR_NOT_SUPPORTED;  /* would need worker()'s frequency lock */
+#endif
+    if (error == ESP_OK) {
+        error = watch_begin(run, &watch_idle, &watch_worker);
+    }
+    if (error == ESP_OK) {
+        error = paced(run);
+    }
+    watch_end(watch_idle, watch_worker);
+    run->error = error;
+    xSemaphoreGive(run->done);
+    vTaskDelete(NULL);
+}
+
+/* Run one task on core 1 and wait for it. One run at a time. */
+static esp_err_t on_core1(TaskFunction_t task, run_t *run)
+{
+    portENTER_CRITICAL(&state_lock);
+    if (running) {
+        portEXIT_CRITICAL(&state_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    running = true;
+    portEXIT_CRITICAL(&state_lock);
+    run->done = xSemaphoreCreateBinaryStatic(&done_storage);
+    BaseType_t created = xTaskCreatePinnedToCore(task, "radio", 6144, run,
+                                                configMAX_PRIORITIES - 2, NULL, 1);
+    if (created == pdPASS) {
+        xSemaphoreTake(run->done, portMAX_DELAY);
+    } else {
+        run->error = ESP_ERR_NO_MEM;
+    }
     portENTER_CRITICAL(&state_lock);
     running = false;
     portEXIT_CRITICAL(&state_lock);
+    return run->error;
+}
+
+esp_err_t radio_s3_dry_run(radio_s3_fill_fn fill, void *ctx, uint64_t samples,
+                           radio_s3_sink_fn sink, void *sink_ctx, radio_s3_dry_stats_t *stats)
+{
+    if (!fill || !sink || !stats || samples == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    memset(stats, 0, sizeof *stats);
+    radio_s3_stats_t timing = {0};
+    run_t run = {.fill = fill, .ctx = ctx, .stats = &timing, .samples = samples,
+                 .sink = sink, .sink_ctx = sink_ctx, .dry = stats};
+    return on_core1(dry_worker, &run);
+}
+
+esp_err_t radio_s3_paced_run(uint32_t seconds, radio_s3_fill_fn fill, void *ctx,
+                             radio_s3_stats_t *stats)
+{
+    if (!fill || !stats || seconds == 0 || seconds > 600) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    memset(stats, 0, sizeof *stats);
+    stats->min_fill_slack_cycles = UINT32_MAX;
+    run_t run = {.seconds = seconds, .fill = fill, .ctx = ctx, .stats = stats};
+    esp_err_t error = on_core1(paced_worker, &run);
+    if (stats->min_fill_slack_cycles == UINT32_MAX) {
+        stats->min_fill_slack_cycles = 0;
+    }
     return error;
 }
 
@@ -525,32 +639,15 @@ esp_err_t radio_s3_run(uint32_t freq_mhz, uint8_t gain, uint32_t seconds,
             gain > RADIO_S3_GAIN_MAX || seconds == 0 || seconds > 60) {
         return ESP_ERR_INVALID_ARG;
     }
-    portENTER_CRITICAL(&state_lock);
-    if (running) {
-        portEXIT_CRITICAL(&state_lock);
-        return ESP_ERR_INVALID_STATE;
-    }
-    running = true;
-    portEXIT_CRITICAL(&state_lock);
     memset(stats, 0, sizeof *stats);
     stats->min_fill_slack_cycles = UINT32_MAX;
     run_t run = {
         .freq_mhz = freq_mhz, .gain = gain, .seconds = seconds,
         .fill = fill, .ctx = ctx, .stats = stats, .chain = chain,
-        .done = xSemaphoreCreateBinaryStatic(&done_storage),
     };
-    BaseType_t created = xTaskCreatePinnedToCore(worker, "radio", 6144, &run,
-                                                configMAX_PRIORITIES - 2, NULL, 1);
-    if (created == pdPASS) {
-        xSemaphoreTake(run.done, portMAX_DELAY);
-    } else {
-        run.error = ESP_ERR_NO_MEM;
-    }
+    esp_err_t error = on_core1(worker, &run);
     if (stats->min_fill_slack_cycles == UINT32_MAX) {
         stats->min_fill_slack_cycles = 0;
     }
-    portENTER_CRITICAL(&state_lock);
-    running = false;
-    portEXIT_CRITICAL(&state_lock);
-    return run.error;
+    return error;
 }
