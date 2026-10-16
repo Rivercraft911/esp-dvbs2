@@ -23,7 +23,10 @@ FEC_STATUS = re.compile(
     r"S2FEC modcod=(\d+) short=(\d+) pilots=(\d+) ldpc_flips=(\d+) "
     r"ldpc_checks_before=(\d+) ldpc_checks_after=(\d+) bch_errors=(-?\d+)")
 MODCODS = {4: "QPSK 1/2", 6: "QPSK 2/3", 7: "QPSK 3/4",
-           13: "8PSK 2/3", 15: "8PSK 5/6"}
+           13: "8PSK 2/3", 15: "8PSK 5/6",
+           18: "16APSK 2/3", 19: "16APSK 3/4", 20: "16APSK 4/5", 21: "16APSK 5/6",
+           22: "16APSK 8/9", 23: "16APSK 9/10", 24: "32APSK 3/4", 25: "32APSK 4/5",
+           26: "32APSK 5/6", 27: "32APSK 8/9", 28: "32APSK 9/10"}
 
 
 def crc8(data):
@@ -140,7 +143,8 @@ def summarize(status, frames, payload, expected=None):
 
 
 def decode(capture, *, sample_rate=None, symbol_rate=None, alpha=None,
-           receiver=None, expected=None, output=None, log=None, tune=0.0, timeout=120):
+           receiver=None, expected=None, output=None, log=None, tune=0.0, timeout=120,
+           rrc_rej=20):
     """Decode one file, returning a JSON-serializable report and recovered bytes.
 
     LDPC counts are bit flips and unsatisfied parity checks, not a measured BER.
@@ -151,12 +155,12 @@ def decode(capture, *, sample_rate=None, symbol_rate=None, alpha=None,
     executable = str(receiver or os.environ.get("LEANDVB", DEFAULT_RECEIVER))
     if not shutil.which(executable):
         raise FileNotFoundError(f"LeanDVB not found: {executable}; build per notes/decode.md")
-    if not math.isfinite(tune) or timeout <= 0:
-        raise ValueError("tune must be finite and timeout positive")
+    if not math.isfinite(tune) or timeout <= 0 or not math.isfinite(rrc_rej) or rrc_rej <= 0:
+        raise ValueError("tune must be finite; timeout and RRC rejection must be positive")
     with tempfile.TemporaryFile() as bb, tempfile.TemporaryFile() as ts, \
             tempfile.TemporaryFile() as diagnostics, path.open("rb") as source:
         command = [executable, "--standard", "DVB-S2", "--f32", "-f", str(fs),
-                   "--sr", str(rs), "--sampler", "rrc", "--rrc-rej", "20", "--fastdrift",
+                   "--sr", str(rs), "--sampler", "rrc", "--rrc-rej", str(rrc_rej), "--fastdrift",
                    "--roll-off", str(alpha), "--ldpc-bf", "100",
                    "--fd-bbf", str(bb.fileno()), "--fd-info", "2", "-d"]
         if tune:
@@ -182,7 +186,7 @@ def decode(capture, *, sample_rate=None, symbol_rate=None, alpha=None,
             payload = b"".join(f["payload"] for f in frames)
     report = summarize(status, frames, payload, expected)
     report.update({"sample_rate": fs, "symbol_rate": rs, "rolloff": alpha,
-                   "command": command})
+                   "rrc_rej_db": rrc_rej, "command": command})
     if output:
         Path(output).write_bytes(payload)
     return report, payload
@@ -200,13 +204,16 @@ def main():
     parser.add_argument("--log", type=Path, help="save unabridged receiver diagnostics")
     parser.add_argument("--tune", type=float, default=0, help="receiver frequency bias in Hz")
     parser.add_argument("--timeout", type=float, default=120)
+    parser.add_argument("--rrc-rej", type=float, default=20,
+                        help="receiver RRC filter rejection in dB; APSK loopbacks use 40")
     args = parser.parse_args()
     try:
         report, _ = decode(args.capture, sample_rate=args.sample_rate,
                            symbol_rate=args.symbol_rate, alpha=args.alpha,
                            receiver=args.receiver,
                            expected=args.expected.read_bytes() if args.expected else None,
-                           output=args.output, log=args.log, tune=args.tune, timeout=args.timeout)
+                           output=args.output, log=args.log, tune=args.tune, timeout=args.timeout,
+                           rrc_rej=args.rrc_rej)
         print(json.dumps(report, sort_keys=True))
         return 0 if (report["frame_lock"] and report["bb_frames"] and
                      report["status_complete"] and report.get("payload_match", True)) else 1

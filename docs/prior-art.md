@@ -5,6 +5,12 @@ none of their code is incorporated into this repository, since several licences 
 reuse in an Apache-2.0 project. Independent receivers run as separate, locally installed tools.
 Facts below were read from each project's source and documents on 2026-10-16.
 
+The APSK host reference is also checked against separate transmitter harnesses using
+[GNU Radio gr-dtv at aee9fd3](https://github.com/gnuradio/gnuradio/tree/aee9fd3f79389c4282a98e8d62c8405c73fd91df/gr-dtv)
+and the LeanSDR revision below. Their code stays outside this repository. Independent
+stage digests, numerical symbol comparisons and file-loopback evidence are documented in
+[the APSK results](../results/2026-10-16-apsk-decode/README.md).
+
 | Project | Chip | What it showed | Licence |
 |---|---|---|---|
 | [ESP32-DATV](https://github.com/SP8ESA/ESP32-DATV) (SP8ESA) | C3 | DVB-S and DVB-S2 on 2300–2450 MHz up to 1 Msym/s. The CPU rewrites one held DAC word every 20 cycles (8 MS/s); a PC does the coding and sends symbols over USB. | PolyForm Noncommercial 1.0.0 |

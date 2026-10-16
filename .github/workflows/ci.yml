@@ -11,6 +11,10 @@ jobs:
           python-version: "3.12"
       - run: pip install numpy scipy
       - run: python tests/test_dvbs2.py
+      - run: python tests/test_dvbs2_8psk.py
+      - run: python tests/test_dvbs2_apsk.py
+      - run: python tests/test_iq.py
+      - run: python tests/test_decode.py
       - run: python tests/test_shaper.py
       - run: python tests/test_radio.py
       - run: python tests/test_tx_command.py

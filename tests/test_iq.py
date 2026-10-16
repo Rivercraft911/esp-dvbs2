@@ -120,7 +120,33 @@ def test_files():
                               "--alpha", "0.2"], capture_output=True, text=True, check=True)
         assert json.loads(run.stdout)["samples"] == len(np.fromfile(sigmf, "<c8"))
         assert np.array_equal(np.fromfile(sigmf, "<c8"), iq.shape(phases, 1e6, 4e6, 0.2))
+        symbols = np.array([0.2 + 0.3j, -1.2 + 0.7j, 0, 0.5 - 1j], dtype="<c8")
+        symbols.tofile(phase_path)
+        subprocess.run([sys.executable, str(Path(iq.__file__)), str(phase_path), str(sigmf),
+                        "--complex-symbols", "--symbol-rate", "1000000",
+                        "--sample-rate", "4000000"], capture_output=True, check=True)
+        assert np.array_equal(np.fromfile(sigmf, "<c8"), iq.shape_symbols(symbols, 1e6, 4e6))
     print("files: cf32_le byte order, SigMF metadata and CLI/API agreement")
+
+
+def test_complex_symbols():
+    symbols = np.array([0.2 + 0.3j, -1.2 + 0.7j, 0, 0.5 - 1j])
+    for ppm in (0, 50):
+        got = iq.shape_symbols(symbols, 1e6, 4e6, sample_rate_offset_ppm=ppm)
+        t = np.arange(len(got)) / (4 * (1 + ppm * 1e-6)) - 6
+        want = sum(s * np.where(np.abs(t - k) <= 6, iq.rrc(t - k, 0.35), 0)
+                   for k, s in enumerate(symbols))
+        assert np.max(np.abs(got - want)) < 2e-7
+        assert np.allclose(iq.shape_symbols(0.5 * symbols, 1e6, 4e6,
+                                           sample_rate_offset_ppm=ppm), got * 0.5)
+    for bad in ([], [[1j]], [np.nan + 1j], [np.inf]):
+        try:
+            iq.shape_symbols(bad, 1e6, 4e6)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("invalid complex symbols accepted")
+    print("complex symbols: direct pulse sums, amplitude scaling, integer/offset clocks, CLI")
 
 
 def test_invalid():
@@ -147,4 +173,5 @@ if __name__ == "__main__":
     test_noise()
     test_dac_hold()
     test_files()
+    test_complex_symbols()
     test_invalid()
