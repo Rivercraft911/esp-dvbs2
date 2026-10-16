@@ -541,3 +541,129 @@ dvbs2_pie_run:
     ee.srcq.128.st.incp q0, q1, a7
     retw
     .size dvbs2_pie_run, . - dvbs2_pie_run
+
+/* LDPC parity packing: append each column's q bits (natural order) to a
+ * big-endian bit stream of 32-bit words. Column t's 32 rows of block b sit,
+ * big-endian, at p + cols[t] + 1536 b. The last q % 32 rows (always some) are
+ * the top bits of the last word. Bits wait right-aligned in 'pending'; 'have'
+ * of them are valid and SAR = have, so SRC pending:v is the next output word.
+ * void dvbs2_pie_pack(const uint8_t *p, const uint16_t *cols, unsigned q,
+ *                     uint32_t *out, uint32_t pending, unsigned have)
+ * a2 p, a3 cols, a5 out, a6 pending, a7 have, a9 part, a10 32 - part,
+ * a11 1536, a12 offset of the last word, a14 column, a15 v, a4/a8/a13 temp. */
+    .macro full_word offset
+    .if \offset
+    add a4, a14, a11
+    l32i a15, a4, 0
+    .else
+    l32i a15, a14, 0
+    .endif
+    src a4, a6, a15
+    s32i a4, a5, 0
+    addi a5, a5, 4
+    mov a6, a15
+    .endm
+
+    .macro last_word
+    add a4, a14, a12
+    l32i a15, a4, 0
+    add a13, a7, a9                     /* have + part */
+    bltui a13, 32, 1f
+    src a4, a6, a15                     /* a word completes */
+    s32i a4, a5, 0
+    addi a5, a5, 4
+    addi a7, a13, -32
+    ssr a10
+    srl a6, a15                         /* leftover bits, right-aligned */
+    j 2f
+1:
+    ssr a10
+    src a6, a6, a15                     /* pending:v >> (32 - part) */
+    mov a7, a13
+2:  /* not the loop end: a jump to the end of a zero-overhead loop leaves it */
+    ssr a7
+    .endm
+
+    .macro column words
+    l16ui a14, a3, 0
+    addi a3, a3, 2
+    add a14, a14, a2
+    .if \words >= 1
+    full_word 0
+    .endif
+    .if \words >= 2
+    full_word 1
+    .endif
+    last_word
+    .endm
+
+    .align 4
+    .global dvbs2_pie_pack
+    .type dvbs2_pie_pack, @function
+dvbs2_pie_pack:
+    entry a1, 32
+    srli a8, a4, 5                      /* whole words per column: 0, 1, 2 */
+    extui a9, a4, 0, 5
+    movi a10, 32
+    sub a10, a10, a9
+    movi a11, 1536
+    mull a12, a8, a11
+    movi a13, 360
+    ssr a7
+    beqz a8, 30f
+    bnei a8, 1, 32f
+    loop a13, 31f
+    column 1
+31:
+    retw
+32:
+    loop a13, 33f
+    column 2
+33:
+    retw
+30:
+    loop a13, 34f
+    column 0
+34:
+    retw
+    .size dvbs2_pie_pack, . - dvbs2_pie_pack
+
+/* Byte-reverse 32-bit words and store them at any address: vectors x 16
+ * bytes from src (aligned) to dst, given as block = (dst - 1) & ~15 and
+ * sar_byte = -dst & 15. Bytes from block to dst are overwritten; the last
+ * aligned block goes to tail (16 bytes) for the caller.
+ * Reversal per register pair: unzip/zip bytes, then unzip/zip halfwords.
+ * void dvbs2_pie_bswap(const uint32_t *src, uint8_t *block, unsigned vectors,
+ *                      unsigned sar_byte, uint8_t *tail) */
+    .align 4
+    .global dvbs2_pie_bswap
+    .type dvbs2_pie_bswap, @function
+dvbs2_pie_bswap:
+    entry a1, 32
+    wur.sar_byte a5
+    ee.zero.q q0
+    srli a8, a4, 1
+    loopnez a8, 35f
+    ee.vld.128.ip q1, a2, 16
+    ee.vld.128.ip q2, a2, 16
+    ee.vunzip.8 q1, q2
+    ee.vzip.8 q2, q1
+    ee.vunzip.16 q2, q1
+    ee.vzip.16 q1, q2                   /* q1, q2: words reversed */
+    ee.srcq.128.st.incp q0, q1, a3
+    ee.srcq.128.st.incp q1, q2, a3
+    ee.orq q0, q2, q2
+35:
+    bbci a4, 0, 36f
+    ee.vld.128.ip q1, a2, 16
+    ee.zero.q q2
+    ee.vunzip.8 q1, q2
+    ee.vzip.8 q2, q1
+    ee.vunzip.16 q2, q1
+    ee.vzip.16 q1, q2
+    ee.srcq.128.st.incp q0, q1, a3
+    ee.orq q0, q1, q1
+36:
+    ee.srcq.128.st.incp q0, q1, a6
+    retw
+    .size dvbs2_pie_bswap, . - dvbs2_pie_bswap

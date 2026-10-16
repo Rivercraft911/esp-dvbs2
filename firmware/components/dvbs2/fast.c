@@ -49,7 +49,6 @@ struct dvbs2_fast {
             uint8_t p[P_ROWS * ROW];
         } ldpc;
         uint16_t index[507 * 16];   /* QPSK: 507 chunks of 64 symbols */
-        uint32_t packed[675 + 8];   /* parity in big-endian words */
     } scratch __attribute__((aligned(16)));
     uint8_t carry[ROW] __attribute__((aligned(16)));
     uint8_t tail[16] __attribute__((aligned(16)));
@@ -57,6 +56,7 @@ struct dvbs2_fast {
     uint8_t pilot_phases[22 * 36];
     uint8_t crc8[256];
     uint16_t prog[MAX_PROG];
+    uint16_t cols[360];         /* parity column t after the transpose: row offset in block 0 */
     const dvbs2_mode *mode;
     unsigned pilots, pie, ldxq_bias;
     unsigned bch_bytes, groups, q, data_symbols, pilot_blocks;
@@ -77,16 +77,14 @@ int dvbs2_fast_ldxq_bias(const dvbs2_fast *f)
     return (f->pie & DVBS2_PIE_MAP) ? (int)f->ldxq_bias : -1;
 }
 
-static inline uint32_t load32(const uint8_t *p)
-{
-    uint32_t v;
-    memcpy(&v, p, 4);
-    return v;
-}
+/* Aligned 32-bit access to byte buffers (Xtensa has no unaligned loads; a
+ * memcpy here becomes a library call). */
+typedef uint32_t __attribute__((may_alias, aligned(4))) word_t;
+#define W(p) (*(word_t *)(p))
 
-static inline void store32(uint8_t *p, uint32_t v)
+static inline uint32_t funnel(uint32_t lo, uint32_t hi, unsigned shift)
 {
-    memcpy(p, &v, 4);
+    return shift ? (lo >> shift) | (hi << (32 - shift)) : lo;
 }
 
 #ifdef DVBS2_PIE
@@ -102,6 +100,10 @@ void dvbs2_pie_index8(const uint8_t *a, const uint8_t *b, const uint8_t *c,
 void dvbs2_pie_index4(const uint8_t *x, const uint8_t *gold, uint16_t *index, unsigned chunks);
 void dvbs2_pie_run(const uint16_t *index, const uint32_t *table, uint8_t *block,
                    unsigned vectors, unsigned sar_byte, uint8_t *tail);
+void dvbs2_pie_pack(const uint8_t *p, const uint16_t *cols, unsigned q, uint32_t *out,
+                    uint32_t pending, unsigned have);
+void dvbs2_pie_bswap(const uint32_t *src, uint8_t *block, unsigned vectors, unsigned sar_byte,
+                     uint8_t *tail);
 uint32_t dvbs2_pie_ldxq(const uint32_t *table);
 #define PIE_MASK (DVBS2_PIE_BB | DVBS2_PIE_BCH | DVBS2_PIE_LDPC | DVBS2_PIE_MAP)
 #else
@@ -182,6 +184,12 @@ static int prepare_ldpc(dvbs2_fast *f)
                 }
             }
         }
+    }
+    /* After the transpose, rows 0..31 of column 32 w + c are big-endian in row
+     * 8 (3 - c / 8) + c % 8, word w (see transpose32 and pack). */
+    for (unsigned t = 0; t < 360; ++t) {
+        const unsigned c = t % 32;
+        f->cols[t] = (uint16_t)(ROW * (8 * (3 - c / 8) + c % 8) + 4 * (t / 32));
     }
     memset(&f->scratch, 0, sizeof f->scratch);
     return 0;
@@ -324,8 +332,22 @@ static HOT void bb_fill(const dvbs2_fast *f, uint8_t *bits, const uint8_t *data,
         }
     }
 #endif
-    for (; k + 4 <= 10 + n; k += 4) {
-        store32(bits + k, load32(data + k - 10) ^ load32(f->prbs + k));
+    /* Aligned destination words from aligned source words, shifted together.
+     * Start where the first source word lies inside data. */
+    for (; k < 10 + n && (k < 14 || (k & 3)); ++k) {
+        bits[k] = data[k - 10] ^ f->prbs[k];
+    }
+    if (k + 8 <= 10 + n) {
+        const uintptr_t at = (uintptr_t)(data + k - 10);
+        const unsigned shift = 8 * (at & 3);
+        const uint8_t *src = (const uint8_t *)(at & ~(uintptr_t)3);
+        uint32_t lo = W(src);
+        for (; src + 8 <= data + n; k += 4) {
+            src += 4;
+            const uint32_t hi = W(src);
+            W(bits + k) = funnel(lo, hi, shift) ^ W(f->prbs + k);
+            lo = hi;
+        }
     }
     for (; k < 10 + n; ++k) {
         bits[k] = data[k - 10] ^ f->prbs[k];
@@ -405,29 +427,43 @@ HOT int dvbs2_fast_bb_ts(const dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_stat
 
 /* ---------------------------------------------------------------- BCH */
 
-static HOT void bch_c(const dvbs2_fast *f, uint8_t *bits, unsigned words, uint32_t w[8])
+#define BCH_ROWS(x)                                                                  \
+    const uint8_t *r0 = t + (((x) & 255) << 4), *r1 = t + 8192 + (((x) >> 4) & 0xff0),   \
+                  *r2 = t + 16384 + (((x) >> 12) & 0xff0), *r3 = t + 24576 + (((x) >> 20) & 0xff0)
+#define BCH_WORD(j) (W(r0 + (j)) ^ W(r1 + (j)) ^ W(r2 + (j)) ^ W(r3 + (j)))
+
+static HOT void bch_c(const dvbs2_fast *f, const uint8_t *bits, unsigned words, uint32_t r[8])
 {
-    const unsigned hi = f->bch_bytes > 16;
-    for (unsigned i = 0; i < words; ++i) {
-        const uint32_t x = w[0] ^ load32(bits + 4 * i);
-        w[0] = w[1];
-        w[1] = w[2];
-        w[2] = w[3];
-        w[3] = w[4];
-        w[4] = w[5];
-        w[5] = 0;
-        for (unsigned k = 0; k < 4; ++k) {
-            const uint8_t *lo = f->bch + 8192 * k + 16 * ((x >> (8 * k)) & 255);
-            w[0] ^= load32(lo);
-            w[1] ^= load32(lo + 4);
-            w[2] ^= load32(lo + 8);
-            w[3] ^= load32(lo + 12);
-            if (hi) {
-                w[4] ^= load32(lo + 4096);
-                w[5] ^= load32(lo + 4100);
-            }
+    const uint8_t *t = f->bch;
+    const word_t *msg = (const word_t *)bits;
+    uint32_t w0 = 0, w1 = 0, w2 = 0, w3 = 0, w4 = 0, w5 = 0;
+    if (f->bch_bytes > 16) {
+        for (unsigned i = 0; i < words; ++i) {
+            const uint32_t x = w0 ^ msg[i];
+            BCH_ROWS(x);
+            w0 = w1 ^ BCH_WORD(0);
+            w1 = w2 ^ BCH_WORD(4);
+            w2 = w3 ^ BCH_WORD(8);
+            w3 = w4 ^ BCH_WORD(12);
+            w4 = w5 ^ BCH_WORD(4096);
+            w5 = BCH_WORD(4100);
+        }
+    } else {
+        for (unsigned i = 0; i < words; ++i) {
+            const uint32_t x = w0 ^ msg[i];
+            BCH_ROWS(x);
+            w0 = w1 ^ BCH_WORD(0);
+            w1 = w2 ^ BCH_WORD(4);
+            w2 = w3 ^ BCH_WORD(8);
+            w3 = BCH_WORD(12);
         }
     }
+    r[0] = w0;
+    r[1] = w1;
+    r[2] = w2;
+    r[3] = w3;
+    r[4] = w4;
+    r[5] = w5;
 }
 
 HOT void dvbs2_fast_bch(dvbs2_fast *f, dvbs2_workspace *ws)
@@ -452,10 +488,10 @@ HOT void dvbs2_fast_bch(dvbs2_fast *f, dvbs2_workspace *ws)
         w[5] >>= 8;
         const uint8_t *lo = f->bch + 8192 * 3 + 16 * v;
         for (unsigned j = 0; j < 4; ++j) {
-            w[j] ^= load32(lo + 4 * j);
+            w[j] ^= W(lo + 4 * j);
         }
-        w[4] ^= load32(lo + 4096);
-        w[5] ^= load32(lo + 4100);
+        w[4] ^= W(lo + 4096);
+        w[5] ^= W(lo + 4100);
     }
     memcpy(ws->bits + bytes, w, f->bch_bytes);
 }
@@ -485,33 +521,45 @@ static HOT void rows_c(dvbs2_fast *f)
                 shift_1(h);
             }
             for (unsigned n = *prog++; n; --n) {
-                const uint8_t *window = f->scratch.ldpc.u2 + *prog++;
+                const unsigned offset = *prog++, shift = 8 * (offset & 3);
+                const uint8_t *window = f->scratch.ldpc.u2 + (offset & ~3u);
+                uint32_t lo = W(window);
                 for (unsigned w = 0; w < 12; ++w) {
-                    h[w] ^= load32(window + 4 * w);
+                    const uint32_t hi = W(window + 4 * w + 4);
+                    h[w] ^= funnel(lo, hi, shift);
+                    lo = hi;
                 }
             }
         }
         /* Accumulate down the rows: p_k ^= p_(k - q) in natural order. */
         for (unsigned w = 0; w < 12; ++w) {
             if (r) {
-                h[w] ^= load32(p + ROW * (r - 1) + 4 * w);
+                h[w] ^= W(p + ROW * (r - 1) + 4 * w);
             }
-            store32(p + ROW * r + 4 * w, h[w]);
+            W(p + ROW * r + 4 * w) = h[w];
         }
     }
 }
 
 /* Hacker's Delight transpose32: afterwards a[k] bit i = old a[31 - i] bit 31 - k. */
-static inline void transpose32(uint32_t a[32])
+static inline void transpose_stage(uint32_t a[32], unsigned j, uint32_t m)
 {
-    uint32_t m = 0x0000ffffu;
-    for (unsigned j = 16; j; j >>= 1, m ^= m << j) {
-        for (unsigned k = 0; k < 32; k = (k + j + 1) & ~j) {
+    for (unsigned base = 0; base < 32; base += 2 * j) {
+        for (unsigned k = base; k < base + j; ++k) {
             const uint32_t t = (a[k] ^ (a[k + j] >> j)) & m;
             a[k] ^= t;
             a[k + j] ^= t << j;
         }
     }
+}
+
+static inline void transpose32(uint32_t a[32])
+{
+    transpose_stage(a, 16, 0x0000ffffu);
+    transpose_stage(a, 8, 0x00ff00ffu);
+    transpose_stage(a, 4, 0x0f0f0f0fu);
+    transpose_stage(a, 2, 0x33333333u);
+    transpose_stage(a, 1, 0x55555555u);
 }
 
 static HOT void transpose_c(dvbs2_fast *f, unsigned blocks)
@@ -520,13 +568,13 @@ static HOT void transpose_c(dvbs2_fast *f, unsigned blocks)
     uint32_t a[32];
     for (unsigned b = 0; b < blocks; ++b) {
         for (unsigned w = 0; w < 12; ++w) {
-            const uint32_t carry = load32(f->carry + 4 * w);
+            const uint32_t carry = W(f->carry + 4 * w);
             for (unsigned i = 0; i < 32; ++i) {
-                a[i] = load32(p + ROW * (32 * b + i) + 4 * w) ^ carry;
+                a[i] = W(p + ROW * (32 * b + i) + 4 * w) ^ carry;
             }
             transpose32(a);
             for (unsigned i = 0; i < 32; ++i) {
-                store32(p + ROW * (32 * b + i) + 4 * w, a[i]);
+                W(p + ROW * (32 * b + i) + 4 * w) = a[i];
             }
         }
     }
@@ -534,7 +582,13 @@ static HOT void transpose_c(dvbs2_fast *f, unsigned blocks)
 
 static inline uint32_t bswap(uint32_t v)
 {
-    return (v >> 24) | ((v >> 8) & 0xff00u) | ((v << 8) & 0xff0000u) | (v << 24);
+    return __builtin_bswap32(v);
+}
+
+/* Low 32 bits of (hi:lo) >> s, s = 0..31: the Xtensa SRC instruction. */
+static inline uint32_t src32(uint32_t hi, uint32_t lo, unsigned s)
+{
+    return (uint32_t)((((uint64_t)hi << 32) | lo) >> (s & 31));
 }
 
 /* Exclusive prefix parity along the last row: carry[t] = XOR of row bits
@@ -544,7 +598,7 @@ static HOT void carry_row(dvbs2_fast *f)
     const uint8_t *last = f->scratch.ldpc.p + ROW * (f->q - 1);
     uint32_t parity = 0;
     for (unsigned w = 0; w < 12; ++w) {
-        uint32_t x = bswap(load32(last + 4 * w));
+        uint32_t x = bswap(W(last + 4 * w));
         if (w == 11) {
             x &= 0xff000000u;   /* bits 352..359 only */
         }
@@ -555,7 +609,7 @@ static HOT void carry_row(dvbs2_fast *f)
         x ^= x >> 16;
         const uint32_t exclusive = (x >> 1) ^ (parity ? 0xffffffffu : 0);
         parity ^= x & 1;
-        store32(f->carry + 4 * w, bswap(exclusive));
+        W(f->carry + 4 * w) = bswap(exclusive);
     }
 }
 
@@ -563,40 +617,42 @@ static HOT void carry_row(dvbs2_fast *f)
  * transpose, the 32 rows of block b for column 32 w + c sit big-endian in
  * row 32 b + 31 - sigma(c), word w, sigma(c) = 8 (c / 8) + 7 - c % 8.
  * Rows past q hold leftovers; only the top bits of each word are used. */
+/* Natural parity order: column t (q bits) follows column t - 1. Output words
+ * start at the word holding the parity start; its BCH bytes are kept by
+ * starting the bit stream with them. Bits wait right-aligned in 'pending';
+ * bits above 'have' are stale and never used. */
+static unsigned pack_start(const uint8_t *bits, unsigned start, uint32_t *pending)
+{
+    *pending = 0;
+    for (unsigned j = start - start % 4; j < start; ++j) {
+        *pending = (*pending << 8) | bits[j];
+    }
+    return 8 * (start % 4);
+}
+
 static HOT void pack(dvbs2_fast *f, uint8_t *bits)
 {
-    const unsigned q = f->q, start = f->mode->nbch / 8;
+    const unsigned q = f->q, start = f->mode->nbch / 8, full = q / 32, part = q % 32;
     const uint8_t *p = f->scratch.ldpc.p;
-    uint32_t *out = f->scratch.packed;
-    /* Begin at the word holding the parity start; keep its BCH bytes. */
-    const unsigned lead = start % 4;
-    uint32_t pending = 0;
-    unsigned have = 8 * lead;
-    for (unsigned j = 0; j < lead; ++j) {
-        pending = (pending << 8) | bits[start - lead + j];
-    }
-    unsigned n = 0;
+    word_t *out = (word_t *)(bits + start - start % 4);
+    uint32_t pending;
+    unsigned have = pack_start(bits, start, &pending);
     for (unsigned t = 0; t < 360; ++t) {
-        const unsigned w = t / 32, c = t % 32;
-        const unsigned slot = 8 * (3 - c / 8) + c % 8;
-        for (unsigned b = 0; 32 * b < q; ++b) {
-            const uint32_t v = load32(p + ROW * (32 * b + slot) + 4 * w);
-            const unsigned length = q - 32 * b < 32 ? q - 32 * b : 32;
-            /* Append the top 'length' bits of v to the pending bits. */
-            if (have + length >= 32) {
-                out[n++] = have ? (pending << (32 - have)) | (v >> have) : v;
-                const unsigned left = have + length - 32;
-                pending = left ? v >> (32 - length) : 0;
-                have = left;
-            } else {
-                pending = (pending << length) | (v >> (32 - length));
-                have += length;
-            }
+        const uint8_t *col = p + f->cols[t];
+        for (unsigned b = 0; b < full; ++b) {
+            const uint32_t v = W(col + ROW * 32 * b);
+            *out++ = bswap(src32(pending, v, have));
+            pending = v;
         }
-    }
-    uint8_t *dst = bits + start - lead;
-    for (unsigned i = 0; i < n; ++i) {
-        store32(dst + 4 * i, bswap(out[i]));
+        const uint32_t v = W(col + ROW * 32 * full);
+        if (have + part >= 32) {
+            *out++ = bswap(src32(pending, v, have));
+            pending = v >> (32 - part);
+            have += part - 32;
+        } else {
+            pending = src32(pending, v, 32 - part);
+            have += part;
+        }
     }
 }
 
@@ -609,7 +665,25 @@ HOT void dvbs2_fast_ldpc(dvbs2_fast *f, dvbs2_workspace *ws)
         dvbs2_pie_rows(f->scratch.ldpc.u2, f->prog, f->scratch.ldpc.p, f->q);
         carry_row(f);
         dvbs2_pie_transpose(f->scratch.ldpc.p, blocks, f->carry);
-        pack(f, ws->bits);
+        /* Pack big-endian words into the free u2 area, then reverse their
+         * bytes into ws->bits from the word holding the parity start. */
+        const unsigned start = f->mode->nbch / 8, base = start - start % 4;
+        const unsigned words = (DVBS2_FEC_BYTES - base) / 4, vectors = words / 4;
+        uint32_t pending;
+        const unsigned have = pack_start(ws->bits, start, &pending);
+        uint32_t *packed = (uint32_t *)f->scratch.ldpc.u2;
+        dvbs2_pie_pack(f->scratch.ldpc.p, f->cols, f->q, packed, pending, have);
+        uint8_t *dst = ws->bits + base;
+        const uintptr_t at = (uintptr_t)dst;
+        uint8_t *block = (uint8_t *)((at - 1) & ~(uintptr_t)15);
+        uint8_t keep[16];   /* BCH bytes between block and dst */
+        memcpy(keep, block, (size_t)(dst - block));
+        dvbs2_pie_bswap(packed, block, vectors, (unsigned)(-at & 15), f->tail);
+        memcpy(block, keep, (size_t)(dst - block));
+        memcpy(block + 16 * vectors, f->tail, (at & 15) ? (at & 15) : 16);
+        for (unsigned i = 4 * vectors; i < words; ++i) {
+            W(dst + 4 * i) = bswap(packed[i]);
+        }
         return;
     }
 #endif
@@ -628,38 +702,83 @@ HOT void dvbs2_fast_ldpc(dvbs2_fast *f, dvbs2_workspace *ws)
 
 /* ---------------------------------------------------------------- mapping */
 
+/* Writes a run of 4-byte words to any address with aligned stores, like the
+ * PIE kernel: the word before the run and the bytes after it are scribbled
+ * on (header or pilot positions, rewritten by dvbs2_fast_pl), except at the
+ * frame end where the last bytes go one by one. */
+typedef struct {
+    word_t *at;
+    uint32_t previous;
+    unsigned shift;
+} writer;
+
+static inline writer writer_start(uint8_t *dst)
+{
+    const uintptr_t a = (uintptr_t)dst;
+    writer w = {(word_t *)(a & ~(uintptr_t)3), 0, 8 * (unsigned)(a & 3)};
+    return w;
+}
+
+static inline void writer_put(writer *w, uint32_t v)
+{
+    if (w->shift) {
+        *w->at++ = (w->previous >> (32 - w->shift)) | (v << w->shift);
+        w->previous = v;
+    } else {
+        *w->at++ = v;
+    }
+}
+
+static inline void writer_end(writer *w, int last)
+{
+    if (!w->shift) {
+        return;
+    }
+    uint8_t *tail = (uint8_t *)w->at;
+    if (last) {
+        for (unsigned i = 0; i < w->shift / 8; ++i) {
+            tail[i] = (uint8_t)(w->previous >> (32 - w->shift + 8 * i));
+        }
+    } else {
+        *w->at = w->previous >> (32 - w->shift);
+    }
+}
+
 /* Data symbol k goes to output 90 + k + 36 (k / 1440) with pilots. Runs of
  * 1440 symbols are whole groups of four, so a table word never straddles a
  * pilot block. */
 static HOT void map_c(const dvbs2_fast *f, const uint8_t *bits, uint8_t *output)
 {
-    const unsigned d = f->data_symbols;
-    uint8_t *run = output + 90;
-    if (f->mode->bits_per_symbol == 3) {
-        const uint8_t *a = bits, *b = bits + 2700, *c = bits + 5400;
-        if (f->mode->modcod == 12) {   /* 5.3.3: rate 3/5 reads the columns backwards */
-            a = bits + 5400;
-            c = bits;
+    const unsigned d = f->data_symbols, runs = f->pilots ? f->pilot_blocks + 1 : 1;
+    const unsigned run_symbols = f->pilots ? 1440 : d;
+    const uint32_t *map = f->map;
+    const uint8_t *a = bits, *b = bits + 2700, *c = bits + 5400;
+    if (f->mode->modcod == 12) {   /* 5.3.3: rate 3/5 reads the columns backwards */
+        a = bits + 5400;
+        c = bits;
+    }
+    for (unsigned r = 0; r < runs; ++r) {
+        const unsigned k0 = r * run_symbols;
+        const unsigned n = d - k0 < run_symbols ? d - k0 : run_symbols;
+        writer w = writer_start(output + 90 + k0 + 36 * r);
+        if (f->mode->bits_per_symbol == 3) {
+            for (unsigned j = k0 / 8; j < (k0 + n) / 8; ++j) {
+                const unsigned x = b[j] ^ c[j], z0 = f->gold[j], z1 = f->gold[GOLD + j];
+                const unsigned p0 = a[j] ^ x;                       /* inverted p0 */
+                const unsigned p1 = a[j] ^ z0;
+                const unsigned p2 = b[j] ^ (a[j] & x) ^ z1 ^ (a[j] & z0);
+                writer_put(&w, map[(p0 >> 4) | (p2 & 0xf0) | (p1 >> 4) << 8]);
+                writer_put(&w, map[(p0 & 15) | (p2 & 15) << 4 | (p1 & 15) << 8]);
+            }
+        } else {
+            for (unsigned j = k0 / 4; j < (k0 + n) / 4; ++j) {
+                const unsigned x = bits[j], g = f->gold[j];
+                const unsigned dd = x ^ (x >> 1);
+                const unsigned p2 = x ^ (g >> 1) ^ (dd & g), p1 = dd ^ g;
+                writer_put(&w, map[(p1 & 0x55) | (p2 & 0x55) << 1]);
+            }
         }
-        for (unsigned j = 0; j < d / 8; ++j) {
-            const unsigned x = b[j] ^ c[j], z0 = f->gold[j], z1 = f->gold[GOLD + j];
-            const unsigned p0 = a[j] ^ x;                       /* inverted p0 */
-            const unsigned p1 = a[j] ^ z0;
-            const unsigned p2 = b[j] ^ (a[j] & x) ^ z1 ^ (a[j] & z0);
-            const unsigned k = 8 * j;
-            uint8_t *o = run + k + (f->pilots ? 36 * (k / 1440) : 0);
-            store32(o, f->map[(p0 >> 4) | (p2 & 0xf0) | (p1 >> 4) << 8]);
-            store32(o + 4, f->map[(p0 & 15) | (p2 & 15) << 4 | (p1 & 15) << 8]);
-        }
-    } else {
-        for (unsigned j = 0; j < d / 4; ++j) {
-            const unsigned x = bits[j], g = f->gold[j];
-            const unsigned dd = x ^ (x >> 1);
-            const unsigned p2 = x ^ (g >> 1) ^ (dd & g), p1 = dd ^ g;
-            const unsigned k = 4 * j;
-            store32(run + k + (f->pilots ? 36 * (k / 1440) : 0),
-                    f->map[(p1 & 0x55) | (p2 & 0x55) << 1]);
-        }
+        writer_end(&w, r == runs - 1);
     }
 }
 
