@@ -3,6 +3,10 @@
     python3 tests/test_fecbench.py
     python3 tests/test_fecbench.py results/<date>-fec/runs.jsonl
 
+fecbench runs one implementation per command: plain (dvbs2.c), c (fast.c in
+portable C) or pie (fast.c with the ESP32-S3 vector kernels). All three must
+produce the same 140 phase CRCs.
+
 The device recipe is fixed in firmware/main/fecbench.c. Timing is never inferred
 from the native test: its clock advances a synthetic 17 counts per read. Native
 records stay in memory and never enter the performance report. Board records
@@ -24,6 +28,8 @@ from test_dvbs2_c import MODES, ROOT, d
 
 FRAMES = 5
 STAGES = ("bb", "bb_scramble", "bch", "ldpc", "interleave_map", "pl", "total")
+IMPLS = ("plain", "c", "pie")
+TARGET = 250_000   # brief: one 240 MHz core per normal 8PSK 2/3 frame at 20 Msym/s
 
 
 def source(seed, count):
@@ -63,7 +69,7 @@ def reference_records():
     return expected
 
 
-def native_records():
+def native_records(impl="plain"):
     """Run the actual command with synchronous task stubs and a synthetic clock.
 
     This checks the firmware's source generator, TS continuation, phase CRC and
@@ -131,7 +137,9 @@ static inline unsigned ulTaskNotifyTake(int clear, unsigned timeout)
                        "sdkconfig.h", "freertos/FreeRTOS.h", "freertos/task.h"):
             (folder / header).write_text('#include "native.h"\n')
         main = folder / "main.c"
-        main.write_text('#include "fecbench.h"\nint main(void) { fecbench_run(); return 0; }\n')
+        main.write_text('#include "fecbench.h"\n'
+                        'int main(int argc, char **argv) { (void)argc; '
+                        'return fecbench_run(argv[1]) ? 1 : 0; }\n')
         executable = folder / "fecbench"
         component = ROOT / "firmware/components/dvbs2"
         subprocess.run(shlex.split(os.environ.get("CC", "cc")) + [
@@ -139,8 +147,8 @@ static inline unsigned ulTaskNotifyTake(int clear, unsigned timeout)
             "-I", str(folder), "-I", str(ROOT / "firmware/main"),
             "-I", str(component / "include"), str(main),
             str(ROOT / "firmware/main/fecbench.c"), str(component / "dvbs2.c"),
-            "-o", str(executable)], check=True)
-        output = subprocess.run([str(executable)], check=True, capture_output=True,
+            str(component / "fast.c"), "-o", str(executable)], check=True)
+        output = subprocess.run([str(executable), impl], check=True, capture_output=True,
                                 text=True).stdout
         lines = output.splitlines()
         assert all(line.startswith("@") for line in lines), output
@@ -162,16 +170,25 @@ def check_records(records, expected):
                                    inputs=["gcs", "ts"]).items():
                 assert record[key] == value, (key, record.get(key))
             assert record["firmware"] and record["idf"]
-            active = dict(metadata=record, frames={})
+            impl = record.get("impl", "plain")   # records before exp/fec-limit had no impl
+            assert impl in IMPLS, impl
+            if impl == "pie":
+                assert record["pie_mask"] == 15, ("PIE kernels not all in use", record)
+            active = dict(metadata=record, impl=impl, frames={})
         elif event == "frame":
             assert active is not None, "frame without begin"
             key = record["modcod"], record["input"], record["frame"]
             assert key in expected and key not in active["frames"], ("unknown/duplicate", key)
             for field, value in expected[key].items():
                 assert record[field] == value, (key, field, record.get(field), value)
+            assert record.get("impl", "plain") == active["impl"], key
             cycles = record["cycles"]
             assert set(cycles) == set(STAGES), (key, cycles)
-            assert all(type(v) is int and 0 < v < 2**32 for v in cycles.values()), key
+            # The fast implementations scramble inside bb, so bb_scramble is 0 there.
+            zero = {"bb_scramble"} if active["impl"] != "plain" else set()
+            for stage, value in cycles.items():
+                assert type(value) is int and 0 <= value < 2**32, (key, stage)
+                assert (value == 0) == (stage in zero), (key, stage, value)
             assert cycles["total"] >= sum(cycles[s] for s in STAGES[:-1]), key
             active["frames"][key] = record
         elif event == "end":
@@ -215,7 +232,8 @@ def test_checker(expected):
 def report(runs):
     target_pass = True
     for index, run in enumerate(runs, 1):
-        print(f"run {index}: all 140 CRCs match; firmware {run['metadata']['firmware']}")
+        print(f"run {index}: all 140 CRCs match; firmware {run['metadata']['firmware']}, "
+              f"impl {run['impl']}")
         for modcod, modulation, rate in MODES:
             for input_name in ("gcs", "ts"):
                 rows = [run["frames"][(modcod, input_name, k)] for k in range(FRAMES)]
@@ -225,6 +243,8 @@ def report(runs):
                 fit = max(totals) < budget
                 if modcod == 13:
                     target_pass &= fit
+                if modcod == 13 and run["impl"] != "plain":
+                    target_pass &= max(totals) < TARGET
                 print(f"  {modulation} {rate:>4} {input_name}: cycles min/median/max "
                       f"{min(totals)}/{statistics.median(totals):.0f}/{max(totals)}, "
                       f"max {100 * max(totals) / budget:.1f}% of {budget} cycles "
@@ -233,17 +253,20 @@ def report(runs):
                     f"{s}={statistics.median(r['cycles'][s] for r in rows):.0f}"
                     for s in STAGES[:-1]))
     print(("PASS" if target_pass else "FAIL") +
-          " encoder budget: every sampled 8PSK 2/3 GCS and TS frame < 1065312 cycles")
+          " encoder budget: every sampled 8PSK 2/3 GCS and TS frame < 1065312 cycles"
+          f" (5 Msym/s), and < {TARGET} cycles (20 Msym/s) for the c and pie runs")
     return target_pass
 
 
 if __name__ == "__main__":
     if len(sys.argv) == 1:
         expected = reference_records()
-        assert len(check_records(native_records(), expected)) == 1
+        for impl in ("plain", "c"):
+            runs = check_records(native_records(impl), expected)
+            assert len(runs) == 1 and runs[0]["impl"] == impl
         test_checker(expected)
-        print("fecbench: actual C command emits 140 phase CRCs equal to the reference; "
-              "checker rejects missing, duplicate and corrupt records. "
+        print("fecbench: actual C command (plain and fast C) emits 140 phase CRCs equal to the "
+              "reference; checker rejects missing, duplicate and corrupt records. "
               "Native clock counts are synthetic; no performance was measured.")
     else:
         assert len(sys.argv) == 2, __doc__

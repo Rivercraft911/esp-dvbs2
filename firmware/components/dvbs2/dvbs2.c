@@ -2,6 +2,7 @@
  * Portable C99, no platform headers. DVBS2_IRAM places timed stages in ESP32
  * instruction RAM; constant tables stay in flash and use the normal data cache. */
 #include "dvbs2.h"
+#include "private.h"
 
 #include <string.h>
 
@@ -304,6 +305,11 @@ HOT void dvbs2_plframe(const dvbs2_mode *mode, int pilots, uint8_t *output)
         unsigned rotation = (pl_rotations[k / 4] >> (2 * (k % 4))) & 3;
         output[90 + k] = (uint8_t)((output[90 + k] + 2 * rotation) & 7);
     }
+    dvbs2_plheader(mode->modcod, pilots, output);
+}
+
+HOT void dvbs2_plheader(unsigned modcod, int pilots, uint8_t *output)
+{
     /* 5.5.2: SOF and scrambled (64,7) PLS code, pi/2-BPSK mapped. */
     static const uint32_t generators[6] = {
         0x55555555u, 0x33333333u, 0x0f0f0f0fu,
@@ -311,7 +317,7 @@ HOT void dvbs2_plframe(const dvbs2_mode *mode, int pilots, uint8_t *output)
     };
     uint32_t y = 0;
     for (unsigned k = 0; k < 5; ++k) {
-        if ((mode->modcod >> (4 - k)) & 1) {
+        if ((modcod >> (4 - k)) & 1) {
             y ^= generators[k];
         }
     }
@@ -329,4 +335,24 @@ HOT void dvbs2_plframe(const dvbs2_mode *mode, int pilots, uint8_t *output)
         }
         output[k] = (uint8_t)(((k & 1) ? 3 : 1) + (bit ? 4 : 0));
     }
+}
+
+const uint32_t (*dvbs2_bch_bytes(unsigned t))[6]
+{
+    return t == 12 ? bch_12 : t == 10 ? bch_10 : bch_8;
+}
+
+const uint16_t *dvbs2_ldpc_table(unsigned modcod)
+{
+    return ldpc_rows(modcod);
+}
+
+const uint8_t *dvbs2_prbs_table(void)
+{
+    return bb_prbs;
+}
+
+unsigned dvbs2_pl_rotation(size_t k)
+{
+    return (pl_rotations[k / 4] >> (2 * (k % 4))) & 3;
 }

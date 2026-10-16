@@ -55,4 +55,31 @@ void dvbs2_map(const dvbs2_workspace *ws, const dvbs2_mode *mode,
  * the body. Allocate dvbs2_frame_symbols(mode,pilots) bytes. */
 void dvbs2_plframe(const dvbs2_mode *mode, int pilots, uint8_t *output);
 
+/* Fast encoder (fast.c): the same frames with wide tables, whole-row LDPC and
+ * table mapping. Allocate dvbs2_fast_size() bytes, 16-byte aligned, in
+ * internal RAM (about 90 KB), and prepare it for one mode and pilot setting.
+ * The pie mask selects ESP32-S3 vector kernels (pie.S) per stage; without PIE
+ * support the mask is ignored and portable C runs. dvbs2_fast_pie() tells
+ * which kernels are in use; dvbs2_fast_ldxq_bias() reports the measured
+ * EE.LDXQ.32 address offset (0 or 4 bytes, -1 if unused). Stages keep
+ * ws->bits in the canonical format: bb_* writes the scrambled BBFRAME, then
+ * bch and ldpc as above. map writes the mapped and scrambled data symbols to
+ * their PLFRAME positions and may scribble on the others; pl then writes the
+ * header and pilots. output: dvbs2_frame_symbols(mode, pilots) bytes, any
+ * alignment. */
+typedef struct dvbs2_fast dvbs2_fast;
+enum { DVBS2_PIE_BB = 1, DVBS2_PIE_BCH = 2, DVBS2_PIE_LDPC = 4, DVBS2_PIE_MAP = 8 };
+size_t dvbs2_fast_size(void);
+int dvbs2_fast_prepare(dvbs2_fast *f, const dvbs2_mode *mode, int pilots, unsigned pie);
+unsigned dvbs2_fast_pie(const dvbs2_fast *f);
+int dvbs2_fast_ldxq_bias(const dvbs2_fast *f);
+int dvbs2_fast_bb_gcs(const dvbs2_fast *f, dvbs2_workspace *ws,
+                      const uint8_t *payload, size_t dfl_bits);
+int dvbs2_fast_bb_ts(const dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_state *state,
+                     const uint8_t *input, size_t input_bytes);
+void dvbs2_fast_bch(dvbs2_fast *f, dvbs2_workspace *ws);
+void dvbs2_fast_ldpc(dvbs2_fast *f, dvbs2_workspace *ws);
+void dvbs2_fast_map(dvbs2_fast *f, const dvbs2_workspace *ws, uint8_t *output);
+void dvbs2_fast_pl(const dvbs2_fast *f, uint8_t *output);
+
 #endif

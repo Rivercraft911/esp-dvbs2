@@ -2,6 +2,12 @@
 // Only encoding is timed; source generation, CRC, printing and the between-frame yield are not.
 // Interrupts stay enabled, so raw totals include interrupt service during a frame. A pinned task
 // keeps every CCOUNT subtraction on the same CPU. This command never starts the radio.
+//
+// Implementations, chosen per run so one image gives the A/B comparison:
+//   plain  the reference stages in dvbs2.c
+//   c      fast.c in portable C (bb_scramble is part of bb, so it reads 0)
+//   pie    fast.c with the ESP32-S3 vector kernels from pie.S
+// Preparing the fast tables for each mode happens before the warmup frame and is not timed.
 
 #include "fecbench.h"
 
@@ -56,10 +62,43 @@ static uint32_t phase_crc32(const uint8_t *bytes, size_t count)
     return ~crc;
 }
 
-static int encode(dvbs2_workspace *ws, const dvbs2_mode *mode, dvbs2_ts_state *ts,
-                  const uint8_t *payload, uint8_t *output, uint32_t cycles[STAGES],
-                  uint32_t *total)
+static int encode_fast(dvbs2_fast *f, dvbs2_workspace *ws, const dvbs2_mode *mode,
+                       dvbs2_ts_state *ts, const uint8_t *payload, uint8_t *output,
+                       uint32_t cycles[STAGES], uint32_t *total)
 {
+    const size_t payload_bytes = (mode->kbch - 80) / 8;
+    const uint32_t start = esp_cpu_get_cycle_count();
+    uint32_t before = esp_cpu_get_cycle_count();
+    const int rc = ts ? dvbs2_fast_bb_ts(f, ws, ts, payload, payload_bytes)
+                      : dvbs2_fast_bb_gcs(f, ws, payload, payload_bytes * 8);
+    cycles[0] = esp_cpu_get_cycle_count() - before;
+    cycles[1] = 0;
+    if (rc != 0) {
+        return rc;
+    }
+    before = esp_cpu_get_cycle_count();
+    dvbs2_fast_bch(f, ws);
+    cycles[2] = esp_cpu_get_cycle_count() - before;
+    before = esp_cpu_get_cycle_count();
+    dvbs2_fast_ldpc(f, ws);
+    cycles[3] = esp_cpu_get_cycle_count() - before;
+    before = esp_cpu_get_cycle_count();
+    dvbs2_fast_map(f, ws, output);
+    cycles[4] = esp_cpu_get_cycle_count() - before;
+    before = esp_cpu_get_cycle_count();
+    dvbs2_fast_pl(f, output);
+    cycles[5] = esp_cpu_get_cycle_count() - before;
+    *total = esp_cpu_get_cycle_count() - start;
+    return 0;
+}
+
+static int encode(dvbs2_fast *f, dvbs2_workspace *ws, const dvbs2_mode *mode,
+                  dvbs2_ts_state *ts, const uint8_t *payload, uint8_t *output,
+                  uint32_t cycles[STAGES], uint32_t *total)
+{
+    if (f) {
+        return encode_fast(f, ws, mode, ts, payload, output, cycles, total);
+    }
     const size_t payload_bytes = (mode->kbch - 80) / 8;
     const uint32_t start = esp_cpu_get_cycle_count();
     uint32_t before = esp_cpu_get_cycle_count();
@@ -88,15 +127,32 @@ static int encode(dvbs2_workspace *ws, const dvbs2_mode *mode, dvbs2_ts_state *t
     return 0;
 }
 
+static const char *const impl_names[] = {"plain", "c", "pie"};
+static unsigned impl;
+
 static void fecbench_task(void *waiter)
 {
     const uint32_t internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     dvbs2_workspace *ws = heap_caps_aligned_alloc(16, sizeof *ws, internal);
     uint8_t *payload = heap_caps_malloc(DVBS2_FEC_BYTES, internal);
     uint8_t *output = heap_caps_malloc(DVBS2_MAX_SYMBOLS, internal);
-    if (!ws || !payload || !output) {
+    dvbs2_fast *fast = impl ? heap_caps_aligned_alloc(16, dvbs2_fast_size(), internal) : NULL;
+    const unsigned pie = impl == 2 ? DVBS2_PIE_BB | DVBS2_PIE_BCH | DVBS2_PIE_LDPC | DVBS2_PIE_MAP
+                                   : 0;
+    if (!ws || !payload || !output || (impl && !fast)) {
         printf("@{\"cmd\":\"fecbench\",\"error\":\"internal allocation failed\"}\n");
         goto done;
+    }
+    // The PIE mask actually used and the measured EE.LDXQ.32 offset (see dvbs2.h).
+    unsigned pie_used = 0;
+    int ldxq_bias = -1;
+    if (fast) {
+        if (dvbs2_fast_prepare(fast, &dvbs2_modes[0], 1, pie) != 0) {
+            printf("@{\"cmd\":\"fecbench\",\"error\":\"prepare failed\"}\n");
+            goto done;
+        }
+        pie_used = dvbs2_fast_pie(fast);
+        ldxq_bias = dvbs2_fast_ldxq_bias(fast);
     }
 
     const esp_app_desc_t *app = esp_app_get_description();
@@ -104,10 +160,12 @@ static void fecbench_task(void *waiter)
            "\"start_us\":%" PRId64 ",\"cpu_mhz\":%d,\"core\":%d,\"modes\":%u,"
            "\"frames_per_mode\":%d,\"warmup_frames\":1,\"pilots\":true,\"pl_code\":0,"
            "\"rolloff\":0.35,\"inputs\":[\"gcs\",\"ts\"],\"workspace_bytes\":%u,"
-           "\"payload_buffer_bytes\":%d,\"phase_buffer_bytes\":%d}\n",
+           "\"payload_buffer_bytes\":%d,\"phase_buffer_bytes\":%d,\"impl\":\"%s\","
+           "\"fast_bytes\":%u,\"pie_mask\":%u,\"ldxq_bias\":%d}\n",
            app->version, app->idf_ver, esp_timer_get_time(), CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
            xPortGetCoreID(), (unsigned)dvbs2_mode_count, FRAMES, (unsigned)sizeof *ws,
-           DVBS2_FEC_BYTES, DVBS2_MAX_SYMBOLS);
+           DVBS2_FEC_BYTES, DVBS2_MAX_SYMBOLS, impl_names[impl],
+           fast ? (unsigned)dvbs2_fast_size() : 0, pie_used, ldxq_bias);
 
     unsigned reported = 0;
     for (size_t m = 0; m < dvbs2_mode_count; ++m) {
@@ -121,8 +179,14 @@ static void fecbench_task(void *waiter)
             const uint32_t seed = 2026u ^ ((uint32_t)mode->modcod << 16) ^ ((uint32_t)input << 8);
             uint32_t state = seed, cycles[STAGES], total;
             dvbs2_ts_state ts = {0};
+            if (fast && (dvbs2_fast_prepare(fast, mode, PILOTS, pie) != 0 ||
+                         dvbs2_fast_pie(fast) != pie_used)) {
+                printf("@{\"cmd\":\"fecbench\",\"error\":\"prepare failed\","
+                       "\"modcod\":%u}\n", mode->modcod);
+                goto done;
+            }
             fill_payload(payload, payload_bytes, input, 0, &state);
-            if (encode(ws, mode, input ? &ts : NULL, payload, output, cycles, &total) != 0) {
+            if (encode(fast, ws, mode, input ? &ts : NULL, payload, output, cycles, &total) != 0) {
                 printf("@{\"cmd\":\"fecbench\",\"error\":\"warmup encode failed\","
                        "\"modcod\":%u,\"input\":\"%s\"}\n", mode->modcod, input ? "ts" : "gcs");
                 goto done;
@@ -132,7 +196,8 @@ static void fecbench_task(void *waiter)
             for (unsigned frame = 0; frame < FRAMES; ++frame) {
                 const size_t offset = frame * payload_bytes;
                 fill_payload(payload, payload_bytes, input, offset, &state);
-                if (encode(ws, mode, input ? &ts : NULL, payload, output, cycles, &total) != 0) {
+                if (encode(fast, ws, mode, input ? &ts : NULL, payload, output, cycles,
+                           &total) != 0) {
                     printf("@{\"cmd\":\"fecbench\",\"error\":\"encode failed\","
                            "\"modcod\":%u,\"input\":\"%s\",\"frame\":%u}\n",
                            mode->modcod, input ? "ts" : "gcs", frame);
@@ -140,13 +205,15 @@ static void fecbench_task(void *waiter)
                 }
                 const uint32_t crc = phase_crc32(output, symbols);
                 printf("@{\"cmd\":\"fecbench\",\"event\":\"frame\",\"modcod\":%u,"
-                       "\"rate\":\"%s\",\"modulation\":\"%s\",\"input\":\"%s\",\"frame\":%u,"
+                       "\"impl\":\"%s\",\"rate\":\"%s\",\"modulation\":\"%s\","
+                       "\"input\":\"%s\",\"frame\":%u,"
                        "\"seed\":%" PRIu32 ",\"source_offset\":%u,\"payload_bytes\":%u,"
                        "\"symbols\":%u,\"crc32\":%" PRIu32 ",\"cycles\":{"
                        "\"bb\":%" PRIu32 ",\"bb_scramble\":%" PRIu32 ",\"bch\":%" PRIu32 ","
                        "\"ldpc\":%" PRIu32 ",\"interleave_map\":%" PRIu32 ","
                        "\"pl\":%" PRIu32 ",\"total\":%" PRIu32 "}}\n",
-                       mode->modcod, mode->rate, mode->bits_per_symbol == 3 ? "8psk" : "qpsk",
+                       mode->modcod, impl_names[impl], mode->rate,
+                       mode->bits_per_symbol == 3 ? "8psk" : "qpsk",
                        input ? "ts" : "gcs", frame, seed, (unsigned)offset,
                        (unsigned)payload_bytes, (unsigned)symbols, crc, cycles[0], cycles[1],
                        cycles[2], cycles[3], cycles[4], cycles[5], total);
@@ -158,6 +225,7 @@ static void fecbench_task(void *waiter)
     printf("@{\"cmd\":\"fecbench\",\"event\":\"end\",\"frames_reported\":%u}\n", reported);
 
 done:
+    heap_caps_free(fast);
     heap_caps_free(output);
     heap_caps_free(payload);
     heap_caps_free(ws);
@@ -165,13 +233,20 @@ done:
     vTaskDelete(NULL);
 }
 
-void fecbench_run(void)
+int fecbench_run(const char *name)
 {
+    for (impl = 0; impl < 3 && strcmp(name, impl_names[impl]) != 0; ++impl) {
+    }
+    if (impl == 3) {
+        printf("@{\"cmd\":\"fecbench\",\"error\":\"implementation is plain, c or pie\"}\n");
+        return -1;
+    }
     if (xTaskCreatePinnedToCore(fecbench_task, "fecbench", 4096,
                                xTaskGetCurrentTaskHandle(), tskIDLE_PRIORITY + 1,
                                NULL, 1) != pdPASS) {
         printf("@{\"cmd\":\"fecbench\",\"error\":\"task allocation failed\"}\n");
-        return;
+        return -1;
     }
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    return 0;
 }
