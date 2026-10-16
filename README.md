@@ -71,6 +71,7 @@ the rate that would allow 20 Msym/s. [Run details](results/2026-10-16-shaper/REA
 | Pulse shaping fast enough for 8PSK at 5 Msym/s (PIE, 1.78 cycles/sample) | done |
 | DAC bank streaming received on an SDR | done, [first RF](results/2026-10-16-radio/README.md) |
 | Whole chain on the chip, bank samples decoded by LeanDVB (radio off) | done, [dry run](results/2026-10-16-dryrun/README.md), 47 dB MER |
+| Continuous encoding on one core while the other fills banks (radio off) | done, [stream](results/2026-10-16-stream/README.md), every deadline met |
 | QPSK at 1 Msym/s decoded by a DVB-S2 receiver | |
 | 8PSK 2/3 at 5 Msym/s with the payload arriving over SPI | |
 
@@ -87,13 +88,15 @@ python3 tests/test_dvbs2_c.py                   # compile with cc, compare every
 python3 tests/test_fecbench.py                  # seeded benchmark frames and output CRCs
 python3 tests/test_iq.py                        # RRC waveform and capture formats, no hardware
 python3 tests/test_decode.py                    # receiver output parsing and failure checks
+python3 tests/test_ring.py                      # encoder-to-fill frame ring against the bank schedule
 cd firmware && idf.py build flash && cd ..      # after sourcing ESP-IDF
 python3 host/board.py info --reset              # talk to the board
 python3 host/board.py membench --out results/<date>-<topic>/runs.jsonl
 python3 host/board.py fecbench --reset --timeout 120 --out results/<date>-encoder/runs.jsonl
 python3 tests/test_fecbench.py results/<date>-encoder/runs.jsonl
-python3 host/board.py "dvbdump 4 20" --save dump.iq   # the transmit samples over USB, radio off
-python3 host/onair.py dump.iq --rate 4000000 --scale 512   # LeanDVB decode and payload check
+python3 host/board.py "dvbdump 4 40" --save dump.iq   # the transmit samples over USB, radio off
+python3 host/onair.py dump.iq --rate 4000000 --scale 512 --stream 40   # LeanDVB decode, payload check
+python3 host/board.py "dvbpace 4 60" --timeout 120  # encoder and timed bank fills, radio off
 python3 host/plots.py                           # redraw the figures from results/
 ```
 

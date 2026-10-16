@@ -1,4 +1,8 @@
-"""Compile the actual console parser against a counted RF stub. No board is used."""
+"""Compile the actual console parsers against counted stubs. No board is used.
+
+tx and dvb key the radio; dvbdump and dvbpace must not. Every invalid request must stop in the
+parser, and every valid one must reach exactly its own function with the parsed values.
+"""
 import json
 import pathlib
 import subprocess
@@ -6,11 +10,10 @@ import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
-# Extract just the two parser functions so this safety check needs no simulated
+# Extract just the parser functions so this safety check needs no simulated
 # RTOS, USB or Wi-Fi stack. Every tested branch is compiled from main.c itself.
 source = (ROOT / "firmware/main/main.c").read_text()
-parser = (source[source.index("static bool number("):source.index("static void cmd_dvb(")] +
-          source[source.index("static void cmd_tx("):source.index("static void cmd_info(")])
+parser = source[source.index("static bool number("):source.index("static void cmd_info(")]
 invalid = [
     "", "2400", "2400 tone", "2400 tone 1 0 extra", "2400 unknown 1 0",
     "2389 tone 1 0", "2451 tone 1 0", "-2400 tone 1 0", "nan tone 1 0",
@@ -25,6 +28,23 @@ valid = [
     ("2450 two 60 17", 2450, 60, 17),
     ("\t2400\ttag\t2\t3\t", 2400, 2, 3),
 ]
+# Commands handled by dvbtx.c: invalid arguments, then valid ones with the values each stub
+# must receive (freq, modcod, seconds, gain, level) for dvb, (modcod, frames, level, decim,
+# stall) for dvbdump and (modcod, seconds, level, stall) for dvbpace.
+dvbtx = {
+    "dvb": (["", "2400", "2400 4", "2389 4 1", "2451 4 1", "2400 3 1", "2400 12 1",
+             "2400 4 0", "2400 4 61", "2400 4 1 18", "2400 4 1 0 15", "2400 4 1 0 509",
+             "2400 4 1 0 128 x", "2400 4 1.5", "2400 0x4 1"],
+            [("2400 4 1", (2400, 4, 1, 0, 128)), ("2450 11 60 17 508", (2450, 11, 60, 17, 508)),
+             ("2390 4 1 0 16", (2390, 4, 1, 0, 16))]),
+    "dvbdump": (["", "4", "3 1", "12 1", "4 0", "4 257", "4 1 15", "4 1 509", "4 1 128 0",
+                 "4 1 128 3", "4 1 128 21", "4 1 128 10 2001", "4 1 128 10 0 x", "4 -1"],
+                [("4 40", (4, 40, 128, 10, 0)), ("11 256 508 1 2000", (11, 256, 508, 1, 2000)),
+                 ("6 1 64 20", (6, 1, 64, 20, 0))]),
+    "dvbpace": (["", "4", "4 0", "4 601", "3 1", "12 1", "4 1 15", "4 1 128 2001",
+                 "4 1 128 0 x", "4 1.5"],
+                [("4 30", (4, 30, 128, 0)), ("11 600 64 25", (11, 600, 64, 25))]),
+}
 
 prelude = r'''
 #include <assert.h>
@@ -61,6 +81,28 @@ static const char *esp_err_to_name(esp_err_t error)
     (void)error;
     return "ESP_OK";
 }
+static unsigned dvb_calls, dump_calls, pace_calls, got[5];
+static void stub(unsigned *count, unsigned a, unsigned b, unsigned c, unsigned d, unsigned e)
+{
+    ++*count;
+    got[0] = a, got[1] = b, got[2] = c, got[3] = d, got[4] = e;
+    printf("@{\"status\":\"ESP_OK\"}\n");
+}
+static void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain,
+                      unsigned level)
+{
+    stub(&dvb_calls, freq, modcod, seconds, gain, level);
+}
+static void dvbtx_dump(unsigned modcod, unsigned frames, unsigned level, unsigned decim,
+                       unsigned stall)
+{
+    stub(&dump_calls, modcod, frames, level, decim, stall);
+}
+static void dvbtx_pace(unsigned modcod, uint32_t seconds, unsigned level, unsigned stall)
+{
+    stub(&pace_calls, modcod, seconds, level, stall, 0);
+}
+#define RF_CALLS (calls + dvb_calls)
 '''
 
 with tempfile.TemporaryDirectory() as directory:
@@ -74,7 +116,18 @@ with tempfile.TemporaryDirectory() as directory:
         checks.append("{ char args[] = " + json.dumps(command) + "; cmd_tx(args); " +
                       f"assert(calls == {index} && got_freq == {freq} && " +
                       f"got_seconds == {seconds} && got_gain == {gain}); }}")
-    checks.append("return 0; }")
+    counters = {"dvb": "dvb_calls", "dvbdump": "dump_calls", "dvbpace": "pace_calls"}
+    for name, (bad, good) in dvbtx.items():
+        others = " && ".join(f"{v} == 0" for k, v in counters.items() if k != name)
+        for command in bad:
+            checks.append("{ char args[] = " + json.dumps(command) + f"; cmd_{name}(args); " +
+                          "assert(dvb_calls + dump_calls + pace_calls == 0); }")
+        for index, (command, values) in enumerate(good, 1):
+            expect = " && ".join(f"got[{i}] == {v}" for i, v in enumerate(values))
+            checks.append("{ char args[] = " + json.dumps(command) + f"; cmd_{name}(args); " +
+                          f"assert({counters[name]} == {index} && {others} && {expect}); }}")
+        checks.append(f"{counters[name]} = 0;")
+    checks.append("assert(RF_CALLS == " + str(len(valid)) + "); return 0; }")
     harness = tmp / "parser.c"
     harness.write_text(prelude + parser + "\n".join(checks))
     executable = tmp / "parser"
@@ -84,8 +137,17 @@ with tempfile.TemporaryDirectory() as directory:
                     "-o", str(executable)], check=True)
     result = subprocess.run([str(executable)], check=True, capture_output=True, text=True)
     records = [json.loads(line[1:]) for line in result.stdout.splitlines()]
-    assert len(records) == len(invalid) + len(valid)
-    assert all("error" in record for record in records[:len(invalid)])
-    assert all(record["status"] == "ESP_OK" for record in records[len(invalid):])
+    counts = [len(invalid), len(valid)]
+    for bad, good in dvbtx.values():
+        counts += [len(bad), len(good)]
+    assert len(records) == sum(counts)
+    start = 0
+    for index, count in enumerate(counts):
+        group = records[start:start + count]
+        assert all(("error" in r) if index % 2 == 0 else r["status"] == "ESP_OK" for r in group)
+        start += count
 
-print(f"tx command: {len(invalid)} invalid requests never enter RF; boundary/default cases pass")
+bad = len(invalid) + sum(len(b) for b, _ in dvbtx.values())
+print(f"commands: {bad} invalid tx/dvb/dvbdump/dvbpace requests stop in the parser; valid ones "
+      "reach only their own function with the parsed values; dvbdump and dvbpace never reach "
+      "radio_s3_run or dvbtx_run")

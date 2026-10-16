@@ -172,7 +172,8 @@ for _ in range(8):
         (root / "bbframes.bin").write_bytes(b"".join(header + data[i:i + per] for i in range(0, len(data), per)))
         args = arguments(prefix, "dvb")
         args.samples, args.receiver = 2400000, receiver
-        phases = (np.rint(np.angle(np.tile(onair.symbols(4), 3)) * 4 / np.pi).astype(int) % 8).astype(np.uint8)
+        # The firmware's continuous stream: frames 0..23, no repetition.
+        phases = (np.rint(np.angle(onair.symbols(4, 24)) * 4 / np.pi).astype(int) % 8).astype(np.uint8)
         z = iq.shape(phases, 1e6, 4e6, frequency_offset=55000,
                      sample_rate_offset_ppm=70, snr_db=20 - 10 * np.log10(4), seed=9)[123:123 + args.samples]
         np.rint(np.column_stack([z.real, z.imag]) * 200).astype("<i2").tofile(root / "samples.iq")

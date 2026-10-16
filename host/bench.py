@@ -131,8 +131,12 @@ def analysis_command(args, capture: pathlib.Path, log: pathlib.Path) -> list[str
         cmd = [sys.executable, str(ROOT / "host/capture.py"), str(capture), "--format", "i16",
                "--rate", str(args.rate), "--scale", "2048", "--signal", "two" if args.signal == "two" else "tone"]
     else:
+        # dvb sends a non-repeating stream: QPSK frames of 33,282 symbols at 1 Msym/s, from
+        # frame 0 at keying. Check the decode against every frame the run can have sent.
+        frames = -(-args.seconds * 1_000_000 // 33282) + 2
         cmd = [sys.executable, str(ROOT / "host/onair.py"), str(capture), "--rate", str(args.rate),
-               "--scale", "2048", "--modcod", str(args.modcod), "--auto-shift", "--mer", "--log", str(log)]
+               "--scale", "2048", "--modcod", str(args.modcod), "--stream", str(frames),
+               "--auto-shift", "--mer", "--log", str(log)]
         if args.receiver:
             cmd += ["--receiver", str(args.receiver)]
     return cmd

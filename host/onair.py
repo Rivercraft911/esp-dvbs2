@@ -1,19 +1,28 @@
 #!/usr/bin/env python3
 """Check the board's DVB-S2 samples with LeanDVB: a dvbdump over USB, or an SDR capture.
 
-    python3 host/board.py "dvbdump 4 20" --save dump.iq --out runs.jsonl
-    python3 host/onair.py dump.iq --rate 4000000 --scale 512
-    python3 host/onair.py capture.iq --rate 4000000 --scale 2048 --shift 55000
-    python3 host/onair.py capture.iq --rate 4000000 --scale 2048 --auto-shift --mer
+    python3 host/board.py "dvbdump 4 40" --save dump.iq --out runs.jsonl
+    python3 host/onair.py dump.iq --rate 4000000 --scale 512 --stream 40
+    python3 host/onair.py dump.iq --rate 40000000 --scale 512 --stream 2 --mer --shift 0
+    python3 host/onair.py capture.iq --rate 4000000 --scale 2048 --stream 330 --auto-shift --mer
+    python3 host/onair.py old-dump.iq --rate 4000000 --scale 512   # firmware 35739b5, 8-frame loop
 
-The firmware (firmware/main/dvbtx.c) loops LOOP_FRAMES frames whose GCS payload is xorshift32
-bytes seeded with 2026, continued across frames. The decoded stream must contain one whole loop,
-starting at its first byte, bit for bit. Input is little-endian int16 I/Q; --scale is full scale
-(512 for the board's 10-bit words, 2048 for the E200's 12-bit ADC). --shift moves a carrier that
-sits that many Hz above the capture center back to 0 Hz before decoding. --auto-shift estimates
-it from a fourth-power carrier line. --mer recovers timing, clock drift, symbol-loop position
-and a linear carrier phase, then compares against the known symbols. Phase noise and channel
-distortion remain in the error. dump_mer() retains the original aligned-dump measurement.
+The GCS payload is one stream of xorshift32 bytes seeded with 2026: frame f carries bytes
+[f * B, (f + 1) * B), B = (Kbch - 80) / 8. The firmware (firmware/main/dvbtx.c) encodes it
+continuously; with --stream N (at least the number of frames the board sent) the decoded payload
+must be a contiguous, bit-exact slice of the first N frames' bytes that starts on a frame
+boundary. Filler frames, sent when the encoder is late, carry no payload and so keep the slice
+contiguous. Without --stream the check is the one for firmware up to 35739b5, which looped
+LOOP_FRAMES frames: one whole loop must occur in the decoded stream from its first byte.
+
+Input is little-endian int16 I/Q; --scale is full scale (512 for the board's 10-bit words, 2048
+for the E200's 12-bit ADC). --shift moves a carrier that sits that many Hz above the capture
+center back to 0 Hz before decoding. --auto-shift estimates it from a fourth-power carrier line.
+--mer recovers timing, clock drift, symbol position and a linear carrier phase, then compares
+against the known symbols (the first N stream frames, or the 8-frame loop without --stream);
+phase noise and channel distortion remain in the error, and filler frames are not modelled.
+dump_mer() keeps the older aligned-dump measurement, which needs a whole number of samples per
+symbol and is limited by its eighth-sample timing grid.
 """
 from __future__ import annotations
 
@@ -53,17 +62,27 @@ def payload(modcod: int, frames: int = LOOP_FRAMES) -> bytes:
 
 
 @functools.lru_cache(maxsize=8)
-def symbols(modcod: int) -> np.ndarray:
-    """One loop of PL frames as complex symbols, from the independent Python encoder."""
-    data = np.frombuffer(payload(modcod), np.uint8)
+def symbols(modcod: int, frames: int = LOOP_FRAMES) -> np.ndarray:
+    """The first `frames` PL frames as complex symbols, from the independent Python encoder."""
     rate = dvbs2.RATES[modcod - 1]
-    per_frame = len(data) // LOOP_FRAMES
+    data = np.frombuffer(payload(modcod, frames), np.uint8)
+    per_frame = len(data) // frames
     out = []
-    for f in range(LOOP_FRAMES):
+    for f in range(frames):
         bits = np.unpackbits(data[f * per_frame:(f + 1) * per_frame])
         fec = dvbs2.fecframe(dvbs2.bbframe(bits, rate), rate)
         out.append(dvbs2.plframe_phases(fec, rate))
     return np.exp(1j * np.pi / 4 * np.concatenate(out).astype(float))
+
+
+def stream_match(stream: bytes, got: bytes, per_frame: int) -> int | None:
+    """Offset of `got` in `stream` if it is whole frames starting on a frame boundary, else None."""
+    if not got or len(got) % per_frame:
+        return None
+    at = stream.find(got)
+    while at >= 0 and at % per_frame:
+        at = stream.find(got, at + 1)
+    return at if at >= 0 else None
 
 
 def read_i16(path: pathlib.Path, scale: float) -> np.ndarray:
@@ -117,8 +136,9 @@ def _sample(y: np.ndarray, times: np.ndarray, precise=False) -> np.ndarray:
 
 
 def recover_mer(z: np.ndarray, rate: float, symbol_rate: float = 1e6,
-                modcod: int = 4, shift: float | None = None) -> dict:
-    """Data-aided QPSK MER for an arbitrary interior of the firmware's frame loop.
+                modcod: int = 4, shift: float | None = None, frames: int | None = None) -> dict:
+    """Data-aided QPSK MER for an arbitrary interior of the transmitted symbols: the first
+    `frames` stream frames, or the 8-frame loop when frames is None.
 
     Fit t[k] = t0 + k*s samples (one timing and clock fit over the capture), and
     phi[k] = phi0 + omega*k rad (one carrier fit). No equalizer or per-symbol
@@ -137,7 +157,7 @@ def recover_mer(z: np.ndarray, rate: float, symbol_rate: float = 1e6,
     sps = rate / symbol_rate
     if len(z) < 8192 * sps:
         raise ValueError("MER needs at least 8192 symbols")
-    loop = symbols(modcod)
+    loop = symbols(modcod) if frames is None else symbols(modcod, frames)
     z = z * np.exp(-2j * np.pi * coarse / rate * np.arange(len(z)))
     taps = iq.rrc(np.arange(-int(16 * sps), int(16 * sps) + 1) / sps, .35)
     y = fftconvolve(z, taps / np.sqrt(np.sum(taps**2)), mode="same")
@@ -156,7 +176,7 @@ def recover_mer(z: np.ndarray, rate: float, symbol_rate: float = 1e6,
     delay = minimize_scalar(eye, bounds=(delay - sps / 16, delay + sps / 16),
                             method="bounded").x
     start += delay
-    # Circular correlation gives the symbol number within the eight-frame loop.
+    # Circular correlation gives the symbol number within the reference symbols.
     r = _sample(spline, start + k * sps)
     corr = np.fft.ifft(np.fft.fft(loop) * np.conj(np.fft.fft(r, len(loop))))
     offset = int(np.argmax(abs(corr)))
@@ -218,20 +238,26 @@ def recover_mer(z: np.ndarray, rate: float, symbol_rate: float = 1e6,
 
 
 def capture_mer(path: pathlib.Path, rate: float, symbol_rate: float = 1e6,
-                scale: float = 2048, modcod: int = 4, shift: float | None = None) -> dict:
-    return recover_mer(read_i16(path, scale), rate, symbol_rate, modcod, shift)
+                scale: float = 2048, modcod: int = 4, shift: float | None = None,
+                frames: int | None = None) -> dict:
+    return recover_mer(read_i16(path, scale), rate, symbol_rate, modcod, shift, frames)
 
 
-def dump_mer(path: pathlib.Path, rate: float, symbol_rate: float, scale: float, modcod: int) -> dict:
+def dump_mer(path: pathlib.Path, rate: float, symbol_rate: float, scale: float, modcod: int,
+             stream: bool = False) -> dict:
     sps = rate / symbol_rate
     if sps != int(sps):
         raise ValueError("--mer needs a whole number of samples per symbol")
     sps = int(sps)
     raw = np.fromfile(path, dtype="<i2").astype(float) / scale
     z = raw[0::2] + 1j * raw[1::2]
-    loop = symbols(modcod)
     count = len(z) // sps
-    ideal = np.tile(loop, count // len(loop) + 1)[:count]
+    if stream:
+        frame = dvbs2.plframe_length(False, True)
+        ideal = symbols(modcod, -(-count // frame))[:count]
+    else:
+        loop = symbols(modcod)
+        ideal = np.tile(loop, count // len(loop) + 1)[:count]
     best = None
     for frac in np.arange(8) / 8:               # the table pulse is centred between samples
         taps = iq.rrc((np.arange(-16 * sps, 16 * sps + 1) + frac) / sps, 0.35)
@@ -268,28 +294,44 @@ def main() -> int:
     parser.add_argument("--symbol-rate", type=float, default=1e6)
     parser.add_argument("--receiver", type=pathlib.Path, help="local patched leandvb executable")
     parser.add_argument("--log", type=pathlib.Path, help="save unabridged receiver diagnostics")
+    parser.add_argument("--stream", type=int, metavar="N",
+                        help="continuous stream: check against the first N frames' payload")
     parser.add_argument("--mer", action="store_true", help="also recover timing/carrier and measure MER")
     parser.add_argument("--mer-only", action="store_true", help="measure MER without running LeanDVB")
     args = parser.parse_args()
+    if args.stream is not None and args.stream < 1:
+        parser.error("--stream needs at least one frame")
     try:
         mer = None
         if args.mer or args.mer_only:
             mer = capture_mer(args.capture, args.rate, args.symbol_rate, args.scale, args.modcod,
-                              args.shift)
+                              args.shift, args.stream)
             shift = mer["carrier_offset_hz"]
         else:
             shift = (carrier_offset(read_i16(args.capture, args.scale), args.rate, args.symbol_rate)
                      if args.auto_shift else (args.shift or 0.0))
         report = {}
+        expected = payload(args.modcod, args.stream or LOOP_FRAMES)
         if not args.mer_only:
             with tempfile.TemporaryDirectory() as tmp:
                 cf32 = pathlib.Path(tmp) / "capture.cfile"
                 to_cf32(args.capture, cf32, args.rate, args.scale, shift)
-                report, _ = decode.decode(cf32, sample_rate=args.rate, symbol_rate=args.symbol_rate,
-                                          alpha=0.35, receiver=args.receiver, expected=payload(args.modcod),
-                                          output=pathlib.Path(tmp) / "payload.bin", log=args.log)
-        report.update({"capture": str(args.capture), "shift_hz": shift, "scale": args.scale,
-                       "loop_frames": LOOP_FRAMES})
+                report, got = decode.decode(cf32, sample_rate=args.rate, symbol_rate=args.symbol_rate,
+                                            alpha=0.35, receiver=args.receiver,
+                                            expected=None if args.stream else expected,
+                                            output=pathlib.Path(tmp) / "payload.bin", log=args.log)
+            if args.stream:
+                per_frame = len(expected) // args.stream
+                at = stream_match(expected, got, per_frame)
+                report.update({"stream_frames": args.stream, "stream_bytes": len(expected),
+                               "payload_match": at is not None, "match_offset_bytes": at,
+                               "first_frame": None if at is None else at // per_frame,
+                               "payload_frames": len(got) // per_frame,
+                               "compared_bits": 0 if at is None else len(got) * 8,
+                               "payload_bit_errors": None if at is None else 0})
+        report.update({"capture": str(args.capture), "shift_hz": shift, "scale": args.scale})
+        if not args.stream:
+            report["loop_frames"] = LOOP_FRAMES
         report.pop("command", None)
         if mer is not None:
             report["mer"] = mer

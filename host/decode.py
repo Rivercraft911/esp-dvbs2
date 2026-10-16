@@ -116,6 +116,7 @@ def summarize(status, frames, payload, expected=None):
         "modes": [MODCODS.get(m, f"MODCOD {m}") for m in modcods],
         "fec_frames": len(attempts) if attempts else None,
         "bb_frames": len(frames),
+        "empty_bb_frames": sum(f["dfl_bits"] == 0 for f in frames),
         "ldpc_bit_flips": sum(a[3] for a in attempts) if attempts else None,
         "ldpc_checks_before": sum(a[4] for a in attempts) if attempts else None,
         "ldpc_checks_after": sum(a[5] for a in attempts) if attempts else None,

@@ -52,6 +52,11 @@ def test_parsers():
     assert report["ldpc_residual_frames"] == 2 and report["bch_corrected_bits"] == 1
     assert report["ldpc_bit_flips"] == 103 and report["match_offset_bytes"] == 6
     assert not rx.summarize(status, frames, payload[:-1], payload)["payload_match"]
+    # An empty BBFRAME (DFL = 0), the firmware's filler when its encoder is late.
+    empty = np.packbits(tx.bbheader(tx.matype1(tx.GCS), 0)).tobytes()
+    mixed = rx.parse_bbframes(raw + empty + raw)
+    assert [f["payload"] for f in mixed] == [payload, b"", payload]
+    assert rx.summarize(status, mixed, payload * 2)["empty_bb_frames"] == 1
     assert not rx.summarize("LOCK 1\n", frames, payload)["frame_lock"]
     assert rx.summarize("", [], b"")["ldpc_checks_after"] is None
     with tempfile.TemporaryDirectory() as tmp:
@@ -83,7 +88,7 @@ def test_parsers():
             meta.write_text(json.dumps(metadata))
             rejected(rx.capture_info, meta)
     print("decode parsers: independent BBHEADERs, truncated/corrupt data, GCS lock, "
-          "FEC failures, incomplete payload rejected", flush=True)
+          "FEC failures, incomplete payload rejected, empty BBFRAMEs counted", flush=True)
 
 
 def guarded_stream(rate, modulation, alpha, encoder, seed=20261016, tail_frames=4):

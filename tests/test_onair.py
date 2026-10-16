@@ -1,4 +1,4 @@
-"""Host checks for host/onair.py: the payload generator and one loop of reference symbols.
+"""Host checks for host/onair.py: the payload stream, the reference symbols and the stream check.
 
 Run: python3 tests/test_onair.py. No board or receiver is needed.
 """
@@ -42,6 +42,31 @@ def test_symbols():
     print("onair symbols: one loop of PL frames, unit circle, QPSK phases")
 
 
+def test_stream():
+    # The 8-frame loop of firmware 35739b5 is the start of the continuous stream.
+    per_frame = (dvbs2.code("1/2").kbch - 80) // 8
+    stream = onair.payload(4, 20)
+    assert stream[:8 * per_frame] == onair.payload(4)
+    loop, longer = onair.symbols(4), onair.symbols(4, 9)
+    assert np.array_equal(longer[:len(loop)], loop) and len(longer) == 9 * 33282
+
+    match = onair.stream_match
+    assert match(stream, stream[3 * per_frame:9 * per_frame], per_frame) == 3 * per_frame
+    assert match(stream, stream, per_frame) == 0
+    flipped = bytearray(stream[2 * per_frame:4 * per_frame])
+    flipped[1234] ^= 0x10
+    gap = stream[per_frame:3 * per_frame] + stream[4 * per_frame:6 * per_frame]
+    loop_twice = stream[:8 * per_frame] * 2      # a repeating loop is not the stream
+    for bad in (b"", stream[3 * per_frame + 1:9 * per_frame + 1],   # off a frame boundary
+                stream[3 * per_frame:9 * per_frame - 1],             # partial frame
+                bytes(flipped), gap, loop_twice):
+        assert match(stream, bad, per_frame) is None
+    print("onair stream: the 8-frame loop is the stream's start; a decoded payload matches only "
+          "as whole frames from a frame boundary, and a flipped bit, a missing frame, a "
+          "repeated loop or a shifted slice is rejected")
+
+
 if __name__ == "__main__":
     test_payload()
     test_symbols()
+    test_stream()

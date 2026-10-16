@@ -7,7 +7,8 @@
 //   chain <forced|cw|cw40|cwgain>  how tx turns the transmit chain on (default cwgain)
 //   tx <integer MHz> <tone|two|tag|...> <1..60 seconds> [0..17 gain, default 0]
 //   dvb <MHz> <modcod> <1..60 seconds> [0..17 gain] [16..508 peak]  DVB-S2 QPSK on air (dvbtx.c)
-//   dvbdump <modcod> <frames> [peak] [decimation]  the same samples over USB, no radio
+//   dvbdump <modcod> <frames> [peak] [decimation] [stall ms]  the same samples over USB, no radio
+//   dvbpace <modcod> <seconds> [peak] [stall ms]  the same encoder, fills and deadlines, no radio
 //   fecbench   normal-frame encoder correctness and stage timing (fecbench.c)
 //   usbrx N    receive N bytes over USB as fast as the host sends them; report the rate
 
@@ -83,16 +84,36 @@ static void cmd_dvbdump(char *args)
     char *count = strtok_r(NULL, " \t", &save);
     char *peak = strtok_r(NULL, " \t", &save);
     char *step = strtok_r(NULL, " \t", &save);
+    char *pause = strtok_r(NULL, " \t", &save);
     char *extra = strtok_r(NULL, " \t", &save);
-    uint32_t modcod, frames, top = 128, decim = 10;
-    if (!number(code, 4, 11, &modcod) || !number(count, 1, 64, &frames) ||
+    uint32_t modcod, frames, top = 128, decim = 10, stall = 0;
+    if (!number(code, 4, 11, &modcod) || !number(count, 1, 256, &frames) ||
         (peak && !number(peak, 16, 508, &top)) || (step && !number(step, 1, 20, &decim)) ||
-        40 % decim || extra) {
-        printf("@{\"cmd\":\"dvbdump\",\"error\":\"usage: dvbdump <modcod 4..11> <1..64 frames> "
-               "[16..508 peak] [decimation dividing 40, at most 20]\"}\n");
+        40 % decim || (pause && !number(pause, 0, 2000, &stall)) || extra) {
+        printf("@{\"cmd\":\"dvbdump\",\"error\":\"usage: dvbdump <modcod 4..11> <1..256 frames> "
+               "[16..508 peak] [decimation dividing 40, at most 20] "
+               "[0..2000 ms encoder stall]\"}\n");
         return;
     }
-    dvbtx_dump(modcod, frames, top, decim);
+    dvbtx_dump(modcod, frames, top, decim, stall);
+}
+
+static void cmd_dvbpace(char *args)
+{
+    char *save, *code = strtok_r(args, " \t", &save);
+    char *duration = strtok_r(NULL, " \t", &save);
+    char *peak = strtok_r(NULL, " \t", &save);
+    char *pause = strtok_r(NULL, " \t", &save);
+    char *extra = strtok_r(NULL, " \t", &save);
+    uint32_t modcod, seconds, top = 128, stall = 0;
+    if (!number(code, 4, 11, &modcod) || !number(duration, 1, 600, &seconds) ||
+        (peak && !number(peak, 16, 508, &top)) || (pause && !number(pause, 0, 2000, &stall)) ||
+        extra) {
+        printf("@{\"cmd\":\"dvbpace\",\"error\":\"usage: dvbpace <modcod 4..11> <1..600 seconds> "
+               "[16..508 peak] [0..2000 ms encoder stall]\"}\n");
+        return;
+    }
+    dvbtx_pace(modcod, seconds, top, stall);
 }
 
 static void cmd_tx(char *args)
@@ -221,6 +242,9 @@ void app_main(void)
         } else if (strncmp(line, "dvbdump ", 8) == 0) {
             cmd_dvbdump(line + 8);
             strcpy(line, "dvbdump");
+        } else if (strncmp(line, "dvbpace ", 8) == 0) {
+            cmd_dvbpace(line + 8);
+            strcpy(line, "dvbpace");
         } else if (strncmp(line, "dvb ", 4) == 0) {
             cmd_dvb(line + 4);
             strcpy(line, "dvb");
