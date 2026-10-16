@@ -11,8 +11,10 @@
 // B = (kbch - 80) / 8: xorshift32 seeded with 2026 (x ^= x << 13, x ^= x >> 17, x ^= x << 5;
 // byte = x & 0xff), so host/onair.py can rebuild it. If the encoder is late, the fill plays a
 // filler frame instead, the same MODCOD carrying an empty BBFRAME (DFL = 0), and counts an
-// underrun; payload is never lost or reordered. `stall` makes the encoder sleep that long after
-// each frame, to provoke underruns.
+// underrun; payload is never lost or reordered. EN 302 307-1 clause 5.1.5 asks for a dummy
+// PLFRAME in this case; dvbs2.h cannot make one yet, and its 3330 symbols would change the frame
+// grid (results/2026-10-16-stream). `stall` makes the encoder sleep that long after each frame,
+// to provoke underruns.
 //
 // One symbol is 40 DAC samples: 1 Msym/s at 40 MS/s. The pulse is the roll-off 0.35 table,
 // matching the roll-off the encoder signals, scaled so the worst-case |I + jQ| is the requested
