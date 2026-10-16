@@ -21,6 +21,7 @@ import time
 import zlib
 
 import serial
+from serial.tools import list_ports
 
 DEFAULT_PORT = "/dev/cu.usbmodem101"
 
@@ -32,12 +33,13 @@ def open_port(port: str, reset: bool) -> serial.Serial:
     the port opens, so assert them first, then release RTS before DTR so that the change is never
     seen as a reset. Each RTS change re-sends DTR so the new line state reaches the device.
 
-    An RTS reset from macOS left GPIO0 low and the chip in its bootloader (strap register 0x23,
-    2026-10-16), so reset=True restarts the firmware with esptool's watchdog reset instead, which
-    does not use DTR or RTS.
+    An RTS reset through this port from macOS left GPIO0 low and the chip in its bootloader (strap
+    register 0x23, 2026-10-16). So reset=True pulls EN low through the board's USB-UART bridge if
+    it is plugged in, and otherwise uses esptool's watchdog reset.
     """
     if reset:
-        watchdog_reset(port)
+        bridge = bridge_port()
+        en_reset(bridge) if bridge else watchdog_reset(port)
     link = serial.Serial()
     link.port, link.baudrate, link.timeout = port, 115200, 0.1
     link.rts = link.dtr = True
@@ -46,6 +48,27 @@ def open_port(port: str, reset: bool) -> serial.Serial:
     link.dtr = link.dtr
     link.dtr = False
     return link
+
+
+def bridge_port() -> str | None:
+    """The board's second USB port: a WCH USB-UART bridge (VID 0x1A86) on UART0, if connected."""
+    for p in list_ports.comports():
+        if p.vid == 0x1A86:
+            return p.device
+    return None
+
+
+def en_reset(bridge: str) -> None:
+    """Hardware reset through the bridge's auto-reset circuit: RTS high with DTR low pulls EN
+    low; equal levels leave EN and GPIO0 alone, so the chip restarts into the firmware."""
+    with serial.Serial() as link:
+        link.port, link.baudrate = bridge, 115200
+        link.dtr = link.rts = False
+        link.open()
+        link.dtr, link.rts = False, True
+        time.sleep(0.1)
+        link.rts = False
+    time.sleep(2.5)                        # boot and USB driver start
 
 
 def watchdog_reset(port: str) -> None:

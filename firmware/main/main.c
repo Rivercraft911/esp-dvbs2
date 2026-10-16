@@ -30,11 +30,11 @@ static void cmd_info(void)
     const esp_app_desc_t *app = esp_app_get_description();
     printf("@{\"cmd\":\"info\",\"firmware\":\"%s\",\"idf\":\"%s\",\"cores\":%d,"
            "\"revision\":%d,\"cpu_mhz\":%d,\"psram_bytes\":%u,\"free_internal\":%u,"
-           "\"free_psram\":%u}\n",
+           "\"free_psram\":%u,\"uptime_ms\":%lld}\n",
            app->version, app->idf_ver, chip.cores, chip.revision,
            CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ, (unsigned)esp_psram_get_size(),
            (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-           (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+           (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM), esp_timer_get_time() / 1000);
 }
 
 // Payload ingress test: read N bytes straight from the USB driver (not through stdio) and time
