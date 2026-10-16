@@ -17,6 +17,7 @@
 
 #define _POSIX_C_SOURCE 200809L   // rand_r, nanosleep under -std=c11 on glibc
 
+#include <inttypes.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -139,8 +140,8 @@ static void check(void)
     if (e != ring.next_frame || fillers != ring.underruns) {
         fail("frame or underrun count", e, fillers);
     }
-    printf("ok positions %u frames %u underruns %u min_lead %lld\n", ring.next_position, e,
-           ring.underruns, (long long)ring.min_lead);
+    printf("ok positions %" PRIu32 " frames %" PRIu32 " underruns %" PRIu32 " min_lead %lld\n",
+           ring.next_position, e, ring.underruns, (long long)ring.min_lead);
 }
 
 static void setup(uint32_t l, uint32_t s, uint32_t positions)
