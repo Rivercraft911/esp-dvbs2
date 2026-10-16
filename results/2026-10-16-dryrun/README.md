@@ -48,17 +48,24 @@ every frame, so the hard decisions were already error free.
 `host/dvbs2.py` encodes from the same payload, through an RRC matched filter (roll-off 0.35,
 +-16 symbols) with the best delay in eighths of a sample and a fitted complex gain. The same
 code gives 46.5 dB for the Python model of the full-scale table, so the scaled table and the
-fill add nothing measurable. The best delay is 178.5 samples: the 360-tap pulse is centred
-between samples.
+fill add nothing measurable. The 360-tap pulse is centred between samples, so the best delay
+falls half a sample off the integer grid.
 
-The 4 MS/s dumps measure about 35.7 dB with the same code. Taking every 10th sample with no
-filter folds the table's out-of-band floor from 40 MHz into 4 MHz. That is a property of the
-dump, not of the signal, and it does not affect decoding.
+The 4 MS/s dumps measured about 35.7 dB with the same code. **Corrected the same day:** this
+first version blamed aliasing from taking every 10th sample. The cause was the measurement:
+at 4 samples per symbol the eighth-sample delay grid cannot reach the true delay of
+17.955 samples, and the script also reported the delay with the wrong sign. With band-limited
+interpolation and a fitted clock (`host/onair.py` `recover_mer`, from exp/bench-tools), the
+same MODCOD 4 dump measures 43.8 dB, and the 40 MS/s dump still measures 47.03 dB. How the
+remaining 3 dB divides between aliasing, rounding and the filter has not been separated.
 
 ## Timing on the board
 
-- Fill: at most 43,095 cycles per bank (180 µs of the 356.7 µs bank period, 50% of one core).
-  This includes copying symbols from PSRAM and the partial symbols at bank edges. The dry run
+- Fill: at most 43,095 cycles per fill call (180 µs of the 356.7 µs bank period, 50% of one
+  core). **Corrected:** this is the largest single call; a bank wrap splits a bank into two
+  calls, so it is not the whole-bank figure. The later stream runs report whole banks: at most
+  41,904 cycles (results/2026-10-16-stream). It includes copying symbols from PSRAM and the
+  partial symbols at bank edges. The dry run
   does not run the DAC at the same time, so memory contention with the engine is not included;
   the earlier PIE kernel alone took about 28,700 cycles per bank.
 - Encoding into PSRAM: 2.83 to 2.98 M cycles per frame (12.4 ms per 33.3 ms QPSK frame at
