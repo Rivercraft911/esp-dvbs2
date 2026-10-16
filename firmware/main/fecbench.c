@@ -169,16 +169,17 @@ static unsigned check_pie(dvbs2_fast *f, const dvbs2_mode *mode, unsigned pie,
 static void fecbench_task(void *waiter)
 {
     const uint32_t internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
-    dvbs2_workspace *ws = heap_caps_aligned_alloc(16, sizeof *ws, internal);
-    uint8_t *payload = heap_caps_malloc(DVBS2_FEC_BYTES, internal);
-    uint8_t *output = heap_caps_malloc(DVBS2_MAX_SYMBOLS, internal);
+    const uint32_t external = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+    dvbs2_workspace *ws = heap_caps_aligned_alloc(16, sizeof *ws, external);
+    uint8_t *payload = NULL;
+    uint8_t *output = NULL;
     dvbs2_fast *fast = impl ? heap_caps_aligned_alloc(16, dvbs2_fast_size(), internal) : NULL;
-    dvbs2_workspace *ws2 = impl == 2 ? heap_caps_aligned_alloc(16, sizeof *ws2, internal) : NULL;
-    uint8_t *output2 = impl == 2 ? heap_caps_malloc(DVBS2_MAX_SYMBOLS, internal) : NULL;
+    dvbs2_workspace *ws2 = impl == 2 ? heap_caps_aligned_alloc(16, sizeof *ws2, external) : NULL;
+    uint8_t *output2 = impl == 2 ? heap_caps_malloc(DVBS2_MAX_SYMBOLS, external) : NULL;
     const unsigned pie = impl == 2 ? DVBS2_PIE_BB | DVBS2_PIE_BCH | DVBS2_PIE_LDPC | DVBS2_PIE_MAP
                                    : 0;
-    if (!ws || !payload || !output || (impl && !fast) || (impl == 2 && (!ws2 || !output2))) {
-        printf("@{\"cmd\":\"fecbench\",\"error\":\"internal allocation failed\"}\n");
+    if (!ws || (impl && !fast) || (impl == 2 && (!ws2 || !output2))) {
+        printf("@{\"cmd\":\"fecbench\",\"error\":\"encoder allocation failed\"}\n");
         goto done;
     }
     // The PIE mask actually used and the measured EE.LDXQ.32 offset (see dvbs2.h).
@@ -199,17 +200,41 @@ static void fecbench_task(void *waiter)
            "\"frames_per_mode\":%d,\"warmup_frames\":1,\"pilots\":true,\"pl_code\":0,"
            "\"rolloff\":0.35,\"inputs\":[\"gcs\",\"ts\"],\"workspace_bytes\":%u,"
            "\"payload_buffer_bytes\":%d,\"phase_buffer_bytes\":%d,\"impl\":\"%s\","
-           "\"fast_bytes\":%u,\"pie_mask\":%u,\"ldxq_bias\":%d}\n",
+           "\"fast_bytes\":%u,\"pie_mask\":%u,\"ldxq_bias\":%d,"
+           "\"payload_memory\":\"internal\",\"workspace_memory\":\"psram\","
+           "\"free_internal\":%u,\"largest_internal\":%u}\n",
            app->version, app->idf_ver, esp_timer_get_time(), CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
            xPortGetCoreID(), (unsigned)dvbs2_mode_count, FRAMES, (unsigned)sizeof *ws,
            DVBS2_FEC_BYTES, DVBS2_MAX_SYMBOLS, impl_names[impl],
-           fast ? (unsigned)dvbs2_fast_size() : 0, pie_used, ldxq_bias);
+           fast ? (unsigned)dvbs2_fast_size() : 0, pie_used, ldxq_bias,
+           (unsigned)heap_caps_get_free_size(internal),
+           (unsigned)heap_caps_get_largest_free_block(internal));
 
     unsigned reported = 0;
     for (size_t m = 0; m < dvbs2_mode_count; ++m) {
         const dvbs2_mode *mode = &dvbs2_modes[m];
         const size_t payload_bytes = (mode->kbch - 80) / 8;
         const size_t symbols = dvbs2_frame_symbols(mode, PILOTS);
+        heap_caps_free(output);
+        heap_caps_free(fast);
+        heap_caps_free(payload);
+        const unsigned output_caps = mode->bits_per_symbol == 3 ? internal : external;
+        // Largest allocation first. Cached workspace in PSRAM; hot scratch and
+        // 8PSK phase output in SRAM. Payload fits the fragment after phases.
+        output = heap_caps_malloc(symbols, output_caps);
+        fast = impl ? heap_caps_aligned_alloc(16, dvbs2_fast_mode_size(mode), internal) : NULL;
+        payload = heap_caps_malloc(payload_bytes, internal);
+        if (!payload || !output || (impl && !fast)) {
+            printf("@{\"cmd\":\"fecbench\",\"error\":\"mode allocation failed\"}\n");
+            goto done;
+        }
+        printf("@{\"cmd\":\"fecbench\",\"event\":\"mode\",\"modcod\":%u,"
+               "\"fast_bytes\":%u,\"output_memory\":\"%s\",\"free_internal\":%u,"
+               "\"largest_internal\":%u}\n", mode->modcod,
+               impl ? (unsigned)dvbs2_fast_mode_size(mode) : 0,
+               output_caps == internal ? "internal" : "psram",
+               (unsigned)heap_caps_get_free_size(internal),
+               (unsigned)heap_caps_get_largest_free_block(internal));
         for (int input = 0; input < 2; ++input) {
             // For each mode/input, advance xorshift32 once per raw source byte and emit its low
             // byte. TS sync replacement still consumes that PRNG byte. Source and packet state
@@ -225,7 +250,7 @@ static void fecbench_task(void *waiter)
             }
             fill_payload(payload, payload_bytes, input, 0, &state);
             if (impl == 2 && input == 0) {
-                const unsigned mismatch = check_pie(fast, mode, pie, ws, ws2, output, output2,
+                const unsigned mismatch = check_pie(fast, mode, pie, ws2, ws, output2, output,
                                                     payload);
                 printf("@{\"cmd\":\"fecbench\",\"event\":\"pie_check\",\"modcod\":%u,"
                        "\"mismatch\":%u}\n", mode->modcod, mismatch);

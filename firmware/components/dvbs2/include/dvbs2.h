@@ -55,9 +55,12 @@ void dvbs2_map(const dvbs2_workspace *ws, const dvbs2_mode *mode,
  * the body. Allocate dvbs2_frame_symbols(mode,pilots) bytes. */
 void dvbs2_plframe(const dvbs2_mode *mode, int pilots, uint8_t *output);
 
-/* Fast encoder (fast.c): the same frames with wide tables, whole-row LDPC and
- * table mapping. Allocate dvbs2_fast_size() bytes, 16-byte aligned, in
- * internal RAM (about 90 KB), and prepare it for one mode and pilot setting.
+/* Fast encoder (fast.c): shared immutable tables in flash, mutable scratch in
+ * internal RAM. Allocate dvbs2_fast_size() bytes, 16-byte aligned (about 17 KB),
+ * and prepare for one mode and pilot setting. Workspace must also be 16-byte
+ * aligned; cached PSRAM is recommended. Use internal payload and 8PSK output
+ * buffers for the cycle target; QPSK output can be in cached PSRAM. Both CPU
+ * cores share the data cache, so external-memory timing needs a board check.
  * The pie mask selects ESP32-S3 vector kernels (pie.S) per stage; without PIE
  * support the mask is ignored and portable C runs. dvbs2_fast_pie() tells
  * which kernels are in use; dvbs2_fast_ldxq_bias() reports the measured
@@ -70,6 +73,11 @@ void dvbs2_plframe(const dvbs2_mode *mode, int pilots, uint8_t *output);
 typedef struct dvbs2_fast dvbs2_fast;
 enum { DVBS2_PIE_BB = 1, DVBS2_PIE_BCH = 2, DVBS2_PIE_LDPC = 4, DVBS2_PIE_MAP = 8 };
 size_t dvbs2_fast_size(void);
+/* Smaller allocation valid only for this mode (14736 bytes for 8PSK 2/3
+ * on ESP32-S3). Allocate internal output first, then context, then payload to
+ * preserve a large free block in the transmitter build. Reprepare with the same mode
+ * and either pilot setting; allocate fast_size() to switch freely. */
+size_t dvbs2_fast_mode_size(const dvbs2_mode *mode);
 int dvbs2_fast_prepare(dvbs2_fast *f, const dvbs2_mode *mode, int pilots, unsigned pie);
 unsigned dvbs2_fast_pie(const dvbs2_fast *f);
 int dvbs2_fast_ldxq_bias(const dvbs2_fast *f);
@@ -81,5 +89,17 @@ void dvbs2_fast_bch(dvbs2_fast *f, dvbs2_workspace *ws);
 void dvbs2_fast_ldpc(dvbs2_fast *f, dvbs2_workspace *ws);
 void dvbs2_fast_map(dvbs2_fast *f, const dvbs2_workspace *ws, uint8_t *output);
 void dvbs2_fast_pl(const dvbs2_fast *f, uint8_t *output);
+
+/* Default complete-frame path. Prepare f once with the desired PIE mask (15
+ * for all kernels, 0 for portable C). No allocation or preparation per frame.
+ * GCS: ts == NULL, input_bits is DFL (including partial bytes). TS: ts != NULL,
+ * input_bits must equal kbch-80; consumes input_bits/8 bytes and advances ts.
+ * Output has dvbs2_frame_symbols(mode, pilots) bytes, phases 0..7. Same buffer
+ * and non-overlap rules as the stages. Invalid input leaves ws, ts and output
+ * unchanged. A context and workspace belong to one encoder at a time; there
+ * is no global selection or hidden allocation. Existing stage callers keep
+ * their original behavior and canonical intermediate formats. */
+int dvbs2_encode_frame(dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_state *ts,
+                       const uint8_t *payload, size_t input_bits, uint8_t *output);
 
 #endif

@@ -337,22 +337,7 @@ HOT void dvbs2_plheader(unsigned modcod, int pilots, uint8_t *output)
     }
 }
 
-const uint32_t (*dvbs2_bch_bytes(unsigned t))[6]
-{
-    return t == 12 ? bch_12 : t == 10 ? bch_10 : bch_8;
-}
-
-const uint16_t *dvbs2_ldpc_table(unsigned modcod)
-{
-    return ldpc_rows(modcod);
-}
-
 const uint8_t *dvbs2_prbs_table(void)
 {
     return bb_prbs;
-}
-
-unsigned dvbs2_pl_rotation(size_t k)
-{
-    return (pl_rotations[k / 4] >> (2 * (k % 4))) & 3;
 }

@@ -47,107 +47,65 @@ dvbs2_pie_xor:
     retw
     .size dvbs2_pie_xor, . - dvbs2_pie_xor
 
-/* BCH: the remainder R is a byte string, most significant byte first, kept in
- * q0 (bytes 0..15) and q1 (bytes 16..31). For each 32-bit message word:
- * X = R[0..3] ^ msg, R = R[4..] (byte shift), then R ^= T_k[X byte k] for
- * k = 0..3. Table k at tables + 8192 k, row v at + 16 v, row bytes 16..31 at
- * + 4096. extui of 12 bits leaves junk in the low 4 address bits, which the
- * 128-bit loads ignore.
- * void dvbs2_pie_bch32(const uint8_t *msg, unsigned words, const uint8_t *tables,
- *                      uint8_t *r)  r: 32 bytes, 16-byte aligned, out only. */
+/* BCH: eight four-bit slices per 32-bit message word. Each slice is 512
+ * bytes: sixteen 16-byte low rows, then sixteen 16-byte high rows. The
+ * complete table is 4096 bytes and fits alongside the other cached tables. */
+    .macro bch_nibble shift, high
+    extui a8, a6, \shift, 4
+    slli a8, a8, 4
+    add a8, a8, a4
+    ee.vld.128.xp q2, a8, a13
+    .if \high
+    ee.vld.128.ip q3, a8, 0
+    .endif
+    ee.xorq q0, q0, q2
+    .if \high
+    ee.xorq q1, q1, q3
+    .endif
+    add a4, a4, a9
+    .endm
+
+    .macro bch_kernel name, high
     .align 4
-    .global dvbs2_pie_bch32
-    .type dvbs2_pie_bch32, @function
-dvbs2_pie_bch32:
+    .global \name
+    .type \name, @function
+\name:
     entry a1, 32
     ee.zero.q q0
     ee.zero.q q1
-    movi a9, 8192
-    add a9, a9, a4                      /* table 1 */
-    movi a10, 16384
-    add a10, a10, a4                    /* table 2 */
-    movi a11, 24576
-    add a11, a11, a4                    /* table 3 */
-    movi a13, 4096
-    loopnez a3, 2f
-    l32i a6, a2, 0
-    ee.movi.32.a q0, a7, 0
-    addi a2, a2, 4
-    xor a6, a6, a7                      /* X */
-    ee.srci.2q q1, q0, 3                /* R = R[4..] */
-    slli a12, a6, 4
-    extui a8, a12, 0, 12                /* byte 0 * 16 */
-    extui a14, a12, 8, 12               /* byte 1 * 16 + junk */
-    extui a15, a12, 16, 12              /* byte 2 * 16 + junk */
-    extui a7, a6, 20, 12                /* byte 3 * 16 + junk */
-    add a8, a8, a4
-    add a14, a14, a9
-    add a15, a15, a10
-    add a7, a7, a11
-    ee.vld.128.xp q2, a8, a13
-    ee.vld.128.ip q3, a8, 0
-    ee.vld.128.xp q4, a14, a13
-    ee.xorq q0, q0, q2
-    ee.vld.128.ip q5, a14, 0
-    ee.xorq q1, q1, q3
-    ee.vld.128.xp q2, a15, a13
-    ee.xorq q0, q0, q4
-    ee.vld.128.ip q3, a15, 0
-    ee.xorq q1, q1, q5
-    ee.vld.128.xp q4, a7, a13
-    ee.xorq q0, q0, q2
-    ee.vld.128.ip q5, a7, 0
-    ee.xorq q1, q1, q3
-    ee.xorq q0, q0, q4
-    ee.xorq q1, q1, q5
-2:
-    ee.vst.128.ip q0, a5, 16
-    ee.vst.128.ip q1, a5, 16
-    retw
-    .size dvbs2_pie_bch32, . - dvbs2_pie_bch32
-
-/* The same for 16-byte remainders (t = 8): q7 stays zero above R. */
-    .align 4
-    .global dvbs2_pie_bch16
-    .type dvbs2_pie_bch16, @function
-dvbs2_pie_bch16:
-    entry a1, 32
-    ee.zero.q q0
+    .if !\high
     ee.zero.q q7
-    movi a9, 8192
-    add a9, a9, a4
-    movi a10, 16384
-    add a10, a10, a4
-    movi a11, 24576
-    add a11, a11, a4
-    loopnez a3, 3f
+    .endif
+    mov a10, a4
+    movi a9, 512
+    movi a13, 256
+    loopnez a3, 99f
     l32i a6, a2, 0
     ee.movi.32.a q0, a7, 0
     addi a2, a2, 4
     xor a6, a6, a7
+    .if \high
+    ee.srci.2q q1, q0, 3
+    .else
     ee.srci.2q q7, q0, 3
-    slli a12, a6, 4
-    extui a8, a12, 0, 12
-    extui a14, a12, 8, 12
-    extui a15, a12, 16, 12
-    extui a7, a6, 20, 12
-    add a8, a8, a4
-    add a14, a14, a9
-    add a15, a15, a10
-    add a7, a7, a11
-    ee.vld.128.ip q2, a8, 0
-    ee.vld.128.ip q3, a14, 0
-    ee.vld.128.ip q4, a15, 0
-    ee.xorq q0, q0, q2
-    ee.vld.128.ip q5, a7, 0
-    ee.xorq q0, q0, q3
-    ee.xorq q0, q0, q4
-    ee.xorq q0, q0, q5
-3:
+    .endif
+    mov a4, a10
+    bch_nibble 4, \high
+    bch_nibble 0, \high
+    bch_nibble 12, \high
+    bch_nibble 8, \high
+    bch_nibble 20, \high
+    bch_nibble 16, \high
+    bch_nibble 28, \high
+    bch_nibble 24, \high
+99:
     ee.vst.128.ip q0, a5, 16
-    ee.vst.128.ip q7, a5, 16
+    ee.vst.128.ip q1, a5, 16
     retw
-    .size dvbs2_pie_bch16, . - dvbs2_pie_bch16
+    .size \name, . - \name
+    .endm
+    bch_kernel dvbs2_pie_bch32, 1
+    bch_kernel dvbs2_pie_bch16, 0
 
 /* LDPC doubled groups: u2 = u u u[0..5] per 360-bit group u (45 bytes), 96
  * bytes each. U0 = u[0..15], U1 = u[16..31], U2 = u[32..47], X = u[29..44];
@@ -544,6 +502,67 @@ dvbs2_pie_run:
     ee.srcq.128.st.incp q0, q1, a7
     retw
     .size dvbs2_pie_run, . - dvbs2_pie_run
+
+/* 8PSK: split a four-symbol 12-bit index into two six-bit indices, each
+ * looking up two phase bytes in 64 words (256 bytes). Two lookups per group
+ * trade instructions for a smaller cache working set than the 16 KiB table.
+ * Same arguments and shifted-store convention as dvbs2_pie_run. */
+    .macro pair_lookup lane
+    ee.ldxq.32 q1, q0, a3, 0, (\lane + 0)
+    ee.ldxq.32 q3, q2, a3, 0, (\lane + 0)
+    ee.ldxq.32 q1, q0, a3, 1, (\lane + 1)
+    ee.ldxq.32 q3, q2, a3, 1, (\lane + 1)
+    ee.ldxq.32 q1, q0, a3, 2, (\lane + 2)
+    ee.ldxq.32 q3, q2, a3, 2, (\lane + 2)
+    ee.ldxq.32 q1, q0, a3, 3, (\lane + 3)
+    ee.ldxq.32 q3, q2, a3, 3, (\lane + 3)
+    ee.vzip.16 q1, q3
+    ee.vunzip.32 q1, q3
+    .endm
+    .align 4
+    .global dvbs2_pie_run8
+    .type dvbs2_pie_run8, @function
+dvbs2_pie_run8:
+    entry a1, 32
+    wur.sar_byte a6
+    splat q5, 0x00300030
+    splat q6, 0x00030003
+    splat q7, 0x000c000c
+    ee.zero.q q4
+    srli a8, a5, 1
+    loopnez a8, 98f
+    ee.vld.128.ip q2, a2, 16
+    ssai 2
+    ee.vsr.32 q0, q2
+    ee.andq q0, q0, q6
+    ssai 4
+    ee.vsr.32 q1, q2
+    ee.andq q1, q1, q7
+    ee.orq q0, q0, q1
+    ssai 6
+    ee.vsr.32 q1, q2
+    ee.andq q1, q1, q5
+    ee.orq q0, q0, q1
+    ee.andq q3, q2, q6
+    ssai 2
+    ee.vsr.32 q1, q2
+    ee.andq q1, q1, q7
+    ee.orq q3, q3, q1
+    ssai 4
+    ee.vsr.32 q1, q2
+    ee.andq q1, q1, q5
+    ee.orq q2, q3, q1
+    pair_lookup 0
+    ee.srcq.128.st.incp q4, q1, a4
+    ee.orq q4, q1, q1
+    pair_lookup 4
+    ee.srcq.128.st.incp q4, q1, a4
+    ee.orq q4, q1, q1
+98:
+    /* All 8PSK runs are multiples of 32 symbols (1440 or 21600). */
+    ee.srcq.128.st.incp q4, q1, a7
+    retw
+    .size dvbs2_pie_run8, . - dvbs2_pie_run8
 
 /* LDPC parity packing: append each column's q bits (natural order) to a
  * big-endian bit stream of 32-bit words. Column t's 32 rows of block b sit,

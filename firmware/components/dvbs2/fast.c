@@ -3,18 +3,19 @@
  * (ws->bits, MSB first), so each one can be checked and timed on its own.
  *
  *   BB      payload copy, header and scrambling in one pass; TS CRC-8 by table.
- *   BCH     32 message bits per step, four 256-row tables (one per byte).
+ *   BCH     32 message bits per step, eight 16-row nibble tables (4 KiB).
  *   LDPC    whole 360-bit rows: each parity row r of the q x 360 group form is
  *           a sum of byte-aligned windows of the doubled information group,
  *           shifted by 0..7 bits with a Horner scheme; then a 32x32 bit
  *           transpose and a bit packer give the natural parity order.
  *   MAP     interleaver, mapping and PL scrambling as bit-plane logic, four
- *           symbols per table lookup, then pilots and header.
+ *           symbols per pair of 64-row table lookups, then pilots and header.
  *
  * The C here is the portable reference of the same data layout. On the
  * ESP32-S3 (DVBS2_PIE) the hot loops can run as PIE kernels from pie.S. */
 #include "dvbs2.h"
 #include "private.h"
+#include "fast_tables.h"
 
 #include <string.h>
 
@@ -24,47 +25,42 @@
 #define HOT
 #endif
 
-#define MAX_GROUPS 162          /* 9/10: 58320 / 360 */
-#define MAX_Q 90                /* 1/2 */
-#define P_ROWS 96               /* q rounded up to whole 32-row transpose blocks */
 #define ROW 48                  /* bytes per parity row: 360 bits + 24 spare */
 #define U2 96                   /* bytes per doubled group: 744 bits needed */
-#define MAX_PROG (MAX_Q * 9 + 648)    /* rows x (1 + 8 levels) + edges */
 #define GOLD 2720               /* one 8PSK Gold plane, 169 x 16 bytes rounded */
 
 struct dvbs2_fast {
-    /* BCH: slice k (byte k of a 32-bit message word, k = 0 first) at
-     * 8192 k; value v at +16 v; remainder bytes 0..15 there, 16..23 at +4096. */
-    uint8_t bch[4 * 8192] __attribute__((aligned(16)));
-    /* Four phase bytes per 12-bit (8PSK) or 8-bit (QPSK) index. */
-    uint32_t map[4096] __attribute__((aligned(16)));
-    /* PL scrambling as bit planes in data-symbol order, MSB first:
-     * 8PSK: Z0 = R & 1 at 0, Z1 = R >> 1 at GOLD.
-     * QPSK: one byte per four symbols, Z1 at bit 7 - 2i, Z0 at bit 6 - 2i. */
-    uint8_t gold[8128] __attribute__((aligned(16)));
-    uint8_t prbs[7296] __attribute__((aligned(16)));
-    union {
-        struct {
-            uint8_t u2[MAX_GROUPS * U2];
-            uint8_t p[P_ROWS * ROW];
-        } ldpc;
-        uint16_t index[507 * 16];   /* QPSK: 507 chunks of 64 symbols */
-    } scratch __attribute__((aligned(16)));
+    const uint8_t *bch, *gold, *prbs;
+    const uint32_t *map;
+    const uint16_t *prog;
+    uint8_t *p;
     uint8_t carry[ROW] __attribute__((aligned(16)));
     uint8_t tail[16] __attribute__((aligned(16)));
-    uint8_t header[90];
-    uint8_t pilot_phases[22 * 36];
-    uint8_t crc8[4][256];       /* CRC-8 of v followed by k zero bytes */
-    uint16_t prog[MAX_PROG];
-    uint16_t cols[360];         /* parity column t after the transpose: row offset in block 0 */
+    const uint8_t *header;
     const dvbs2_mode *mode;
     unsigned pilots, pie, ldxq_bias;
     unsigned bch_bytes, groups, q, data_symbols, pilot_blocks;
+    uint8_t scratch[] __attribute__((aligned(16)));
 };
+
+size_t dvbs2_fast_mode_size(const dvbs2_mode *mode)
+{
+    if (!mode || dvbs2_find_mode(mode->modcod) != mode) {
+        return 0;
+    }
+    const size_t ldpc = mode->nbch / 360 * U2 + ((mode->q + 31) / 32) * 32 * ROW;
+    const size_t index = mode->bits_per_symbol == 3 ? 169 * 64 : 507 * 32;
+    return sizeof(dvbs2_fast) + (ldpc > index ? ldpc : index);
+}
 
 size_t dvbs2_fast_size(void)
 {
-    return sizeof(dvbs2_fast);
+    size_t size = 0;
+    for (size_t k = 0; k < dvbs2_mode_count; ++k) {
+        const size_t n = dvbs2_fast_mode_size(&dvbs2_modes[k]);
+        size = n > size ? n : size;
+    }
+    return size;
 }
 
 unsigned dvbs2_fast_pie(const dvbs2_fast *f)
@@ -98,6 +94,8 @@ void dvbs2_pie_transpose(uint8_t *p, unsigned blocks, const uint8_t *carry);
 void dvbs2_pie_index8(const uint8_t *a, const uint8_t *b, const uint8_t *c,
                       const uint8_t *gold, uint16_t *index, unsigned chunks);
 void dvbs2_pie_index4(const uint8_t *x, const uint8_t *gold, uint16_t *index, unsigned chunks);
+void dvbs2_pie_run8(const uint16_t *index, const uint32_t *table, uint8_t *block,
+                    unsigned vectors, unsigned sar_byte, uint8_t *tail);
 void dvbs2_pie_run(const uint16_t *index, const uint32_t *table, uint8_t *block,
                    unsigned vectors, unsigned sar_byte, uint8_t *tail);
 void dvbs2_pie_pack(const uint8_t *p, const uint16_t *cols, unsigned q, uint32_t *out,
@@ -113,137 +111,13 @@ uint32_t dvbs2_pie_crc8(const uint8_t *p, unsigned quads, const uint8_t *tables,
 
 /* ---------------------------------------------------------------- prepare */
 
-static void prepare_bch(dvbs2_fast *f)
-{
-    const uint32_t (*bytes)[6] = dvbs2_bch_bytes(f->mode->t);
-    const unsigned n = f->bch_bytes;
-    uint8_t row[24];
-    memset(f->bch, 0, sizeof f->bch);
-    for (unsigned v = 0; v < 256; ++v) {
-        /* Slice 3 is the byte table: v(x) x^r mod g(x), as bytes MSB first. */
-        for (unsigned j = 0; j < n; ++j) {
-            row[j] = (uint8_t)(bytes[v][j / 4] >> (24 - 8 * (j % 4)));
-        }
-        for (int k = 3; k >= 0; --k) {
-            uint8_t *lo = f->bch + 8192 * k + 16 * v;
-            memcpy(lo, row, 16);
-            memcpy(lo + 4096, row + 16, n - 16);
-            /* Next slice: one more byte of x^8, reduced with the byte table. */
-            const unsigned top = row[0];
-            memmove(row, row + 1, n - 1);
-            row[n - 1] = 0;
-            for (unsigned j = 0; j < n; ++j) {
-                row[j] ^= (uint8_t)(bytes[top][j / 4] >> (24 - 8 * (j % 4)));
-            }
-        }
-    }
-}
-
-/* Row r of the group form gets, for each table address x = r + q c of group g,
- * the information group rotated by c: P[r][t] ^= u[(t - c) mod 360]. With the
- * doubled group u2 (u2[i] = u[i mod 360]) that is u2[t + s], s = (360 - c) mod
- * 360: a window starting at byte s / 8, read s % 8 bits further on. Rows are
- * built as H = sum over shifts b = bmax..0 of shift_b(sum of windows), Horner
- * style: H = shift_1(H) ^ windows(b). Program per row: bmax + 1, then for each
- * b from bmax down to 0 the window count and the u2 byte offsets. */
-static int prepare_ldpc(dvbs2_fast *f)
-{
-    const uint16_t *table = dvbs2_ldpc_table(f->mode->modcod);
-    uint16_t *out = f->prog;
-    for (unsigned r = 0; r < f->q; ++r) {
-        uint16_t offset[64];
-        uint8_t shift[64];
-        unsigned n = 0, bmax = 0;
-        const uint16_t *row = table;
-        for (unsigned g = 0; g < f->groups; ++g) {
-            const unsigned degree = *row++;
-            for (unsigned e = 0; e < degree; ++e) {
-                const unsigned x = *row++, s = (360 - (x & 511)) % 360;
-                if (x >> 9 != r) {
-                    continue;
-                }
-                if (n == 64) {
-                    return -1;
-                }
-                offset[n] = (uint16_t)(U2 * g + s / 8);
-                shift[n] = (uint8_t)(s & 7);
-                bmax = shift[n] > bmax ? shift[n] : bmax;
-                ++n;
-            }
-        }
-        if (out + 1 + (bmax + 1) + n > f->prog + MAX_PROG) {
-            return -1;
-        }
-        *out++ = (uint16_t)(bmax + 1);
-        for (int b = (int)bmax; b >= 0; --b) {
-            uint16_t *count = out++;
-            *count = 0;
-            for (unsigned e = 0; e < n; ++e) {
-                if (shift[e] == b) {
-                    *out++ = offset[e];
-                    ++*count;
-                }
-            }
-        }
-    }
-    /* After the transpose, rows 0..31 of column 32 w + c are big-endian in row
-     * 8 (3 - c / 8) + c % 8, word w (see transpose32 and pack). */
-    for (unsigned t = 0; t < 360; ++t) {
-        const unsigned c = t % 32;
-        f->cols[t] = (uint16_t)(ROW * (8 * (3 - c / 8) + c % 8) + 4 * (t / 32));
-    }
-    memset(&f->scratch, 0, sizeof f->scratch);
-    return 0;
-}
-
-static unsigned data_position(const dvbs2_fast *f, unsigned k)
-{
-    return k + (f->pilots ? 36 * (k / 1440) : 0);
-}
-
 static void prepare_map(dvbs2_fast *f)
 {
-    const unsigned d = f->data_symbols;
-    memset(f->gold, 0, sizeof f->gold);
-    if (f->mode->bits_per_symbol == 3) {
-        /* Index bits 3..0, 7..4, 11..8: inverted p0, p2, p1 of symbols 0..3,
-         * first symbol in the highest bit of each nibble. */
-        for (unsigned v = 0; v < 4096; ++v) {
-            uint32_t word = 0;
-            for (unsigned i = 0; i < 4; ++i) {
-                const unsigned p0 = ((v >> (3 - i)) & 1) ^ 1, p2 = (v >> (7 - i)) & 1,
-                               p1 = (v >> (11 - i)) & 1;
-                word |= (uint32_t)(p0 | p1 << 1 | p2 << 2) << (8 * i);
-            }
-            f->map[v] = word;
-        }
-        for (unsigned k = 0; k < d; ++k) {
-            const unsigned r = dvbs2_pl_rotation(data_position(f, k));
-            f->gold[k / 8] |= (uint8_t)((r & 1) << (7 - k % 8));
-            f->gold[GOLD + k / 8] |= (uint8_t)((r >> 1) << (7 - k % 8));
-        }
-    } else {
-        /* Index bit 6 - 2i holds p1, bit 7 - 2i p2 of symbol i; p0 = 1. */
-        for (unsigned v = 0; v < 256; ++v) {
-            uint32_t word = 0;
-            for (unsigned i = 0; i < 4; ++i) {
-                const unsigned p1 = (v >> (6 - 2 * i)) & 1, p2 = (v >> (7 - 2 * i)) & 1;
-                word |= (uint32_t)(1 | p1 << 1 | p2 << 2) << (8 * i);
-            }
-            f->map[v] = word;
-        }
-        for (unsigned k = 0; k < d; ++k) {
-            const unsigned r = dvbs2_pl_rotation(data_position(f, k)), i = k % 4;
-            f->gold[k / 4] |= (uint8_t)(((r >> 1) << (7 - 2 * i)) | ((r & 1) << (6 - 2 * i)));
-        }
-    }
-    dvbs2_plheader(f->mode->modcod, (int)f->pilots, f->header);
-    for (unsigned b = 0; b < f->pilot_blocks; ++b) {
-        for (unsigned i = 0; i < 36; ++i) {
-            const unsigned p = 1440 * (b + 1) + 36 * b + i;
-            f->pilot_phases[36 * b + i] = (uint8_t)((1 + 2 * dvbs2_pl_rotation(p)) & 7);
-        }
-    }
+    f->map = f->mode->bits_per_symbol == 3 ? fast_map_3 : fast_map_2;
+    f->gold = f->mode->bits_per_symbol == 3
+                  ? (f->pilots ? fast_gold_3_1 : fast_gold_3_0)
+                  : (f->pilots ? fast_gold_2_1 : fast_gold_2_0);
+    f->header = fast_headers + 90 * (2 * (f->mode->modcod - 4) + f->pilots);
 }
 
 int dvbs2_fast_prepare(dvbs2_fast *f, const dvbs2_mode *mode, int pilots, unsigned pie)
@@ -276,23 +150,13 @@ int dvbs2_fast_prepare(dvbs2_fast *f, const dvbs2_mode *mode, int pilots, unsign
         }
     }
 #endif
-    memcpy(f->prbs, dvbs2_prbs_table(), mode->kbch / 8);
-    for (unsigned v = 0; v < 256; ++v) {
-        uint8_t crc = (uint8_t)v;
-        for (unsigned bit = 0; bit < 8; ++bit) {
-            crc = (uint8_t)((crc << 1) ^ ((crc & 0x80) ? 0xd5 : 0));
-        }
-        f->crc8[0][v] = crc;
-    }
-    for (unsigned k = 1; k < 4; ++k) {
-        for (unsigned v = 0; v < 256; ++v) {
-            f->crc8[k][v] = f->crc8[0][f->crc8[k - 1][v]];
-        }
-    }
-    prepare_bch(f);
-    if (prepare_ldpc(f) != 0) {
-        return -1;
-    }
+    f->prbs = dvbs2_prbs_table();
+    f->bch = mode->t == 12 ? fast_bch_12 : mode->t == 10 ? fast_bch_10 : fast_bch_8;
+    /* QPSK and 8PSK share their code-rate program. */
+    f->prog = fast_prog[mode->bits_per_symbol == 2 ? mode->modcod - 4 :
+                        (unsigned[]){1, 2, 3, 5, 6, 7}[mode->modcod - 12]];
+    f->p = f->scratch + f->groups * U2;
+    memset(f->scratch, 0, dvbs2_fast_mode_size(mode) - sizeof *f);
     prepare_map(f);
     return 0;
 }
@@ -373,7 +237,7 @@ HOT int dvbs2_fast_bb_gcs(const dvbs2_fast *f, dvbs2_workspace *ws,
         return -1;
     }
     const size_t n = (dfl_bits + 7) / 8;
-    bb_header(ws->bits, f->crc8[0], 0x70, (unsigned)dfl_bits, 0, 0, 0);
+    bb_header(ws->bits, fast_crc8, 0x70, (unsigned)dfl_bits, 0, 0, 0);
     bb_fill(f, ws->bits, payload, n);
     if (dfl_bits & 7) {
         /* Clear the unused low bits of the last data byte, then rescramble. */
@@ -398,7 +262,7 @@ HOT int dvbs2_fast_bb_ts(const dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_stat
         }
     }
     const unsigned syncd = ((188 - state->packet_pos) % 188) * 8;
-    bb_header(ws->bits, f->crc8[0], 0xf0, (unsigned)(input_bytes * 8), 1504, 0x47, syncd);
+    bb_header(ws->bits, fast_crc8, 0xf0, (unsigned)(input_bytes * 8), 1504, 0x47, syncd);
     bb_fill(f, ws->bits, input, input_bytes);
     /* CRC-8 of each packet's 187 bytes after sync; the sync byte position
      * carries the previous packet's CRC. */
@@ -419,7 +283,7 @@ HOT int dvbs2_fast_bb_ts(const dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_stat
         const uint8_t *p = input + k, *end = p + run;
         /* Four bytes per step: CRC-8 is linear, so
          * crc' = T3[crc ^ b0] ^ T2[b1] ^ T1[b2] ^ T0[b3], Tk = byte table^(k+1). */
-        const uint8_t *t0 = f->crc8[0], *t1 = f->crc8[1], *t2 = f->crc8[2], *t3 = f->crc8[3];
+        const uint8_t *t0 = fast_crc8, *t1 = (fast_crc8 + 256), *t2 = (fast_crc8 + 512), *t3 = (fast_crc8 + 768);
 #ifdef DVBS2_PIE
         if (f->pie & DVBS2_PIE_BB) {
             const unsigned quads = (unsigned)(end - p) / 4;
@@ -446,44 +310,29 @@ HOT int dvbs2_fast_bb_ts(const dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_stat
 
 /* ---------------------------------------------------------------- BCH */
 
-#define BCH_ROWS(x)                                                                  \
-    const uint8_t *r0 = t + (((x) & 255) << 4), *r1 = t + 8192 + (((x) >> 4) & 0xff0),   \
-                  *r2 = t + 16384 + (((x) >> 12) & 0xff0), *r3 = t + 24576 + (((x) >> 20) & 0xff0)
-#define BCH_WORD(j) (W(r0 + (j)) ^ W(r1 + (j)) ^ W(r2 + (j)) ^ W(r3 + (j)))
+/* Keep the six remainder words in registers. A loop over remainder words
+ * makes the compiler reload them for every slice on Xtensa. */
+#define BCH_SLICE(k, shift) do { \
+    const uint8_t *row = t + 512 * (k) + (((x >> (shift)) & 15) << 4); \
+    w0 ^= W(row); w1 ^= W(row + 4); w2 ^= W(row + 8); w3 ^= W(row + 12); \
+    w4 ^= W(row + 256); w5 ^= W(row + 260); \
+} while (0)
 
 static HOT void bch_c(const dvbs2_fast *f, const uint8_t *bits, unsigned words, uint32_t r[8])
 {
     const uint8_t *t = f->bch;
-    const word_t *msg = (const word_t *)bits;
     uint32_t w0 = 0, w1 = 0, w2 = 0, w3 = 0, w4 = 0, w5 = 0;
-    if (f->bch_bytes > 16) {
-        for (unsigned i = 0; i < words; ++i) {
-            const uint32_t x = w0 ^ msg[i];
-            BCH_ROWS(x);
-            w0 = w1 ^ BCH_WORD(0);
-            w1 = w2 ^ BCH_WORD(4);
-            w2 = w3 ^ BCH_WORD(8);
-            w3 = w4 ^ BCH_WORD(12);
-            w4 = w5 ^ BCH_WORD(4096);
-            w5 = BCH_WORD(4100);
-        }
-    } else {
-        for (unsigned i = 0; i < words; ++i) {
-            const uint32_t x = w0 ^ msg[i];
-            BCH_ROWS(x);
-            w0 = w1 ^ BCH_WORD(0);
-            w1 = w2 ^ BCH_WORD(4);
-            w2 = w3 ^ BCH_WORD(8);
-            w3 = BCH_WORD(12);
-        }
+    for (unsigned i = 0; i < words; ++i) {
+        const uint32_t x = w0 ^ W(bits + 4 * i);
+        w0 = w1; w1 = w2; w2 = w3; w3 = w4; w4 = w5; w5 = 0;
+        BCH_SLICE(0, 4); BCH_SLICE(1, 0);
+        BCH_SLICE(2, 12); BCH_SLICE(3, 8);
+        BCH_SLICE(4, 20); BCH_SLICE(5, 16);
+        BCH_SLICE(6, 28); BCH_SLICE(7, 24);
     }
-    r[0] = w0;
-    r[1] = w1;
-    r[2] = w2;
-    r[3] = w3;
-    r[4] = w4;
-    r[5] = w5;
+    r[0] = w0; r[1] = w1; r[2] = w2; r[3] = w3; r[4] = w4; r[5] = w5;
 }
+#undef BCH_SLICE
 
 HOT void dvbs2_fast_bch(dvbs2_fast *f, dvbs2_workspace *ws)
 {
@@ -498,19 +347,17 @@ HOT void dvbs2_fast_bch(dvbs2_fast *f, dvbs2_workspace *ws)
     {
         bch_c(f, ws->bits, words, w);
     }
-    /* Remaining 0..3 message bytes, one byte-table step each. */
+    /* A final partial word: two nibble-table steps per remaining byte. */
+    uint8_t *r = (uint8_t *)w;
     for (unsigned i = 4 * words; i < bytes; ++i) {
-        const unsigned v = (w[0] & 255) ^ ws->bits[i];
-        for (unsigned j = 0; j < 5; ++j) {
-            w[j] = (w[j] >> 8) | (w[j + 1] << 24);
+        for (int shift = 4; shift >= 0; shift -= 4) {
+            const unsigned v = (r[0] >> 4) ^ ((ws->bits[i] >> shift) & 15);
+            const uint8_t *row = f->bch + 7 * 512 + 16 * v;
+            for (unsigned j = 0; j < f->bch_bytes; ++j) {
+                r[j] = (uint8_t)((r[j] << 4) | (r[j + 1] >> 4));
+                r[j] ^= row[j < 16 ? j : 256 + j - 16];
+            }
         }
-        w[5] >>= 8;
-        const uint8_t *lo = f->bch + 8192 * 3 + 16 * v;
-        for (unsigned j = 0; j < 4; ++j) {
-            w[j] ^= W(lo + 4 * j);
-        }
-        w[4] ^= W(lo + 4096);
-        w[5] ^= W(lo + 4100);
     }
     memcpy(ws->bits + bytes, w, f->bch_bytes);
 }
@@ -531,7 +378,7 @@ static inline void shift_1(uint32_t h[12])
 static HOT void rows_c(dvbs2_fast *f)
 {
     const uint16_t *prog = f->prog;
-    uint8_t *p = f->scratch.ldpc.p;
+    uint8_t *p = f->p;
     for (unsigned r = 0; r < f->q; ++r) {
         uint32_t h[12] = {0};
         const unsigned levels = *prog++;
@@ -541,7 +388,7 @@ static HOT void rows_c(dvbs2_fast *f)
             }
             for (unsigned n = *prog++; n; --n) {
                 const unsigned offset = *prog++, shift = 8 * (offset & 3);
-                const uint8_t *window = f->scratch.ldpc.u2 + (offset & ~3u);
+                const uint8_t *window = f->scratch + (offset & ~3u);
                 uint32_t lo = W(window);
                 for (unsigned w = 0; w < 12; ++w) {
                     const uint32_t hi = W(window + 4 * w + 4);
@@ -583,7 +430,7 @@ static inline void transpose32(uint32_t a[32])
 
 static HOT void transpose_c(dvbs2_fast *f, unsigned blocks)
 {
-    uint8_t *p = f->scratch.ldpc.p;
+    uint8_t *p = f->p;
     uint32_t a[32];
     for (unsigned b = 0; b < blocks; ++b) {
         for (unsigned w = 0; w < 12; ++w) {
@@ -614,7 +461,7 @@ static inline uint32_t src32(uint32_t hi, uint32_t lo, unsigned s)
  * 0 .. t - 1 (the accumulator continues across columns). */
 static HOT void carry_row(dvbs2_fast *f)
 {
-    const uint8_t *last = f->scratch.ldpc.p + ROW * (f->q - 1);
+    const uint8_t *last = f->p + ROW * (f->q - 1);
     uint32_t parity = 0;
     for (unsigned w = 0; w < 12; ++w) {
         uint32_t x = bswap(W(last + 4 * w));
@@ -652,12 +499,12 @@ static unsigned pack_start(const uint8_t *bits, unsigned start, uint32_t *pendin
 static HOT void pack(dvbs2_fast *f, uint8_t *bits)
 {
     const unsigned q = f->q, start = f->mode->nbch / 8, full = q / 32, part = q % 32;
-    const uint8_t *p = f->scratch.ldpc.p;
+    const uint8_t *p = f->p;
     word_t *out = (word_t *)(bits + start - start % 4);
     uint32_t pending;
     unsigned have = pack_start(bits, start, &pending);
     for (unsigned t = 0; t < 360; ++t) {
-        const uint8_t *col = p + f->cols[t];
+        const uint8_t *col = p + fast_cols[t];
         for (unsigned b = 0; b < full; ++b) {
             const uint32_t v = W(col + ROW * 32 * b);
             *out++ = bswap(src32(pending, v, have));
@@ -680,18 +527,18 @@ HOT void dvbs2_fast_ldpc(dvbs2_fast *f, dvbs2_workspace *ws)
     const unsigned blocks = (f->q + 31) / 32;
 #ifdef DVBS2_PIE
     if (f->pie & DVBS2_PIE_LDPC) {
-        dvbs2_pie_u2(ws->bits, f->scratch.ldpc.u2, f->groups);
-        dvbs2_pie_rows(f->scratch.ldpc.u2, f->prog, f->scratch.ldpc.p, f->q);
+        dvbs2_pie_u2(ws->bits, f->scratch, f->groups);
+        dvbs2_pie_rows(f->scratch, f->prog, f->p, f->q);
         carry_row(f);
-        dvbs2_pie_transpose(f->scratch.ldpc.p, blocks, f->carry);
+        dvbs2_pie_transpose(f->p, blocks, f->carry);
         /* Pack big-endian words into the free u2 area, then reverse their
          * bytes into ws->bits from the word holding the parity start. */
         const unsigned start = f->mode->nbch / 8, base = start - start % 4;
         const unsigned words = (DVBS2_FEC_BYTES - base) / 4, vectors = words / 4;
         uint32_t pending;
         const unsigned have = pack_start(ws->bits, start, &pending);
-        uint32_t *packed = (uint32_t *)f->scratch.ldpc.u2;
-        dvbs2_pie_pack(f->scratch.ldpc.p, f->cols, f->q, packed, pending, have);
+        uint32_t *packed = (uint32_t *)f->scratch;
+        dvbs2_pie_pack(f->p, fast_cols, f->q, packed, pending, have);
         uint8_t *dst = ws->bits + base;
         const uintptr_t at = (uintptr_t)dst;
         uint8_t *block = (uint8_t *)((at - 1) & ~(uintptr_t)15);
@@ -707,7 +554,7 @@ HOT void dvbs2_fast_ldpc(dvbs2_fast *f, dvbs2_workspace *ws)
     }
 #endif
     for (unsigned g = 0; g < f->groups; ++g) {
-        uint8_t *u2 = f->scratch.ldpc.u2 + U2 * g;
+        uint8_t *u2 = f->scratch + U2 * g;
         const uint8_t *u = ws->bits + 45 * g;
         memcpy(u2, u, 45);
         memcpy(u2 + 45, u, 45);
@@ -786,8 +633,14 @@ static HOT void map_c(const dvbs2_fast *f, const uint8_t *bits, uint8_t *output)
                 const unsigned p0 = a[j] ^ x;                       /* inverted p0 */
                 const unsigned p1 = a[j] ^ z0;
                 const unsigned p2 = b[j] ^ (a[j] & x) ^ z1 ^ (a[j] & z0);
-                writer_put(&w, map[(p0 >> 4) | (p2 & 0xf0) | (p1 >> 4) << 8]);
-                writer_put(&w, map[(p0 & 15) | (p2 & 15) << 4 | (p1 & 15) << 8]);
+                for (int shift = 6; shift >= 0; shift -= 4) {
+                    const unsigned hi = ((p0 >> shift) & 3) | (((p2 >> shift) & 3) << 2) |
+                                        (((p1 >> shift) & 3) << 4);
+                    const unsigned lo = ((p0 >> (shift - 2)) & 3) |
+                                        (((p2 >> (shift - 2)) & 3) << 2) |
+                                        (((p1 >> (shift - 2)) & 3) << 4);
+                    writer_put(&w, map[hi] | (map[lo] << 16));
+                }
             }
         } else {
             for (unsigned j = k0 / 4; j < (k0 + n) / 4; ++j) {
@@ -805,7 +658,7 @@ HOT void dvbs2_fast_pl(const dvbs2_fast *f, uint8_t *output)
 {
     memcpy(output, f->header, 90);
     for (unsigned b = 0; b < f->pilot_blocks; ++b) {
-        memcpy(output + 90 + 1440 * (b + 1) + 36 * b, f->pilot_phases + 36 * b, 36);
+        memcpy(output + 90 + 1440 * (b + 1) + 36 * b, fast_pilots + 36 * b, 36);
     }
 }
 
@@ -814,7 +667,7 @@ HOT void dvbs2_fast_pl(const dvbs2_fast *f, uint8_t *output)
 static HOT void map_pie(dvbs2_fast *f, const uint8_t *bits, uint8_t *output)
 {
     const unsigned d = f->data_symbols;
-    uint16_t *index = f->scratch.index;
+    uint16_t *index = (uint16_t *)f->scratch;
     if (f->mode->bits_per_symbol == 3) {
         const uint8_t *a = bits, *c = bits + 5400;
         if (f->mode->modcod == 12) {
@@ -834,7 +687,8 @@ static HOT void map_pie(dvbs2_fast *f, const uint8_t *bits, uint8_t *output)
         const uintptr_t at = (uintptr_t)dst;
         uint8_t *block = (uint8_t *)((at - 1) & ~(uintptr_t)15);
         const unsigned vectors = length / 16;
-        dvbs2_pie_run(index + k / 4, table, block, vectors, (unsigned)(-at & 15), f->tail);
+        (f->mode->bits_per_symbol == 3 ? dvbs2_pie_run8 : dvbs2_pie_run)(
+            index + k / 4, table, block, vectors, (unsigned)(-at & 15), f->tail);
         /* The kernel leaves the final aligned block in f->tail: the run's
          * last (at & 15) bytes, or a whole vector when dst is aligned. */
         memcpy(block + 16 * vectors, f->tail, (at & 15) ? (at & 15) : 16);
@@ -852,4 +706,24 @@ HOT void dvbs2_fast_map(dvbs2_fast *f, const dvbs2_workspace *ws, uint8_t *outpu
     {
         map_c(f, ws->bits, output);
     }
+}
+
+/* Complete frames use the fast path; the original public stages remain the
+ * portable reference. Each concurrent encoder owns its context and workspace. */
+HOT int dvbs2_encode_frame(dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_state *ts,
+                           const uint8_t *payload, size_t input_bits, uint8_t *output)
+{
+    if (!output || (ts && (input_bits & 7))) {
+        return -1;
+    }
+    const int rc = ts ? dvbs2_fast_bb_ts(f, ws, ts, payload, input_bits / 8)
+                      : dvbs2_fast_bb_gcs(f, ws, payload, input_bits);
+    if (rc) {
+        return rc;
+    }
+    dvbs2_fast_bch(f, ws);
+    dvbs2_fast_ldpc(f, ws);
+    dvbs2_fast_map(f, ws, output);
+    dvbs2_fast_pl(f, output);
+    return 0;
 }

@@ -109,10 +109,13 @@ static IRAM_ATTR esp_err_t fill(uint32_t *dst, uint64_t first, size_t count, voi
 static uint32_t encode_ring(const dvbs2_mode *mode, uint8_t *ring, size_t frame_symbols)
 {
     const size_t bytes = (mode->kbch - 80) / 8;
-    dvbs2_workspace *ws = heap_caps_malloc(sizeof *ws, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    uint8_t *payload = heap_caps_malloc(bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    const uint32_t internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    dvbs2_workspace *ws = heap_caps_aligned_alloc(16, sizeof *ws,
+                                                   MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    dvbs2_fast *fast = heap_caps_aligned_alloc(16, dvbs2_fast_mode_size(mode), internal);
+    uint8_t *payload = heap_caps_malloc(bytes, internal);
     uint32_t spent = 0;
-    if (ws && payload) {
+    if (ws && fast && payload && dvbs2_fast_prepare(fast, mode, PILOTS, 15) == 0) {
         uint32_t x = 2026;
         const uint32_t start = esp_cpu_get_cycle_count();
         for (int f = 0; f < FRAMES; ++f) {
@@ -120,14 +123,9 @@ static uint32_t encode_ring(const dvbs2_mode *mode, uint8_t *ring, size_t frame_
                 payload[i] = next_byte(&x);
             }
             uint8_t *out = ring + f * frame_symbols;
-            if (dvbs2_bb_gcs(ws, mode, payload, bytes * 8)) {
+            if (dvbs2_encode_frame(fast, ws, NULL, payload, bytes * 8, out)) {
                 goto done;
             }
-            dvbs2_bb_scramble(ws, mode);
-            dvbs2_bch(ws, mode);
-            dvbs2_ldpc(ws, mode);
-            dvbs2_map(ws, mode, out + 90);
-            dvbs2_plframe(mode, PILOTS, out);
             for (size_t i = 0; i < frame_symbols; ++i) {
                 out[i] <<= 4;
             }
@@ -135,6 +133,7 @@ static uint32_t encode_ring(const dvbs2_mode *mode, uint8_t *ring, size_t frame_
         spent = esp_cpu_get_cycle_count() - start;
     }
 done:
+    heap_caps_free(fast);
     heap_caps_free(ws);
     heap_caps_free(payload);
     return spent;

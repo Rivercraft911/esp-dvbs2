@@ -86,6 +86,7 @@ def native_records(impl="plain"):
 #define CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ 240
 #define MALLOC_CAP_INTERNAL 1
 #define MALLOC_CAP_8BIT 2
+#define MALLOC_CAP_SPIRAM 4
 #define pdPASS 1
 #define pdTRUE 1
 #define portMAX_DELAY UINT32_MAX
@@ -114,6 +115,8 @@ static inline void *heap_caps_malloc(size_t size, unsigned caps)
     return malloc(size);
 }
 #define heap_caps_free free
+static inline size_t heap_caps_get_free_size(unsigned caps) { (void)caps; return 65536; }
+static inline size_t heap_caps_get_largest_free_block(unsigned caps) { (void)caps; return 32768; }
 static inline int xPortGetCoreID(void) { return 1; }
 static inline void vTaskDelay(unsigned ticks) { (void)ticks; }
 static inline void xTaskNotifyGive(TaskHandle_t task) { (void)task; }
@@ -175,6 +178,15 @@ def check_records(records, expected):
             if impl == "pie":
                 assert record["pie_mask"] == 15, ("PIE kernels not all in use", record)
             active = dict(metadata=record, impl=impl, frames={})
+        elif event == "mode":
+            assert active is not None, "mode without begin"
+            assert record["modcod"] in {k[0] for k in expected}
+            assert record["output_memory"] in {"internal", "psram"}
+            memory = active.setdefault("memory", {})
+            assert record["modcod"] not in memory, "duplicate mode"
+            for key in ("fast_bytes", "free_internal", "largest_internal"):
+                assert type(record[key]) is int and record[key] >= 0
+            memory[record["modcod"]] = record
         elif event == "frame":
             assert active is not None, "frame without begin"
             key = record["modcod"], record["input"], record["frame"]
@@ -200,6 +212,8 @@ def check_records(records, expected):
             assert active is not None, "end without begin"
             assert record["frames_reported"] == len(expected)
             assert set(active["frames"]) == set(expected), "missing frames"
+            if "workspace_memory" in active["metadata"]:
+                assert set(active.get("memory", {})) == {k[0] for k in expected}, "mode memory report missing"
             if active["impl"] == "pie":
                 assert active.get("checked") == {k[0] for k in expected}, "pie_check missing"
             runs.append(active)
@@ -225,7 +239,8 @@ def test_checker(expected):
     assert len(check_records(good * 2, expected)) == 2
     bad_crc = dict(frames[0], crc32=frames[0]["crc32"] ^ 1)
     bad_cycles = dict(frames[0], cycles=dict(frames[0]["cycles"], total=1))
-    for bad in (good[:-1], [begin, *frames[1:], end],
+    for bad in ([dict(begin, workspace_memory="psram"), *frames, end],
+                good[:-1], [begin, *frames[1:], end],
                 [begin, *frames, frames[0], end], [begin, bad_crc, *frames[1:], end],
                 [begin, bad_cycles, *frames[1:], end]):
         try:
@@ -244,6 +259,12 @@ def report(runs):
     plain runs are the known-slow reference and only reported."""
     passed = True
     for index, run in enumerate(runs, 1):
+        memory = run.get("memory", {}).get(13)
+        if memory and run["impl"] != "plain":
+            fits = memory["free_internal"] >= 32768 and memory["largest_internal"] >= 16384
+            print(f"8PSK 2/3 heap: {memory['free_internal']} bytes free, "
+                  f"{memory['largest_internal']} largest: {'PASS' if fits else 'FAIL'}")
+            passed &= fits
         print(f"run {index}: all 140 CRCs match; firmware {run['metadata']['firmware']}, "
               f"impl {run['impl']}")
         worst = 0

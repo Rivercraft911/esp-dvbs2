@@ -25,6 +25,7 @@ class NativeEncoder:
     def __enter__(self):
         subprocess.run([sys.executable, str(ROOT / "host/gen_dvbs2_c.py"), "--check"],
                        check=True)
+        subprocess.run([sys.executable, str(ROOT / "host/gen_dvbs2_fast.py"), "--check"], check=True)
         self.tmp = tempfile.TemporaryDirectory(prefix="dvbs2-c-")
         folder = pathlib.Path(self.tmp.name)
         bridge = folder / "sizes.c"
@@ -52,6 +53,9 @@ class NativeEncoder:
             "dvbs2_map": (None, [ct.c_void_p, ct.c_void_p, U8P]),
             "dvbs2_plframe": (None, [ct.c_void_p, ct.c_int, U8P]),
             "dvbs2_fast_size": (ct.c_size_t, []),
+            "dvbs2_fast_mode_size": (ct.c_size_t, [ct.c_void_p]),
+            "dvbs2_encode_frame": (ct.c_int, [ct.c_void_p, ct.c_void_p, ct.c_void_p,
+                                              U8P, ct.c_size_t, U8P]),
             "dvbs2_fast_prepare": (ct.c_int, [ct.c_void_p, ct.c_void_p, ct.c_int, ct.c_uint]),
             "dvbs2_fast_pie": (ct.c_uint, [ct.c_void_p]),
             "dvbs2_fast_bb_gcs": (ct.c_int, [ct.c_void_p, ct.c_void_p, U8P, ct.c_size_t]),
@@ -307,8 +311,57 @@ def test_fast(native):
           "and the PLFRAME at shifted output addresses; 33 LDPC impulses; input checks")
 
 
+
+def test_complete_frame(native):
+    lib = native.lib
+    for modcod, modulation, rate in MODES:
+        mode = lib.dvbs2_find_mode(modcod)
+        size = lib.dvbs2_fast_mode_size(mode)
+        assert 0 < size <= lib.dvbs2_fast_size() < 22000
+        n = (d.code(rate).kbch - 80) // 8
+        payload = np.random.default_rng(modcod).integers(0, 256, n, dtype=np.uint8)
+        for pilots in (0, 1):
+            # Allocate only this mode's advertised size and guard both ends.
+            raw = np.full(size + 64, 0xA5, np.uint8)
+            at = 16 + (-raw.ctypes.data % 16)
+            f = raw.ctypes.data + at
+            assert lib.dvbs2_fast_prepare(f, mode, pilots, 15) == 0
+            count = lib.dvbs2_frame_symbols(mode, pilots)
+            output = np.full(count + 32, 0x5A, np.uint8)
+            dst = output[16:-16].ctypes.data_as(U8P)
+            bits = np.unpackbits(payload)[:-3]
+            assert lib.dvbs2_encode_frame(f, native.ws, None, payload.ctypes.data_as(U8P), len(bits), dst) == 0
+            expected = d.plframe_phases(d.fecframe(d.bbframe(bits, rate), rate), rate,
+                                        pilots=pilots, modulation=modulation)
+            np.testing.assert_array_equal(output[16:-16], expected)
+            assert np.all(raw[:at] == 0xA5) and np.all(raw[at + size:] == 0xA5)
+            assert np.all(output[:16] == 0x5A) and np.all(output[-16:] == 0x5A)
+            # TS continuation through the complete API agrees with the original stages.
+            state = ct.create_string_buffer(lib.state_size())
+            refstate = ct.create_string_buffer(lib.state_size())
+            for frame in range(2):
+                stream = payload.copy()
+                stream[np.arange(n)[(np.arange(n) + frame * n) % 188 == 0]] = 0x47
+                src = stream.ctypes.data_as(U8P)
+                assert lib.dvbs2_bb_ts(native.ws, mode, refstate, src, n) == 0
+                bbf = native.bits(d.code(rate).kbch).copy()
+                expected = d.plframe_phases(d.fecframe(bbf, rate), rate, pilots=pilots, modulation=modulation)
+                assert lib.dvbs2_encode_frame(f, native.ws, state, src, 8*n, dst) == 0
+                np.testing.assert_array_equal(output[16:-16], expected)
+                assert state.raw == refstate.raw
+            saved = native.ws.raw, state.raw, output.copy()
+            for args in ((f, native.ws, state, src, 8*n - 1, dst),
+                         (f, native.ws, None, src, 8*n + 1, dst),
+                         (f, native.ws, None, src, 8*n, None),
+                         (None, native.ws, None, src, 8*n, dst)):
+                assert lib.dvbs2_encode_frame(*args) == -1
+                assert native.ws.raw == saved[0] and state.raw == saved[1]
+                np.testing.assert_array_equal(output, saved[2])
+    assert lib.dvbs2_fast_mode_size(None) == 0
+    print("complete fast API: all modes, both pilots, GCS/TS continuation, exact-sized contexts and invalid-input guards")
+
 if __name__ == "__main__":
     with NativeEncoder() as native:
         for test in (test_modes, test_gcs, test_ts, test_ldpc_boundaries, test_invalid_inputs,
-                     test_fast):
+                     test_fast, test_complete_frame):
             test(native)

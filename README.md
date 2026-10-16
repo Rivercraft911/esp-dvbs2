@@ -50,6 +50,11 @@ On the RP2350 the same kind of bit-level code, BCH and LDPC, ran 11 times faster
 with tables and whole-word operations (4.1 M to 0.38 M cycles per frame).
 [Run details](results/2026-10-16-encoder/README.md).
 
+The transmitter now uses the fast complete-frame API. Its 8PSK 2/3 context takes 14,736 bytes
+of internal RAM; shared tables stay in flash and the workspace uses cached PSRAM. Host tests
+and QEMU agree bit for bit. The instruction pipeline model predicts 179k cycles per GCS frame
+and 205k with TS input after warmup. Board timing and shared-cache contention are still unverified.
+
 ## Pulse shaping at 1.78 cycles per sample
 
 ![Time to shape one DAC bank with plain C and with the PIE vector unit](docs/img/shaper.png)
@@ -67,7 +72,7 @@ the rate that would allow 20 Msym/s. [Run details](results/2026-10-16-shaper/REA
 | Firmware scaffold and memory benchmarks on the ESP32-S3 | done |
 | DVB-S2 encoder in C on the S3, bit-exact with the reference | done, QPSK fast enough |
 | Offline IQ decoded by an independent DVB-S2 receiver | done, [40 cases](results/2026-10-16-decode/README.md), whole payloads match |
-| Encoder fast enough for 8PSK at 5 Msym/s | next, needs 2.3x |
+| Fast encoder integrated with the transmitter | host/QEMU verified; board timing pending |
 | Pulse shaping fast enough for 8PSK at 5 Msym/s (PIE, 1.78 cycles/sample) | done |
 | DAC bank streaming received on an SDR | done, [first RF](results/2026-10-16-radio/README.md) |
 | Whole chain on the chip, bank samples decoded by LeanDVB (radio off) | done, [dry run](results/2026-10-16-dryrun/README.md), 47 dB MER |
