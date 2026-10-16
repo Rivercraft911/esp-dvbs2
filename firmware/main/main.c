@@ -6,6 +6,8 @@
 //   membench   memory and bank-fill timing (membench.c)
 //   chain <forced|cw|cw40|cwgain>  how tx turns the transmit chain on (default cwgain)
 //   tx <integer MHz> <tone|two|tag|...> <1..60 seconds> [0..17 gain, default 0]
+//   dvb <MHz> <modcod> <1..60 seconds> [0..17 gain] [16..508 peak]  DVB-S2 QPSK on air (dvbtx.c)
+//   dvbdump <modcod> <frames> [peak] [decimation]  the same samples over USB, no radio
 //   fecbench   normal-frame encoder correctness and stage timing (fecbench.c)
 //   usbrx N    receive N bytes over USB as fast as the host sends them; report the rate
 
@@ -26,6 +28,7 @@
 #include "freertos/task.h"
 #include "sdkconfig.h"
 
+#include "dvbtx.h"
 #include "fecbench.h"
 #include "membench.h"
 #include "radio_s3.h"
@@ -52,6 +55,44 @@ static bool number(const char *text, unsigned lo, unsigned hi, uint32_t *out)
     }
     *out = n;
     return true;
+}
+
+static void cmd_dvb(char *args)
+{
+    char *save, *mhz = strtok_r(args, " \t", &save);
+    char *code = strtok_r(NULL, " \t", &save);
+    char *duration = strtok_r(NULL, " \t", &save);
+    char *level = strtok_r(NULL, " \t", &save);
+    char *peak = strtok_r(NULL, " \t", &save);
+    char *extra = strtok_r(NULL, " \t", &save);
+    uint32_t freq, modcod, seconds, gain = RADIO_S3_GAIN_DEFAULT, top = 128;
+    if (!number(mhz, 2390, 2450, &freq) || !number(code, 4, 11, &modcod) ||
+        !number(duration, 1, 60, &seconds) ||
+        (level && !number(level, 0, RADIO_S3_GAIN_MAX, &gain)) ||
+        (peak && !number(peak, 16, 508, &top)) || extra) {
+        printf("@{\"cmd\":\"dvb\",\"error\":\"usage: dvb <2390..2450 MHz> <modcod 4..11> "
+               "<1..60 seconds> [0..17 gain] [16..508 peak]\"}\n");
+        return;
+    }
+    dvbtx_run(freq, modcod, seconds, gain, top);
+}
+
+static void cmd_dvbdump(char *args)
+{
+    char *save, *code = strtok_r(args, " \t", &save);
+    char *count = strtok_r(NULL, " \t", &save);
+    char *peak = strtok_r(NULL, " \t", &save);
+    char *step = strtok_r(NULL, " \t", &save);
+    char *extra = strtok_r(NULL, " \t", &save);
+    uint32_t modcod, frames, top = 128, decim = 10;
+    if (!number(code, 4, 11, &modcod) || !number(count, 1, 64, &frames) ||
+        (peak && !number(peak, 16, 508, &top)) || (step && !number(step, 1, 20, &decim)) ||
+        40 % decim || extra) {
+        printf("@{\"cmd\":\"dvbdump\",\"error\":\"usage: dvbdump <modcod 4..11> <1..64 frames> "
+               "[16..508 peak] [decimation dividing 40, at most 20]\"}\n");
+        return;
+    }
+    dvbtx_dump(modcod, frames, top, decim);
 }
 
 static void cmd_tx(char *args)
@@ -145,6 +186,7 @@ void app_main(void)
 {
     usb_serial_jtag_driver_config_t usb = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
     usb.rx_buffer_size = 8192;
+    usb.tx_buffer_size = 8192;
     ESP_ERROR_CHECK(usb_serial_jtag_driver_install(&usb));
     usb_serial_jtag_vfs_use_driver();
     setvbuf(stdin, NULL, _IONBF, 0);
@@ -176,6 +218,12 @@ void app_main(void)
             cmd_tx(line + 2);
             // cmd_tx tokenizes its arguments in place. Keep the completion record stable.
             strcpy(line, "tx");
+        } else if (strncmp(line, "dvbdump ", 8) == 0) {
+            cmd_dvbdump(line + 8);
+            strcpy(line, "dvbdump");
+        } else if (strncmp(line, "dvb ", 4) == 0) {
+            cmd_dvb(line + 4);
+            strcpy(line, "dvb");
         } else if (strncmp(line, "chain ", 6) == 0) {
             // How later tx runs turn the transmit chain on (radio_s3_set_chain).
             static const char *const modes[] = {"forced", "cw", "cw40", "cwgain"};

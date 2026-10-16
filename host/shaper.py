@@ -174,7 +174,7 @@ PROFILES = {p.name: p for p in (
     Profile("qpsk-n40-a20", 0.20, 40, "qpsk"),
     Profile("qpsk-n40-a35", 0.35, 40, "qpsk"),
 )}
-ON_DEVICE = ("8psk-n8-a20", "qpsk-n40-a20")    # profiles the firmware builds (shaper_taps.h)
+ON_DEVICE = ("8psk-n8-a20", "qpsk-n40-a20", "qpsk-n40-a35")    # profiles the firmware builds (shaper_taps.h)
 
 
 # ---------------------------------------------------------------- symbols and samples

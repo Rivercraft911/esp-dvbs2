@@ -475,6 +475,49 @@ cleanup:
     vTaskDelete(NULL);
 }
 
+esp_err_t radio_s3_dry_run(radio_s3_fill_fn fill, void *ctx, uint64_t samples,
+                           radio_s3_sink_fn sink, void *sink_ctx, radio_s3_dry_stats_t *stats)
+{
+    if (!fill || !sink || !stats || samples == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    portENTER_CRITICAL(&state_lock);
+    if (running) {
+        portEXIT_CRITICAL(&state_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    running = true;
+    portEXIT_CRITICAL(&state_lock);
+    memset(stats, 0, sizeof *stats);
+    radio_s3_stats_t timing = {0};
+    run_t run = {.fill = fill, .ctx = ctx, .stats = &timing};
+    esp_err_t error = fill_bank(&run, 0, 0);
+    if (error == ESP_OK) {
+        error = fill_bank(&run, 1, RADIO_S3_STEP_WORDS - RADIO_S3_LEAD_WORDS);
+    }
+    for (uint64_t j = 0; error == ESP_OK && j * RADIO_S3_STEP_WORDS < samples; ++j) {
+        const uint32_t *now = radio_s3_bank(j & 1), *next = radio_s3_bank((j + 1) & 1);
+        const uint64_t edge = (j + 1) * RADIO_S3_STEP_WORDS;
+        for (uint64_t n = edge - RADIO_S3_LEAD_WORDS; n < edge + RADIO_S3_TAIL_WORDS; ++n) {
+            const size_t at = n % RADIO_S3_BANK_WORDS;
+            stats->overlap_mismatches += now[at] != next[at];
+        }
+        stats->overlap_words += RADIO_S3_LEAD_WORDS + RADIO_S3_TAIL_WORDS;
+        const uint64_t left = samples - j * RADIO_S3_STEP_WORDS;
+        error = sink(now, j * RADIO_S3_STEP_WORDS,
+                     left < RADIO_S3_STEP_WORDS ? (size_t)left : RADIO_S3_STEP_WORDS, sink_ctx);
+        if (error == ESP_OK && (j + 1) * RADIO_S3_STEP_WORDS < samples) {
+            error = fill_bank(&run, j & 1, (j + 2) * RADIO_S3_STEP_WORDS - RADIO_S3_LEAD_WORDS);
+        }
+    }
+    stats->fills = timing.fills;
+    stats->max_fill_cycles = timing.max_fill_cycles;
+    portENTER_CRITICAL(&state_lock);
+    running = false;
+    portEXIT_CRITICAL(&state_lock);
+    return error;
+}
+
 esp_err_t radio_s3_run(uint32_t freq_mhz, uint8_t gain, uint32_t seconds,
                        radio_s3_fill_fn fill, void *ctx, radio_s3_stats_t *stats)
 {
