@@ -76,6 +76,7 @@ cd firmware && idf.py build flash && cd ..      # after sourcing ESP-IDF
 python3 host/board.py info --reset              # talk to the board
 python3 host/board.py membench --out results/<date>-<topic>/runs.jsonl
 python3 host/board.py fecbench --reset --timeout 120 --out results/<date>-encoder/runs.jsonl
+python3 host/board.py "fecbench pie" --timeout 120 --out results/<date>-encoder/runs.jsonl  # or c
 python3 tests/test_fecbench.py results/<date>-encoder/runs.jsonl
 python3 host/plots.py                           # redraw the figures from results/
 ```

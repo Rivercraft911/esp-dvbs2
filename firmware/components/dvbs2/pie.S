@@ -670,3 +670,38 @@ dvbs2_pie_bswap:
     ee.srcq.128.st.incp q0, q1, a6
     retw
     .size dvbs2_pie_bswap, . - dvbs2_pie_bswap
+
+/* TS CRC-8, four bytes per step (scalar; scheduled so no load is used by the next
+ * instruction): crc' = T3[crc ^ b0] ^ T2[b1] ^ T1[b2] ^ T0[b3], Tk = tables + 256 k.
+ * uint32_t dvbs2_pie_crc8(const uint8_t *p, unsigned quads, const uint8_t *tables,
+ *                         uint32_t crc) */
+    .align 4
+    .global dvbs2_pie_crc8
+    .type dvbs2_pie_crc8, @function
+dvbs2_pie_crc8:
+    entry a1, 32
+    addmi a6, a4, 256                   /* T1 */
+    addmi a7, a4, 512                   /* T2 */
+    addmi a8, a4, 768                   /* T3 */
+    loopnez a3, 37f
+    l8ui a9, a2, 0
+    l8ui a10, a2, 1
+    l8ui a11, a2, 2
+    l8ui a12, a2, 3
+    xor a9, a9, a5
+    add a10, a10, a7
+    add a11, a11, a6
+    add a12, a12, a4
+    add a9, a9, a8
+    l8ui a10, a10, 0
+    l8ui a11, a11, 0
+    l8ui a12, a12, 0
+    l8ui a9, a9, 0
+    xor a10, a10, a11
+    addi a2, a2, 4
+    xor a10, a10, a12
+    xor a5, a9, a10
+37:
+    mov a2, a5
+    retw
+    .size dvbs2_pie_crc8, . - dvbs2_pie_crc8

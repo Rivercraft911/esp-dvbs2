@@ -105,6 +105,7 @@ void dvbs2_pie_pack(const uint8_t *p, const uint16_t *cols, unsigned q, uint32_t
 void dvbs2_pie_bswap(const uint32_t *src, uint8_t *block, unsigned vectors, unsigned sar_byte,
                      uint8_t *tail);
 uint32_t dvbs2_pie_ldxq(const uint32_t *table);
+uint32_t dvbs2_pie_crc8(const uint8_t *p, unsigned quads, const uint8_t *tables, uint32_t crc);
 #define PIE_MASK (DVBS2_PIE_BB | DVBS2_PIE_BCH | DVBS2_PIE_LDPC | DVBS2_PIE_MAP)
 #else
 #define PIE_MASK 0u
@@ -419,6 +420,13 @@ HOT int dvbs2_fast_bb_ts(const dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_stat
         /* Four bytes per step: CRC-8 is linear, so
          * crc' = T3[crc ^ b0] ^ T2[b1] ^ T1[b2] ^ T0[b3], Tk = byte table^(k+1). */
         const uint8_t *t0 = f->crc8[0], *t1 = f->crc8[1], *t2 = f->crc8[2], *t3 = f->crc8[3];
+#ifdef DVBS2_PIE
+        if (f->pie & DVBS2_PIE_BB) {
+            const unsigned quads = (unsigned)(end - p) / 4;
+            crc = (uint8_t)dvbs2_pie_crc8(p, quads, t0, crc);
+            p += 4 * quads;
+        }
+#endif
         for (; end - p >= 4; p += 4) {
             crc = t3[crc ^ p[0]] ^ t2[p[1]] ^ t1[p[2]] ^ t0[p[3]];
         }

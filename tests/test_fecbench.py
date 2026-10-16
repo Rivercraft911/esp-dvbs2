@@ -237,21 +237,24 @@ def test_checker(expected):
 
 
 def report(runs):
-    target_pass = True
+    """Print each run; return whether every c and pie run meets its budget.
+
+    Budget for 8PSK 2/3 (GCS and TS, every sampled frame): one core at 5 Msym/s
+    (1065312 cycles) for c and pie, and TARGET (one core at 20 Msym/s) for pie.
+    plain runs are the known-slow reference and only reported."""
+    passed = True
     for index, run in enumerate(runs, 1):
         print(f"run {index}: all 140 CRCs match; firmware {run['metadata']['firmware']}, "
               f"impl {run['impl']}")
+        worst = 0
         for modcod, modulation, rate in MODES:
             for input_name in ("gcs", "ts"):
                 rows = [run["frames"][(modcod, input_name, k)] for k in range(FRAMES)]
                 totals = [r["cycles"]["total"] for r in rows]
                 rs = 5e6 if modulation == "8psk" else 1e6
                 budget = int(240e6 * rows[0]["symbols"] / rs)
-                fit = max(totals) < budget
                 if modcod == 13:
-                    target_pass &= fit
-                if modcod == 13 and run["impl"] == "pie":
-                    target_pass &= max(totals) < TARGET
+                    worst = max(worst, max(totals))
                 print(f"  {modulation} {rate:>4} {input_name}: cycles min/median/max "
                       f"{min(totals)}/{statistics.median(totals):.0f}/{max(totals)}, "
                       f"max {100 * max(totals) / budget:.1f}% of {budget} cycles "
@@ -259,10 +262,13 @@ def report(runs):
                 print("    stage medians: " + ", ".join(
                     f"{s}={statistics.median(r['cycles'][s] for r in rows):.0f}"
                     for s in STAGES[:-1]))
-    print(("PASS" if target_pass else "FAIL") +
-          " encoder budget: every sampled 8PSK 2/3 GCS and TS frame < 1065312 cycles"
-          f" (5 Msym/s), and < {TARGET} cycles (20 Msym/s) for pie runs")
-    return target_pass
+        limit = {"plain": None, "c": 1065312, "pie": TARGET}[run["impl"]]
+        verdict = "reference" if limit is None else ("PASS" if worst < limit else "FAIL")
+        if limit is not None:
+            passed &= worst < limit
+        print(f"  {verdict}: slowest 8PSK 2/3 frame {worst} cycles"
+              + ("" if limit is None else f", limit {limit}"))
+    return passed
 
 
 if __name__ == "__main__":
@@ -280,4 +286,10 @@ if __name__ == "__main__":
         records = [json.loads(line.removeprefix("@"))
                    for line in pathlib.Path(sys.argv[1]).read_text().splitlines() if line.strip()]
         runs = check_records(records, reference_records())
-        sys.exit(0 if report(runs) else 1)
+        ok = report(runs)
+        if any(run["impl"] != "plain" for run in runs):
+            print(("PASS" if ok else "FAIL") + ": every c run < 1065312 cycles (8PSK 2/3 at "
+                  f"5 Msym/s) and every pie run < {TARGET} (20 Msym/s), slowest sampled frame")
+        else:
+            print("plain runs only: correctness checked, no budget judged")
+        sys.exit(0 if ok else 1)
