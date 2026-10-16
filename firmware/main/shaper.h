@@ -16,8 +16,8 @@
 
 typedef struct {
     uint32_t *blocks;      // window w's parts 0, 1, 2 at blocks + w * block_words
-    uint16_t n;            // samples per symbol, a multiple of 4 in 4..40
-    uint16_t block_words;  // 3 * n rounded up to a power of two
+    uint16_t n;            // samples per symbol, 4..40
+    uint16_t block_words;  // 3 * (n rounded up to 4) rounded up to a power of two
     uint8_t bits;          // bits per symbol code: 3 (eight phases) or 2 (QPSK)
 } shaper_table_t;
 
@@ -34,7 +34,7 @@ extern uint32_t shaper_store[SHAPER_STORE_WORDS];
 // shaper_table_words() words).
 void shaper_build(shaper_table_t *t, uint32_t *blocks, const int32_t *taps, int n, int bits);
 
-// Portable kernel: nsym >= 0 symbols -> nsym * t->n words, n a multiple of 4 in 4..40.
+// Portable kernel: nsym >= 0 symbols -> nsym * t->n words, 4 <= n <= 40.
 void shaper_fill_c(uint32_t *dst, const uint8_t *sym, int nsym, const shaper_table_t *t);
 
 // PIE kernels (shaper_pie.S), dst 16-byte aligned, tables from shaper_build().
@@ -42,7 +42,21 @@ void shaper_fill_c(uint32_t *dst, const uint8_t *sym, int nsym, const shaper_tab
 // words. For other lengths use C for the last 0..5 symbols. Each 64-byte window block holds
 // three 16-byte part rows followed by 16 bytes of padding; every PIE load is aligned.
 void shaper_fill4_pie(uint32_t *dst, const uint8_t *sym, int groups, const uint32_t *blocks);
+// Any nsym >= 0, same history/alignment contract. PIE also handles the 0..5-symbol tail.
+// Intended for a fill reading immutable, prestaged internal symbols, not a PSRAM callback.
+void shaper_fill4_all_pie(uint32_t *dst, const uint8_t *sym, int nsym, const uint32_t *blocks);
 // 8 samples/symbol, 3-bit codes: 6 * groups + 1 symbols -> (6 * groups + 1) * 8 words.
 void shaper_fill8_pie(uint32_t *dst, const uint8_t *sym, int groups, const uint32_t *blocks);
 // 40 samples/symbol, 2-bit codes (QPSK): nsym >= 1 symbols -> nsym * 40 words.
 void shaper_fill40_pie(uint32_t *dst, const uint8_t *sym, int nsym, const uint32_t *blocks);
+
+// Prototype producer-side row staging, phase bytes sym[-8..nsym), rows[-6..nsym] (one valid guard).
+// Keep rows internal and immutable until the consumer finishes. This helper does not provide
+// thread synchronization or a queue. n4 only; native pointers are four bytes on the S3.
+void shaper_rows4(const uint32_t **rows, const uint8_t *sym, int nsym, const uint32_t *blocks);
+// n4 with staged row addresses, same 6*groups+1 geometry as shaper_fill4_pie.
+void shaper_fill4_rows_pie(uint32_t *dst, const uint32_t *const *rows, int groups);
+void shaper_fill4_rows_all_pie(uint32_t *dst, const uint32_t *const *rows, int nsym);
+// n5, 3-bit codes, padded eight-word part rows. Four symbols/group, groups >= 0;
+// exactly 20*groups words, aligned dst, no writes outside output. Eight history phase bytes.
+void shaper_fill5_pie(uint32_t *dst, const uint8_t *sym, int groups, const uint32_t *blocks);

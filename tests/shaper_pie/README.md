@@ -1,8 +1,9 @@
 # Shaper PIE check in QEMU
 
-This ESP-IDF app compares every output word of the 4-sample PIE kernel with C, then emits
-table and sample checksums for the Python model. It does not initialize the radio. Both
-roll-offs, three seeds, 1/7/13/4093 symbols and a full 4095-symbol bank with a C tail are checked.
+This ESP-IDF app compares every output word of the 4-sample and 5-sample PIE kernels with C,
+then emits table and sample checksums for the Python model. It does not initialize the radio.
+Both roll-offs and three seeds exercise empty calls, short lengths, bank-sized calls,
+the staged-row kernel, and the helpers that handle every n4 tail using PIE.
 CI builds this harness; execution needs Espressif's ESP32-S3 QEMU.
 
 From the repository root, after activating ESP-IDF v6.1:
@@ -28,5 +29,17 @@ is needed by this app.
   tests/test_shaper.py notes/shaper-pie.log
 ```
 
-The checker requires all 30 cases, zero word mismatches, intact output guards, and table and
+The checker requires all 324 cases, zero word mismatches, intact output guards, and table and
 output checksums equal to `host/shaper.py`. QEMU verifies instructions, not silicon timing.
+
+For the instruction issue model and the quality/budget sweep, from the root:
+
+```sh
+xtensa-esp32s3-elf-objdump -d --no-show-raw-insn \
+  tests/shaper_pie/build/esp-idf/main/libmain.a > notes/shaper.dis
+python3 host/shaper_cycles.py notes/shaper.dis
+python3 host/shaper_budget.py --disassembly notes/shaper.dis --qemu notes/shaper-pie.log
+```
+
+The n8 calibration is a prior radio-off measurement. The 22% stress factor comes from the
+encoder's prior model error and is a sensitivity check, not a bound on shaper timing.

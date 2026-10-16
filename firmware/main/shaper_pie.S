@@ -267,3 +267,154 @@ shaper_fill40_pie:
     ee.vst.128.ip   q5, a2, 16
     retw
     .size   shaper_fill40_pie, . - shaper_fill40_pie
+
+    .section .iram1.shaper4rows, "ax"
+    .global shaper_fill4_rows_pie
+    .type   shaper_fill4_rows_pie, @function
+    .align  4
+
+// Staged internal row pointers replace symbol load, history update, mask and address.
+// a3 points to rows[0], rows[-6..-1] supply history, rows[nsym] is a valid guard pointer.
+// Next part 1 and row address are prefetched to hide both load-use stalls. Six instructions/symbol
+// plus one pointer advance per six symbols. Same prefetch schedule and table as n4.
+    .macro symbol4rows R, next, nextP, S, N, off
+    ee.vadds.s32.ld.incp q2, \R, \S, \S, q1
+    ee.vld.128.ip   \N, \next, 16
+    l32i            \next, a3, \off
+    ee.vadds.s32.st.incp q4, a2, \S, \S, q2
+    ee.vld.128.ip   q1, \nextP, 16
+    ee.xorq         q4, \S, q7
+    .endm
+
+    .macro window4rows reg, off, part
+    l32i            \reg, a3, \off
+    addi            \reg, \reg, \part
+    .endm
+
+// dst a2, rows a3, groups a4. No table argument.
+shaper_fill4_rows_pie:
+    entry           a1, 32
+    movi            a8, 0x80200
+    ee.movi.32.q    q7, a8, 0
+    ee.movi.32.q    q7, a8, 1
+    ee.movi.32.q    q7, a8, 2
+    ee.movi.32.q    q7, a8, 3
+    addi            a3, a3, -24
+    window4rows     a15, 0, 32
+    window4rows     a10, 4, 32
+    window4rows     a11, 8, 32
+    window4rows     a12, 12, 16
+    window4rows     a13, 16, 16
+    window4rows     a14, 20, 16
+    addi            a3, a3, 24
+    // Symbol 0, without a store. Preload symbol 1's part 2 (a table row, no symbol read).
+    ee.vld.128.ip   q0, a15, 16
+    l32i            a15, a3, 0
+    ee.vld.128.ip   q1, a12, 16
+    ee.vadds.s32.ld.incp q2, a15, q0, q0, q1
+    ee.vld.128.ip   q3, a10, 16
+    ee.vadds.s32    q0, q0, q2
+    ee.xorq         q4, q0, q7
+    ee.vld.128.ip   q1, a13, 16
+    l32i            a10, a3, 4
+    addi            a3, a3, 4
+    loopnez         a4, .Lend4rows
+    symbol4rows a10, a11, a14, q3, q0, 4
+    symbol4rows a11, a12, a15, q0, q3, 8
+    symbol4rows a12, a13, a10, q3, q0, 12
+    symbol4rows a13, a14, a11, q0, q3, 16
+    symbol4rows a14, a15, a12, q3, q0, 20
+    symbol4rows a15, a10, a13, q0, q3, 24
+    addi            a3, a3, 24
+.Lend4rows:
+    ee.vst.128.ip   q4, a2, 16
+    retw
+    .size   shaper_fill4_rows_pie, . - shaper_fill4_rows_pie
+
+
+
+// Five samples/symbol prototype. Each part row is padded to eight words. Compute two
+// vectors, retain five lanes, and pack four symbols into five aligned stores. SAR_BYTE
+// selects bytes from the concatenation (TRM v1.8 1.8.49 p125, 1.8.56 p132). No unaligned memory access.
+    .section .iram1.shaper5, "ax"
+    .global shaper_fill5_pie
+    .type shaper_fill5_pie, @function
+    .align 4
+    .macro calc5 R, P, off
+    ee.vld.128.ip q0, \R, 16
+    l8ui a8, a3, \off
+    ee.vld.128.ip q2, \P, 16
+    ee.vld.128.ip q1, \R, 16
+    ee.vadds.s32.ld.incp q3, \P, q0, q0, q2
+    addx8 a6, a6, a8
+    and a9, a6, a7
+    addx8 \R, a9, a5
+    ee.vadds.s32.ld.incp q2, \R, q1, q1, q3
+    ee.vld.128.ip q3, \R, 16
+    ee.vadds.s32 q0, q0, q2
+    ee.vadds.s32 q1, q1, q3
+    ee.xorq q4, q0, q7
+    ee.xorq q5, q1, q7
+    .endm
+
+    .macro pack5 shift, remain
+    movi a8, \shift
+    wur.sar_byte a8
+    ee.src.q q6, q6, q6
+    movi a8, \remain
+    wur.sar_byte a8
+    ee.srcq.128.st.incp q6, q4, a2
+    ee.src.q q6, q4, q5
+    .endm
+
+// Six window registers rotate; twelve symbols restore both the pointer and packing phases.
+    .macro group5 R0,P0,R1,P1,R2,P2,R3,P3,off
+    calc5 \R0, \P0, \off
+    ee.vst.128.ip q4, a2, 16
+    ee.orq q6, q5, q5
+    calc5 \R1, \P1, (\off+1)
+    pack5 4, 12
+    calc5 \R2, \P2, (\off+2)
+    pack5 8, 8
+    calc5 \R3, \P3, (\off+3)
+    pack5 12, 4
+    ee.srcq.128.st.incp q4, q5, a2
+    .endm
+
+shaper_fill5_pie:
+    entry a1, 32
+    beqz a4, .Ldone5
+    movi a8, 0x80200
+    ee.movi.32.q q7, a8, 0
+    ee.movi.32.q q7, a8, 1
+    ee.movi.32.q q7, a8, 2
+    ee.movi.32.q q7, a8, 3
+    movi a7, 0x1ff0
+    movi a6, 0
+    addi a9, a3, -8
+    l8ui a8, a9, 0
+    addx8 a6, a6, a8
+    l8ui a8, a9, 1
+    addx8 a6, a6, a8
+    window8 a15, 2, 64
+    window8 a10, 3, 64
+    window8 a11, 4, 64
+    window8 a12, 5, 32
+    window8 a13, 6, 32
+    window8 a14, 7, 32
+.Lgroup5a:
+    group5 a15,a12,a10,a13,a11,a14,a12,a15,0
+    addi a3, a3, 4
+    addi a4, a4, -1
+    beqz a4, .Ldone5
+    group5 a13,a10,a14,a11,a15,a12,a10,a13,0
+    addi a3, a3, 4
+    addi a4, a4, -1
+    beqz a4, .Ldone5
+    group5 a11,a14,a12,a15,a13,a10,a14,a11,0
+    addi a3, a3, 4
+    addi a4, a4, -1
+    bnez a4, .Lgroup5a
+.Ldone5:
+    retw
+    .size shaper_fill5_pie, . - shaper_fill5_pie

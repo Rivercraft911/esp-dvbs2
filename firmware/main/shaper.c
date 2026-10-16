@@ -12,7 +12,7 @@
 static int block_words(int n)
 {
     int w = 1;
-    while (w < PARTS * n) {
+    while (w < PARTS * ((n + 3) / 4 * 4)) {
         w <<= 1;
     }
     return w;
@@ -44,7 +44,7 @@ static int part_value(const int32_t *taps, const int32_t *level, int n, int bits
 // the ranges for the generated taps).
 void shaper_build(shaper_table_t *t, uint32_t *blocks, const int32_t *taps, int n, int bits)
 {
-    const int windows = 1 << (SPAN * bits), bw = block_words(n);
+    const int windows = 1 << (SPAN * bits), bw = block_words(n), row = (n + 3) / 4 * 4;
     const int32_t *level[2] = {shaper_level_i, shaper_level_q};
     int bias[2][PARTS][MAX_N];
     *t = (shaper_table_t){.blocks = blocks, .n = n, .block_words = bw, .bits = bits};
@@ -64,22 +64,23 @@ void shaper_build(shaper_table_t *t, uint32_t *blocks, const int32_t *taps, int 
     }
     for (int w = 0; w < windows; ++w) {
         uint32_t *b = blocks + w * bw;
+        for (int i = 0; i < bw; ++i) {
+            b[i] = 0;
+        }
         for (int j = 0; j < PARTS; ++j) {
             for (int p = 0; p < n; ++p) {
                 const int fi = part_value(taps, level[0], n, bits, j, w, p) + bias[0][j][p];
                 const int fq = part_value(taps, level[1], n, bits, j, w, p) + bias[1][j][p];
-                b[j * n + p] = (uint32_t)fi << SHAPER_I_SHIFT | (uint32_t)fq << SHAPER_Q_SHIFT;
+                b[j * row + p] = (uint32_t)fi << SHAPER_I_SHIFT | (uint32_t)fq << SHAPER_Q_SHIFT;
             }
-        }
-        for (int i = PARTS * n; i < bw; ++i) {
-            b[i] = 0;
         }
     }
 }
 
 IRAM_ATTR void shaper_fill_c(uint32_t *dst, const uint8_t *sym, int nsym, const shaper_table_t *t)
 {
-    const int n = t->n, bw = t->block_words, b = t->bits, shift = b == 3 ? 4 : 5;
+    const int n = t->n, row = (n + 3) / 4 * 4, bw = t->block_words;
+    const int b = t->bits, shift = b == 3 ? 4 : 5;
     const uint32_t wmask = (1u << (SPAN * b)) - 1;
     uint32_t h = 0;  // codes, newest in the low bits
     for (int i = -SHAPER_HISTORY; i < 0; ++i) {
@@ -88,14 +89,52 @@ IRAM_ATTR void shaper_fill_c(uint32_t *dst, const uint8_t *sym, int nsym, const 
     for (int s = 0; s < nsym; ++s) {
         h = h << b | sym[s] >> shift;
         const uint32_t *p0 = t->blocks + (h & wmask) * bw;
-        const uint32_t *p1 = t->blocks + (h >> (SPAN * b) & wmask) * bw + n;
-        const uint32_t *p2 = t->blocks + (h >> (2 * SPAN * b) & wmask) * bw + 2 * n;
-        for (int i = 0; i < n; i += 4) {  // n is a multiple of 4
-            dst[0] = (p0[0] + p1[0] + p2[0]) ^ SHAPER_XOR;
-            dst[1] = (p0[1] + p1[1] + p2[1]) ^ SHAPER_XOR;
-            dst[2] = (p0[2] + p1[2] + p2[2]) ^ SHAPER_XOR;
-            dst[3] = (p0[3] + p1[3] + p2[3]) ^ SHAPER_XOR;
-            dst += 4, p0 += 4, p1 += 4, p2 += 4;
+        const uint32_t *p1 = t->blocks + (h >> (SPAN * b) & wmask) * bw + row;
+        const uint32_t *p2 = t->blocks + (h >> (2 * SPAN * b) & wmask) * bw + 2 * row;
+        for (int i = 0; i < n; ++i) {
+            *dst++ = (p0[i] + p1[i] + p2[i]) ^ SHAPER_XOR;
         }
     }
 }
+
+// Stage row addresses on the producer core. The consumer needs rows[-6..nsym], one pointer
+// per three-symbol window. Supply phase bytes sym[-8..nsym). No per-sample work here.
+IRAM_ATTR void shaper_rows4(const uint32_t **rows, const uint8_t *sym, int nsym,
+                            const uint32_t *blocks)
+{
+    uint32_t h = (uint32_t)sym[-8] * 8 + sym[-7];
+    for (int i = -6; i < nsym; ++i) {
+        h = (h * 8 + sym[i]) & 0x1ff0;
+        rows[i] = blocks + h;   // 16 * window words = 64 bytes
+    }
+    rows[nsym] = blocks;  // one harmless look-ahead for the pipelined consumer
+}
+
+#ifdef __XTENSA__
+// Input is already in internal RAM with its history. A bank wrap may split this into two
+// calls; n4 makes both pieces symbol aligned. Avoid the slow C tail and partial-sample path.
+IRAM_ATTR void shaper_fill4_all_pie(uint32_t *dst, const uint8_t *sym, int nsym,
+                                  const uint32_t *blocks)
+{
+    if (!nsym) {
+        return;
+    }
+    const int groups = (nsym - 1) / 6, bulk = 6 * groups + 1;
+    shaper_fill4_pie(dst, sym, groups, blocks);
+    for (int i = bulk; i < nsym; ++i) {
+        shaper_fill4_pie(dst + 4 * i, sym + i, 0, blocks);
+    }
+}
+
+IRAM_ATTR void shaper_fill4_rows_all_pie(uint32_t *dst, const uint32_t *const *rows, int nsym)
+{
+    if (!nsym) {
+        return;
+    }
+    const int groups = (nsym - 1) / 6, bulk = 6 * groups + 1;
+    shaper_fill4_rows_pie(dst, rows, groups);
+    for (int i = bulk; i < nsym; ++i) {
+        shaper_fill4_rows_pie(dst + 4 * i, rows + i, 0);
+    }
+}
+#endif

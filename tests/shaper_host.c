@@ -24,8 +24,12 @@ int main(int argc, char **argv)
     } cases[] = {
         {"shape4", shaper_taps_8psk_n4_a20, 4, 3, 4093},
         {"shape4a35", shaper_taps_8psk_n4_a35, 4, 3, 4093},
+        {"shape5", shaper_taps_8psk_n5_a20, 5, 3, 3276},
+        {"shape5a35", shaper_taps_8psk_n5_a35, 5, 3, 3276},
         {"shape8", shaper_taps_8psk_n8_a20, 8, 3, 2047},
+        {"shape8a35", shaper_taps_8psk_n8_a35, 8, 3, 2047},
         {"shape40", shaper_taps_qpsk_n40_a20, 40, 2, 409},
+        {"shape40a35", shaper_taps_qpsk_n40_a35, 40, 2, 409},
     };
     static uint32_t blocks[16384], bank[16384];
     static uint8_t sym[SHAPER_HISTORY + 4093];

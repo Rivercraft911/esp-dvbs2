@@ -87,10 +87,25 @@ def rrc(t, alpha):
 
 
 def window_rrc(alpha, n, span=L, beta=KAISER_BETA):
-    """RRC truncated to span symbols (span * n taps, even, centre between two taps) times a
-    Kaiser window."""
+    """RRC truncated to span * n taps, symmetric about their midpoint, times a Kaiser window."""
     k = np.arange(span * n)
     return rrc((k - (span * n - 1) / 2) / n, alpha) * np.kaiser(span * n, beta)
+
+
+def corrected_rrc(alpha, n, span=L, beta=KAISER_BETA):
+    """Window the inverse transform of RRC(f)/sinc(f/Fs), then truncate to span symbols.
+
+    f is in Rs, Fs = n Rs. Integrate only the ideal RRC band, where sinc is nonzero.
+    DC correction is 1; as n tends to infinity this tends to window_rrc(). The hold's
+    linear phase is a delay, handled by receiver timing, not by this amplitude correction.
+    EN 302 307-1 V1.4.1 5.6 p35 defines the ideal RRC response, not this finite FIR.
+    """
+    f = np.linspace(0, (1 + alpha) / 2, 16385)
+    t = (np.arange(span * n) - (span * n - 1) / 2) / n
+    a = rrc_response(f, alpha) / np.sinc(f / n)
+    g = np.concatenate([2 * np.trapezoid(a * np.cos(2 * np.pi * np.outer(ti, f)), f, axis=1)
+                        for ti in np.array_split(t, 1 + len(t)//64)])
+    return g * np.kaiser(span * n, beta)
 
 
 @dataclass(frozen=True)
@@ -101,6 +116,16 @@ class Profile:
     alpha: float
     n: int
     alphabet: str
+    equalized: bool = True
+    span: int = L
+
+    @property
+    def parts_count(self):
+        return (self.span + SPAN - 1) // SPAN
+
+    @property
+    def history(self):
+        return self.span - 1
 
     @property
     def bits(self):
@@ -118,7 +143,12 @@ class Profile:
     def block_words(self):
         """Parts 0, 1, 2 of one window, padded to a power of two so that an address is one
         shift and add."""
-        return 1 << (PARTS * self.n - 1).bit_length()
+        return 1 << (self.parts_count * self.row_words - 1).bit_length()
+
+    @property
+    def row_words(self):
+        # n5 uses two aligned vectors per row; the last three lanes are padding.
+        return (self.n + 3) // 4 * 4
 
     @property
     def table_bytes(self):
@@ -128,9 +158,9 @@ class Profile:
     def taps(self):
         """Integer taps in 1/256 LSB, scaled so that the worst case over all symbol histories,
         max_p sum_a |g[aN + p]| * max|cos|, equals PEAK."""
-        g = window_rrc(self.alpha, self.n)
+        g = (corrected_rrc if self.equalized else window_rrc)(self.alpha, self.n, self.span)
         amax = np.abs(np.cos(self.phases * np.pi / 4)).max()
-        worst = np.abs(g.reshape(L, self.n)).sum(axis=0).max() * amax
+        worst = np.abs(g.reshape(self.span, self.n)).sum(axis=0).max() * amax
         return np.round(g * PEAK / worst * 2 ** COEF_FRAC).astype(np.int64)
 
     @cached_property
@@ -141,7 +171,8 @@ class Profile:
         k = self.phases[codes]                                   # [age in window, window]
         out = []
         for level in (LEVEL_I, LEVEL_Q):
-            c = self.taps.reshape(PARTS, SPAN, self.n)           # [part, age, phase p]
+            c = np.pad(self.taps, (0, (self.parts_count * SPAN - self.span) * self.n))
+            c = c.reshape(self.parts_count, SPAN, self.n)       # [part, age, phase p]
             s = np.einsum("aw,jap->jwp", level[k], c)            # exact in int64
             out.append((s + (1 << (SHIFT - 1))) >> SHIFT)        # floor(s / 2^SHIFT + 1/2)
         return out
@@ -152,7 +183,7 @@ class Profile:
         out = []
         for r in self.parts:
             b = -r.min(axis=1)
-            b[0] = 512 - b[1] - b[2]
+            b[0] = 512 - b[1:].sum(axis=0)
             assert (r[0].min(axis=0) + b[0] >= 0).all(), "part 0 field below 0"
             assert ((r.max(axis=1) + b).sum(axis=0) <= 1023).all(), "field sum above 1023"
             out.append(b)
@@ -164,19 +195,23 @@ class Profile:
         (ri, rq), (bi, bq) = self.parts, self.biases
         words = (((ri + bi[:, None]) << I_SHIFT) | ((rq + bq[:, None]) << Q_SHIFT)).astype(np.uint32)
         t = np.zeros((self.windows, self.block_words), np.uint32)
-        t[:, :PARTS * self.n] = words.transpose(1, 0, 2).reshape(self.windows, -1)
+        for j in range(self.parts_count):
+            t[:, j*self.row_words:j*self.row_words+self.n] = words[j]
         return t
 
 
 PROFILES = {p.name: p for p in (
     Profile("8psk-n4-a20", 0.20, 4, "8psk"),
     Profile("8psk-n4-a35", 0.35, 4, "8psk"),
+    Profile("8psk-n5-a20", 0.20, 5, "8psk"),
+    Profile("8psk-n5-a35", 0.35, 5, "8psk"),
     Profile("8psk-n8-a20", 0.20, 8, "8psk"),
     Profile("8psk-n8-a35", 0.35, 8, "8psk"),
     Profile("qpsk-n40-a20", 0.20, 40, "qpsk"),
     Profile("qpsk-n40-a35", 0.35, 40, "qpsk"),
 )}
-ON_DEVICE = ("8psk-n4-a20", "8psk-n4-a35", "8psk-n8-a20", "qpsk-n40-a20", "qpsk-n40-a35")
+ON_DEVICE = ("8psk-n4-a20", "8psk-n4-a35", "8psk-n5-a20", "8psk-n5-a35",
+             "8psk-n8-a20", "8psk-n8-a35", "qpsk-n40-a20", "qpsk-n40-a35")
 
 
 # ---------------------------------------------------------------- symbols and samples
@@ -197,10 +232,16 @@ def shape(p: Profile, sym):
     """DAC words for sym[HISTORY:], as the firmware kernels make them. sym: bytes 16 * k with
     HISTORY symbols of history in front."""
     w = windows(p, sym)                   # w[i] is the window of symbol i + 2
-    n0 = HISTORY - 2                      # index in w of the first output symbol
+    n0 = p.history - 2                    # index in w of the first output symbol
+    count = len(sym) - p.history
     t = p.table
-    rows = (t[w[n0:], :p.n] + t[w[n0 - 3:len(w) - 3], p.n:2 * p.n]
-            + t[w[n0 - 6:len(w) - 6], 2 * p.n:3 * p.n])
+    # A partial last window needs zero padding in front of the symbol history.
+    if p.parts_count * SPAN > p.span:
+        sym = np.r_[np.repeat(sym[0], p.parts_count * SPAN - p.span), sym]
+        w = windows(p, sym)
+        n0 += p.parts_count * SPAN - p.span
+    rows = sum(t[w[n0 - 3*j:n0 - 3*j + count], j*p.row_words:j*p.row_words+p.n]
+               for j in range(p.parts_count))
     return (rows ^ XOR).astype(np.uint32).ravel()
 
 
@@ -218,7 +259,7 @@ def linear(p: Profile, sym):
     u = np.zeros(len(x) * p.n, complex)
     u[::p.n] = x
     y = np.convolve(u, p.taps / 2 ** COEF_FRAC)
-    return y[HISTORY * p.n:len(x) * p.n]
+    return y[p.history * p.n:len(x) * p.n]
 
 
 def random_symbols(p: Profile, count, seed):
@@ -287,7 +328,7 @@ def receive(p: Profile, y, hold=True):
     (symbol i starts at sample i * N). Filter and hold act in the frequency domain; the pulse
     delay (LN - 1)/2 samples is removed exactly, the hold's half sample is left to timing."""
     f = np.fft.fftfreq(len(y)) * p.n                             # units of Rs
-    h = rrc_response(f, p.alpha) * np.exp(2j * np.pi * f / p.n * (L * p.n - 1) / 2)
+    h = rrc_response(f, p.alpha) * np.exp(2j * np.pi * f / p.n * (len(p.taps) - 1) / 2)
     if hold:
         h = h * np.sinc(f / p.n)
     return np.fft.ifft(np.fft.fft(y) * h)[::p.n]
@@ -304,18 +345,23 @@ def mer(p: Profile, y, sym, hold=True):
 def cyclic(p: Profile, count, seed):
     """Symbols for a periodic test signal: count symbols, with the last HISTORY copied in front."""
     s = random_symbols(p, count, seed)
-    return np.r_[s[-HISTORY:], s]
+    return np.r_[s[-p.history:], s]
 
 
 def pulse_mer(p: Profile, hold=True):
     """MER limited by the pulse alone (exact taps, no table rounding): sum of the receiver
     output's symbol-spaced sidelobes, by numerical integration over the RRC band."""
-    f = np.linspace(0, (1 + p.alpha) / 2, 20001)                 # units of Rs
-    k = np.arange(len(p.taps)) - (len(p.taps) - 1) / 2
-    a = (np.cos(2 * np.pi * np.outer(f, k) / p.n) * p.taps).sum(axis=1)
+    return pulse_mer_taps(p.taps, p.n, p.alpha, hold)
+
+
+def pulse_mer_taps(taps, n, alpha, hold=True):
+    """Pulse-only MER for arbitrary floating or quantized taps, same integral as pulse_mer."""
+    f = np.linspace(0, (1 + alpha) / 2, 20001)                  # units of Rs
+    k = np.arange(len(taps)) - (len(taps) - 1) / 2
+    a = (np.cos(2 * np.pi * np.outer(f, k) / n) * taps).sum(axis=1)
     if hold:
-        a *= np.sinc(f / p.n)
-    s = np.trapezoid(a * rrc_response(f, p.alpha) * np.cos(2 * np.pi * np.outer(np.arange(80), f)), f, axis=1)
+        a *= np.sinc(f / n)
+    s = np.trapezoid(a * rrc_response(f, alpha) * np.cos(2 * np.pi * np.outer(np.arange(80), f)), f, axis=1)
     return -10 * np.log10(2 * (s[1:] ** 2).sum() / s[0] ** 2)
 
 
@@ -334,7 +380,7 @@ def report_profile(p: Profile, count=16384, seed=7):
     s = cyclic(p, count, seed)
     y, exact = iq(shape(p, s)), linear(p, s)
     err = y - exact
-    sym = s[HISTORY:]
+    sym = s[p.history:]
     ref = np.exp(1j * np.pi * (sym.astype(np.int64) >> 4) / 4)
     gain = np.vdot(ref, receive(p, exact)) / np.vdot(ref, ref)
     # Rounding noise density against the signal's in-band density (|f| < 0.4 fN), both
@@ -349,7 +395,7 @@ def report_profile(p: Profile, count=16384, seed=7):
                    512 - int((r.min(axis=1) + b).sum(axis=0).min())) for r, b in zip(p.parts, p.biases))
     return dict(
         profile=p.name, alpha=p.alpha, samples_per_symbol=p.n, alphabet=p.alphabet,
-        span_symbols=L, kaiser_beta=KAISER_BETA, taps=len(p.taps),
+        span_symbols=p.span, equalized=p.equalized, kaiser_beta=KAISER_BETA, taps=len(p.taps),
         mask_hold=mask_margins(p.taps, p.n, p.alpha), mask_digital=mask_margins(p.taps, p.n, p.alpha, False),
         mer_pulse_db=pulse_mer(p), mer_pulse_no_hold_db=pulse_mer(p, False),
         mer_table_db=mer(p, y, sym), mer_table_no_hold_db=mer(p, y, sym, False),
@@ -381,7 +427,9 @@ def formats(n, alphabet, span=L):
 
 # Device tests (firmware/main/membench.c): symbol counts that nearly fill a 16380-word bank.
 TESTS = {"shape4": ("8psk-n4-a20", 4093), "shape4a35": ("8psk-n4-a35", 4093),
-         "shape8": ("8psk-n8-a20", 2047), "shape40": ("qpsk-n40-a20", 409)}
+         "shape5": ("8psk-n5-a20", 3276), "shape5a35": ("8psk-n5-a35", 3276),
+         "shape8": ("8psk-n8-a20", 2047), "shape8a35": ("8psk-n8-a35", 2047),
+         "shape40": ("qpsk-n40-a20", 409), "shape40a35": ("qpsk-n40-a35", 409)}
 SEED = 2026
 
 
@@ -393,12 +441,15 @@ def expected_checks():
         words = shape(p, random_symbols(p, count + HISTORY, SEED))
         out[f"{test}_build"] = checksum(p.table.ravel())
         out[f"{test}_c"] = out[f"{test}_pie"] = checksum(words)
+        if p.n == 4:
+            out[f"{test}_rows"] = out[f"{test}_all"] = checksum(words)
+            out[f"{test}_rows_all"] = checksum(words)
     return out
 
 
 def header_text():
     lines = ["// Generated by host/shaper.py header. Do not edit.",
-             f"// Pulse taps: RRC truncated to {L} symbols, Kaiser beta {KAISER_BETA}, in 1/256 LSB,",
+             f"// Pulse taps: inverse-hold RRC, {L} symbols, Kaiser beta {KAISER_BETA}, in 1/256 LSB,",
              f"// scaled to a worst-case peak of {PEAK} LSB. Phase levels cos and sin(k pi/4) in 2^-30.",
              "#pragma once", "#include <stdint.h>", "",
              f"#define SHAPER_SHIFT {SHIFT}  // part sum >> SHIFT (rounded) gives LSB",
