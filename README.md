@@ -56,7 +56,7 @@ with tables and whole-word operations (4.1 M to 0.38 M cycles per frame).
 
 Real 8PSK samples, a 9-symbol root-raised-cosine pulse, go into a DAC bank at 1.78 cycles per
 sample using the S3's 128-bit vector instructions. Each sample is the sum of three table words,
-so the whole 8PSK table fits in 64 KiB. That is 34% of one core at 40 MS/s, and 59% at 80 MS/s,
+so the whole 8PSK table fits in 64 KiB. That is 34% of one core at 40 MS/s, and 68% at 80 MS/s,
 the rate that would allow 20 Msym/s. [Run details](results/2026-10-16-shaper/README.md).
 
 ## Status

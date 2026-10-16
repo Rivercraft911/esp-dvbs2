@@ -7,8 +7,7 @@
 
 How samples are made. The DAC plays one 32-bit word per complex sample at 40 MS/s: signed 10-bit
 I in bits 9:0 and Q in bits 19:10 (esp-sdr-zephyr include/esp_sdr/esp_sdr_tx.h:84-88 at
-3214c16; docs/prior-art.md states the fields the other way round and must be corrected once a
-tone test settles it). Output sample p of symbol n is
+3214c16; confirmed on the board by the -1 MHz test signal in results/2026-10-16-radio). Output sample p of symbol n is
 
     y[nN + p] = sum_{a=0}^{L-1} x[n - a] g[aN + p],    x = exp(j pi k / 4), k = 0..7,
 

@@ -22,5 +22,6 @@ The prediction assumed one cycle per instruction plus load-use stalls and single
 SRAM access; the measurements confirm it.
 
 At 40 MS/s a bank is due every 356.7 µs, so 8PSK shaping uses 34% of one core. At 80 MS/s the
-same work would be 59% of one core. These runs had the radio off; contention with the DAC engine
+same work would be 68% of one core (corrected the same day: the first version said 59%, which is
+1.776 x 80/240 and leaves out that each 16,380-word fill covers only 14,268 new samples). These runs had the radio off; contention with the DAC engine
 reading the other bank is not included.
