@@ -25,6 +25,7 @@ class NativeEncoder:
     def __enter__(self):
         subprocess.run([sys.executable, str(ROOT / "host/gen_dvbs2_c.py"), "--check"],
                        check=True)
+        subprocess.run([sys.executable, str(ROOT / "host/gen_dvbs2_fast.py"), "--check"], check=True)
         self.tmp = tempfile.TemporaryDirectory(prefix="dvbs2-c-")
         folder = pathlib.Path(self.tmp.name)
         bridge = folder / "sizes.c"
@@ -36,7 +37,7 @@ class NativeEncoder:
         subprocess.run(shlex.split(os.environ.get("CC", "cc")) + [
             "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-fPIC", "-shared",
             "-I", str(component / "include"), str(component / "dvbs2.c"),
-            str(bridge), "-o", str(library)], check=True)
+            str(component / "fast.c"), str(bridge), "-o", str(library)], check=True)
         self.lib = ct.CDLL(str(library))
         api = {
             "workspace_size": (ct.c_size_t, []),
@@ -51,11 +52,27 @@ class NativeEncoder:
             "dvbs2_ldpc": (None, [ct.c_void_p, ct.c_void_p]),
             "dvbs2_map": (None, [ct.c_void_p, ct.c_void_p, U8P]),
             "dvbs2_plframe": (None, [ct.c_void_p, ct.c_int, U8P]),
+            "dvbs2_fast_size": (ct.c_size_t, []),
+            "dvbs2_fast_mode_size": (ct.c_size_t, [ct.c_void_p]),
+            "dvbs2_encode_frame": (ct.c_int, [ct.c_void_p, ct.c_void_p, ct.c_void_p,
+                                              U8P, ct.c_size_t, U8P]),
+            "dvbs2_fast_prepare": (ct.c_int, [ct.c_void_p, ct.c_void_p, ct.c_int, ct.c_uint]),
+            "dvbs2_fast_pie": (ct.c_uint, [ct.c_void_p]),
+            "dvbs2_fast_bb_gcs": (ct.c_int, [ct.c_void_p, ct.c_void_p, U8P, ct.c_size_t]),
+            "dvbs2_fast_bb_ts": (ct.c_int, [ct.c_void_p, ct.c_void_p, ct.c_void_p,
+                                           U8P, ct.c_size_t]),
+            "dvbs2_fast_bch": (None, [ct.c_void_p, ct.c_void_p]),
+            "dvbs2_fast_ldpc": (None, [ct.c_void_p, ct.c_void_p]),
+            "dvbs2_fast_map": (None, [ct.c_void_p, ct.c_void_p, U8P]),
+            "dvbs2_fast_pl": (None, [ct.c_void_p, U8P]),
         }
         for name, (result, arguments) in api.items():
             fn = getattr(self.lib, name)
             fn.restype, fn.argtypes = result, arguments
         self.ws = ct.create_string_buffer(self.lib.workspace_size())
+        # 16-byte aligned fast context inside an oversized buffer.
+        self.fast_raw = ct.create_string_buffer(self.lib.dvbs2_fast_size() + 16)
+        self.fast = ct.addressof(self.fast_raw) + (-ct.addressof(self.fast_raw) % 16)
         return self
 
     def __exit__(self, *args):
@@ -101,6 +118,28 @@ class NativeEncoder:
         np.testing.assert_array_equal(output, expected, err_msg="PLFRAME")
         assert np.all(raw[:16] == 0xA5) and np.all(raw[-16:] == 0xA5)
         return output.copy()
+
+
+    def fast_stages(self, bbf, mode, rate, modulation, pilots, offset=0):
+        """Fast path after fast_bb_*: every stage against the model and the
+        PLFRAME written at an arbitrary output offset with guard bytes."""
+        c = d.code(rate)
+        scr = d.bb_scramble(bbf)
+        np.testing.assert_array_equal(self.bits(c.kbch), scr, err_msg="fast BB")
+        self.lib.dvbs2_fast_bch(self.fast, self.ws)
+        bch = d.bch_encode(scr, rate)
+        np.testing.assert_array_equal(self.bits(c.nbch), bch, err_msg="fast BCH")
+        self.lib.dvbs2_fast_ldpc(self.fast, self.ws)
+        fec = d.ldpc_encode_groups(bch, rate)
+        np.testing.assert_array_equal(self.bits(c.n), fec, err_msg="fast LDPC")
+        count = self.lib.dvbs2_frame_symbols(mode, pilots)
+        raw = np.full(count + 64, 0xA5, np.uint8)
+        output = raw[16 + offset:16 + offset + count]
+        self.lib.dvbs2_fast_map(self.fast, self.ws, output.ctypes.data_as(U8P))
+        self.lib.dvbs2_fast_pl(self.fast, output.ctypes.data_as(U8P))
+        expected = d.plframe_phases(fec, rate, pilots=pilots, modulation=modulation)
+        np.testing.assert_array_equal(output, expected, err_msg="fast PLFRAME")
+        assert np.all(raw[:16 + offset] == 0xA5) and np.all(raw[16 + offset + count:] == 0xA5)
 
 
 def test_modes(native):
@@ -209,7 +248,120 @@ def test_invalid_inputs(native):
           "without modifying frame or stream state")
 
 
+def test_fast(native):
+    """Fast C path: GCS and TS frames in all modes, both pilot settings, PLFRAME
+    at 16 output alignments, LDPC impulses, and the same input checks."""
+    lib, fast = native.lib, native.fast
+    rng, frames = np.random.default_rng(1729), 0
+    for modcod, modulation, rate in MODES:
+        mode, c = lib.dvbs2_find_mode(modcod), d.code(rate)
+        capacity = c.kbch - 80
+        for pilots in (1, 0):
+            assert lib.dvbs2_fast_prepare(fast, mode, pilots, 0) == 0
+            assert lib.dvbs2_fast_pie(fast) == 0
+            for case, length in enumerate((capacity, 0, 13, capacity - 3)):
+                bits = rng.integers(0, 2, length, dtype=np.uint8)
+                packed = np.packbits(bits)
+                if length % 8:
+                    packed[-1] |= (1 << (8 - length % 8)) - 1
+                assert lib.dvbs2_fast_bb_gcs(fast, native.ws, packed.ctypes.data_as(U8P),
+                                             length) == 0
+                native.fast_stages(d.bbframe(bits, rate), mode, rate, modulation, pilots,
+                                   offset=(5 * frames) % 16)
+                frames += 1
+        assert lib.dvbs2_fast_prepare(fast, mode, 1, 0) == 0
+        size, count = (c.kbch - 80) // 8, 3
+        packets = rng.integers(0, 256, ((count * size + 187) // 188, 188), dtype=np.uint8)
+        packets[:, 0] = 0x47
+        expected = d.ts_bbframes(packets, rate)
+        stream = packets.ravel()
+        state = ct.create_string_buffer(lib.state_size())
+        for k in range(count):
+            payload = stream[k * size:(k + 1) * size]
+            assert lib.dvbs2_fast_bb_ts(fast, native.ws, state,
+                                        payload.ctypes.data_as(U8P), size) == 0
+            native.fast_stages(expected[k], mode, rate, modulation, 1, offset=k)
+            frames += 1
+    for modcod, rate in ((4, "1/2"), (13, "2/3"), (11, "9/10")):
+        mode, c = lib.dvbs2_find_mode(modcod), d.code(rate)
+        assert lib.dvbs2_fast_prepare(fast, mode, 1, 0) == 0
+        for bit in (0, 1, 7, 8, 31, 32, 351, 352, 359, 360, c.nbch - 1):
+            message = np.zeros(c.nbch, np.uint8)
+            message[bit] = 1
+            native.load(message)
+            lib.dvbs2_fast_ldpc(fast, native.ws)
+            np.testing.assert_array_equal(native.bits(c.n), d.ldpc_encode(message, rate),
+                                          err_msg=f"fast LDPC {rate} impulse {bit}")
+    mode = lib.dvbs2_find_mode(4)
+    assert lib.dvbs2_fast_prepare(fast, mode, 1, 0) == 0
+    cap = (d.code("1/2").kbch - 80) // 8
+    data = np.zeros(cap, np.uint8)
+    data[::188] = 0x47
+    state = ct.create_string_buffer(lib.state_size())
+    before = bytes(native.ws)
+    assert lib.dvbs2_fast_bb_gcs(fast, native.ws, data.ctypes.data_as(U8P), cap * 8 + 1) == -1
+    for length in (cap - 1, cap + 1):
+        assert lib.dvbs2_fast_bb_ts(fast, native.ws, state, data.ctypes.data_as(U8P),
+                                    length) == -1
+    data[376] = 0
+    assert lib.dvbs2_fast_bb_ts(fast, native.ws, state, data.ctypes.data_as(U8P), cap) == -1
+    assert bytes(native.ws) == before and not any(bytes(state))
+    assert lib.dvbs2_fast_prepare(fast, None, 1, 0) == -1
+    print(f"C fast path: {frames} GCS/TS frames, all 14 modes, pilots on/off, every stage "
+          "and the PLFRAME at shifted output addresses; 33 LDPC impulses; input checks")
+
+
+
+def test_complete_frame(native):
+    lib = native.lib
+    for modcod, modulation, rate in MODES:
+        mode = lib.dvbs2_find_mode(modcod)
+        size = lib.dvbs2_fast_mode_size(mode)
+        assert 0 < size <= lib.dvbs2_fast_size() < 22000
+        n = (d.code(rate).kbch - 80) // 8
+        payload = np.random.default_rng(modcod).integers(0, 256, n, dtype=np.uint8)
+        for pilots in (0, 1):
+            # Allocate only this mode's advertised size and guard both ends.
+            raw = np.full(size + 64, 0xA5, np.uint8)
+            at = 16 + (-raw.ctypes.data % 16)
+            f = raw.ctypes.data + at
+            assert lib.dvbs2_fast_prepare(f, mode, pilots, 15) == 0
+            count = lib.dvbs2_frame_symbols(mode, pilots)
+            output = np.full(count + 32, 0x5A, np.uint8)
+            dst = output[16:-16].ctypes.data_as(U8P)
+            bits = np.unpackbits(payload)[:-3]
+            assert lib.dvbs2_encode_frame(f, native.ws, None, payload.ctypes.data_as(U8P), len(bits), dst) == 0
+            expected = d.plframe_phases(d.fecframe(d.bbframe(bits, rate), rate), rate,
+                                        pilots=pilots, modulation=modulation)
+            np.testing.assert_array_equal(output[16:-16], expected)
+            assert np.all(raw[:at] == 0xA5) and np.all(raw[at + size:] == 0xA5)
+            assert np.all(output[:16] == 0x5A) and np.all(output[-16:] == 0x5A)
+            # TS continuation through the complete API agrees with the original stages.
+            state = ct.create_string_buffer(lib.state_size())
+            refstate = ct.create_string_buffer(lib.state_size())
+            for frame in range(2):
+                stream = payload.copy()
+                stream[np.arange(n)[(np.arange(n) + frame * n) % 188 == 0]] = 0x47
+                src = stream.ctypes.data_as(U8P)
+                assert lib.dvbs2_bb_ts(native.ws, mode, refstate, src, n) == 0
+                bbf = native.bits(d.code(rate).kbch).copy()
+                expected = d.plframe_phases(d.fecframe(bbf, rate), rate, pilots=pilots, modulation=modulation)
+                assert lib.dvbs2_encode_frame(f, native.ws, state, src, 8*n, dst) == 0
+                np.testing.assert_array_equal(output[16:-16], expected)
+                assert state.raw == refstate.raw
+            saved = native.ws.raw, state.raw, output.copy()
+            for args in ((f, native.ws, state, src, 8*n - 1, dst),
+                         (f, native.ws, None, src, 8*n + 1, dst),
+                         (f, native.ws, None, src, 8*n, None),
+                         (None, native.ws, None, src, 8*n, dst)):
+                assert lib.dvbs2_encode_frame(*args) == -1
+                assert native.ws.raw == saved[0] and state.raw == saved[1]
+                np.testing.assert_array_equal(output, saved[2])
+    assert lib.dvbs2_fast_mode_size(None) == 0
+    print("complete fast API: all modes, both pilots, GCS/TS continuation, exact-sized contexts and invalid-input guards")
+
 if __name__ == "__main__":
     with NativeEncoder() as native:
-        for test in (test_modes, test_gcs, test_ts, test_ldpc_boundaries, test_invalid_inputs):
+        for test in (test_modes, test_gcs, test_ts, test_ldpc_boundaries, test_invalid_inputs,
+                     test_fast, test_complete_frame):
             test(native)

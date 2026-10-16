@@ -62,7 +62,8 @@ static DRAM_ATTR dvb_t dvb;
 
 typedef struct {
     const dvbs2_mode *mode;
-    dvbs2_workspace *ws;
+    dvbs2_fast *fast;               // fast encoder context for this mode, internal RAM
+    dvbs2_workspace *ws;            // cached PSRAM
     uint8_t *payload;               // one frame of payload, PSRAM
     uint8_t *slots, *filler;        // PSRAM
     uint32_t stall_ms;
@@ -121,17 +122,12 @@ static IRAM_ATTR esp_err_t fill(uint32_t *dst, uint64_t first, size_t count, voi
 }
 
 // One PL frame of phase codes 16 k from `bytes` payload bytes (0: an empty BBFRAME).
-static int encode(const dvbs2_mode *mode, dvbs2_workspace *ws, const uint8_t *payload,
+static int encode(dvbs2_fast *fast, dvbs2_workspace *ws, const uint8_t *payload,
                   size_t bytes, uint8_t *out, size_t symbols)
 {
-    if (dvbs2_bb_gcs(ws, mode, payload, bytes * 8)) {
+    if (dvbs2_encode_frame(fast, ws, NULL, payload, bytes * 8, out)) {
         return -1;
     }
-    dvbs2_bb_scramble(ws, mode);
-    dvbs2_bch(ws, mode);
-    dvbs2_ldpc(ws, mode);
-    dvbs2_map(ws, mode, out + 90);
-    dvbs2_plframe(mode, PILOTS, out);
     for (size_t i = 0; i < symbols; ++i) {
         out[i] <<= 4;
     }
@@ -156,7 +152,7 @@ static void encoder_task(void *arg)
         for (size_t i = 0; i < bytes; ++i) {
             e->payload[i] = next_byte(&x);
         }
-        if (encode(e->mode, e->ws, e->payload, bytes, out, dvb.ring.frame_symbols)) {
+        if (encode(e->fast, e->ws, e->payload, bytes, out, dvb.ring.frame_symbols)) {
             e->failed = true;
             goto done;
         }
@@ -178,11 +174,12 @@ done:
 static void release(void)
 {
     (void)heap_caps_monitor_local_minimum_free_size_stop();
+    heap_caps_free(enc.fast);
     heap_caps_free(enc.ws);
     heap_caps_free(enc.payload);
     heap_caps_free(enc.slots);
     heap_caps_free(enc.filler);
-    enc.ws = NULL, enc.payload = enc.slots = enc.filler = NULL;
+    enc.fast = NULL, enc.ws = NULL, enc.payload = enc.slots = enc.filler = NULL;
 }
 
 // Build the scaled table and the filler frame, start the encoder on core 0 and wait until it has
@@ -200,16 +197,21 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
     enc.mode = mode;
     enc.stall_ms = stall_ms;
     enc.min_cycles = UINT32_MAX;
-    enc.ws = heap_caps_aligned_alloc(16, sizeof *enc.ws, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    // Fast encoder: per-mode context in internal RAM, workspace in cached PSRAM
+    // (components/dvbs2/include/dvbs2.h).
+    enc.fast = heap_caps_aligned_alloc(16, dvbs2_fast_mode_size(mode),
+                                       MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    enc.ws = heap_caps_aligned_alloc(16, sizeof *enc.ws, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     enc.payload = heap_caps_malloc((mode->kbch - 80) / 8, MALLOC_CAP_SPIRAM);
     enc.slots = heap_caps_malloc(RING_SLOTS * symbols, MALLOC_CAP_SPIRAM);
     enc.filler = heap_caps_malloc(symbols, MALLOC_CAP_SPIRAM);
-    if (!enc.ws || !enc.payload || !enc.slots || !enc.filler) {
+    if (!enc.fast || !enc.ws || !enc.payload || !enc.slots || !enc.filler ||
+            dvbs2_fast_prepare(enc.fast, mode, PILOTS, 15)) {
         printf("@{\"cmd\":\"%s\",\"error\":\"allocation failed\"}\n", cmd);
         release();
         return 0;
     }
-    if (encode(mode, enc.ws, NULL, 0, enc.filler, symbols)) {
+    if (encode(enc.fast, enc.ws, NULL, 0, enc.filler, symbols)) {
         printf("@{\"cmd\":\"%s\",\"error\":\"encoder failed\"}\n", cmd);
         release();
         return 0;

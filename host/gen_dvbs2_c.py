@@ -22,8 +22,9 @@ def multiply(a, b):
     return product
 
 
-def array(name, ctype, values, columns=12):
-    out = [f"static const {ctype} {name}[{len(values)}] = {{"]
+def array(name, ctype, values, columns=12, aligned=False):
+    attr = " __attribute__((aligned(16)))" if aligned else ""
+    out = [f"static const {ctype} {name}[{len(values)}]{attr} = {{"]
     for k in range(0, len(values), columns):
         out.append("    " + ", ".join(str(v) for v in values[k:k + columns]) + ",")
     return "\n".join(out + ["};\n"])
@@ -67,7 +68,7 @@ def generate():
             state = ((state << 1) | bit) & 0x7fff
             byte = (byte << 1) | bit
         prbs.append(byte)
-    out.append(array("bb_prbs", "uint8_t", prbs, 16))
+    out.append(array("bb_prbs", "uint8_t", prbs, 16, aligned=True))
     # The Gold generators are periodic at 2**18-1. Pack four pi/2
     # rotations per byte, earliest symbol in bits 1:0.
     period = (1 << 18) - 1

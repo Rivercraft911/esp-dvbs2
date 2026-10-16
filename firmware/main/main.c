@@ -9,7 +9,7 @@
 //   dvb <MHz> <modcod> <1..60 seconds> [0..17 gain] [16..508 peak]  DVB-S2 QPSK on air (dvbtx.c)
 //   dvbdump <modcod> <frames> [peak] [decimation] [stall ms]  the same samples over USB, no radio
 //   dvbpace <modcod> <seconds> [peak] [stall ms]  the same encoder, fills and deadlines, no radio
-//   fecbench   normal-frame encoder correctness and stage timing (fecbench.c)
+//   fecbench [plain|c|pie]  normal-frame encoder correctness and stage timing (fecbench.c)
 //   usbrx N    receive N bytes over USB as fast as the host sends them; report the rate
 
 #include <errno.h>
@@ -262,7 +262,9 @@ void app_main(void)
                 printf("@{\"cmd\":\"chain\",\"error\":\"usage: chain <forced|cw|cw40|cwgain>\"}\n");
             }
         } else if (strcmp(line, "fecbench") == 0) {
-            fecbench_run();
+            fecbench_run("plain");
+        } else if (strncmp(line, "fecbench ", 9) == 0) {
+            fecbench_run(line + 9);
         } else if (strncmp(line, "usbrx ", 6) == 0) {
             cmd_usbrx((unsigned)strtoul(line + 6, NULL, 10));
         } else {
