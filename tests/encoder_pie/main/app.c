@@ -61,6 +61,13 @@ static void packed_check(void)
                         memset(out, 0xa5, 16704);
                         assert(!dvbs2_encode_frame_packed(f, ws, NULL, borrowed, bytes*8, dst));
                         const unsigned qn = (symbols+3)/4;
+                        if (memcmp(dst, quad, qn)) {
+                            for (unsigned i = 0; i < qn; ++i) if (dst[i] != quad[i]) {
+                                printf("quad mismatch mc=%u pilots=%u sparse=%u offset=%u byte=%u got=%02x want=%02x\n",
+                                       mc, pilots, sparse, offset, i, dst[i], quad[i]);
+                                break;
+                            }
+                        }
                         assert(!memcmp(dst, quad, qn));
                         for (size_t i = 0; i < tail_bytes; ++i)
                             assert(tail[i] == (uint8_t)(13 * offset + mc));

@@ -54,6 +54,7 @@ else:
  elif kind=='dvbpace':
   r.update(seconds=int(x[-1]),late_fills=0,late_switches=0,fatal_late=0,min_fill_slack_cycles=1,
            max_fill_cycles=1,encode_cycles_mean=1,encode_cycles_live_max=1,
+           encode_kernel_cycles_mean=1,encode_kernel_cycles_live_max=1,
            prefill_frames=r['ring_slots'],frames_played=10,profile=dict(shaped_words=8,reused_words=2,fill_words=10))
   # Exercise the exact two-percent boundary for each timing metric.
   old={'11 20m':('dvbpace 11 20mq4 30','max_fill_cycles'),
@@ -67,12 +68,18 @@ else:
   if fir:
    ceiling=240000000*symbols*n*85//(rate*den*100)
    r.update(max_fill_cycles=40137+bool(bad),encode_cycles_mean=ceiling,encode_cycles_live_max=ceiling)
+  if os.getenv('ENCODER_GATES') and token=='20m':
+   # Test both exact target boundaries and independent mean/live failures.
+   r['encode_kernel_cycles_mean']=r['encode_kernel_cycles_live_max']=125827
+   if bad and mc==13:r['encode_kernel_cycles_mean']+=1
+   if bad and mc==15:r['encode_kernel_cycles_live_max']+=1
   rows=[r]
  else:
   r.update(wifi_free_up=50000,wifi_min_free=50000,frames_played=0,positions=0,max_fill_call_cycles=0)
   if bad and mc==17:r['wifi_free_up']=22350
   if bad and mc==11:r['wifi_min_free']=41386
   if bad and fir:r['wifi_min_free']=19999
+  if bad and os.getenv('ENCODER_GATES'):r['wifi_min_free']=20479
   rows=[r]
 with a.out.open('a') as f:
  for r in rows:f.write(json.dumps(dict(command=a.command,**r))+'\n')
@@ -116,4 +123,19 @@ with tempfile.TemporaryDirectory() as tmp:
         commands=[json.loads(line) for line in (root/'commands.jsonl').read_text().splitlines()]
         assert commands[-1]==('wifimem 17 26m667' if moon else 'wifimem 13 20m'), commands
         assert len(commands)==(17 if moon else 22)*(2 if fail else 1), commands
+    plan=subprocess.run(['sh','host/check.sh','--encoder','--plan'],cwd=root,env=env,
+                        capture_output=True,text=True,check=True)
+    assert '135,827' in plan.stdout and '203,685' in plan.stdout and '20480 B' in plan.stdout
+    for fail in (False,True):
+        out=root/('encoder-bad' if fail else 'encoder-good')
+        run=subprocess.run(['sh','host/check.sh','--encoder',str(out)],cwd=root,
+                           env=dict(env,ENCODER_GATES='1',**({'FAIL_GATES':'1'} if fail else {})),
+                           capture_output=True,text=True,timeout=60)
+        assert run.returncode == int(fail), (run.stdout,run.stderr)
+        summary=(out/'summary.tsv').read_text().splitlines()
+        assert len(summary)==23, summary
+        failures=[line for line in summary if line.startswith('FAIL')]
+        assert len(failures)==(7 if fail else 0), failures
+        commands=[json.loads(line) for line in (root/'commands.jsonl').read_text().splitlines()]
+        assert commands[-1]=='wifimem 17 20m' and len(commands)==44+16*(2 if fail else 1), commands
 print('check: dry plan, all commands run after failures, strict CRC/decode/2%/heap gates, final exit and summary pass')

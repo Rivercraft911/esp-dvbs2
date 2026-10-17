@@ -100,6 +100,8 @@ typedef struct {
     uint32_t frames;                // encoded and published
     uint64_t cycles;                // per frame: payload and encoding, raw
     uint32_t min_cycles, max_cycles, live_max_cycles; // live excludes the initial ring prefill
+    uint64_t kernel_cycles;        // same-frame interval after payload generation
+    uint32_t kernel_live_max;
     stream_profile_t stage[6];      // payload, BB, BCH, LDPC, map, PL
     uint32_t slot_waits;
 } encoder_t;
@@ -263,6 +265,8 @@ static void encoder_task(void *arg)
         for (size_t i = 0; i < bytes; ++i) {
             payload[i] = next_byte(&x);
         }
+        // Keep station ID and profiling in the interval paired with a future input copy.
+        const uint32_t kernel_start = esp_cpu_get_cycle_count();
         station_payload_header(payload, bytes, station_store_get());
         if (dvb.profile) {
             after = stream_mark();
@@ -300,13 +304,16 @@ static void encoder_task(void *arg)
             e->failed = true;
             goto done;
         }
-        const uint32_t spent = esp_cpu_get_cycle_count() - start;
+        const uint32_t end = esp_cpu_get_cycle_count();
+        const uint32_t spent = end - start, kernel_spent = end - kernel_start;
         ring_publish(&dvb.ring, f);
         e->frames = f + 1;
         e->cycles += spent;
+        e->kernel_cycles += kernel_spent;
         e->min_cycles = spent < e->min_cycles ? spent : e->min_cycles;
         e->max_cycles = spent > e->max_cycles ? spent : e->max_cycles;
         if (f >= dvb.ring.nslots && spent > e->live_max_cycles) e->live_max_cycles = spent;
+        if (f >= dvb.ring.nslots && kernel_spent > e->kernel_live_max) e->kernel_live_max = kernel_spent;
         if (e->stall_ms) {
             vTaskDelay(pdMS_TO_TICKS(e->stall_ms));
         }
@@ -602,13 +609,15 @@ static void stop_encoder(void)
            "\"frames_played\":%" PRIu32 ",\"positions\":%" PRIu32 ",\"underruns\":%" PRIu32 ","
            "\"min_lead_symbols\":%lld,\"encode_cycles_mean\":%" PRIu64 ","
            "\"encode_cycles_min\":%" PRIu32 ",\"encode_cycles_max\":%" PRIu32 ","
-           "\"encode_cycles_live_max\":%" PRIu32 ",\"prefill_frames\":%u,"
+           "\"encode_cycles_live_max\":%" PRIu32 ","
+           "\"encode_kernel_cycles_mean\":%" PRIu64 ",\"encode_kernel_cycles_live_max\":%" PRIu32 ",\"prefill_frames\":%u,"
            "\"encoder_failed\":%s,\"max_fill_call_cycles\":%" PRIu32 ",\"free_internal\":%u,"
            "\"largest_internal\":%u,\"min_free_internal\":%u",
            (int)r->nslots, enc.stall_ms, enc.frames, r->next_frame, r->next_position, r->underruns,
            r->min_lead == INT64_MAX ? -1LL : (long long)r->min_lead,
            enc.frames ? enc.cycles / enc.frames : 0, enc.frames ? enc.min_cycles : 0,
-           enc.max_cycles, enc.live_max_cycles, (unsigned)r->nslots,
+           enc.max_cycles, enc.live_max_cycles,
+           enc.frames ? enc.kernel_cycles / enc.frames : 0, enc.kernel_live_max, (unsigned)r->nslots,
            enc.failed ? "true" : "false", dvb.max_fill_cycles,
            (unsigned)internal, (unsigned)largest, (unsigned)lowest);
     printf(",\"callsign\":\"%s\",\"encoder_timed\":true,\"sps\":%.8g,\"sps_num\":%u,\"sps_den\":%u,\"fill_kernel\":\"%s\"",
@@ -623,7 +632,8 @@ static void stop_encoder(void)
            (unsigned)heap_caps_get_allocated_size(enc.fast),
            enc.bch ? (unsigned)heap_caps_get_allocated_size(enc.bch) : 0,
            enc.bch ? DVBS2_BCH_CACHE_BYTES : 0,
-           enc.bch ? "resident-byte" : "nibble",
+           enc.bch ? "resident-byte" : enc.packed && (dvb.fir || enc.mode->bits_per_symbol == 2 || dvb.table.n == 4)
+                                      && enc.mode->t == 8 ? "flash-pair" : "nibble",
            !enc.packed ? "none" : enc.quads ? "quads" : dvb.fir || enc.mode->bits_per_symbol == 2 || dvb.table.n == 4 ? "direct" : "sparse");
     printf(",\"ring_memory\":\"%s\",\"ring_format\":\"%s\",\"ring_heap_bytes\":%u,"
            "\"payload_memory\":\"%s\",\"slot_waits\":%" PRIu32,

@@ -91,7 +91,7 @@ before running and continues after failures. It never flashes, retunes, keys,
 changes NVS or invokes an SDR. It uses stored N0CALL and verifies the firmware
 revision. `--plan` opens no devices.
 
-The slim check verifies all 57 golden CRCs on the host, nine board dumps
+The slim check verifies all 58 golden CRCs on the host, nine board dumps
 (six 16-frame fast-mode dumps and three regressions), each decoded by LeanDVB,
 140 FEC CRCs, four key 30 s paces, four 10 s regression paces and three Wi-Fi
 memory probes. `--all-crcs`

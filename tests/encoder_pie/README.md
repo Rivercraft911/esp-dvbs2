@@ -2,7 +2,7 @@
 
 This app runs the actual `fecbench pie` command, then checks 896 complete packed
 frames: all 14 QPSK/8PSK MODCODs, pilots on/off, all 16 output alignments, both the direct
-mapper with resident byte BCH (t = 10/12) and sparse mapper with nibble BCH,
+mapper with resident byte BCH (t = 10/12) or flash paired BCH (t = 8), and sparse mapper with nibble BCH,
 and guarded output buffers. Its oracle is the portable C
 encoder, whose stages are checked against Python by `tests/test_dvbs2_c.py`.
 It also checks 512 four-code QPSK frames with borrowed context payload, both BCH

@@ -16,12 +16,14 @@ p.add_argument('out', nargs='?', type=pathlib.Path)
 p.add_argument('--plan', action='store_true', help='print every criterion without running anything')
 p.add_argument('--moonshot', action='store_true', help='33m333 and 8PSK 26m667 gates, plus slim regressions')
 p.add_argument('--all-crcs', action='store_true', help='also dump every golden waveform on the board (much slower)')
+p.add_argument('--encoder', action='store_true', help='encoder candidate: target 9/10, stage timings and estimated 10k-cycle input')
 a = p.parse_args()
 python = sys.executable
 receiver = os.getenv('RX', '/Users/river/Documents/stanford/SSI/esp-dvbs2/notes/leansdr/src/apps/leandvb')
 firmware = subprocess.check_output(['git','describe','--always','--dirty'], text=True).strip()
 golden = json.loads(pathlib.Path('tests/data/waveform_crcs.json').read_text())
-# mc/sps/DAC MHz/frames. Golden CRCs come from 46f90af, including its adopted opt-in pulses.
+# mc/sps/DAC MHz/frames. Original 57 CRCs: 46f90af with adopted opt-in pulses.
+# The extra 17/4/80/16 fixture is checked by the plain encoder and LeanDVB.
 selected = ['4/40/40/16', '13/8/40/16', '13/4/40/40',
             '4/4/80/16', '11/4/80/16', '13/4/80/16', '15/4/80/16',
             '4/3/80/16', '11/3/80/16']
@@ -40,6 +42,17 @@ paces = [(4,'',10,'2026-10-17-next4','dvbpace 4 30'),
          (17,'5m',30,'2026-10-17-qpsk-goal','dvbpace 17 5m 30'),
          (13,'10m',10,'2026-10-17-next4','dvbpace 13 10m 30'),
          (15,'20m',30,'2026-10-17-next4','dvbpace 15 20ms6 30')]
+if a.encoder:
+    selected = ['11/3/80/16','17/4/80/16','13/4/80/16','15/4/80/16',
+                '13/8/40/16','4/40/40/16']
+    paces = [(11,'26m667',30,'2026-10-17-qpsk-goal','dvbpace 11 26m667 30'),
+             # 17 has no fast-stream board baseline. Reuse 15's fill ceiling;
+             # the absolute post-payload target below is its encoder gate.
+             (17,'20m',30,'2026-10-17-next4','dvbpace 15 20ms6 30'),
+             (13,'20m',30,'2026-10-17-next4','dvbpace 13 20ms6 30'),
+             (15,'20m',30,'2026-10-17-next4','dvbpace 15 20ms6 30'),
+             (17,'5m',10,'2026-10-17-qpsk-goal','dvbpace 17 5m 30')]
+if a.all_crcs: selected = list(golden)
 metrics = ('max_fill_cycles','encode_cycles_mean','encode_cycles_live_max')
 
 def baseline(topic, command):
@@ -50,8 +63,10 @@ def baseline(topic, command):
     return found[0]
 
 limits = [{k:baseline(topic,cmd)[k]*102//100 for k in metrics} for _,_,_,topic,cmd in paces]
+if a.encoder: limits[1] = {'max_fill_cycles':limits[1]['max_fill_cycles']}
 # Exact previously measured heap floors: free with Wi-Fi up / command low-water, bytes.
 wifi = [(17,'5m',22351,22351), (11,'26m667',43203,41387), (13,'20m',36727,34875)]
+if a.encoder: wifi = [(17,'5m',20480,20480), (11,'26m667',20480,20480), (17,'20m',20480,20480)]
 
 if a.moonshot:
     # Exact 240 MHz deadlines, 15% reserve. No host-clock timing thresholds.
@@ -92,6 +107,10 @@ print('Paces: selected 30 s key runs and 10 s regressions; zero late fills/switc
 for (mc,token,seconds,topic,old),limit in zip(paces,limits):
     print(f'  {mc} {token or "1m"}, {seconds} s: ceilings {limit} cycles (encoder cycles/frame); '+(f'<=102% of {topic}: {old}' if topic else '85% of the exact deadline'))
 for mc,token,up,low in wifi: print(f'  wifimem {mc} {token}: up >= {up} B, minimum >= {low} B; no playback.')
+if a.encoder:
+    print('Encoder planning gate: same-frame post-payload mean AND live maximum + estimated 10,000 cycles/input copy')
+    print('  <= 135,827 cycles/frame for internal 8PSK; <= 203,685 for QPSK 9/10 at 26m667.')
+    print('  These are floor(0.85 * 240e6 * frame_symbols / (100e6/3)); real SPI input must be measured later.')
 print('Continue after failures, print every result and exit nonzero if any gate fails.', flush=True)
 if a.plan: sys.exit(0)
 out = a.out or pathlib.Path('notes',dt.datetime.now().strftime('check-%Y%m%d-%H%M%S'))
@@ -181,6 +200,10 @@ def pace(mc,token,seconds,limit):
     assert r['seconds'] == seconds and r['dac_rate'] == mode(mc,token)[1], r
     assert all(r[k] == 0 for k in ('late_fills','late_switches','fatal_late')), r
     assert r['min_fill_slack_cycles'] > 0 and all(r[k] <= v for k,v in limit.items()), r
+    if a.encoder and (token == '20m' or mc == 11):
+        ceiling = 203685 if mc < 12 else 135827
+        assert r['encode_kernel_cycles_mean'] + 10000 <= ceiling, r
+        assert r['encode_kernel_cycles_live_max'] + 10000 <= ceiling, r
     assert r['prefill_frames'] == r['ring_slots'] and r['frames_played'] > 0, r
     f = r['profile']
     assert f['shaped_words'] + f['reused_words'] == f['fill_words'], r

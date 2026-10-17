@@ -86,8 +86,9 @@ void dvbs2_plframe(const dvbs2_mode *mode, int pilots, uint8_t *output);
  * header and pilots. output: dvbs2_frame_symbols(mode, pilots) bytes, any
  * alignment. */
 typedef struct dvbs2_fast dvbs2_fast;
-/* NIBBLE uses register-based BCH rows for PSRAM workspaces; the default byte
- * rows are cached in internal RAM by the fast stream. MAP_SPARSE keeps the
+/* NIBBLE uses register-based BCH rows for PSRAM workspaces; default t=10/12
+ * byte rows are cached internally, while t=8 uses paired byte rows in flash.
+ * MAP_SPARSE keeps the
  * 8PSK mapper's hot cache footprint at 512 B beside a PSRAM workspace.
  * MAP_QUADS selects the QPSK block shaper's four-symbol bytes.
  * RO_20 selects GCS BBHEADER roll-off 0.20; the default is 0.35. */
