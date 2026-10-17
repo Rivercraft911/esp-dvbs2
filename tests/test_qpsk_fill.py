@@ -63,6 +63,18 @@ def test_model():
     print('QPSK model: 9-symbol convolution within 1.5 LSB/axis; full table extrema fit, pulse mask passes')
 
 
+def test_geometry():
+    assert q.geometry(0) == dict(fresh=[(0,16380)],reused=0,saved=768)
+    assert q.geometry(1)['reused'] == 768
+    for n in (3,4):
+        for bank in range(2,3278):
+            g = q.geometry(bank)
+            assert sum(count for _,count in g['fresh']) == 15740
+            assert g['reused'] == 640 and g['saved'] <= 1536
+            assert all(at%4 == count%4 == 0 for at,count in g['fresh'])
+    print('QPSK geometry: all bank/block phases, first-bank extra lead, at most two cache saves')
+
+
 def test_native():
     with tempfile.TemporaryDirectory() as tmp:
         folder = pathlib.Path(tmp)
@@ -76,5 +88,6 @@ def test_native():
 
 if __name__ == '__main__':
     test_model()
+    test_geometry()
     test_native()
     if len(sys.argv)>1: check_records(pathlib.Path(sys.argv[1]).read_text())

@@ -2,9 +2,11 @@
 """Four-symbol QPSK tables, independent sample oracle and assembled issue model. No devices."""
 import argparse
 import json
+import math
 import pathlib
 import numpy as np
 import shaper as s
+import shaper_cycles as c
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 HEADER = ROOT / 'firmware/main/shaper_qpsk_taps.h'
@@ -65,14 +67,104 @@ def header_text():
     return '\n'.join(lines) + '\n'
 
 
+BANK, STEP, LEAD, CACHE = 16380, 15740, 128, 768
+
+
+def geometry(bank):
+    first = bank*STEP-LEAD if bank else 0
+    end = (bank-1)*STEP-LEAD+BANK if bank > 1 else BANK if bank else 0
+    head = BANK-first%BANK
+    pieces = [(first,head)] + ([(first+head,BANK-head)] if head < BANK else [])
+    fresh = [(max(at,end),at+count-max(at,end)) for at,count in pieces if at+count > end]
+    return dict(fresh=fresh,reused=BANK-sum(count for _,count in fresh),
+                saved=sum(min(count,CACHE) for _,count in fresh))
+
+
+def coefficients(code):
+    # Positive groups: leading beqz is not taken. Interlocks are retained across iterations.
+    first = c.replay(c.loop_stream(code,1))['cycles']
+    step = c.replay(c.loop_stream(code,2))['cycles']-first
+    return first-step,step
+
+
+def bank_model(n, bank, costs):
+    g = geometry(bank)
+    row, (base,step) = 4*n,costs
+    kernel = inputs = partial_words = 0
+    for at,count in g['fresh']:
+        skip = at%row
+        head = min(row-skip,count) if skip else 0
+        groups,tail = divmod(count-head,row)
+        calls = bool(head)+bool(groups)+bool(tail)
+        kernel += base*calls+step*(bool(head)+groups+bool(tail))
+        inputs += 2+math.ceil((skip+count)/row)
+        partial_words += head+tail
+    # Both buffers' word addresses track the global sample modulo four. PIE copies have
+    # aligned bodies; 160 cycles allows copy prologues and <=4-word scalar tails per bank.
+    copies = .5*(g['reused']+g['saved'])+160
+    # Assumptions, separately visible: one cycle/packed input byte; C edge copies at 6/word;
+    # 1500 cycles for ROM division, wrappers, cache/ring bookkeeping and scheduler overhead.
+    glue = 1500
+    total = kernel+inputs+6*partial_words+copies+glue
+    wake = 2348 if bank else 0  # prior measured stream notification maximum, not probe work
+    return dict(bank=bank,sps=n,kernel_cycles=kernel,packed_input_bytes=inputs,
+                assumed_input_cycles=inputs,partial_words=partial_words,
+                assumed_partial_cycles=6*partial_words,copy_cycles=copies,
+                assumed_glue_cycles=glue,reused_words=g['reused'],saved_words=g['saved'],
+                estimated_probe_cycles=total,notification_allowance_cycles=wake,
+                estimated_stream_cycles=total+wake,stress_25pct_stream_cycles=total*1.25+wake)
+
+
+def report(disassembly):
+    functions = c.functions(disassembly)
+    for n in (3,4):
+        code = functions[f'shaper_qpsk{n}_pie']
+        costs = coefficients(code)
+        groups = BANK//(4*n)
+        yield dict(kind='kernel',sps=n,groups=groups,samples=groups*4*n,
+                   cycles_per_sample=costs[1]/(4*n),**c.replay(c.loop_stream(code,groups)))
+        period = math.lcm(BANK,4*n)//math.gcd(STEP,math.lcm(BANK,4*n))
+        yield dict(kind='startup',**bank_model(n,0,costs))
+        yield dict(kind='steady',phase_period_banks=period,
+                   **max((bank_model(n,k,costs) for k in range(1,period+2)),
+                         key=lambda x:x['estimated_probe_cycles']))
+
+
+def check_membench(path):
+    rows = [json.loads(line.lstrip('@')) for line in pathlib.Path(path).read_text().splitlines()
+            if line.lstrip('@').startswith('{')]
+    seen = set()
+    for r in rows:
+        name = r.get('test','')
+        if name not in ('qpsk3_c','qpsk3_pie','qpsk4_c','qpsk4_pie'): continue
+        n = int(name[4])
+        x,src = 2026,[]
+        for _ in range(2+BANK//(4*n)):
+            x ^= x << 13 & 0xffffffff
+            x ^= x >> 17
+            x ^= x << 5 & 0xffffffff
+            src.append((x >> 16) & 255)
+        assert r['check'] == s.checksum(shape(np.array(src,np.uint8),n)),r
+        assert r['words'] == BANK//(4*n)*(4*n),r
+        seen.add(name)
+    assert len(seen) == 4,seen
+    print('QPSK membench: four checks match Python')
+
+
 if __name__ == '__main__':
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument('--header', action='store_true')
+    ap.add_argument('--header',action='store_true')
+    ap.add_argument('--disassembly',type=pathlib.Path)
+    ap.add_argument('--membench',type=pathlib.Path)
     args = ap.parse_args()
     if args.header:
         HEADER.write_text(header_text())
+    elif args.disassembly:
+        for row in report(args.disassembly): print(json.dumps(row,sort_keys=True))
+    elif args.membench:
+        check_membench(args.membench)
     else:
         for n in (3,4):
-            print(json.dumps(dict(sps=n, table_bytes=table(n).nbytes,
+            print(json.dumps(dict(sps=n,table_bytes=table(n).nbytes,
                                   table_check=s.checksum(table(n).ravel()),
                                   mask=s.mask_margins(pulse(n),n,.35))))
