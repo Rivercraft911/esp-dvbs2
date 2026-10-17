@@ -14,7 +14,7 @@ void ring_init(ring_t *r, uint8_t *slots, uint32_t nslots, const uint8_t *filler
     r->slots = slots;
     r->nslots = nslots;
     r->filler = filler;
-    r->frame_symbols = frame_symbols;
+    r->frame_symbols = r->filler_symbols = frame_symbols;
     r->min_lead = INT64_MAX;
 }
 
@@ -32,12 +32,15 @@ void ring_publish(ring_t *r, uint32_t e)
     __atomic_store_n(&r->published, e + 1, __ATOMIC_RELEASE);
 }
 
-// Copy symbols [first, first + count) into dst, choosing positions on first touch.
+void ring_filler_length(ring_t *r, uint32_t symbols)
+{
+    r->filler_symbols = symbols;
+}
+
+// Copy absolute symbols, retaining choices until no future overlap can read them.
 static IRAM_ATTR int ring_read(ring_t *r, uint8_t *dst, int64_t first, size_t count)
 {
-    // The acquire pairs with ring_publish: frames below `published` are complete and visible.
     const uint32_t published = __atomic_load_n(&r->published, __ATOMIC_ACQUIRE);
-    const int64_t length = r->frame_symbols;
     const int64_t end = first + (int64_t)count;
     if (first < 0) {
         const size_t zeros = end < 0 ? count : (size_t)-first;
@@ -47,54 +50,60 @@ static IRAM_ATTR int ring_read(ring_t *r, uint8_t *dst, int64_t first, size_t co
     if (!count) {
         return 0;
     }
-    uint32_t p = (uint32_t)(first / length);
-    const uint32_t last = (uint32_t)((end - 1) / length);
-    if (p < r->release_position || p + RING_CHOICES < r->next_position) {
+    if ((uint64_t)first < (r->release_position == r->next_position ? r->chosen_end :
+                           r->start[r->release_position % RING_CHOICES])) {
         return -1;
     }
-    while (r->next_position <= last) {
+    uint32_t p = r->release_position;
+    while (p < r->next_position && r->end[p % RING_CHOICES] <= (uint64_t)first) {
+        ++p;
+    }
+    while (r->chosen_end < (uint64_t)end) {
         if (r->next_position - r->release_position >= RING_CHOICES) {
             return -1;
         }
+        const unsigned i = r->next_position++ % RING_CHOICES;
         uint32_t c = RING_FILLER;
         if (r->next_frame != published) {
             c = r->next_frame++;
         } else {
             r->underruns++;
         }
-        r->choice[r->next_position++ % RING_CHOICES] = c;
+        r->choice[i] = c;
+        r->start[i] = r->chosen_end;
+        r->chosen_end += c == RING_FILLER ? r->filler_symbols : r->frame_symbols;
+        r->end[i] = r->chosen_end;
     }
-    // Symbols the fill could still read past this one before it needs an unfinished frame.
-    const int64_t lead = (int64_t)r->next_position * length +
-                         (int64_t)(published - r->next_frame) * length - end;
+    const int64_t lead = (int64_t)r->chosen_end +
+                         (int64_t)(published - r->next_frame) * r->frame_symbols - end;
     if (lead < r->min_lead) {
         r->min_lead = lead;
     }
-    size_t at = (size_t)(first - (int64_t)p * length);
     while (count) {
-        const uint32_t c = r->choice[p % RING_CHOICES];
-        const uint8_t *src = c == RING_FILLER ? r->filler
-                                              : r->slots + (size_t)(c % r->nslots) * length;
-        const size_t part = (size_t)length - at < count ? (size_t)length - at : count;
+        const unsigned i = p++ % RING_CHOICES;
+        const uint32_t c = r->choice[i];
+        const uint8_t *src = c == RING_FILLER ? r->filler :
+                            r->slots + (size_t)(c % r->nslots) * r->frame_symbols;
+        const size_t at = (uint64_t)first - r->start[i];
+        const size_t avail = r->end[i] - (uint64_t)first;
+        const size_t part = avail < count ? avail : count;
         memcpy(dst, src + at, part);
-        dst += part, count -= part, at = 0, ++p;
+        dst += part, count -= part, first += part;
     }
     return 0;
 }
 
-// No later read starts before symbol `oldest`: release the positions that end before it.
 static IRAM_ATTR void ring_release(ring_t *r, int64_t oldest)
 {
-    const uint32_t done = (uint32_t)(oldest / r->frame_symbols);  // q ends at (q + 1) * L
     uint32_t freed = 0;
-    while (r->release_position < done && r->release_position < r->next_position) {
+    while (r->release_position < r->next_position &&
+           r->end[r->release_position % RING_CHOICES] <= (uint64_t)oldest) {
         const uint32_t c = r->choice[r->release_position++ % RING_CHOICES];
         if (c != RING_FILLER) {
             freed = c + 1;
         }
     }
     if (freed) {
-        // The release orders this core's reads of the slot before the encoder reuses it.
         __atomic_store_n(&r->freed, freed, __ATOMIC_RELEASE);
     }
 }

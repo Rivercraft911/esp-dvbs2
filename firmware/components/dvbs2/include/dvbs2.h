@@ -10,6 +10,10 @@
  * phase output buffers must not overlap the workspace or TS state. */
 #define DVBS2_FEC_BYTES 8100
 #define DVBS2_MAX_SYMBOLS 33282
+#define DVBS2_DUMMY_SYMBOLS 3330
+/* 5.5.1, 5.5.4: MODCOD 0, no pilots, 36 slots of pi/4 carrier, PL scrambled.
+ * Output is canonical phases 0..7, as for data frames. */
+void dvbs2_dummy(uint8_t *output);
 
 typedef struct {
     const char *rate;

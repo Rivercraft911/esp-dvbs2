@@ -11,16 +11,18 @@ The GCS payload is one stream of xorshift32 bytes seeded with 2026: frame f carr
 [f * B, (f + 1) * B), B = (Kbch - 80) / 8. The firmware (firmware/main/dvbtx.c) encodes it
 continuously; with --stream N (at least the number of frames the board sent) the decoded payload
 must be a contiguous, bit-exact slice of the first N frames' bytes that starts on a frame
-boundary. Filler frames, sent when the encoder is late, carry no payload and so keep the slice
+boundary. Dummy PLFRAMEs, sent when the encoder is late, carry no payload and so keep the slice
 contiguous. Without --stream the check is the one for firmware up to 35739b5, which looped
 LOOP_FRAMES frames: one whole loop must occur in the decoded stream from its first byte.
 
 Input is little-endian int16 I/Q; --scale is full scale (512 for the board's 10-bit words, 2048
 for the E200's 12-bit ADC). --shift moves a carrier that sits that many Hz above the capture
-center back to 0 Hz before decoding. --auto-shift estimates it from a fourth-power carrier line.
+center back to 0 Hz before decoding. --auto-shift estimates it from a fourth/eighth-power
+carrier line (QPSK/8PSK).
 --mer recovers timing, clock drift, symbol position and a linear carrier phase, then compares
 against the known symbols (the first N stream frames, or the 8-frame loop without --stream);
-phase noise and channel distortion remain in the error, and filler frames are not modelled.
+phase noise and channel distortion remain in the error. Dummy positions need --dummy-before
+for MER. LeanDVB skips dummy frames during payload checks.
 dump_mer() keeps the older aligned-dump measurement, which needs a whole number of samples per
 symbol and is limited by its eighth-sample timing grid.
 """
@@ -47,11 +49,25 @@ LOOP_FRAMES = 8
 SEED = 2026
 
 
+def mode(modcod: int) -> tuple[str, str]:
+    if 4 <= modcod <= 11:
+        return dvbs2.RATES[modcod - 1], "qpsk"
+    if 12 <= modcod <= 17:
+        return dvbs2.PSK8_RATES[modcod - 12], "8psk"
+    raise ValueError("PSK modcods 4..17 only")
+
+
+def frame_symbols(modcod: int) -> int:
+    return dvbs2.plframe_length(False, True, mode(modcod)[1])
+
+
 def payload(modcod: int, frames: int = LOOP_FRAMES) -> bytes:
-    """GCS payload of `frames` QPSK frames, as dvbtx.c fills them."""
-    if not 4 <= modcod <= 11:
-        raise ValueError("QPSK modcods 4..11 only")
-    per_frame = (dvbs2.code(dvbs2.RATES[modcod - 1]).kbch - 80) // 8
+    """GCS payload of data frames, as dvbtx.c fills them (dummies carry no bytes)."""
+    if not 4 <= modcod <= 17:
+        raise ValueError("PSK modcods 4..17 only")
+    if frames < 1:
+        raise ValueError("need at least one data frame")
+    per_frame = (dvbs2.code(mode(modcod)[0]).kbch - 80) // 8
     out, x = bytearray(frames * per_frame), SEED
     for i in range(len(out)):
         x ^= (x << 13) & 0xFFFFFFFF
@@ -62,16 +78,21 @@ def payload(modcod: int, frames: int = LOOP_FRAMES) -> bytes:
 
 
 @functools.lru_cache(maxsize=8)
-def symbols(modcod: int, frames: int = LOOP_FRAMES) -> np.ndarray:
+def symbols(modcod: int, frames: int = LOOP_FRAMES, dummy_before: tuple[int, ...] = ()) -> np.ndarray:
     """The first `frames` PL frames as complex symbols, from the independent Python encoder."""
-    rate = dvbs2.RATES[modcod - 1]
+    rate, modulation = mode(modcod)
     data = np.frombuffer(payload(modcod, frames), np.uint8)
     per_frame = len(data) // frames
+    if any(f < 0 or f > frames for f in dummy_before):
+        raise ValueError("dummy positions must be in 0..frames")
     out = []
-    for f in range(frames):
+    for f in range(frames + 1):
+        out.extend([dvbs2.dummy_phases()] * dummy_before.count(f))
+        if f == frames:
+            break
         bits = np.unpackbits(data[f * per_frame:(f + 1) * per_frame])
         fec = dvbs2.fecframe(dvbs2.bbframe(bits, rate), rate)
-        out.append(dvbs2.plframe_phases(fec, rate))
+        out.append(dvbs2.plframe_phases(fec, rate, modulation=modulation))
     return np.exp(1j * np.pi / 4 * np.concatenate(out).astype(float))
 
 
@@ -94,11 +115,11 @@ def read_i16(path: pathlib.Path, scale: float) -> np.ndarray:
     return raw[0::2] + 1j * raw[1::2]
 
 
-def carrier_offset(z: np.ndarray, rate: float, symbol_rate: float = 1e6) -> float:
-    """QPSK fourth-power line, search +/-Rs/8 Hz; no assumption of a +55 kHz offset.
+def carrier_offset(z: np.ndarray, rate: float, symbol_rate: float = 1e6, modcod: int = 4) -> float:
+    """PSK power line: order M=4 (QPSK) or 8 (8PSK), search +/-Rs/(2*M) Hz.
 
-    Raising exp(j*2*pi*f*n/Fs) to power four puts its line at 4*f Hz. QPSK
-    data has constant fourth power at symbol centers. A window limits leakage;
+    Raising exp(j*2*pi*f*n/Fs) to power M puts its line at M*f Hz. PSK
+    data has constant M-th power at symbol centers. A window limits leakage;
     the ratio to the median periodogram rejects noise-only acquisitions.
     """
     if not np.isfinite(rate) or not np.isfinite(symbol_rate) or rate < 2 * symbol_rate or symbol_rate <= 0:
@@ -106,18 +127,19 @@ def carrier_offset(z: np.ndarray, rate: float, symbol_rate: float = 1e6) -> floa
     z = np.asarray(z, dtype=complex)[:262144]
     if z.ndim != 1 or len(z) < 8192 or not np.all(np.isfinite(z)) or not np.any(z):
         raise ValueError("carrier acquisition needs >=8192 finite, nonzero samples")
+    order = 8 if mode(modcod)[1] == "8psk" else 4
     z = z - np.mean(z)
     z /= np.sqrt(np.mean(abs(z)**2))
     nfft = 1 << (len(z) - 1).bit_length()
-    power = abs(np.fft.fft(z**4 * np.hanning(len(z)), nfft))**2
+    power = abs(np.fft.fft(z**order * np.hanning(len(z)), nfft))**2
     freq = np.fft.fftfreq(nfft, 1 / rate)
     search = np.flatnonzero(abs(freq) < symbol_rate / 2)
     peak = int(search[np.argmax(power[search])])
     if power[peak] < 100 * np.median(power[search]):
-        raise ValueError("no unambiguous QPSK fourth-power carrier line")
+        raise ValueError("no unambiguous PSK power carrier line")
     a, b, c = np.log(np.maximum(power[(peak + np.array([-1, 0, 1])) % nfft], 1e-100))
     frac = .5 * (a - c) / (a - 2 * b + c)
-    return float((freq[peak] + frac * rate / nfft) / 4)
+    return float((freq[peak] + frac * rate / nfft) / order)
 
 
 def _sample(y: np.ndarray, times: np.ndarray, precise=False) -> np.ndarray:
@@ -136,8 +158,9 @@ def _sample(y: np.ndarray, times: np.ndarray, precise=False) -> np.ndarray:
 
 
 def recover_mer(z: np.ndarray, rate: float, symbol_rate: float = 1e6,
-                modcod: int = 4, shift: float | None = None, frames: int | None = None) -> dict:
-    """Data-aided QPSK MER for an arbitrary interior of the transmitted symbols: the first
+                modcod: int = 4, shift: float | None = None, frames: int | None = None,
+                dummy_before: tuple[int, ...] = ()) -> dict:
+    """Data-aided PSK MER for an arbitrary interior of the transmitted symbols: the first
     `frames` stream frames, or the 8-frame loop when frames is None.
 
     Fit t[k] = t0 + k*s samples (one timing and clock fit over the capture), and
@@ -149,7 +172,7 @@ def recover_mer(z: np.ndarray, rate: float, symbol_rate: float = 1e6,
     pilots or acquisition symbols. Reported clock error is relative to Fs/Rs.
     """
     z = np.asarray(z, dtype=complex)
-    coarse = carrier_offset(z, rate, symbol_rate) if shift is None else float(shift)
+    coarse = carrier_offset(z, rate, symbol_rate, modcod) if shift is None else float(shift)
     if (z.ndim != 1 or not np.isfinite(coarse) or not np.all(np.isfinite(z)) or not np.any(z)
             or not np.isfinite(rate) or not np.isfinite(symbol_rate)
             or rate < 2 * symbol_rate or symbol_rate <= 0):
@@ -157,7 +180,7 @@ def recover_mer(z: np.ndarray, rate: float, symbol_rate: float = 1e6,
     sps = rate / symbol_rate
     if len(z) < 8192 * sps:
         raise ValueError("MER needs at least 8192 symbols")
-    loop = symbols(modcod) if frames is None else symbols(modcod, frames)
+    loop = symbols(modcod) if frames is None else symbols(modcod, frames, dummy_before)
     z = z * np.exp(-2j * np.pi * coarse / rate * np.arange(len(z)))
     taps = iq.rrc(np.arange(-int(16 * sps), int(16 * sps) + 1) / sps, .35)
     y = fftconvolve(z, taps / np.sqrt(np.sum(taps**2)), mode="same")
@@ -239,8 +262,8 @@ def recover_mer(z: np.ndarray, rate: float, symbol_rate: float = 1e6,
 
 def capture_mer(path: pathlib.Path, rate: float, symbol_rate: float = 1e6,
                 scale: float = 2048, modcod: int = 4, shift: float | None = None,
-                frames: int | None = None) -> dict:
-    return recover_mer(read_i16(path, scale), rate, symbol_rate, modcod, shift, frames)
+                frames: int | None = None, dummy_before: tuple[int, ...] = ()) -> dict:
+    return recover_mer(read_i16(path, scale), rate, symbol_rate, modcod, shift, frames, dummy_before)
 
 
 def dump_mer(path: pathlib.Path, rate: float, symbol_rate: float, scale: float, modcod: int,
@@ -253,7 +276,7 @@ def dump_mer(path: pathlib.Path, rate: float, symbol_rate: float, scale: float, 
     z = raw[0::2] + 1j * raw[1::2]
     count = len(z) // sps
     if stream:
-        frame = dvbs2.plframe_length(False, True)
+        frame = frame_symbols(modcod)
         ideal = symbols(modcod, -(-count // frame))[:count]
     else:
         loop = symbols(modcod)
@@ -289,26 +312,32 @@ def main() -> int:
     parser.add_argument("--scale", type=float, required=True, help="int16 full scale")
     shift_group = parser.add_mutually_exclusive_group()
     shift_group.add_argument("--shift", type=float, help="carrier offset to remove, Hz")
-    shift_group.add_argument("--auto-shift", action="store_true", help="estimate the QPSK carrier offset")
+    shift_group.add_argument("--auto-shift", action="store_true", help="estimate the PSK carrier offset")
     parser.add_argument("--modcod", type=int, default=4)
     parser.add_argument("--symbol-rate", type=float, default=1e6)
     parser.add_argument("--receiver", type=pathlib.Path, help="local patched leandvb executable")
     parser.add_argument("--log", type=pathlib.Path, help="save unabridged receiver diagnostics")
     parser.add_argument("--stream", type=int, metavar="N",
                         help="continuous stream: check against the first N frames' payload")
+    parser.add_argument("--dummy-before", type=int, nargs="*", default=[], metavar="FRAME",
+                        help="MER reference: insert a dummy before these data-frame indices; repeat for runs")
     parser.add_argument("--mer", action="store_true", help="also recover timing/carrier and measure MER")
     parser.add_argument("--mer-only", action="store_true", help="measure MER without running LeanDVB")
     args = parser.parse_args()
     if args.stream is not None and args.stream < 1:
         parser.error("--stream needs at least one frame")
     try:
+        mode(args.modcod)
+        if args.dummy_before and args.stream is None:
+            raise ValueError("--dummy-before needs --stream")
         mer = None
         if args.mer or args.mer_only:
             mer = capture_mer(args.capture, args.rate, args.symbol_rate, args.scale, args.modcod,
-                              args.shift, args.stream)
+                              args.shift, args.stream, tuple(args.dummy_before))
             shift = mer["carrier_offset_hz"]
         else:
-            shift = (carrier_offset(read_i16(args.capture, args.scale), args.rate, args.symbol_rate)
+            shift = (carrier_offset(read_i16(args.capture, args.scale), args.rate,
+                                    args.symbol_rate, args.modcod)
                      if args.auto_shift else (args.shift or 0.0))
         report = {}
         expected = payload(args.modcod, args.stream or LOOP_FRAMES)

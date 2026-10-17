@@ -2,6 +2,8 @@
 
 #include "shaper.h"
 
+#include <string.h>
+
 #include "esp_attr.h"
 #include "shaper_taps.h"
 
@@ -97,5 +99,61 @@ IRAM_ATTR void shaper_fill_c(uint32_t *dst, const uint8_t *sym, int nsym, const 
             dst[3] = (p0[3] + p1[3] + p2[3]) ^ SHAPER_XOR;
             dst += 4, p0 += 4, p1 += 4, p2 += 4;
         }
+    }
+}
+
+// At most five tail symbols. Keep the legacy C kernel as an independent oracle.
+static IRAM_ATTR void raw_c(uint32_t *dst, const uint8_t *sym, int nsym,
+                            const shaper_table_t *t)
+{
+    uint8_t shifted[SHAPER_HISTORY + 5];
+    for (int i = -SHAPER_HISTORY; i < nsym; ++i) {
+        shifted[SHAPER_HISTORY + i] = sym[i] << 4;
+    }
+    shaper_fill_c(dst, shifted + SHAPER_HISTORY, nsym, t);
+}
+
+IRAM_ATTR void shaper_fill_raw(uint32_t *dst, const uint8_t *sym, int nsym,
+                              const shaper_table_t *t)
+{
+    if (!nsym) {
+        return;
+    }
+#ifdef __XTENSA__
+    if (t->n == 40) {
+        shaper_fill40_raw_pie(dst, sym, nsym, t->blocks);
+        return;
+    }
+    const int groups = (nsym - 1) / 6, bulk = 6 * groups + 1;
+    (t->n == 8 ? shaper_fill8_raw_pie : shaper_fill4_raw_pie)(dst, sym, groups, t->blocks);
+    raw_c(dst + bulk * t->n, sym + bulk, nsym - bulk, t);
+#else
+    // Host execution of the same edge glue, without Xtensa instructions.
+    for (int i = 0; i < nsym; ++i) {
+        raw_c(dst + i * t->n, sym + i, 1, t);
+    }
+#endif
+}
+
+IRAM_ATTR void shaper_samples(uint32_t *dst, const uint8_t *sym, unsigned skip, size_t count,
+                             const shaper_table_t *t)
+{
+    if (!count) {
+        return;
+    }
+    uint32_t part[MAX_N] __attribute__((aligned(16)));
+    const unsigned n = t->n;
+    if (skip) {
+        shaper_fill_raw(part, sym++, 1, t);
+        const size_t take = n - skip < count ? n - skip : count;
+        memcpy(dst, part + skip, take * 4);
+        dst += take, count -= take;
+    }
+    const size_t whole = count / n;
+    shaper_fill_raw(dst, sym, (int)whole, t);
+    dst += whole * n, count -= whole * n, sym += whole;
+    if (count) {
+        shaper_fill_raw(part, sym, 1, t);
+        memcpy(dst, part, count * 4);
     }
 }

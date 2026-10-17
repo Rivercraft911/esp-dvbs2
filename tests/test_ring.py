@@ -6,6 +6,7 @@ encoder at several speeds, then two real threads with random pauses. The harness
 any symbol that changes between reads, any read of a slot being written, and any frame out of
 order or filler without a counted underrun. Timing on the board: dvbpace.
 """
+import os
 import pathlib
 import shutil
 import subprocess
@@ -16,8 +17,9 @@ L = 33282        # QPSK normal frame with pilots, symbols
 SLOTS = 8        # RING_SLOTS in dvbtx.c
 
 
-def run(exe, *args):
-    out = subprocess.run([str(exe), *map(str, args)], capture_output=True, text=True)
+def run(exe, *args, sps=40, dummy=None):
+    out = subprocess.run([str(exe), *map(str, args)], capture_output=True, text=True, env=dict(os.environ, RING_SPS=str(sps),
+                         **({"RING_DUMMY": str(dummy)} if dummy else {})))
     assert out.returncode == 0 and out.stdout.startswith("ok"), (args, out.stdout, out.stderr)
     words = out.stdout.split()
     return {k: int(v) for k, v in zip(words[1::2], words[2::2])}
@@ -50,6 +52,12 @@ def test_ring():
         cold = run(exe, "sim", L, SLOTS, 30, 370, 0, 0, 0)          # no frame ready at start
         assert cold["underruns"] >= 1
         short = run(exe, "sim", 3330, 4, 600, 900, 7, 3000, 1)       # 3330: dummy-frame length
+        for sps in (4, 8, 40):
+            length = 33282 if sps == 40 else 22194
+            for load, prime in ((400, 1), (700, 1), (1250, 1), (1250, 0), (100000, 0)):
+                r = run(exe, "sim", length, SLOTS, 80, load, 0, 0, prime, sps=sps, dummy=3330)
+                assert (r["underruns"] == 0) if load < 1000 else (r["underruns"] > 0), r
+            run(exe, "threads", length, SLOTS, 80, 23, sps=sps, dummy=3330)
         threads = [run(exe, "threads", 3330, 4, 400, seed) for seed in (1, 2, 3)]
         threads.append(run(exe, "threads", L, SLOTS, 60, 7))
         assert sum(t["underruns"] for t in threads) > 0 and sum(t["frames"] for t in threads) > 0

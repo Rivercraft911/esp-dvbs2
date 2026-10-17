@@ -120,3 +120,60 @@ python3 host/onair.py results/<date>-monday-cable/<run-id>.iq \
   --receiver /Users/river/Documents/stanford/SSI/esp-dvbs2/notes/leansdr/src/apps/leandvb
 python3 host/onair.py capture.iq --rate 4000000 --scale 2048 --auto-shift --mer-only
 ```
+
+## 8PSK radio-off checks
+
+`dvb`, `dvbdump` and `dvbpace` accept MODCOD 12..17 with `5m` or `10m` immediately
+before the frame count/duration. QPSK 4..11 keeps its existing syntax. For example,
+`dvbdump 13 5m 40 128 1` and `dvbpace 15 10m 60`. The last dump argument before an
+optional stall is decimation: it must divide sps and leave at least two samples/symbol.
+Defaults are 2 at 5 Msym/s and 1 at 10 Msym/s. Roll-off is 0.35, matching the encoder's
+BBHEADER (`firmware/components/dvbs2/include/dvbs2.h`, format comment). The nominal
+occupied bandwidth is `(1 + 0.35) * Rs`: 6.75 MHz and 13.5 MHz (EN 302 307-1 5.6).
+The rate token goes in the same place in `dvb <MHz> <MODCOD> <5m|10m> <seconds> [gain] [peak]`.
+
+The coordinator runs these after building and flashing the branch under test. These commands
+use USB and timed RAM fills, with the radio off. No SDR is needed. In bash:
+
+```sh
+PY=/Library/Frameworks/Python.framework/Versions/3.13/bin/python3
+RX=/Users/river/Documents/stanford/SSI/esp-dvbs2/notes/leansdr/src/apps/leandvb
+OUT=notes/8psk-board
+mkdir -p "$OUT"
+"$PY" host/board.py info --reset --out "$OUT/runs.jsonl"
+for mc in 13 15; do
+  for rate in 5m 10m; do
+    rs=5000000
+    if [ "$rate" = 10m ]; then rs=10000000; fi
+    "$PY" host/board.py "dvbdump $mc $rate 40 128 1" --timeout 180 \
+      --save "$OUT/$mc-$rate.iq" --out "$OUT/runs.jsonl"
+    "$PY" host/onair.py "$OUT/$mc-$rate.iq" --rate 40000000 --symbol-rate "$rs" \
+      --scale 512 --modcod "$mc" --stream 40 --receiver "$RX" --log "$OUT/$mc-$rate-rx.log"
+    "$PY" host/board.py "dvbpace $mc $rate 60" --timeout 120 --out "$OUT/runs.jsonl"
+    "$PY" host/board.py "dvbdump $mc $rate 3 128 1" --timeout 60 \
+      --save "$OUT/$mc-$rate-mer.iq" --out "$OUT/runs.jsonl"
+    "$PY" host/onair.py "$OUT/$mc-$rate-mer.iq" --rate 40000000 --symbol-rate "$rs" \
+      --scale 512 --modcod "$mc" --stream 3 --mer-only --shift 0
+  done
+done
+```
+
+Pass: every board status is `ESP_OK`, `encoder_failed=false`, dump CRC matches the host,
+`overlap_mismatches=0`; LeanDVB reports `payload_match=true`, at least 30 payload frames,
+`bch_failed_frames=0`, `ldpc_checks_before=0` and `status_complete=true`. Each 60 s pace
+must have `late_fills=0`, `fatal_late=0`, positive `min_fill_slack_cycles` and no underruns.
+Compare the whole-bank `max_fill_cycles` with 85,608 cycles, not the single-call maximum.
+Full-rate MER must acquire and exceed 38 dB. This is a model-based acceptance floor, not
+an RF specification. The host table models give about 42 dB at peak 128.
+
+Also rerun `dvbdump 4 40` / `dvbpace 4 60` for QPSK regression. To provoke dummy insertion,
+use `dvbpace 13 10m 60 128 10`: require nonzero underruns with zero late fills and no
+encoder failure. A stalled dump can use `dvbdump 13 10m 40 128 1 2000` with a 300 s
+host timeout; require at least one decoded data frame, bit-exact contiguous payload with
+`--stream 40`, no BCH failures and zero overlap mismatches. It need not recover 30 data
+frames. Dummies carry no bytes, and LeanDVB skips them. MER on a stalled stream requires
+its dummy positions, supplied as `--dummy-before <data-frame-index> ...` (repeat an index
+for consecutive dummies). Firmware reports the count only, so use unstalled dumps for MER.
+
+Keep the records, receiver logs and firmware revision in a new `results/<date>-8psk-board/`
+run with a README. No RF or sustained 8PSK silicon timing is established by host/QEMU tests.

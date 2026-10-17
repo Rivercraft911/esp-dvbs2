@@ -308,6 +308,15 @@ HOT void dvbs2_plframe(const dvbs2_mode *mode, int pilots, uint8_t *output)
     dvbs2_plheader(mode->modcod, pilots, output);
 }
 
+void dvbs2_dummy(uint8_t *output)
+{
+    dvbs2_plheader(0, 0, output);
+    for (unsigned k = 0; k < DVBS2_DUMMY_SYMBOLS - 90; ++k) {
+        const unsigned rotation = (pl_rotations[k / 4] >> (2 * (k % 4))) & 3;
+        output[90 + k] = (uint8_t)((1 + 2 * rotation) & 7);
+    }
+}
+
 HOT void dvbs2_plheader(unsigned modcod, int pilots, uint8_t *output)
 {
     /* 5.5.2: SOF and scrambled (64,7) PLS code, pi/2-BPSK mapped. */

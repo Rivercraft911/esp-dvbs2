@@ -24,7 +24,7 @@ def test_payload():
     assert list(data[:3]) == first
     assert len(data) == onair.LOOP_FRAMES * (dvbs2.code("1/2").kbch - 80) // 8 == 32128
     assert len(onair.payload(11)) == onair.LOOP_FRAMES * 7264
-    for bad in (3, 12):
+    for bad in (3, 18):
         try:
             onair.payload(bad)
         except ValueError:
@@ -39,6 +39,13 @@ def test_symbols():
     assert np.allclose(abs(s), 1)
     phases = np.round(np.angle(s) / (np.pi / 4)).astype(int) % 8
     assert set(np.unique(phases[90:])) <= {1, 3, 5, 7}  # QPSK body and pilots, scrambled
+    for mc in range(12, 18):
+        t = onair.symbols(mc, 1)
+        assert len(t) == 22194 and np.allclose(abs(t), 1)
+        assert len(np.unique(np.rint(np.angle(t[90:]) * 4 / np.pi).astype(int) % 8)) == 8
+    with_dummy = onair.symbols(13, 2, (0, 1, 1, 2))
+    assert len(with_dummy) == 2 * 22194 + 4 * 3330
+    assert np.allclose(with_dummy[:3330], dvbs2.symbols_from_phases(dvbs2.dummy_phases()))
     print("onair symbols: one loop of PL frames, unit circle, QPSK phases")
 
 
