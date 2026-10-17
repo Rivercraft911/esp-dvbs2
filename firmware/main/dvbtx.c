@@ -330,8 +330,11 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
         enc.filler = heap_caps_malloc(DVBS2_DUMMY_SYMBOLS, MALLOC_CAP_SPIRAM);
     }
     int32_t *taps = heap_caps_malloc(TAPS * sizeof *taps, MALLOC_CAP_SPIRAM);
+    /* Register-nibble BCH in every mode: in the stream the 8 KiB byte table pushes the BB and
+     * PL tables out of the 32 KiB data cache, and 8PSK 5/6 costs 386k instead of 291k cycles
+     * per frame (results/2026-10-16-next). */
     if (!enc.fast || !enc.ws || !enc.payload || !enc.filler || !taps ||
-            (!enc.packed && !enc.slots) || dvbs2_fast_prepare(enc.fast, mode, PILOTS, 15)) {
+            (!enc.packed && !enc.slots) || dvbs2_fast_prepare(enc.fast, mode, PILOTS, 15 | DVBS2_BCH_NIBBLE)) {
         printf("@{\"cmd\":\"%s\",\"error\":\"allocation failed\"}\n", cmd);
         heap_caps_free(taps);
         release();
