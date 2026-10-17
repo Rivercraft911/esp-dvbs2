@@ -40,6 +40,7 @@ jobs:
       - run: python tests/test_ring.py
       - run: python tests/test_stream_profile.py
       - run: python tests/test_next5_board.py
+      - run: python tests/test_qpsk_goal_board.py
       - run: python tests/test_stream.py
 
   firmware:

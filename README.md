@@ -77,6 +77,11 @@ only on the DAC rate, so a higher symbol rate costs no extra shaping, only encod
 - A receiver decoding the signal over RF, starting with a cabled path.
 - Payload over SPI from a second board, APSK in firmware.
 
+QPSK `26m667` now connects the live encoder, three-frame ring and block fill at
+80/3 Msym/s. Offline dumps are bit-exact; integrated silicon timing and Wi-Fi heap
+remain pending. `20mq4` opts into the new four-sample waveform while `20m` keeps
+its existing CRCs. [Integration, RAM account and radio-off board gates](docs/qpsk-goal.md).
+
 ## Build and run
 
 Needs ESP-IDF v6.1, an ESP32-S3 with 8 MB of PSRAM, Python 3 with numpy, pyserial and matplotlib.
