@@ -2,6 +2,7 @@
 // Timing is synthetic. Compare every filled DAC word against the plain encoder.
 #include "native.h"
 #include "dvbtx.c"
+#include "ingress_pattern.h"
 
 static uint32_t banks[2][RADIO_S3_BANK_WORDS] __attribute__((aligned(16)));
 static uint32_t reference[16440] __attribute__((aligned(16)));
@@ -9,6 +10,41 @@ static uint8_t *phases;
 static size_t phase_count;
 static FILE *capture;
 static const char *callsign = "";
+
+// Real portable ingress ring, with the peripheral replaced by the GDMA host model.
+extern void *sim_new(void);
+extern void sim_free(void *);
+extern ingress_ring *sim_ring(void *);
+extern uint32_t sim_transfer(void *, const uint8_t *, uint32_t);
+static void *input_sim;
+static unsigned native_input, input_seq, input_reads;
+static volatile bool input_empty;
+unsigned spi_input_type(void) { return native_input; }
+esp_err_t spi_input_start(void) {
+    if (native_input) {
+        input_sim = sim_new(); sim_ring(input_sim)->type = native_input;
+        input_seq = input_reads = 0;
+    }
+    return ESP_OK;
+}
+size_t spi_input_read(uint8_t *dst, size_t n) {
+    if (input_empty || (++input_reads % 7) == 0) return 0; // starvation between partial reads
+    ingress_ring *r = sim_ring(input_sim);
+    uint8_t msg[PV_MSG_BYTES];
+    while (r->ready) {
+        ingress_pattern(msg + PV_HEADER_BYTES, input_seq, native_input);
+        pv_seal(msg, native_input, input_seq++, PV_PAYLOAD_MAX);
+        assert(sim_transfer(input_sim, msg, sizeof msg) == sizeof msg);
+    }
+    if (n > 997) n = 997; // cut TS packets and SPI messages across calls and frames
+    return ingress_read(r, dst, n);
+}
+void spi_input_stop(void) {
+    if (input_sim) { sim_free(input_sim); input_sim = NULL; }
+}
+void spi_input_print(void) {
+    printf(",\"input\":\"%s\"", native_input == PV_TS ? "ts" : native_input ? "gcs" : "synthetic");
+}
 
 // Station store and command gate: the stored callsign without NVS.
 const char *station_store_get(void) { return callsign; }
@@ -112,12 +148,13 @@ esp_err_t radio_s3_wifi_probe(radio_s3_stats_t *stats)
 
 int main(int argc, char **argv)
 {
-    assert(argc == 4 || argc == 5 || argc == 6 || argc == 7 || argc == 8);
+    assert(argc == 4 || argc == 5 || argc == 6 || argc == 7 || argc == 8 || argc == 9);
     if (argc >= 5) callsign = argv[4];
     const uint32_t rate = argc >= 6 ? (uint32_t)atol(argv[5]) : RADIO_S3_DAC_RATE;
-    const unsigned mc = (unsigned)atoi(argv[1]), sps = (unsigned)atoi(argv[2]), frames = argc == 8 ? (unsigned)atoi(argv[7]) : 40;
+    const unsigned mc = (unsigned)atoi(argv[1]), sps = (unsigned)atoi(argv[2]), frames = argc >= 8 ? (unsigned)atoi(argv[7]) : 40;
     const unsigned pulse = argc >= 7 ? atoi(argv[6]) : 0;
     const bool quads = pulse == 2 || sps == 3, short_pulse = pulse == 1;
+    if (argc == 9) native_input = atoi(argv[8]);
     const dvbs2_mode *mode = dvbs2_find_mode(mc);
     const size_t length = dvbs2_frame_symbols(mode, 1), bytes = (mode->kbch - 80) / 8;
     phase_count = (frames + 2) * length;
@@ -125,10 +162,19 @@ int main(int argc, char **argv)
     dvbs2_workspace ws;
     uint8_t payload[8100];
     uint32_t x = SEED;
+    dvbs2_ts_state ts = {0};
+    uint8_t *source = malloc((frames+4)*bytes + PV_PAYLOAD_MAX);
+    if (native_input)
+        for (unsigned j = 0; j < (frames+4)*bytes; j += PV_PAYLOAD_MAX)
+            ingress_pattern(source+j, j/PV_PAYLOAD_MAX, native_input);
     for (unsigned f = 0; f < frames + 2; ++f) {
-        for (size_t i = 0; i < bytes; ++i) payload[i] = next_byte(&x);
-        station_payload_header(payload, bytes, callsign);
-        assert(!dvbs2_bb_gcs(&ws, mode, payload, bytes * 8));
+        if (native_input) memcpy(payload, source+f*bytes, bytes);
+        else {
+            for (size_t i = 0; i < bytes; ++i) payload[i] = next_byte(&x);
+            station_payload_header(payload, bytes, callsign);
+        }
+        assert(!(native_input == PV_TS ? dvbs2_bb_ts(&ws, mode, &ts, payload, bytes) :
+                                        dvbs2_bb_gcs(&ws, mode, payload, bytes * 8)));
         dvbs2_bb_scramble(&ws, mode); dvbs2_bch(&ws, mode); dvbs2_ldpc(&ws, mode);
         uint8_t *out = phases + f * length;
         dvbs2_map(&ws, mode, out + 90); dvbs2_plframe(mode, 1, out);
@@ -172,5 +218,19 @@ int main(int argc, char **argv)
         assert(live_allocations == 0);
         for (unsigned i = 0; i < 4; ++i) assert(native_ranges[i] == 0);
     }
-    free(phases);
+    if (native_input) {
+        input_empty = true;
+        assert(start_encoder("dvbdump", mc, 128, 0, sps, rate, pulse));
+        assert(enc.frames == 0 && !enc.failed);
+        uint8_t window[64];
+        assert(ring_window(&dvb.ring, window, sizeof window, 0, 12, sps, 0, RADIO_S3_BANK_WORDS) >= 0);
+        assert(dvb.ring.underruns > 0);
+        input_empty = false;
+        unsigned tries=0;
+        while (!enc.frames) { assert(++tries < 5000); vTaskDelay(1); }
+        assert(!enc.failed && enc.input_partial > 0);
+        stop_encoder(); printf("}\n");
+        assert(live_allocations == 0);
+    }
+    free(source); free(phases);
 }

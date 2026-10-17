@@ -37,6 +37,7 @@
 #include "sdkconfig.h"
 
 #include "dvbtx.h"
+#include "spi_input.h"
 #include "fecbench.h"
 #include "membench.h"
 #include "qpsk_probe.h"
@@ -343,6 +344,10 @@ void app_main(void)
             cmd_tx(line + 2);
             // cmd_tx tokenizes its arguments in place. Keep the completion record stable.
             strcpy(line, "tx");
+        } else if (strncmp(line, "spiinput ", 9) == 0 || strncmp(line, "spipins ", 8) == 0 ||
+                   strncmp(line, "spisend ", 8) == 0 || strncmp(line, "spirx ", 6) == 0) {
+            char *args = strchr(line, ' '); *args++ = 0;
+            spi_input_command(line, args);
         } else if (strncmp(line, "dvbdump ", 8) == 0) {
             if (!strncmp(line + 8, "qpsk", 4)) qpsk_probe_command("dvbdump", line + 8);
             else cmd_dvbdump(line + 8);

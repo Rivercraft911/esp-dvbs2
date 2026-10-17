@@ -239,3 +239,9 @@ for consecutive dummies). Firmware reports the count only, so use unstalled dump
 
 Keep the records, receiver logs and firmware revision in a new `results/<date>-8psk-board/`
 run with a README. No RF or sustained 8PSK silicon timing is established by host/QEMU tests.
+
+## Quad SPI payload input
+
+The SPI2 input, configurable XIAO/DevKit pins, second-S3 sender and zero-jumper
+loopback are described in [spi-input.md](spi-input.md). Host bit-exact checks pass;
+SPI timing and throughput still require the coordinator's radio-off board run.

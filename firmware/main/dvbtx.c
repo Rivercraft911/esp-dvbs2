@@ -11,6 +11,7 @@
 // radio sends the held signal; a raw dvbdump has no hold and measures differently.
 
 #include "dvbtx.h"
+#include "spi_input.h"
 
 #include <inttypes.h>
 #include <stdbool.h>
@@ -91,6 +92,9 @@ typedef struct {
     uint32_t stall_ms;
     volatile bool stop;
     bool failed;
+    volatile bool input_started;
+    uint32_t input_waits, input_partial, input_pending, prefill_frames;
+    uint32_t input_frame_cycles_max;
     SemaphoreHandle_t exited;
     uint32_t frames;                // encoded and published
     uint64_t cycles;                // per frame: payload and encoding, raw
@@ -239,6 +243,10 @@ static void encoder_task(void *arg)
     const size_t bytes = (e->mode->kbch - 80) / 8;
     uint8_t *const payload = e->payload;
     uint32_t x = SEED;
+    const unsigned input = spi_input_type();
+    dvbs2_ts_state ts = {0};
+    if (spi_input_start() != ESP_OK) { e->failed = true; goto done; }
+    e->input_started = true;
     for (uint32_t f = 0; !e->stop; ++f) {
         uint8_t *out;
         while (!(out = ring_slot(&dvb.ring, f))) {
@@ -250,18 +258,42 @@ static void encoder_task(void *arg)
         }
         const uint32_t start = esp_cpu_get_cycle_count();
         stream_mark_t before = dvb.profile ? stream_mark() : (stream_mark_t){0}, after;
-        for (size_t i = 0; i < bytes; ++i) {
-            payload[i] = next_byte(&x);
+        uint32_t input_cycles = 0;
+        if (input) {
+            size_t used = 0;
+            while (used < bytes && !e->stop) {
+                const uint32_t t0 = esp_cpu_get_cycle_count();
+                const size_t got = spi_input_read(payload + used, bytes - used);
+                input_cycles += esp_cpu_get_cycle_count() - t0;
+                used += got;
+                e->input_pending = used;
+                if (used < bytes) {
+                    if (got) e->input_partial++;
+                    e->input_waits++;
+                    ulTaskNotifyTake(pdTRUE, 1);
+                }
+            }
+            if (e->stop) goto done;
+            if (input_cycles > e->input_frame_cycles_max) e->input_frame_cycles_max = input_cycles;
+        } else {
+            for (size_t i = 0; i < bytes; ++i) payload[i] = next_byte(&x);
+            station_payload_header(payload, bytes, station_store_get());
         }
-        station_payload_header(payload, bytes, station_store_get());
         if (dvb.profile) {
             after = stream_mark();
-            stream_record(&e->stage[0], before, after);
+            if (input) {
+                // Poll sleeps are starvation time, not encoder CPU work.
+                stream_mark_t active = before;
+                active.cycles = after.cycles - input_cycles;
+                stream_record(&e->stage[0], active, after);
+            } else stream_record(&e->stage[0], before, after);
             before = after;
         }
+        const uint32_t encode_start = esp_cpu_get_cycle_count();
         int rc;
         if (dvb.profile) {
-            rc = dvbs2_fast_bb_gcs(e->fast, e->ws, payload, bytes * 8);
+            rc = input == PV_TS ? dvbs2_fast_bb_ts(e->fast, e->ws, &ts, payload, bytes) :
+                                  dvbs2_fast_bb_gcs(e->fast, e->ws, payload, bytes * 8);
             after = stream_mark(); stream_record(&e->stage[1], before, after); before = after;
             if (!rc) {
                 dvbs2_fast_bch(e->fast, e->ws);
@@ -282,15 +314,17 @@ static void encoder_task(void *arg)
                 after = stream_mark(); stream_record(&e->stage[5], before, after);
             }
         } else if (e->packed) {
-            rc = dvbs2_encode_frame_packed(e->fast, e->ws, NULL, payload, bytes * 8, out);
+            rc = dvbs2_encode_frame_packed(e->fast, e->ws, input == PV_TS ? &ts : NULL, payload, bytes * 8, out);
         } else {
-            rc = dvbs2_encode_frame(e->fast, e->ws, NULL, payload, bytes * 8, out);
+            rc = dvbs2_encode_frame(e->fast, e->ws, input == PV_TS ? &ts : NULL, payload, bytes * 8, out);
         }
         if (rc) {
             e->failed = true;
             goto done;
         }
-        const uint32_t spent = esp_cpu_get_cycle_count() - start;
+        const uint32_t spent = input ? input_cycles + esp_cpu_get_cycle_count() - encode_start :
+                                       esp_cpu_get_cycle_count() - start;
+        e->input_pending = 0;
         ring_publish(&dvb.ring, f);
         e->frames = f + 1;
         e->cycles += spent;
@@ -302,6 +336,7 @@ static void encoder_task(void *arg)
         }
     }
 done:
+    spi_input_stop();
     xSemaphoreGive(e->exited);
     // Keep the notification handle valid even if encoding failed. The command owns
     // deletion after taking exited; a fill may still notify this suspended task.
@@ -529,12 +564,14 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
         release();
         return 0;
     }
-    const TickType_t limit = xTaskGetTickCount() + pdMS_TO_TICKS(nslots * (stall_ms + 100));
+    const bool external = spi_input_type() != 0;
+    const TickType_t limit = xTaskGetTickCount() + pdMS_TO_TICKS(external ? 100 : nslots * (stall_ms + 100));
     while (__atomic_load_n(&dvb.ring.published, __ATOMIC_ACQUIRE) < nslots && !enc.failed &&
            (int32_t)(xTaskGetTickCount() - limit) < 0) {
         vTaskDelay(1);
     }
-    if (__atomic_load_n(&dvb.ring.published, __ATOMIC_ACQUIRE) < nslots) {
+    if (enc.failed || (external ? !enc.input_started :
+            __atomic_load_n(&dvb.ring.published, __ATOMIC_ACQUIRE) < nslots)) {
         enc.stop = true;
         xTaskNotifyGive(enc.task);
         xSemaphoreTake(enc.exited, portMAX_DELAY);
@@ -543,6 +580,7 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
         release();
         return 0;
     }
+    enc.prefill_frames = __atomic_load_n(&dvb.ring.published, __ATOMIC_ACQUIRE);
     return symbols;
 }
 
@@ -566,6 +604,11 @@ static void stop_encoder(void)
     xSemaphoreTake(enc.exited, portMAX_DELAY);
     vTaskDelete(enc.task);
     const ring_t *r = &dvb.ring;
+    spi_input_print();
+    printf(",\"input_pending\":%" PRIu32, enc.input_pending);
+    printf(",\"input_waits\":%" PRIu32 ",\"input_partial\":%" PRIu32
+           ",\"input_frame_cycles_max\":%" PRIu32,
+           enc.input_waits, enc.input_partial, enc.input_frame_cycles_max);
     printf(",\"ring_slots\":%d,\"stall_ms\":%" PRIu32 ",\"frames_encoded\":%" PRIu32 ","
            "\"frames_played\":%" PRIu32 ",\"positions\":%" PRIu32 ",\"underruns\":%" PRIu32 ","
            "\"min_lead_symbols\":%lld,\"encode_cycles_mean\":%" PRIu64 ","
@@ -576,7 +619,7 @@ static void stop_encoder(void)
            (int)r->nslots, enc.stall_ms, enc.frames, r->next_frame, r->next_position, r->underruns,
            r->min_lead == INT64_MAX ? -1LL : (long long)r->min_lead,
            enc.frames ? enc.cycles / enc.frames : 0, enc.frames ? enc.min_cycles : 0,
-           enc.max_cycles, enc.live_max_cycles, (unsigned)r->nslots,
+           enc.max_cycles, enc.live_max_cycles, (unsigned)enc.prefill_frames,
            enc.failed ? "true" : "false", dvb.max_fill_cycles,
            (unsigned)internal, (unsigned)largest, (unsigned)lowest);
     printf(",\"callsign\":\"%s\",\"encoder_timed\":true,\"sps\":%u", station_store_get(), dvb.table.n);

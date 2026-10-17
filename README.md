@@ -28,6 +28,9 @@ leaves through the S3's own Wi-Fi radio.
 Not yet: a receiver decoding the signal over RF, 26.67 Msym/s (at 3 samples per symbol the best
 kernel so far needs 46.4k cycles for a bank due every 47.2k), and payload arriving over SPI.
 
+Quad SPI input for TS and continuous streams is implemented and awaiting board checks.
+[Wire format, XIAO/DevKit pins, sender, budget and radio-off gates](docs/spi-input.md).
+
 ## How it works
 
 ```

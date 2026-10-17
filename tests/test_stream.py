@@ -146,7 +146,7 @@ int usb_serial_jtag_write_bytes(const void *, size_t, unsigned);
 '''
 
 
-def test_stream(output=None, receiver=None):
+def test_stream(output=None, receiver=None, input_only=False):
     if output:
         output.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
@@ -162,10 +162,13 @@ def test_stream(output=None, receiver=None):
         subprocess.run(["cc", "-O2", "-std=c11", "-D_POSIX_C_SOURCE=200809L",
                         "-Wall", "-Wextra", "-Werror", "-pthread",
                         "-I" + tmp, "-I" + str(ROOT / "firmware/main"),
+                        "-I" + str(ROOT / "firmware/components/ingress/include"),
                         "-I" + str(ROOT / "firmware/components/dvbs2/include"),
                         "-I" + str(ROOT / "firmware/components/radio_s3/include"),
                         "-I" + str(ROOT / "firmware/components/station_id/include"),
-                        str(ROOT / "tests/stream_host.c"), str(ROOT / "firmware/main/ring.c"),
+                        str(ROOT / "tests/stream_host.c"), str(ROOT / "tests/ingress_sim.c"),
+                        str(ROOT / "firmware/components/ingress/ingress.c"),
+                        str(ROOT / "firmware/components/ingress/ingress_pattern.c"), str(ROOT / "firmware/main/ring.c"),
                         str(ROOT / "firmware/main/shaper.c"),
                         str(ROOT / "firmware/main/shaper_short.c"),
                         str(ROOT / "firmware/main/shaper_qpsk.c"),
@@ -173,6 +176,21 @@ def test_stream(output=None, receiver=None):
                         str(ROOT / "firmware/components/dvbs2/fast.c"),
                         str(ROOT / "firmware/components/station_id/station_id.c"),
                         "-lm", "-o", str(exe)], check=True)
+        # External TS/GCS: actual ingress checks, split copies, both mapper layouts,
+        # repeated starts, every allocation failure, empty startup and resumed input.
+        for kind in (1, 2):
+            for mc, sps, pulse in ((11,3,2), (11,4,2), (13,4,0), (17,8,0)):
+                iq = (output or folder)/f"input-{kind}-{mc}-n{sps}.iq"
+                subprocess.run([str(exe), str(mc), str(sps), str(iq),
+                                "N0CALL", "80000000", str(pulse), "16", str(kind)],
+                               capture_output=True, text=True, timeout=60, check=True)
+                if receiver and mc < 12:
+                    sys.path.insert(0, str(ROOT / "host"))
+                    from spi_input import decode_dump
+                    decode_dump(iq, kind, mc, sps, 80000000, 16, receiver)
+        print("input stream: TS/GCS, split reads, startup/starvation/recovery, allocation cleanup, every DAC word: ok")
+        if input_only:
+            return
         crcs = {}
         for mc, sps, call, rate, short in ((13, 4, "N0CALL", 40, 0), (15, 4, "N0CALL", 40, 0), (17, 4, "", 40, 0),
                                     (12, 8, "", 40, 0), (13, 8, "N0CALL", 40, 0), (15, 8, "N0CALL", 40, 0),
@@ -305,5 +323,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", nargs="?", type=pathlib.Path)
     parser.add_argument("--receiver", type=pathlib.Path, help="also decode new QPSK modes in LeanDVB")
+    parser.add_argument("--input-only", action="store_true")
     args = parser.parse_args()
-    test_stream(args.output, args.receiver)
+    test_stream(args.output, args.receiver, args.input_only)
