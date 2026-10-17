@@ -150,12 +150,12 @@ void membench_moon(void)
     const unsigned internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     uint16_t *src = (uint16_t *)radio_s3_bank(1);
     uint32_t *dst = radio_s3_bank(0), cycles[REPEATS];
-    for (unsigned mode = 0; mode < 3; ++mode) {
+    for (unsigned mode = 0; mode < SHAPER_MOON_MODES; ++mode) {
         const size_t words = shaper_moon_words(mode);
         uint32_t *oracle = heap_caps_aligned_alloc(16,words*4,MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        const uint32_t *tables[5] = {0};
-        void *extra[5] = {0};
-        const unsigned parts = mode == 0 ? 3 : mode == 1 ? 4 : 5;
+        const uint32_t *tables[4] = {0};
+        void *extra[4] = {0};
+        const unsigned parts = shaper_moon_parts(mode);
         size_t used = 0, at = 0, heap = 0;
         if (!oracle) {
             printf("@{\"cmd\":\"membench moon\",\"mode\":%u,\"error\":\"PSRAM allocation failed\"}\n",mode);
@@ -163,8 +163,7 @@ void membench_moon(void)
         }
         shaper_moon_build(oracle,mode,128);
         for (unsigned j = 0; j < parts; ++j) {
-            const size_t n = j == parts-1 && mode ? (mode == 1 ? 48 : 96) :
-                             mode == 1 ? 3072 : 6144;
+            const size_t n = shaper_moon_part_words(mode,j);
             uint32_t *p;
             if (used+n <= SHAPER_STORE_WORDS) {
                 p = shaper_store+used;
@@ -180,7 +179,7 @@ void membench_moon(void)
         }
         if (at == words) {
             uint32_t x = 2026;
-            const unsigned bits = mode == 0 ? 12 : mode == 1 ? 10 : 15;
+            const unsigned bits = mode == 0 ? 12 : mode == 2 ? 15 : 10;
             for (unsigned i = 0; i < 1367; ++i) {
                 x ^= x << 13, x ^= x >> 17, x ^= x << 5;
                 src[i] = x & ((1u << bits)-1);
@@ -189,6 +188,8 @@ void membench_moon(void)
             const uint32_t expected = checksum(dst,BANK_WORDS);
             if (mode == 0) {
                 TIME(cycles,shaper_moon3_pie(dst,src+2,1365,tables[0],tables[1],tables[2]));
+            } else if (mode == 3) {
+                TIME(cycles,shaper_moon24qc_pie(dst,src+2,1365,tables[0],tables[1],tables[2]));
             } else {
                 TIME(cycles,(mode == 1 ? shaper_moon24q_pie : shaper_moon24p_pie)(dst,src+2,1365,tables));
             }

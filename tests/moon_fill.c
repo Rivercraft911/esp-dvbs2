@@ -23,7 +23,7 @@ int moon_check(void)
     const unsigned peaks[] = {16,128,508};
     const uint32_t seeds[] = {2026,7,UINT32_MAX};
     unsigned bad = 0, slices = 0, slice_bad = 0;
-    for (unsigned mode = 0; mode < 3; ++mode)
+    for (unsigned mode = 0; mode < SHAPER_MOON_MODES; ++mode)
         for (unsigned level = 0; level < 3; ++level) {
             const unsigned peak = peaks[level], words = shaper_moon_words(mode);
             if (shaper_moon_build(table,mode,peak)) return 1;
@@ -31,7 +31,7 @@ int moon_check(void)
                 uint32_t x = seeds[seed];
                 for (unsigned i = 0; i < sizeof input/sizeof input[0]; ++i) {
                     x ^= x << 13, x ^= x >> 17, x ^= x << 5;
-                    input[i] = x & ((1u << (mode == 0 ? 12 : mode == 1 ? 10 : 15))-1);
+                    input[i] = x & ((1u << (mode == 0 ? 12 : mode == 2 ? 15 : 10))-1);
                 }
                 for (unsigned c = 0; c < sizeof counts/sizeof counts[0]; ++c) {
                     const unsigned n = counts[c];
@@ -75,7 +75,7 @@ int main(int argc, char **argv)
     if (argc == 1) return moon_check();
     if (argc != 4) return 2;
     const unsigned mode = (unsigned)strtoul(argv[1],NULL,10);
-    if (mode >= 3) return 2;
+    if (mode >= SHAPER_MOON_MODES) return 2;
     FILE *in = fopen(argv[2],"rb"), *out = fopen(argv[3],"wb");
     if (!in || !out) return 2;
     if (fseek(in,0,SEEK_END)) return 2;
