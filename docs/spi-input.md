@@ -41,6 +41,18 @@ scheduling margin, cable timing or RF performance. An individual check is
 `spirx 3000 pv loop 9`; encoding uses `spiinput pv loop 9` before `dvbpace`.
 `spisend ms pv [MHz [Mb/s [fault]]]` also supports a second S3, capped at 20 MHz.
 
+The dump uses **40 MS/s / 5 Msym/s = 8 samples/symbol**, without decimation.
+The decoder must use that ratio; 4 samples/symbol produces false MODCODs even
+when LeanDVB reports frame lock. The dump runs at a **12 Mb/s** offered ceiling,
+above its **9.678291 Mb/s** TS demand (5,370 bytes/frame × 8 bits/byte ×
+5e6 symbols/s / 22,194 symbols/frame).
+The separate paced check uses 9 Mb/s and may insert dummies.
+
+Firmware gates use ESP-IDF's `git describe --always --tags --dirty`, compared
+exactly after its 31-character application-version limit. Failure output shows
+the full expected version and the board's field. Long tags can truncate the hash
+or dirty suffix; this field cannot distinguish versions beyond that limit.
+
 ## CM5 with unchanged pv-capture
 
 Enable SPI0 (`dtparam=spi=on`). Keep the existing camera settings, including:

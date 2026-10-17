@@ -1,10 +1,14 @@
 """Coordinator gates reject corrupted, slow and late records. No serial access."""
 import copy
+import json
 import pathlib
 import struct
+import subprocess
 import sys
+import tempfile
 import zlib
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / 'host'))
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'host'))
 from spi_input import pattern, pv_pattern, record_check, encoder_check
 
 
@@ -14,6 +18,34 @@ def rejected(r):
     except AssertionError:
         return
     raise AssertionError('bad record passed')
+
+
+def test_firmware(record):
+    # Actual IDF v6.1 truncation from the coordinator's 6720605 run.
+    full = 'archive/dev-2026-10-17-1-g6720605'
+    cut = 'archive/dev-2026-10-17-1-g67206'
+    with tempfile.TemporaryDirectory() as tmp:
+        records = pathlib.Path(tmp)/'runs.jsonl'
+        for expected, infos, passes in (
+                (full, [dict(cmd='info', firmware=cut)], True),
+                ('6720605-dirty', [dict(cmd='info', firmware='6720605-dirty')], True),
+                ('6720605', [dict(cmd='info', firmware='6720605-dirty')], False),
+                (full, [dict(cmd='info', firmware=cut[:-1])], False),
+                (full, [dict(cmd='info', firmware=cut+'0')], False),
+                (full, [dict(cmd='info', firmware='archive/dev-2026-10-17-1-g12345')], False),
+                (full, [], False),
+                (full, [dict(cmd='fecbench', firmware=cut)], False),
+                (full, [dict(cmd='info', firmware=cut, done=True)], False),
+                (full, [dict(cmd='info', firmware=cut), dict(cmd='info', firmware='stale')], False),
+                ('', [dict(cmd='info', firmware=cut)], False),
+                ('', [dict(cmd='info', firmware='')], False)):
+            records.write_text(''.join(json.dumps(r)+'\n' for r in [record, *infos]))
+            run = subprocess.run([sys.executable, str(ROOT/'host/spi_input.py'), 'check',
+                                  str(records), '--firmware', expected],
+                                 capture_output=True, text=True, timeout=10)
+            assert run.returncode == (0 if passes else 1), run.stdout+run.stderr
+            assert ('wrong or missing firmware' in run.stdout) != passes, run.stdout
+    print('SPI firmware gate: IDF truncation, exact fields, dirty/stale/missing/mixed info: ok')
 
 
 def main():
@@ -32,6 +64,7 @@ def main():
         chain = zlib.crc32(struct.pack('<I', zlib.crc32(body)), chain)
     pv['spi'].update(messages=2, ts_packets=14, payload_bytes=2632, crc_chain=chain, next_seq=2)
     record_check(pv)
+    test_firmware(pv)
     for key in ('messages','ts_packets','payload_bytes','crc_chain','next_seq'):
         bad = copy.deepcopy(pv); bad['spi'][key] += 1; rejected(bad)
     for key, value in (('crc32', 0), ('bad_payload', 1), ('mbps', 80), ('verified_msgs', 0)):

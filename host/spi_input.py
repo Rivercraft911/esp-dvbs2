@@ -163,7 +163,9 @@ def decode_dump(path, kind, mc, sps, rate, frames, receiver, replay=False, pv=Fa
                                     receiver=receiver, rrc_rej=20)
     # Host captures show four acquisition frames for 8PSK, two for QPSK.
     required = frames-(4 if mc >= 12 else 2)
-    assert report['frame_lock'] and report['bb_frames'] >= required, report
+    assert report['frame_lock'] and report['lock_at_end'] and report['status_complete'], report
+    assert report['modcods'] == [mc] and report['bb_frames'] >= required, report
+    assert report['stream'] == ('ts' if kind == 1 else 'gcs'), report
     for name in ('ldpc_bit_flips','ldpc_checks_before','ldpc_checks_after','bch_corrected_bits',
                  'bch_failed_frames','bbheader_rejected_frames'):
         assert report[name] == 0, report
@@ -214,8 +216,14 @@ def main():
                           'encode_cycles_mean', 'encode_cycles_live_max', 'wifi_free_up', 'wifi_min_free', 'mbps')
                 details = {k:r[k] for k in fields if k in r}
                 failures.append(f"{r.get('command', r['cmd'])}: {type(e).__name__} {details}")
-        if a.firmware and not any(r.get('firmware') == a.firmware for r in rows):
-            failures.append('wrong or missing firmware')
+        if a.firmware is not None:
+            # ESP-IDF esp_app_format/CMakeLists.txt exports PROJECT_VER[:31].
+            # Compare the whole exported field, never an arbitrary common prefix.
+            expected = a.firmware[:31]
+            versions = [r.get('firmware') for r in rows if r.get('cmd') == 'info' and not r.get('done')]
+            if not expected or versions != [expected]:
+                failures.append(f'wrong or missing firmware: expected {expected!r} '
+                                f'(full version {a.firmware!r}), got {versions!r}')
         if a.encoder_5pct:
             try:
                 encoder_check(rows)

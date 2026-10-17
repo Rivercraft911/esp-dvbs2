@@ -24,7 +24,7 @@ step pv-receive board 'spirx 3000 pv loop 9'
 for fault in 1 2 3; do step "pv-fault-$fault" board "spirx 1000 pv loop 9 $fault"; done
 if board 'spiinput pv loop 12'; then
     step pv-dump board 'dvbdump 13 5m 40 128 1' --save "$OUT/pv.iq"
-    step pv-decode "$PY" host/spi_input.py decode "$OUT/pv.iq" --kind ts --pv --modcod 13 --sps 4 --rate 20000000 --frames 40 --receiver "$RX"
+    step pv-decode "$PY" host/spi_input.py decode "$OUT/pv.iq" --kind ts --pv --modcod 13 --sps 8 --rate 40000000 --frames 40 --receiver "$RX"
 else printf 'FAIL pv-setup\n' >> "$OUT/summary.txt"; failed=1; fi
 if board 'spiinput pv loop 9'; then step pv-pace board 'dvbpace 13 10m 30'
 else printf 'FAIL pv-pace-setup\n' >> "$OUT/summary.txt"; failed=1; fi
@@ -32,7 +32,7 @@ step quad-receive board 'spirx 1000 gcs loop 46.6'
 step input-off board 'spiinput off'
 step regression-qpsk board 'dvbdump 11 26m667 16 128 1' --save "$OUT/reg-qpsk.iq"
 step regression-8psk board 'dvbdump 13 20m 40 128 1' --save "$OUT/reg-8psk.iq"
-step gates "$PY" host/spi_input.py check "$OUT/runs.jsonl" --folder "$OUT" --firmware "$(git describe --always --dirty)"
+step gates "$PY" host/spi_input.py check "$OUT/runs.jsonl" --folder "$OUT" --firmware "$(git describe --always --tags --dirty)"
 printf '\nSummary (%s)\n' "$OUT"
 cat "$OUT/summary.txt"
 exit "$failed"

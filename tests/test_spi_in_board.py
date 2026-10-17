@@ -64,7 +64,13 @@ def main():
         assert commands[:3] == ['info', 'spipins devkit', 'spirx 3000 pv loop 9']
         assert 'dvbpace 13 10m 30' in commands and 'spirx 1000 gcs loop 46.6' in commands
         assert commands[-1] == 'spiinput off' and 'reg-8psk.iq' in calls and "'check'" in calls
-        assert '--pv' in calls and '--rate' in calls and '20000000' in calls
+        decode=[ast.literal_eval(line) for line in calls.splitlines()
+                if "'decode'" in line]
+        assert len(decode) == 1
+        args=decode[0]
+        # dvbdump 13 5m, decimation 1: 40 MS/s / 5 Msym/s = 8 samples/symbol.
+        assert '--pv' in args and args[args.index('--modcod')+1] == '13'
+        assert args[args.index('--sps')+1] == '8' and args[args.index('--rate')+1] == '40000000'
         summary=(folder/'pv/summary.txt').read_text()
         assert summary.count('FAIL') == 1 and 'FAIL pv-fault-2' in summary and 'PASS gates' in summary
         assert run.stdout.index('PASS requires') < run.stdout.index('Summary')
