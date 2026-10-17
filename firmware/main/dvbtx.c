@@ -119,7 +119,7 @@ static IRAM_ATTR esp_err_t fill(uint32_t *dst, uint64_t first, size_t count, voi
 {
     (void)ctx;
     const uint32_t before = esp_cpu_get_cycle_count();
-    const stream_mark_t mark = dvb.profile ? stream_mark() : (stream_mark_t){0};
+    const stream_mark_t mark = dvb.profile ? stream_mark_for(&dvb.copy) : (stream_mark_t){0};
     const unsigned sps = dvb.table.n;
     const uint32_t freed = dvb.ring.freed;
     // Packed reads unpack whole vectors when every symbol lands at an address of its own
@@ -130,11 +130,12 @@ static IRAM_ATTR esp_err_t fill(uint32_t *dst, uint64_t first, size_t count, voi
         return ESP_FAIL;
     }
     // A two-frame ring cannot afford a 1 ms polling delay on core 0. Notify only on
-    // release, after ring_window's last slot read and release-store of freed.
-    if (dvb.ring.freed != freed) xTaskNotifyGive(enc.task);
+    // release, after ring_window's last slot read and release-store of freed. The notification
+    // costs this core up to 2.3k cycles, so QPSK's eight-frame ring polls instead, as before.
+    if (dvb.ring.freed != freed && enc.packed) xTaskNotifyGive(enc.task);
     const uint32_t copied = esp_cpu_get_cycle_count() - before;
     const uint64_t w0 = dvb.whole.cycles, p0 = dvb.partial.cycles;
-    if (dvb.profile) stream_record(&dvb.copy, mark, stream_mark());
+    if (dvb.profile) stream_record(&dvb.copy, mark, stream_mark_for(&dvb.copy));
     shaper_samples_profile(dst, win + SHAPER_HISTORY, first % sps, count, &dvb.table,
                            dvb.profile ? &dvb.whole : NULL,
                            dvb.profile ? &dvb.partial : NULL);
@@ -165,7 +166,7 @@ static void encoder_task(void *arg)
                 goto done;
             }
             e->slot_waits++;
-            ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+            ulTaskNotifyTake(pdTRUE, e->packed ? portMAX_DELAY : 1);
         }
         const uint32_t start = esp_cpu_get_cycle_count();
         stream_mark_t before = dvb.profile ? stream_mark() : (stream_mark_t){0}, after;
@@ -273,6 +274,9 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
     dvb.fill_words = dvb.fill_cycles = dvb.fill_calls = 0;
     dvb.worst_copy = dvb.worst_whole = dvb.worst_partial = 0;
     dvb.profile = !strcmp(cmd, "dvbpace") || !strcmp(cmd, "dvbdump");
+    // The fill phases of a timed run record cycles only; an untimed dump also reads the
+    // shared cache counters. Encoder stages always read them.
+    dvb.copy.counters = dvb.whole.counters = dvb.partial.counters = !strcmp(cmd, "dvbdump");
     if (dvb.profile) cache_profile_start();
     enc.stall_ms = stall_ms;
     enc.min_cycles = UINT32_MAX;
@@ -418,11 +422,11 @@ static void stop_encoder(void)
     printf("]}");
     if (dvb.profile) {
         printf(",\"profile\":{\"cache_scope\":\"both cores and interrupts; windows overlap\","
-               "\"fill_calls\":%" PRIu32 ",\"fill_words\":%" PRIu64 ",\"fill_cycles\":%" PRIu64
-               ",\"worst_call\":{\"copy\":%" PRIu32 ",\"whole\":%" PRIu32
+               "\"fill_counters\":%s,\"fill_calls\":%" PRIu32 ",\"fill_words\":%" PRIu64
+               ",\"fill_cycles\":%" PRIu64 ",\"worst_call\":{\"copy\":%" PRIu32 ",\"whole\":%" PRIu32
                ",\"partial\":%" PRIu32 "},\"fill\":{",
-               dvb.fill_calls, dvb.fill_words, dvb.fill_cycles, dvb.worst_copy,
-               dvb.worst_whole, dvb.worst_partial);
+               dvb.copy.counters ? "true" : "false", dvb.fill_calls, dvb.fill_words,
+               dvb.fill_cycles, dvb.worst_copy, dvb.worst_whole, dvb.worst_partial);
         print_profile("copy", &dvb.copy); printf(",");
         print_profile("whole", &dvb.whole); printf(",");
         print_profile("partial", &dvb.partial); printf("},\"encoder\":{");

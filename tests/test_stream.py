@@ -84,9 +84,16 @@ static inline void xTaskNotifyGive(TaskHandle_t t) {
     pthread_cond_signal(&t->cond); pthread_mutex_unlock(&t->mutex);
 }
 static inline unsigned ulTaskNotifyTake(int clear, unsigned timeout) {
-    (void)clear; (void)timeout; TaskHandle_t t = current;
+    (void)clear; TaskHandle_t t = current;
     pthread_mutex_lock(&t->mutex);
-    while (!t->notifications) pthread_cond_wait(&t->cond, &t->mutex);
+    if (timeout == portMAX_DELAY) {
+        while (!t->notifications) pthread_cond_wait(&t->cond, &t->mutex);
+    } else if (!t->notifications) {   // one tick is 1 ms (CONFIG_FREERTOS_HZ=1000)
+        struct timespec until; clock_gettime(CLOCK_REALTIME, &until);
+        until.tv_nsec += (long)timeout * 1000000;
+        until.tv_sec += until.tv_nsec / 1000000000; until.tv_nsec %= 1000000000;
+        pthread_cond_timedwait(&t->cond, &t->mutex, &until);
+    }
     unsigned n = t->notifications; t->notifications = 0;
     pthread_mutex_unlock(&t->mutex); return n;
 }

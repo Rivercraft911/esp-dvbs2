@@ -19,6 +19,7 @@ typedef struct {
 typedef struct {
     uint64_t cycles, flash_miss, psram_miss, data_access, instruction_miss;
     uint32_t calls, max_cycles;
+    uint8_t counters;   // also read the EXTMEM counters at each mark (stream_mark_for)
 } stream_profile_t;
 
 static inline stream_mark_t stream_mark(void)
@@ -47,4 +48,20 @@ static inline void stream_record(stream_profile_t *p, stream_mark_t a, stream_ma
     p->instruction_miss += (uint32_t)(b.instruction_miss - a.instruction_miss);
     p->calls++;
     if (cycles > p->max_cycles) p->max_cycles = cycles;
+}
+
+// CCOUNT only. The four EXTMEM reads of stream_mark cost the fill 0.9k to 1.6k cycles per bank
+// on the board (results/2026-10-16-buildout), so timed runs mark fill phases this way.
+static inline stream_mark_t stream_mark_cycles(void)
+{
+#ifdef __XTENSA__
+    return (stream_mark_t){.cycles = esp_cpu_get_cycle_count()};
+#else
+    return (stream_mark_t){0};
+#endif
+}
+
+static inline stream_mark_t stream_mark_for(const stream_profile_t *p)
+{
+    return p->counters ? stream_mark() : stream_mark_cycles();
 }
