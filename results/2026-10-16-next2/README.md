@@ -37,13 +37,14 @@ zero LDPC flips and BCH failures, MER 43.82 (QPSK), 43.78 (5 Msym/s) and 40.66-4
 | 8PSK 2/3, 10 Msym/s | 43,780 | 41,559 | 167,113 / 167,967 | 33,712 | 56,881 / 262,085 |
 | 8PSK 5/6, 10 Msym/s | 43,791 | 41,543 | 185,036 / 185,809 | 33,679 | 56,929 / 290,916 |
 | 8PSK 2/3, 5 Msym/s | 37,400 | 47,938 | 298,327 / 306,340 | 15,051 | 43,017 / 262,118 |
-| 8PSK 5/6, 5 Msym/s | 37,454 | 47,884 | 421,593 / 439,250 | 11,486 | 42,845 / 376,092 |
+| 8PSK 5/6, 5 Msym/s | 37,454 | 47,884 | 421,593 / 439,250 | 11,486 | 42,701 / 290,035 |
 | QPSK 1/2, 1 Msym/s | 42,184 | 43,154 | 682,159 / 687,830 | 228,634 | 41,387 / 685,170 |
 
 Every run: `ESP_OK`, 0 late fills, 0 fatal, 0 underruns. "Live max" leaves out only the frames
-encoded before playback starts. The main column is results/2026-10-16-next and -buildout.
+encoded before playback starts. The main column is results/2026-10-16-next, and -keyed-10m for
+5/6 at 5 Msym/s.
 
-At 5 Msym/s the encoder is slower than main (5/6: 422k against 376k-386k). There the
+At 5 Msym/s the encoder is slower than main (2/3: 298k against 262k; 5/6: 422k against 290k). There the
 workspace stays in PSRAM, and the new mapping path takes about twice the flash misses in BB
 framing and three times in mapping. It uses 40% of core 0 at that rate, so deadlines are not at
 risk, but it is a regression and a fix is in progress on exp/max-encoder.
