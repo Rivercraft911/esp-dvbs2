@@ -6,17 +6,16 @@
 //   callsign [CALL|clear]  read, store or erase the station callsign in NVS (station_commands.c)
 //   iddump [CALL] [40|80]  the CW ID's bank samples at 10 kS/s over USB at a 40 or 80 MS/s DAC, no radio
 //   membench   memory and bank-fill timing (membench.c)
-//   chain <forced|cw|cw40|cwgain>  how tx turns the transmit chain on (default cwgain)
 //   tx <integer MHz> <tone|two|tag|...> <1..60 seconds> [0..17 gain, default 0] [40|80 MS/s]
 //              (gap: a 128 tone with every bank's lead and tail silenced, the switch probe;
 //              at 80 MS/s every test signal runs at twice its frequency)
-//   dvb <MHz> <modcod> [5m|10m|10m80|20m|26m667|20mq4] <1..60 seconds> [0..17 gain] [16..508 peak]  DVB-S2 on air (dvbtx.c)
-//   dvbdump <modcod> [5m|10m|10m80|20m|26m667|20mq4|20ms6] <frames> [peak] [decimation] [stall ms]  USB samples, no radio
-//   dvbpace <modcod> [5m|10m|10m80|20m|26m667|20mq4|20ms6] <seconds> [peak] [stall ms]  paced simulation, no radio
-//              (20ms6 is 8PSK only, radio off; 10m80, 20m and 20ms6 use 80 MS/s)
-//   wifimem [<modcod> [5m|10m|10m80|20m|26m667|20mq4|20ms6]]  Wi-Fi start-up heap next to that transmitter's memory;
+//   dvb <MHz> <modcod> [5m|10m|20m|26m667] <1..60 seconds> [0..17 gain] [16..508 peak]  DVB-S2 on air (dvbtx.c)
+//   dvbdump <modcod> [5m|10m|20m|26m667] <frames> [peak] [decimation] [stall ms]  USB samples, no radio
+//   dvbpace <modcod> [5m|10m|20m|26m667] <seconds> [peak] [stall ms]  paced simulation, no radio
+//              (20m and 26m667 use 80 MS/s; 26m667 is QPSK only)
+//   wifimem [<modcod> [5m|10m|20m|26m667]]  Wi-Fi start-up heap next to that transmitter's memory;
 //              starts and stops Wi-Fi like dvb but never keys, retunes or plays (dvbtx.c)
-//   fecbench [plain|c|pie|legacy|nibble|sram]  normal-frame encoder correctness and stage timing (fecbench.c)
+//   fecbench [plain|pie]  normal-frame encoder correctness and stage timing (fecbench.c)
 //   usbrx N    receive N bytes over USB as fast as the host sends them; report the rate
 
 #include <errno.h>
@@ -39,7 +38,6 @@
 #include "dvbtx.h"
 #include "fecbench.h"
 #include "membench.h"
-#include "qpsk_probe.h"
 #include "radio_s3.h"
 #include "radio_signals.h"
 #include "shaper.h"
@@ -72,31 +70,20 @@ static bool number(const char *text, unsigned lo, unsigned hi, uint32_t *out)
     return true;
 }
 
-// QPSK defaults to 1 Msym/s; 8PSK requires a rate. Keep QPSK positional arguments.
-// 5m/10m use 40 MS/s; other named rates use 80 MS/s.
+// QPSK defaults to 1 Msym/s. Named rates select one measured kernel per modulation.
 static bool tx_mode(const char *code, char **count, char **save, uint32_t *modcod,
-                     uint32_t *sps, uint32_t *rate, unsigned *pulse)
+                     uint32_t *sps, uint32_t *rate)
 {
     *sps = 40;
-    *pulse = DVB_PULSE_LEGACY;
     *rate = RADIO_S3_DAC_RATE;
-    if (!number(code, 4, 17, modcod)) {
-        return false;
-    }
+    if (!number(code, 4, 17, modcod)) return false;
     const bool named = *count && (!strcmp(*count, "5m") || !strcmp(*count, "10m") ||
-                                  !strcmp(*count, "10m80") || !strcmp(*count, "20m") ||
-                                  !strcmp(*count, "20ms6") || !strcmp(*count, "26m667") ||
-                                  !strcmp(*count, "20mq4"));
+                                  !strcmp(*count, "20m") || !strcmp(*count, "26m667"));
     if (*modcod >= 12 && !named) return false;
     if (named) {
-        *pulse = !strcmp(*count, "20ms6") ? DVB_PULSE_SHORT :
-                 (!strcmp(*count, "26m667") || !strcmp(*count, "20mq4")) ? DVB_PULSE_QUADS : DVB_PULSE_LEGACY;
-        if ((*pulse == DVB_PULSE_SHORT && *modcod < 12) ||
-            (*pulse == DVB_PULSE_QUADS && *modcod >= 12)) return false;
-        *sps = !strcmp(*count, "5m") || !strcmp(*count, "10m80") ? 8 : 4;
-        if (!strcmp(*count, "26m667")) *sps = 3;
-        *rate = !strcmp(*count, "10m80") || !strcmp(*count, "20m") || *pulse ? RADIO_S3_DAC_RATE_80M :
-                RADIO_S3_DAC_RATE;
+        if (!strcmp(*count, "26m667") && *modcod >= 12) return false;
+        *sps = !strcmp(*count, "5m") ? 8 : !strcmp(*count, "26m667") ? 3 : 4;
+        *rate = !strcmp(*count, "20m") || *sps == 3 ? RADIO_S3_DAC_RATE_80M : RADIO_S3_DAC_RATE;
         *count = strtok_r(NULL, " \t", save);
     }
     return true;
@@ -111,9 +98,7 @@ static void cmd_dvb(char *args)
     char *code = strtok_r(NULL, " \t", &save);
     char *duration = strtok_r(NULL, " \t", &save);
     uint32_t modcod, sps, rate;
-    unsigned pulse;
-    const bool mode_ok = tx_mode(code, &duration, &save, &modcod, &sps, &rate, &pulse) &&
-                         pulse != DVB_PULSE_SHORT;
+    const bool mode_ok = tx_mode(code, &duration, &save, &modcod, &sps, &rate);
     char *level = strtok_r(NULL, " \t", &save);
     char *peak = strtok_r(NULL, " \t", &save);
     char *extra = strtok_r(NULL, " \t", &save);
@@ -122,11 +107,11 @@ static void cmd_dvb(char *args)
         !number(duration, 1, 60, &seconds) ||
         (level && !number(level, 0, RADIO_S3_GAIN_MAX, &gain)) ||
         (peak && !number(peak, 16, 508, &top)) || extra) {
-        printf("@{\"cmd\":\"dvb\",\"error\":\"usage: dvb <2390..2450 MHz> <modcod 4..17> [5m|10m|10m80|20m|26m667|20mq4] "
+        printf("@{\"cmd\":\"dvb\",\"error\":\"usage: dvb <2390..2450 MHz> <modcod 4..17> [5m|10m|20m|26m667] "
                "<1..60 seconds> [0..17 gain] [16..508 peak]\"}\n");
         return;
     }
-    dvbtx_run(freq, modcod, seconds, gain, top, sps, rate, pulse);
+    dvbtx_run(freq, modcod, seconds, gain, top, sps, rate);
 }
 
 static void cmd_dvbdump(char *args)
@@ -134,8 +119,7 @@ static void cmd_dvbdump(char *args)
     char *save, *code = strtok_r(args, " \t", &save);
     char *count = strtok_r(NULL, " \t", &save);
     uint32_t modcod, sps, rate;
-    unsigned pulse;
-    const bool mode_ok = tx_mode(code, &count, &save, &modcod, &sps, &rate, &pulse);
+    const bool mode_ok = tx_mode(code, &count, &save, &modcod, &sps, &rate);
     char *peak = strtok_r(NULL, " \t", &save);
     char *step = strtok_r(NULL, " \t", &save);
     char *pause = strtok_r(NULL, " \t", &save);
@@ -144,12 +128,12 @@ static void cmd_dvbdump(char *args)
     if (!mode_ok || !number(count, 1, 256, &frames) ||
         (peak && !number(peak, 16, 508, &top)) || (step && !number(step, 1, 20, &decim)) ||
         (sps % decim || decim > sps / 2) || (pause && !number(pause, 0, 2000, &stall)) || extra) {
-        printf("@{\"cmd\":\"dvbdump\",\"error\":\"usage: dvbdump <modcod 4..17> [5m|10m|10m80|20m|26m667|20mq4|20ms6 (8PSK)] <1..256 frames> "
+        printf("@{\"cmd\":\"dvbdump\",\"error\":\"usage: dvbdump <modcod 4..17> [5m|10m|20m|26m667] <1..256 frames> "
                "[16..508 peak] [decimation dividing sps, at most sps/2] "
                "[0..2000 ms encoder stall]\"}\n");
         return;
     }
-    dvbtx_dump(modcod, frames, top, decim, stall, sps, rate, pulse);
+    dvbtx_dump(modcod, frames, top, decim, stall, sps, rate);
 }
 
 static void cmd_dvbpace(char *args)
@@ -157,8 +141,7 @@ static void cmd_dvbpace(char *args)
     char *save, *code = strtok_r(args, " \t", &save);
     char *duration = strtok_r(NULL, " \t", &save);
     uint32_t modcod, sps, rate;
-    unsigned pulse;
-    const bool mode_ok = tx_mode(code, &duration, &save, &modcod, &sps, &rate, &pulse);
+    const bool mode_ok = tx_mode(code, &duration, &save, &modcod, &sps, &rate);
     char *peak = strtok_r(NULL, " \t", &save);
     char *pause = strtok_r(NULL, " \t", &save);
     char *extra = strtok_r(NULL, " \t", &save);
@@ -166,11 +149,11 @@ static void cmd_dvbpace(char *args)
     if (!mode_ok || !number(duration, 1, 600, &seconds) ||
         (peak && !number(peak, 16, 508, &top)) || (pause && !number(pause, 0, 2000, &stall)) ||
         extra) {
-        printf("@{\"cmd\":\"dvbpace\",\"error\":\"usage: dvbpace <modcod 4..17> [5m|10m|10m80|20m|26m667|20mq4|20ms6 (8PSK)] <1..600 seconds> "
+        printf("@{\"cmd\":\"dvbpace\",\"error\":\"usage: dvbpace <modcod 4..17> [5m|10m|20m|26m667] <1..600 seconds> "
                "[16..508 peak] [0..2000 ms encoder stall]\"}\n");
         return;
     }
-    dvbtx_pace(modcod, seconds, top, stall, sps, rate, pulse);
+    dvbtx_pace(modcod, seconds, top, stall, sps, rate);
 }
 
 static void cmd_wifimem(char *args)
@@ -178,17 +161,16 @@ static void cmd_wifimem(char *args)
     char *save, *code = strtok_r(args, " \t", &save);
     char *rate = strtok_r(NULL, " \t", &save);
     uint32_t modcod = 0, sps = 0, dac_rate = RADIO_S3_DAC_RATE;
-    unsigned pulse = DVB_PULSE_LEGACY;
     if (code) {
-        const bool ok = tx_mode(code, &rate, &save, &modcod, &sps, &dac_rate, &pulse);
+        const bool ok = tx_mode(code, &rate, &save, &modcod, &sps, &dac_rate);
         // QPSK may omit the rate. Nothing may follow the selected rate.
         if (!ok || rate) {
             printf("@{\"cmd\":\"wifimem\",\"error\":\"usage: wifimem [<modcod 4..17> ["
-                   "5m|10m|10m80|20m|26m667|20mq4|20ms6 (8PSK)]]\"}\n");
+                   "5m|10m|20m|26m667]]\"}\n");
             return;
         }
     }
-    dvbtx_wifi(modcod, sps, dac_rate, pulse);
+    dvbtx_wifi(modcod, sps, dac_rate);
 }
 
 static void cmd_tx(char *args)
@@ -232,7 +214,7 @@ static void cmd_tx(char *args)
            (unsigned long)s.late_switches, (unsigned long)s.max_fill_cycles,
            (unsigned long)s.max_switch_late_cycles, (unsigned long)s.min_fill_slack_cycles,
            (unsigned long)s.fatal_late, (unsigned long)s.fe_base_index,
-           (unsigned long)s.fe_gain_index, (const char *[]){"forced", "cw", "cw40", "cwgain"}[s.chain & 3], esp_err_to_name(err));
+           (unsigned long)s.fe_gain_index, "cwgain", esp_err_to_name(err));
     if (err != ESP_OK) {
         printf(",\"error\":\"%s\"", err == ESP_ERR_INVALID_ARG ?
                "duration too short for start/end ID" : "radio run failed");
@@ -344,31 +326,16 @@ void app_main(void)
             // cmd_tx tokenizes its arguments in place. Keep the completion record stable.
             strcpy(line, "tx");
         } else if (strncmp(line, "dvbdump ", 8) == 0) {
-            if (!strncmp(line + 8, "qpsk", 4)) qpsk_probe_command("dvbdump", line + 8);
-            else cmd_dvbdump(line + 8);
+            cmd_dvbdump(line + 8);
             strcpy(line, "dvbdump");
         } else if (strncmp(line, "dvbpace ", 8) == 0) {
-            if (!strncmp(line + 8, "qpsk", 4)) qpsk_probe_command("dvbpace", line + 8);
-            else cmd_dvbpace(line + 8);
+            cmd_dvbpace(line + 8);
             strcpy(line, "dvbpace");
         } else if (strncmp(line, "dvb ", 4) == 0) {
             cmd_dvb(line + 4);
             strcpy(line, "dvb");
-        } else if (strncmp(line, "chain ", 6) == 0) {
-            // How later tx runs turn the transmit chain on (radio_s3_set_chain).
-            static const char *const modes[] = {"forced", "cw", "cw40", "cwgain"};
-            size_t i = 0;
-            while (i < 4 && strcmp(line + 6, modes[i])) {
-                ++i;
-            }
-            if (i < 4) {
-                radio_s3_set_chain((radio_s3_chain_t)i);
-                printf("@{\"cmd\":\"chain\",\"chain\":\"%s\"}\n", modes[i]);
-            } else {
-                printf("@{\"cmd\":\"chain\",\"error\":\"usage: chain <forced|cw|cw40|cwgain>\"}\n");
-            }
         } else if (strcmp(line, "fecbench") == 0) {
-            fecbench_run("plain");
+            fecbench_run("pie");
         } else if (strncmp(line, "fecbench ", 9) == 0) {
             fecbench_run(line + 9);
         } else if (strcmp(line, "wifimem") == 0 || strncmp(line, "wifimem ", 8) == 0) {

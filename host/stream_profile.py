@@ -31,11 +31,13 @@ def summarize(r):
                                        for name, stage in stages.items()}
                                  for side, stages in (("fill", p["fill"]), ("encoder", p["encoder"]))})
     if r["cmd"] == "dvbpace":
+        deadline = r.get("step_words", 14268) * 240000000 // r.get("dac_rate", 40000000)
+        max_fill, min_slack = deadline * 85 // 100, (deadline * 15 + 99) // 100
         out["passes_60s_15_percent"] = (r.get("seconds", 0) >= 60 and r.get("status") == "ESP_OK"
             and not r.get("encoder_failed", True)
-            and all(r.get(k, 1) == 0 for k in ("late_fills", "fatal_late", "underruns"))
-            and r.get("max_fill_cycles", DEADLINE) <= MAX_FILL
-            and r.get("min_fill_slack_cycles", 0) >= MIN_SLACK)
+            and all(r.get(k, 1) == 0 for k in ("late_fills", "late_switches", "fatal_late", "underruns"))
+            and r.get("max_fill_cycles", deadline) <= max_fill
+            and r.get("min_fill_slack_cycles", 0) >= min_slack)
     return out
 
 

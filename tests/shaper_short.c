@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "shaper.h"
-#ifdef ROUND2_HOST
+#ifdef SHORT_HOST
 static uint32_t reference[16440], guarded[16392];
 #else
 extern uint32_t test_reference[16440], test_guarded[16392];
@@ -17,7 +17,7 @@ static uint32_t hash(const uint32_t *p, unsigned n)
     while (n--) h = (h ^ *p++) * 16777619u;
     return h;
 }
-int round2_check(void)
+int short_check(void)
 {
     const unsigned counts[] = {0,1,2,3,4,5,6,7,8,23,24,25,26,31,47,48,49,4095};
     const unsigned levels[] = {16,128,508};
@@ -44,7 +44,7 @@ int round2_check(void)
                     raw_bad = memcmp(guarded+4, reference, words*4) != 0;
                     memset(guarded, 0xa5, sizeof(uint32_t)*16392);
                 }
-#ifdef ROUND2_HOST
+#ifdef SHORT_HOST
                 shaper_fill_c(guarded+4, symbols+8, n, &t);
 #else
                 shaper_short4_pie(guarded+4, symbols+8, n, t.blocks);
@@ -54,7 +54,7 @@ int round2_check(void)
                 for (unsigned i = 0; i < 4; ++i)
                     guards &= guarded[i] == 0xa5a5a5a5 && guarded[4+words+i] == 0xa5a5a5a5;
                 bad |= mismatch || !guards;
-                printf("@{\"test\":\"round2\",\"symbols\":%u,\"peak\":%u,\"seed\":%"PRIu32
+                printf("@{\"test\":\"short\",\"symbols\":%u,\"peak\":%u,\"seed\":%"PRIu32
                        ",\"mismatch\":%u,\"guards\":%u,\"table\":%"PRIu32",\"check\":%"PRIu32"}\n",
                        n,levels[level],seeds[seed],mismatch,guards,hash(shaper_store,4096),
                        hash(guarded+4,words));
@@ -63,6 +63,6 @@ int round2_check(void)
     }
     return bad;
 }
-#ifdef ROUND2_HOST
-int main(void) { return round2_check(); }
+#ifdef SHORT_HOST
+int main(void) { return short_check(); }
 #endif

@@ -19,7 +19,7 @@ typedef struct {
     uint32_t *blocks;      // window w's parts 0, 1, 2 at blocks + w * block_words
     uint16_t n;            // samples per symbol, 4..40
     uint16_t block_words;  // 3 * (n rounded up to 4) rounded up to a power of two
-    uint8_t parts;         // 0: legacy three-part table; 2: six-symbol experiment
+    uint8_t parts;         // 0: three-part table; 2: six-symbol pulse
     uint8_t bits;          // bits per symbol code: 3 (eight phases) or 2 (QPSK)
 } shaper_table_t;
 
@@ -53,11 +53,9 @@ void shaper_fill8_pie(uint32_t *dst, const uint8_t *sym, int groups, const uint3
 void shaper_fill40_pie(uint32_t *dst, const uint8_t *sym, int nsym, const uint32_t *blocks);
 
 // Encoder phases k = 0..7, with eight raw history bytes. The raw PIE variants have the
-// same group/count contracts as above. No shifted copy of a PLFRAME is needed.
-void shaper_fill4_raw_pie(uint32_t *, const uint8_t *, int, const uint32_t *);
-void shaper_fill8_raw_pie(uint32_t *, const uint8_t *, int, const uint32_t *);
+// n40 count contract above. Fast modes use scaled codes from the packed ring.
 void shaper_fill40_raw_pie(uint32_t *, const uint8_t *, int, const uint32_t *);
-// Any number of whole symbols, including zero. C handles the last 0..5 at 4/8 sps.
+// Any number of whole symbols, including zero. Fast-rate raw phases use the C oracle.
 void shaper_fill_raw(uint32_t *dst, const uint8_t *sym, int nsym, const shaper_table_t *t);
 // Samples at offset skip within sym[0]. dst must be aligned where a whole symbol starts.
 // Partial symbols use aligned scratch; all PIE calls produce whole symbols.
@@ -75,25 +73,11 @@ void shaper_samples_codes_profile(uint32_t *dst, const uint8_t *sym, unsigned sk
 // scalar edges use word stores, never libc's possible byte stores.
 void shaper_copy_words(uint32_t *dst, const uint32_t *src, size_t words);
 
-// The prototypes below take legacy codes 16*k, like the non-raw kernels above.
-// Producer-side row staging, codes sym[-8..nsym), rows[-6..nsym] (one valid guard).
-// Keep rows internal and immutable until the consumer finishes. This helper does not provide
-// thread synchronization or a queue. n4 only; native pointers are four bytes on the S3.
-void shaper_rows4(const uint32_t **rows, const uint8_t *sym, int nsym, const uint32_t *blocks);
-// n4 with staged row addresses, same 6*groups+1 geometry as shaper_fill4_pie.
-void shaper_fill4_rows_pie(uint32_t *dst, const uint32_t *const *rows, int groups);
-void shaper_fill4_rows_all_pie(uint32_t *dst, const uint32_t *const *rows, int nsym);
-// n5, 3-bit codes, padded eight-word part rows. Four symbols/group, groups >= 0;
-// exactly 20*groups words, aligned dst, no writes outside output. Eight history codes.
-void shaper_fill5_pie(uint32_t *dst, const uint8_t *sym, int groups, const uint32_t *blocks);
-
-// Radio-off 20ms6 experiment. sym[-5..nsym] must be readable (one lookahead byte).
+// Six-symbol 8PSK pulse at 20 Msym/s. sym[-5..nsym] must be readable (one lookahead byte).
 void shaper_short_build(shaper_table_t *t, uint32_t *blocks, unsigned peak);
 void shaper_short4_pie(uint32_t *dst, const uint8_t *sym, int nsym, const uint32_t *blocks);
 
 // Radix-four specializations of the existing kernels. Same group/output contract.
-// Scaled entries consume 16*(phase>>1); raw entries consume phase 0..7.
+// Entries consume 16*(phase>>1).
 void shaper_fill4_qpsk_pie(uint32_t *, const uint8_t *, int, const uint32_t *);
 void shaper_fill8_qpsk_pie(uint32_t *, const uint8_t *, int, const uint32_t *);
-void shaper_fill4_qpsk_raw_pie(uint32_t *, const uint8_t *, int, const uint32_t *);
-void shaper_fill8_qpsk_raw_pie(uint32_t *, const uint8_t *, int, const uint32_t *);

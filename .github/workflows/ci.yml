@@ -20,12 +20,9 @@ jobs:
       - run: python tests/test_decode.py
       - run: python tests/test_filelink.py
       - run: python tests/test_qpsk_fill.py
-      - run: python tests/test_qpsk_probe.py
       - run: python tests/test_shaper.py
-      - run: python tests/test_shaper_budget.py
-      - run: python tests/test_maxrate.py
-      - run: python tests/test_round2.py
-      - run: python tests/test_shaper_apsk.py
+      - run: python tests/test_shaper_cycles.py
+      - run: python tests/test_shaper_short.py
       - run: python tests/test_radio.py
       - run: python tests/test_tx_command.py
       - run: python tests/test_tx_samples.py
@@ -39,8 +36,8 @@ jobs:
       - run: python tests/test_mer.py
       - run: python tests/test_ring.py
       - run: python tests/test_stream_profile.py
-      - run: python tests/test_next5_board.py
-      - run: python tests/test_qpsk_goal_board.py
+      - run: python tests/test_check.py
+      - run: python tests/test_encoder_memory.py
       - run: python tests/test_stream.py
 
   firmware:
@@ -62,3 +59,8 @@ jobs:
           esp_idf_version: v6.1
           target: esp32s3
           path: tests/radio_qemu
+      - uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v6.1
+          target: esp32s3
+          path: tests/encoder_pie
