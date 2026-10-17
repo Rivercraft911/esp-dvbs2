@@ -278,7 +278,10 @@ def test_stream(output=None, receiver=None, input_only=False):
                     frame = ((33282 if mc < 12 else 22194) // 2 + 31) // 16 * 16
                     assert slots[:2] == [slots[0], slots[0] + frame]
                     assert all(a % 16 == 0 for a in slots)
-                    assert filler == slots[0] + (r["ring_slots"] if mc < 12 else 2) * frame
+                    if mc >= 12 and sps == 8:
+                        assert filler == int(r['layout']['workspace'],16)+8144
+                    else:
+                        assert filler == slots[0] + (r["ring_slots"] if mc < 12 else 2) * frame
                     fast = int(r["layout"]["fast"],16)
                     assert fast <= payload < payload+r["payload_bytes_per_frame"] <= fast+r["fast_bytes"]
                     need = filler-slots[0]+1696
@@ -298,7 +301,7 @@ def test_stream(output=None, receiver=None, input_only=False):
                         assert need <= 32768 and r["ring_heap_bytes"] == frame
                         assert not slots[0] <= slots[2] < slots[0] + 32768
                     else:
-                        assert r["ring_heap_bytes"] == need
+                        assert r["ring_heap_bytes"] == 2*frame
                 assert all(p["calls"] == r["frames_encoded"] for p in r["profile"]["encoder"].values())
                 assert r["symbol_rate"] == rate * 1000000 // sps
             if receiver and (mc < 12 or mc in (13, 15, 17)):

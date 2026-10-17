@@ -33,7 +33,8 @@
 struct dvbs2_fast {
     const uint8_t *bch, *gold, *prbs, *byte_bch;
     const uint32_t *map;
-    const uint16_t *prog;
+    const uint16_t *prog, *cols;
+    const uint8_t *crc8;
     uint8_t *p;
     uint8_t carry[ROW] __attribute__((aligned(16)));
     uint8_t tail[16] __attribute__((aligned(16)));
@@ -184,7 +185,9 @@ int dvbs2_fast_prepare(dvbs2_fast *f, const dvbs2_mode *mode, int pilots, unsign
 #endif
     f->prbs = dvbs2_prbs_table();
     f->bch = mode->t == 12 ? fast_bch_12 : mode->t == 10 ? fast_bch_10 : fast_bch_8;
-    f->byte_bch = mode->t == 12 ? fast_bch_byte_12 : fast_bch_byte_10;
+    f->byte_bch = mode->t == 8 ? fast_bch_pair_8 : mode->t == 12 ? fast_bch_byte_12 : fast_bch_byte_10;
+    f->cols = fast_cols;
+    f->crc8 = fast_crc8;
     /* QPSK and 8PSK share their code-rate program. */
     f->prog = fast_prog[mode->bits_per_symbol == 2 ? mode->modcod - 4 :
                         (unsigned[]){1, 2, 3, 5, 6, 7}[mode->modcod - 12]];
@@ -202,6 +205,53 @@ int dvbs2_fast_cache_bch(dvbs2_fast *f, uint8_t *table)
     const uint8_t *source = f->mode->t == 12 ? fast_bch_byte_12 : fast_bch_byte_10;
     if (table) memcpy(table, source, DVBS2_BCH_CACHE_BYTES);
     f->byte_bch = table ? table : source;
+    return 0;
+}
+
+/* QPSK quad streams have no mapping lookup table. Cache their complete hot
+ * data set in caller-owned internal RAM; no stage then depends on flash data
+ * bandwidth alongside the other core. Header/pilots already live in f. */
+static size_t cache_prog_bytes(const dvbs2_fast *f)
+{
+    const size_t bytes[] = {sizeof fast_prog_0, sizeof fast_prog_1, sizeof fast_prog_2,
+        sizeof fast_prog_3, sizeof fast_prog_4, sizeof fast_prog_5, sizeof fast_prog_6, sizeof fast_prog_7};
+    return (bytes[f->mode->modcod-4]+15) & ~(size_t)15;
+}
+
+size_t dvbs2_fast_cache_size(const dvbs2_fast *f)
+{
+    if (!f || !f->mode || !(f->pie & DVBS2_MAP_QUADS)) return 0;
+    return 7280+sizeof fast_gold_2_1+DVBS2_BCH_CACHE_BYTES+cache_prog_bytes(f)+sizeof fast_cols+256;
+}
+
+int dvbs2_fast_cache_tables(dvbs2_fast *f, uint8_t *table)
+{
+    if (!dvbs2_fast_cache_size(f) || !table || ((uintptr_t)table & 15)) return -1;
+    memcpy(table,f->prbs,7274);
+    f->prbs = table; table += 7280;
+    memcpy(table,f->gold,sizeof fast_gold_2_1);
+    f->gold = table; table += sizeof fast_gold_2_1;
+    if (f->pie & DVBS2_BCH_NIBBLE) {
+        memcpy(table,f->bch,sizeof fast_bch_8);
+        f->bch = table;
+    } else {
+        memcpy(table,f->byte_bch,DVBS2_BCH_CACHE_BYTES);
+        f->byte_bch = table;
+    }
+    table += DVBS2_BCH_CACHE_BYTES;
+    size_t bytes = cache_prog_bytes(f);
+    // Copy only the real program; its aligned slot may be longer.
+    const uint16_t *end = f->prog;
+    for (unsigned row = 0; row < f->q; ++row) {
+        unsigned levels = *end++;
+        while (levels--) { unsigned n = *end++; end += n; }
+    }
+    memcpy(table,f->prog,(const uint8_t *)end-(const uint8_t *)f->prog);
+    f->prog = (const uint16_t *)table; table += bytes;
+    memcpy(table,f->cols,sizeof fast_cols);
+    f->cols = (const uint16_t *)table; table += sizeof fast_cols;
+    memcpy(table,f->crc8,256);
+    f->crc8 = table;
     return 0;
 }
 
@@ -281,7 +331,7 @@ HOT int dvbs2_fast_bb_gcs(const dvbs2_fast *f, dvbs2_workspace *ws,
         return -1;
     }
     const size_t n = (dfl_bits + 7) / 8;
-    bb_header(ws->bits, fast_crc8, 0x70 | ((f->pie & DVBS2_RO_20) ? 2 : 0), (unsigned)dfl_bits, 0, 0, 0);
+    bb_header(ws->bits, f->crc8, 0x70 | ((f->pie & DVBS2_RO_20) ? 2 : 0), (unsigned)dfl_bits, 0, 0, 0);
     bb_fill(f, ws->bits, payload, n);
     if (dfl_bits & 7) {
         /* Clear the unused low bits of the last data byte, then rescramble. */
@@ -391,7 +441,7 @@ HOT void dvbs2_fast_bch(dvbs2_fast *f, dvbs2_workspace *ws)
 #ifdef DVBS2_PIE
     if (f->pie & DVBS2_PIE_BCH) {
         if (f->bch_bytes == 16 && !(f->pie & DVBS2_BCH_NIBBLE)) {
-            dvbs2_pie_bch_pair(ws->bits, bytes/2, fast_bch_pair_8, (uint8_t *)w);
+            dvbs2_pie_bch_pair(ws->bits, bytes/2, f->byte_bch, (uint8_t *)w);
             words = (bytes + 3) / 4;
         } else if (f->bch_bytes > 16 && !(f->pie & DVBS2_BCH_NIBBLE)) {
             dvbs2_pie_bch_byte(ws->bits, bytes, f->byte_bch, (uint8_t *)w);
@@ -562,7 +612,7 @@ static __attribute__((noinline)) void pack(dvbs2_fast *f, uint8_t *bits)
     uint32_t pending;
     unsigned have = pack_start(bits, start, &pending);
     for (unsigned t = 0; t < 360; ++t) {
-        const uint8_t *col = p + fast_cols[t];
+        const uint8_t *col = p + f->cols[t];
         for (unsigned b = 0; b < full; ++b) {
             const uint32_t v = W(col + ROW * 32 * b);
             *out++ = bswap(src32(pending, v, have));
@@ -596,7 +646,7 @@ HOT void dvbs2_fast_ldpc(dvbs2_fast *f, dvbs2_workspace *ws)
         uint32_t pending;
         const unsigned have = pack_start(ws->bits, start, &pending);
         uint32_t *packed = (uint32_t *)f->scratch;
-        dvbs2_pie_pack(f->p, fast_cols, f->q, packed, pending, have);
+        dvbs2_pie_pack(f->p, f->cols, f->q, packed, pending, have);
         uint8_t *dst = ws->bits + base;
         const uintptr_t at = (uintptr_t)dst;
         uint8_t *block = (uint8_t *)((at - 1) & ~(uintptr_t)15);

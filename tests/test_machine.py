@@ -27,7 +27,7 @@ def records(text):
         assert r['check'] == m.checksum(m.shape(src,phase,1367,peak).tobytes()),r
     assert seen == {(p,s,a) for p in (16,128,508) for s in range(3) for a in range(4)}
     assert rows[-1] == dict(test='machine_end',prepares=2880,slices=17280,errors=0),rows[-1]
-    print('row programs: 2880 guarded prepares, 17280 guarded slices; all words match Python')
+    print('sign windows: 2880 guarded prepares, 17280 guarded slices; all words match Python')
 
 
 def native(folder):
@@ -68,10 +68,10 @@ def loopback(exe,out,receiver):
     q = (((got>>10)&1023).astype(np.int16)^512)-512
     iq = np.column_stack([i,q]).astype('<i2')
     crc = zlib.crc32(iq.tobytes())
-    assert crc == 3130880472,crc  # exp/moon-fill 73136ce qpsk24c/11
+    assert crc == 2575466360,crc  # exp/moon-wild-a f704aa0, independently checked full-axis convolution
     iq.tofile(out/'frame.iq')
     if not receiver:
-        print('16-frame fractional stream: every C word matches Python; retained CRC 3130880472')
+        print('16-frame fractional stream: every C word matches Python; full-axis CRC 2575466360')
         return
     cf = out/'frame.cfile'
     z = (i+1j*q)/512
@@ -89,17 +89,11 @@ def loopback(exe,out,receiver):
 
 
 def storage_and_capacity():
-    assert 27648+16704+864+48*384+96 == 63744
-    # Kernel maxima from notes/wild-b-board; new copied-input encoder estimate
-    # from round-five's measured 146860 total, 53425 payload, and main SPI's
-    # measured 4823-cycle mean copy. These are estimates, never timing claims.
-    def cores(encoder):
-        scale = (15740/12)/1364
-        return (20891*scale*2/3+encoder*47220/239630.4,
-                (31761+20891/3)*scale)
-    assert max(cores(146860-53425+4823)) < 40137
-    assert cores(200000)[0] > 40137
-    print('63744 B store; copied-input capacity estimate fits, slow encoder rejected')
+    # 16-aligned pages include their own readable trailing source-word guard.
+    used = 24576+16704+864+32*272+96+4096+8144
+    assert used == 63184 and used <= 65536
+    print('63184 B store: full sign tables, two frames, dummy, 32 guarded pages, LUT, workspace')
+
 
 
 if __name__ == '__main__':

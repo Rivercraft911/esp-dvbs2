@@ -1,27 +1,74 @@
-// Offsets are 16-bit byte distances within separate compact .20 table parts.
-// Consumer has no symbol history, multiply, helper dispatch or join.
-// TRM v1.8 1.7.1/Table 1.7-2; fused add/load/store: 1.8.74/75.
+// TRM v1.8 1.8.88 p164: VLD forces address low four bits to zero.
+// Keep four disposable history bits below each eight-bit index. EXTUI then
+// produces a byte offset directly. Final signed DAC fields are in the tables.
     .section .iram1.machine,"ax"
+    .global machine_render_pie
+    .type machine_render_pie,@function
+    .align 4
+machine_render_pie:
+    entry a1,32
+    beqz a4,.Ldone
+    l32i a11,a3,0
+    movi a6,4096
+    add a6,a6,a5
+    movi a7,8192
+    add a7,a7,a5
+    movi a8,12288
+    add a8,a8,a5
+    movi a9,16384
+    add a9,a9,a5
+    movi a10,20480
+    add a10,a10,a5
+    loopnez a4,.Lend
+    extui a12,a11,3,12
+    extui a13,a11,19,12
+    add a12,a12,a5
+    add a13,a13,a8
+    ee.vld.128.ip q0,a12,0
+    extui a14,a11,2,12
+    ee.vld.128.ip q1,a13,0
+    extui a15,a11,18,12
+    add a14,a14,a6
+    ee.orq q0,q0,q1
+    add a15,a15,a9
+    ee.vld.128.ip q2,a14,0
+    ee.vst.128.ip q0,a2,16
+    ee.vld.128.ip q3,a15,0
+    extui a12,a11,0,12
+    extui a13,a11,16,12
+    add a12,a12,a7
+    add a13,a13,a10
+    ee.orq q2,q2,q3
+    ee.vld.128.ip q0,a12,0
+    ee.vst.128.ip q2,a2,16
+    ee.vld.128.ip q1,a13,0
+    addi a3,a3,4
+    l32i a11,a3,0 // one readable source-word guard; hides load-use latency
+    ee.orq q0,q0,q1
+    ee.vst.128.ip q0,a2,16
+.Lend:
+.Ldone:
+    retw
+    .size machine_render_pie,.-machine_render_pie
 
-    .macro byte
-    l8ui a9,a3,0
+
+// Packed bytes, four five-symbol blocks per five bytes. A 4 KiB LUT separates
+// the newest five I/Q signs; the previous six signs stay in scalar registers.
+// Unlike the wild-a probe, timing includes extracting groups from quad bytes.
+    .macro byte off
+    l8ui a9,a3,\off
     slli a8,a8,8
-    addi a3,a3,1
     or a8,a8,a9
     .endm
-
-    .macro rows shift,off
-    extui a10,a8,16+\shift,6
-    extui a11,a8,8+\shift,8
-    extui a12,a8,\shift,8
-    mull a10,a10,a14
-    mull a11,a11,a14
-    mull a12,a12,a14
-    s16i a10,a2,\off
-    s16i a11,a2,\off+2
-    s16i a12,a2,\off+4
+    .macro signs shift,off
+    extui a10,a8,\shift,10
+    slli a11,a11,5
+    addx4 a10,a10,a5
+    and a11,a11,a14
+    l32i a10,a10,0
+    or a11,a11,a10
+    s32i a11,a2,\off
     .endm
-
     .global machine_prepare_pie
     .type machine_prepare_pie,@function
     .align 4
@@ -32,63 +79,29 @@ machine_prepare_pie:
     l8ui a9,a3,1
     slli a8,a8,8
     or a8,a8,a9
-    addi a3,a3,2
-    movi a14,48
+    // First six chronological symbols initialize the rolling history.
+    extui a10,a8,6,10
+    extui a12,a8,4,2
+    addx4 a10,a10,a5
+    addx4 a12,a12,a5
+    l32i a11,a10,0
+    l32i a12,a12,0
+    slli a11,a11,1
+    or a11,a11,a12
+    movi a14,0x7ff07ff0
     loopnez a4,.Lprepare_end
-    byte
-    rows 2,0
-    byte
-    rows 0,6
-    byte
-    byte
-    rows 6,12
-    byte
-    rows 4,18
-    addi a2,a2,24
+    byte 2
+    signs 2,0
+    byte 3
+    signs 0,4
+    byte 4
+    byte 5
+    signs 6,8
+    byte 6
+    signs 4,12
+    addi a3,a3,5
+    addi a2,a2,16
 .Lprepare_end:
 .Lprepare_done:
     retw
     .size machine_prepare_pie,.-machine_prepare_pie
-
-    .global machine_render_pie
-    .type machine_render_pie,@function
-    .align 4
-machine_render_pie:
-    entry a1,32
-    beqz a4,.Lrender_done
-    movi a8,0x80200
-    ee.movi.32.q q7,a8,0
-    ee.movi.32.q q7,a8,1
-    ee.movi.32.q q7,a8,2
-    ee.movi.32.q q7,a8,3
-    movi a6,3072
-    movi a7,15360
-    add a6,a6,a5
-    add a7,a7,a5
-    loopnez a4,.Lrender_end
-    l16ui a10,a3,0
-    l16ui a11,a3,2
-    l16ui a12,a3,4
-    add a10,a10,a5
-    add a11,a11,a6
-    add a12,a12,a7
-    ee.vld.128.ip q0,a10,16
-    ee.vld.128.ip q1,a11,16
-    ee.vld.128.ip q2,a10,16
-    ee.vadds.s32.ld.incp q3,a11,q0,q0,q1
-    ee.vld.128.ip q1,a12,16
-    ee.vadds.s32.ld.incp q6,a10,q2,q2,q3
-    ee.vadds.s32.ld.incp q3,a11,q0,q0,q1
-    ee.vld.128.ip q1,a12,16
-    ee.xorq q4,q0,q7
-    ee.vadds.s32.ld.incp q0,a12,q2,q2,q1
-    ee.vadds.s32.st.incp q4,a2,q6,q6,q3
-    ee.xorq q5,q2,q7
-    ee.vadds.s32.st.incp q5,a2,q6,q6,q0
-    ee.xorq q4,q6,q7
-    ee.vst.128.ip q4,a2,16
-    addi a3,a3,6
-.Lrender_end:
-.Lrender_done:
-    retw
-    .size machine_render_pie,.-machine_render_pie

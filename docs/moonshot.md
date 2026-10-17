@@ -1,115 +1,106 @@
-# Queue transmitter
+# Sign windows in the queue
 
-**QPSK 9/10 at 33.333333 Msym/s is wired, but not admitted on silicon.**
-Round six builds and retains all 57 waveform CRCs. Its native 16-frame queue
-stream retains CRC32 1710089068. LeanDVB recovers 14 contiguous frames with
-zero LDPC flips, BCH corrections or payload errors. No USB or RF operation
-was attempted. The coordinator must measure the integrated Wi-Fi-up design.
+**The page queue uses wild-a sign windows. Silicon admission is pending.**
+Round seven retains all 57 main waveform CRCs. Both new 16-frame QPSK dumps
+match independent integer convolution; LeanDVB recovers 14 contiguous frames
+with zero payload errors, LDPC flips or BCH corrections. The live queue CRCs
+are 4118466753 (MODCOD 11) and 1616153472 (MODCOD 4). Full-axis rounding changes
+the experimental round-six CRCs, not the retained main waveforms. The standalone
+MODCOD 11 kernel dump matches wild-a's pinned CRC 2575466360.
 
-## Ownership and work
+Native and ESP32-S3 QEMU checks cover 2,880 guarded prepares and 17,280 sample
+slices. QEMU also passes 140 encoder CRCs, 14 PIE comparisons, 896 packed frames
+and 512 quad frames with guarded resident tables. Native lifecycle checks cover
+allocation failures, repeated commands, notifications, counter wraps and a
+200-frame queue stream. QEMU clocks and native heap sizes are not measurements.
+No USB or radio operation was attempted.
 
-Core 0 encodes into two guarded quad-code frame slots, then prepares a
-persistent queue between encoder stages and while waiting for a slot. Core 1
-renders the banks. There is no helper task, per-bank dispatch, join, encoder
-callback, or live split-kernel fallback. The unsuccessful experimental 8PSK
-rates and old `membench moon` probe are removed from the live image.
+## Work and ownership
 
-A page represents 64 groups of five QPSK symbols, or 768 DAC samples. Two pages
-out of three contain three 16-bit table offsets per group. Every third page
-contains the packed symbols and six history symbols; core 1 prepares that page
-before rendering it. Raw input is copied before expanding offsets in place.
-This moves one third of preparation into core 1's slack. All source windows
-start at a four-symbol boundary, avoiding the scalar prepare prefix.
+Core 0 encodes into two guarded quad-code frames and prepares pages between
+encoder stages and while waiting for a frame slot. Core 1 renders sign windows.
+The wild-b row sums and raw-page handoff are removed. There is no helper task,
+per-bank dispatch or join. A page represents 64 groups of five symbols, or
+768 DAC samples. Each group holds eleven I-negative bits in word bits 14:4 and
+Q-negative bits in 30:20, newest low. Each page owns a readable trailing guard;
+its preparation cost shares the same 272 B aligned allocation.
 
-The queue has 48 pages. Single-writer 32-bit publication and consumption
-counters use release/acquire ordering. Separate physical page cursors preserve
-the 48-page wrap when the counters wrap; 64-bit symbol/sample cursors preserve
-the waveform timeline. Native tests cross the counter wrap on every start.
-The producer sleeps only when both its frame ring and queue are full. The
-consumer wakes it after four pages have become free. A waiting flag and a
-predicate recheck preserve notifications racing the wait. Queue starvation
-returns an error immediately and fails admission.
+Each four-sample vector uses eight signs. The three chronological windows are
+[-6..1], [-5..2] and [-3..4]. Two independent axis tables provide signed 10-bit
+DAC fields; rendering is two loads and an OR per vector. For sample p,
 
-The encoder alone reads/releases frame slots. Each queued page owns its
-history and has no pointers into released slots. The renderer retains the
-existing DAC overlap cache. PL headers, pilots, station headers and fractional
-phase continue across frame and bank boundaries. Station ID pauses the payload
-timeline through the existing radio wrapper.
+`v[p] = round_odd(sum_j sign[j] * L * h[5p-12j] / 2^38)`.
 
-Store use is `27648 + 2*8352 + 864 + 48*384 + 96 = 63744 B`: tables,
-frames, dummy, queue and producer window, respectively. The 65,536 B shaper
-store leaves 1,792 B. The pace's repeated 7,264 B source is an explicit internal
-allocation; its 1,316 B copy chunks and station header are timed. This fixture
-does not measure DMA, parsing, CRC checks or input interrupts.
+L = 759250125 in Q30 units, h is in 1/256 DAC LSB and is scaled by
+`(peak-1)/508`; ties round away from zero. The pulse and derivation are from
+exp/moon-fill 73136ce; the sign renderer is from exp/moon-wild-a f704aa0.
+`host/machine.py` independently sums the complete axis before rounding.
 
-## Budget and evidence
+Preparation accepts the ring's four-symbol bytes directly. Its 4 KiB LUT
+separates five new I/Q signs, then scalar shifts preserve the preceding six.
+Wild-a's measured 6,210-cycle PIE preparation starts from already packed
+five-symbol groups. That number excludes conversion from this ring format and
+is not an integrated queue prediction. Every page's measured cost includes its
+ring read, packed-group extraction and sign preparation.
 
-At 240 MHz and 80 MS/s, the fresh-bank period is
+The 32-page queue uses single-writer release/acquire publication counters and
+separate physical cursors. The producer alone reads/releases frame slots;
+queued pages retain no frame pointers. The consumer wakes the producer after
+four pages are free. A waiting flag and predicate recheck preserve racing
+notifications. Starvation returns an error and fails the gate. The existing
+sample cache preserves overlap, fractional phase, PL headers and pilots across
+page, frame and physical bank seams.
+
+## RAM
+
+The shaper store uses
+`24576 + 2*8352 + 864 + 32*272 + 96 + 4096 + 8144 = 63184 B`:
+full-speed sign tables, two frames, dummy, guarded pages, producer window, LUT
+and fast encoder workspace. The remaining 2,352 B cannot hold the repeated
+7,264 B input fixture, which is an explicit internal allocation during pace.
+Its 1,316 B copies and station header are timed; DMA/parser/ISR work is absent.
+
+The QPSK 9/10 encoder's 25,920 B resident allocation holds PRBS, Gold sequence,
+paired BCH, LDPC program/columns and GCS header CRC. Header/pilots already live
+in the context. Other QPSK rates use their own program and BCH rows. This removes
+hot bulk flash-data dependencies; the board must establish the stage miss rate
+and full encoder timing. Global cache counters include both cores/interrupts.
+
+Overlap storage is allocated at the active geometry: 8,704 B at 40 MS/s and
+3,072 B at 80 MS/s. The Wi-Fi heap probe retains that complete playback layout.
+The 8-sps 8PSK dummy borrows the unused PSRAM workspace tail, reclaiming 1,696 B
+of internal ring storage; both real frame slots stay internal. These are layout
+sizes, not new board heap measurements. All original heap floors are unchanged.
+
+## Admission
+
+At 240 MHz and 80 MS/s the fresh-bank deadline is
 `15740 samples / 80e6 samples/s * 240e6 cycles/s = 47220 cycles`.
-The 85% ceiling is **40,137 cycles/core/bank**. The frame period is
+The 85% ceiling is **40,137 cycles/core/bank**. A QPSK frame lasts
 `33282 symbols * 240e6 cycles/s / (100e6/3 symbols/s) = 239630.4 cycles`;
-its 85% ceiling is **203,685 cycles/frame**. Frame dimensions come from
-`host/dvbs2.py`; bank geometry comes from `radio_s3.h`.
+its 85% ceiling is **203,685 cycles/frame**. Frame sizes come from
+`host/dvbs2.py`, bank geometry from `radio_s3.h`.
 
-Coordinator records in `notes/wild-b-board/runs.jsonl` give prepare maximum
-20,891 and render maximum 31,761 cycles for 1,364 groups, radio off. Round-five
-`notes/moon-round5-board/runs.jsonl` gives 146,860 cycles/frame and about 53,425
-payload cycles at QPSK 26m667. Main's immutable SPI GCS replay gives
-`ceil(57972998 / 12021) = 4823 cycles/frame` of copy, a measured mean, not a
-worst-case bound. Replacing synthetic generation predicts
-`E = 146860 - 53425 + 4823 = 98258 cycles/frame`.
+`host/check.sh --moonshot` runs the main dumps/decodes, eight paces and original
+three heap floors first. Each main timing ceiling remains 102% of its fixed
+measurement. A main failure invalidates admission. The runner keeps going after
+failures and exits nonzero. The candidate adds a 16-frame dump/decode, a 30 s
+Wi-Fi receive-only pace and a complete-layout heap probe.
 
-With `G = (15740/12)/1364`, kernel-only estimates are
-`C0 = (2/3)*20891*G + E*47220/239630.4 = 32755 cycles/bank`, and
-`C1 = (31761 + 20891/3)*G = 37239 cycles/bank` (rounded).
-These combine measurements from different contexts. Queue wrappers, cache
-copies, notifications, interrupts and Wi-Fi are additional and unbounded here.
-A slow 200,000-cycle encoder fails the same model. These are planning screens,
-not claims of deadline compliance.
+Core 1's full-bank maximum includes sign rendering, queue work and cache copies.
+Core 0's capacity screen uses the largest sum of actual prepared page costs
+charged to any consumed bank. Both edge pages are charged in full, including
+again in the next bank if shared. At most 23 pages touch a bank, including the
+initial 16,380-sample fill. Add 23 times the maximum measured publication tail,
+maximum notification cost, and pure encoder work scaled by 47220/239630.4.
+This remains a capacity estimate, not a direct measurement of scheduling tails.
+Encoder wall mean/live maximum must also pass independently. Main SPI GCS's
+measured 4,823-cycle mean copy remains a planning floor, not a worst-case bound.
 
-Wild-a's coordinator results arrived in `notes/wild-a-board/membench.log`:
-prepared-history render median/max 35,527/36,947 cycles for 16,380 samples;
-history prepare 6,210/8,678. Wild-b render median/max is 30,041/31,761 for
-16,368 samples. Sign windows offer cheaper preparation but a slower renderer.
-Use wild-b's renderer and move preparation into its spare capacity. Only this
-queue implementation is linked; no sign-window code is imported.
-
-## Main regressions
-
-Legacy QPSK 5m/10m returns to register-nibble BCH. Its paired flash table
-introduced repeated cache misses in round five; the faster paired BCH and quad
-mapper remain in 80 MS/s QPSK. Packed payloads now borrow encoder scratch until
-BB consumes them, removing a redundant 7,264 B heap payload in 8PSK 9/10 5m.
-Byte BCH borrows available store tails in 8PSK 20m and MODCOD 13 10m. QPSK
-26m667 uses two slots and an 8,144 B fast workspace plus window in the store,
-removing its 12,420 B heap workspace. Plain stages still require the full type.
-
-Fecbench borrows the idle shaper store for workspace, packed output and BCH,
-avoiding the allocation failure. Ingress CRC tables are allocated only during
-input operation, preserving the slicing-by-four input path while reclaiming
-4,096 B between sessions. The encoder stack is 2,048 B instead of 3,072 B;
-round-five measurements left at least 2,108 B free. Every pace now requires at
-least 512 B stack headroom. Heap and timing improvements remain unmeasured. The local QEMU executable
-did not reach serial boot output; no new QEMU execution result is claimed.
-The firmware and both correctness apps build with ESP-IDF v6.1.
-
-## Coordinator gate
-
-`host/check.sh --moonshot` first runs all retained main dumps/decodes, eight
-main paces and the three original heap floors. The four critical paces last
-30 s. Fill maximum, encoder mean and live maximum must each be at most 102%
-of fixed main measurements. No heap floor or timing ceiling is relaxed.
-
-The candidate adds its 16-frame dump/decode, 30 s Wi-Fi receive-only pace and
-Wi-Fi heap probe. Full-bank core-1 maximum includes local preparation, render,
-queue work and overlap copies. Core-0 capacity uses at most 15 prepared and 8
-raw page maxima per bank, including ring reads and publication, plus maximum
-measured bank wake cost and pure encoder work scaled to the bank period. Pure
-encoder work excludes synchronous queue preparation; the measured SPI copy
-floor is retained. Encoder wall mean/live maximum also pass independently.
 Queue low water must be positive, starvation/underruns/lateness zero, slack
-positive and Wi-Fi-up/minimum heap at least 20,000 B. A failed main gate
-invalidates QPSK admission. The runner continues after failures and exits nonzero.
+positive and Wi-Fi-up/minimum heap at least 20,000 B. Encoder stack headroom
+must be at least 512 B. The coordinator must confirm these timing, cache and
+heap predictions on the integrated board image.
 
 After building/flashing the committed revision, with N0CALL stored and exclusive
 board ownership:
@@ -117,7 +108,7 @@ board ownership:
 ```sh
 PYTHON=/Users/river/radioconda/bin/python3 \
 RX=/Users/river/Documents/stanford/SSI/esp-dvbs2/notes/leansdr/src/apps/leandvb \
-  host/check.sh --moonshot notes/moon-round6-board
+  host/check.sh --moonshot notes/moon-round7-board
 ```
 
 `--plan` opens no device. The runner never flashes, writes NVS or transmits.

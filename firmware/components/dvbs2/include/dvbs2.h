@@ -114,6 +114,12 @@ int dvbs2_fast_prepare(dvbs2_fast *f, const dvbs2_mode *mode, int pilots, unsign
  * Returns -1 for invalid context/alignment or t = 8. No allocation is hidden. */
 #define DVBS2_BCH_CACHE_BYTES 8192
 int dvbs2_fast_cache_bch(dvbs2_fast *f, uint8_t *table);
+/* Optional complete hot-data cache for MAP_QUADS (PRBS, Gold, BCH, LDPC
+ * program/columns and GCS header CRC). After prepare, allocate cache_size()
+ * aligned internal bytes, then cache_tables(). Buffer remains owned by caller
+ * until the context is released or prepared again. Size 0 means unsupported. */
+size_t dvbs2_fast_cache_size(const dvbs2_fast *f);
+int dvbs2_fast_cache_tables(dvbs2_fast *f, uint8_t *table);
 unsigned dvbs2_fast_pie(const dvbs2_fast *f);
 int dvbs2_fast_ldxq_bias(const dvbs2_fast *f);
 int dvbs2_fast_bb_gcs(const dvbs2_fast *f, dvbs2_workspace *ws,

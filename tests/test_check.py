@@ -31,8 +31,8 @@ else:
         ring_slots=8 if n==40 else 2 if moon or (quads and n==3) else 3 if n<=4 else 2,ring_format='raw' if n==40 else 'quads' if quads else 'packed',
         workspace_memory='internal' if resident else 'psram',
         fill_kernel='moon-queue' if moon else 'pie',paced_wifi_up=moon,
-        wifi_free_up=50000,wifi_min_free=50000,prepare_pages=48,local_pages=12,queue_pages=48,
-        queue_low_pages=1,queue_empty=0,prepare_max_cycles=1,raw_max_cycles=1,queue_wake_max_cycles=1,
+        wifi_free_up=50000,wifi_min_free=50000,prepare_pages=32,encoder_cache_bytes=25920,queue_pages=32,
+        queue_low_pages=1,queue_empty=0,prepare_max_cycles=1,prepare_bank_max_cycles=1,prepare_tail_max_cycles=1,queue_wake_max_cycles=1,
         dispatch_max_cycles=1,encode_work_cycles_mean=1,encode_work_cycles_live_max=1,
         encode_frame_work_cycles_mean=1,encode_frame_work_cycles_live_max=1,
         payload_source='internal-frame' if moon else 'xorshift32',input_frames=int(moon),
@@ -80,7 +80,8 @@ else:
    fault=os.getenv('QUEUE_GATES')
    if fault=='empty':r['queue_empty']=1
    if fault=='low':r['queue_low_pages']=0
-   if fault=='core0':r['prepare_max_cycles']=3000
+   if fault=='core0':r['prepare_bank_max_cycles']=40137
+   if fault=='tail':r['prepare_tail_max_cycles']=1750
    if fault=='stack':r['encoder_stack_min_free']=511
    if mc==11 and os.getenv('COPY_BUDGET'):
     r['encode_kernel_cycles_mean']=r['encode_kernel_cycles_live_max']=ceiling-4823
@@ -204,7 +205,7 @@ with tempfile.TemporaryDirectory() as tmp:
                            env=dict(env,COPY_BUDGET=metric),capture_output=True,text=True,timeout=60)
         assert run.returncode==int(metric!='exact'), (run.stdout,run.stderr)
         assert ('FAIL\tQPSK admission' in (out/'summary.tsv').read_text()) == (metric!='exact')
-    for fault in ('empty','low','core0','stack'):
+    for fault in ('empty','low','core0','tail','stack'):
         out=root/('queue-'+fault)
         run=subprocess.run(['sh','host/check.sh','--moonshot',str(out)],cwd=root,
                            env=dict(env,QUEUE_GATES=fault),capture_output=True,text=True,timeout=60)

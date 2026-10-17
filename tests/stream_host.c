@@ -207,6 +207,7 @@ static esp_err_t discard(const uint32_t *bank, uint64_t first, size_t count, voi
 esp_err_t radio_s3_wifi_probe(radio_s3_stats_t *stats)
 {
     assert(enc.fast && enc.ws && enc.payload && dvb.win);
+    assert(!enc.packed || dvb.samples); // the heap probe must own the playback cache
     memset(stats, 0, sizeof *stats);
     ++wifi_probes;
     return ESP_OK;
@@ -269,7 +270,7 @@ int main(int argc, char **argv)
             assert(native_buffers[i]+INGRESS_SLOT_BYTES <= enc.bch ||
                    native_buffers[i] >= enc.bch+DVBS2_BCH_CACHE_BYTES);
     }
-    if (!moon) assert(allocations == (sps == 40 ? 7 : 3 - (quads && sps == 3) + (mc >= 12 && !short_pulse) +
+    if (!moon) assert(allocations == (sps == 40 ? 7 : 4 - (quads && sps == 3) + (mc >= 12 && !short_pulse) +
                           (resident && mode->t > 8 && !native_input && !borrowed_bch) + !resident));
     for (unsigned i = 0; i < 64; ++i) {
         if (native_blocks[i].p == enc.ws)
@@ -285,11 +286,15 @@ int main(int argc, char **argv)
             if (native_blocks[i].p && (native_blocks[i].caps & MALLOC_CAP_INTERNAL))
                 internal += native_blocks[i].n;
         const size_t fast = dvbs2_fast_mode_size(mode);
-        const size_t expected = mc >= 12 && sps == 8 ? 23936+2058 :
+        const size_t expected = mc >= 12 && sps == 8 ? 22240+2058 :
             sps == 40 ? fast+420 : quads && !moon && sps == 4 ? fast+25056 :
             fast+(quads && sps == 3 ? 0 : 12420)+(mc >= 12 && !short_pulse ? 11120 : 0);
-        assert(internal == expected);
+        assert(internal == expected+(sps == 40 ? 0 : CACHED_FOR(rate)*sizeof(uint32_t)));
         assert((native_buffers[0] != NULL) == !((quads && sps == 3) || (mc >= 12 && (sps == 8 || (mc == 13 && !short_pulse)))));
+    }
+    if (enc.packed && !resident) {
+        assert(enc.filler == (uint8_t *)enc.ws+DVBS2_FAST_WORKSPACE_USED);
+        assert(enc.filler+packed_bytes(DVBS2_DUMMY_SYMBOLS) <= (uint8_t *)(enc.ws+1));
     }
     if (quads && !moon && sps == 4) assert((uint32_t *)enc.ws == shaper_store+QPSK_TABLE_WORDS(4));
     assert(!((uintptr_t)enc.fast & 15) && !((uintptr_t)enc.ws & 15));

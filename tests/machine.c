@@ -9,8 +9,9 @@
 static uint32_t table[MACHINE_TABLE_WORDS] __attribute__((aligned(16)));
 static uint32_t want[16404] __attribute__((aligned(16)));
 static uint32_t got[16420] __attribute__((aligned(16)));
-static uint16_t rows[4108] __attribute__((aligned(16)));
+static uint32_t rows[1376] __attribute__((aligned(16)));
 static uint8_t src[1720];
+static uint32_t lut[MACHINE_LUT_WORDS] __attribute__((aligned(16)));
 
 static uint32_t hash(const void *data, unsigned bytes)
 {
@@ -31,6 +32,7 @@ static void source(uint32_t x)
 static void check(void)
 {
     unsigned cases = 0, prepares = 0;
+    machine_lut(lut);
     const unsigned peaks[] = {16,128,508}, lengths[] = {0,1,11,12,13,47,48,49,15740,16380};
     const unsigned blocks[] = {0,1,2,3,4,5,7,16,31,1364};
     for (unsigned l = 0; l < 3; ++l) {
@@ -43,21 +45,23 @@ static void check(void)
                     for (unsigned c = 0; c < sizeof blocks/sizeof *blocks; ++c) {
                         unsigned n = blocks[c];
                         memset(rows,0xa5,sizeof rows);
-                        machine_prepare(rows+a,src,phase,n);
-                        for (unsigned b = 0; b < n; ++b)
-                            for (unsigned k = 0; k < 3; ++k) {
-                                unsigned code = 0, at = phase+5*b+(unsigned[]){0,3,7}[k];
-                                for (unsigned j = 0; j < (unsigned[]){3,4,4}[k]; ++j) {
-                                    unsigned i = at+j;
-                                    code = code*4+((src[i/4]>>(6-2*(i&3)))&3);
-                                }
-                                assert(rows[a+3*b+k] == 48*code);
+                        machine_prepare(rows+a,src,phase,n,lut);
+                        for (unsigned b = 0; b < n; ++b) {
+                            uint32_t value = 0;
+                            for (unsigned j = 0; j < 11; ++j) {
+                                unsigned at = phase+5*b+j;
+                                unsigned c = (src[at/4]>>(6-2*(at&3)))&3;
+                                value |= ((c^(c>>1))&1) << (14-j);
+                                value |= (c>>1) << (30-j);
                             }
-                        for (unsigned i = 0; i < a; ++i) assert(rows[i] == 0xa5a5);
-                        for (unsigned i = a+3*n; i < sizeof rows/sizeof *rows; ++i) assert(rows[i] == 0xa5a5);
+                            assert(rows[a+b] == value);
+                        }
+                        for (unsigned i = 0; i < a; ++i) assert(rows[i] == 0xa5a5a5a5);
+                        for (unsigned i = a+n; i < sizeof rows/sizeof *rows; ++i) assert(rows[i] == 0xa5a5a5a5);
                         ++prepares;
                     }
-                machine_prepare(rows,src,phase,1367);
+                machine_prepare(rows,src,phase,1367,lut);
+                rows[1367] = 0;
                 machine_reference(want,src,phase,1367,table);
                 for (unsigned skip = 0; skip < 12; ++skip)
                     for (unsigned a = 0; a < 4; ++a)
@@ -72,7 +76,7 @@ static void check(void)
                         }
                 printf("@{\"test\":\"machine\",\"peak\":%u,\"seed\":%u,\"phase\":%u,"
                        "\"table\":%"PRIu32",\"rows\":%"PRIu32",\"check\":%"PRIu32"}\n",
-                       peaks[l],seed,phase,hash(table,sizeof table),hash(rows,6*1367),hash(want,48*1367));
+                       peaks[l],seed,phase,hash(table,sizeof table),hash(rows,4*1367),hash(want,48*1367));
             }
         }
     }
@@ -91,10 +95,12 @@ int main(int argc, char **argv)
     uint8_t *input = malloc(bytes);
     if (!input || fread(input,1,bytes,in) != bytes) return 2;
     assert(!machine_build(table,128));
+    machine_lut(lut);
     unsigned at = 0, left = (symbols-6)/5;
     while (left) {
         unsigned n = left < 1364 ? left : 1364;
-        machine_prepare(rows,input,at,n);
+        machine_prepare(rows,input,at,n,lut);
+        rows[n] = 0;
         machine_render(got,rows,n,table);
         if (fwrite(got,48,n,out) != n) return 2;
         at += 5*n, left -= n;
@@ -109,8 +115,10 @@ void app_main(void)
 #ifdef MACHINE_TRACE
     source(2026);
     assert(!machine_build(table,128));
+    machine_lut(lut);
     for (unsigned n = 4; n <= 1364; n = n == 4 ? 8 : 1364) {
-        machine_prepare_pie(rows,src,n/4);
+        machine_prepare_pie(rows,src,n/4,lut);
+        rows[n] = 0;
         machine_render_pie(got,rows,n,table);
         machine_reference(want,src,0,n,table);
         assert(!memcmp(got,want,48*n));

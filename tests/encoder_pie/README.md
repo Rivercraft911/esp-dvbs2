@@ -6,7 +6,9 @@ mapper with resident byte BCH (t = 10/12) or flash paired BCH (t = 8), and spars
 and guarded output buffers. Its oracle is the portable C
 encoder, whose stages are checked against Python by `tests/test_dvbs2_c.py`.
 It also checks 512 four-code QPSK frames with borrowed context payload, both BCH
-policies, all alignments and guarded workspace tails. QEMU establishes correctness, not timing.
+policies, all alignments and guarded workspace tails. Those QPSK checks use the
+complete resident table allocation, including paired BCH at t = 8, with guards
+on both ends of the cache. QEMU establishes correctness, not timing.
 QEMU has no PSRAM, so `bench.c` redirects its allocation capability to internal
 RAM. The command's printed PSRAM metadata does not describe these emulated buffers.
 
@@ -38,5 +40,5 @@ python3 tests/test_fecbench.py notes/encoder-qemu.jsonl --correctness-only
 ```
 
 Pass: all 140 reference CRCs, 14 PIE checks with zero mismatch, the 896-case
-packed success line, and `QEMU-END` with no assertion or exception. The printed
+packed success line, `resident quad tables: 512 cases`, and `QEMU-END` with no assertion or exception. The printed
 CCOUNT values are never performance results.

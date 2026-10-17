@@ -15,7 +15,7 @@ import zlib
 p = argparse.ArgumentParser(description='TX-off board gates, including Wi-Fi-up moonshot paces after build/flash.')
 p.add_argument('out', nargs='?', type=pathlib.Path)
 p.add_argument('--plan', action='store_true', help='print every criterion without running anything')
-p.add_argument('--moonshot', action='store_true', help='33m333 and 8PSK 26m667 gates, plus slim regressions')
+p.add_argument('--moonshot', action='store_true', help='QPSK 33m333 gate after the main regressions')
 p.add_argument('--all-crcs', action='store_true', help='also dump every golden waveform on the board (much slower)')
 p.add_argument('--encoder', action='store_true', help='encoder candidate: target 9/10, stage timings and measured SPI copy cost')
 p.add_argument('--port', default='/dev/cu.usbmodem101')
@@ -138,8 +138,8 @@ for (mc,token,seconds,topic,old),limit in zip(paces,limits):
 for mc,token,up,low in wifi: print(f'  wifimem {mc} {token}: up >= {up} B, minimum >= {low} B; no playback.')
 if a.moonshot:
     print(f'Copy planning floor: {copy_cycles} cycles/frame from main SPI GCS replay; actual new-mode payload is timed too.')
-    print('Core 0 capacity: 15 prepared and 8 raw page maxima + measured wake allowance + encoder work * 47220/frame <= 40137 cycles.')
-    print('  Core 1 includes local prepare, render, queue and cache in the full-bank maximum. Queue starvation fails; no dispatch/join.')
+    print('Core 0 capacity: measured sum of actual prepared pages per bank + 23 publication tails + wake allowance + encoder work * 47220/frame <= 40137 cycles.')
+    print('  Core 1 includes sign render, queue and cache in the full-bank maximum. Queue starvation fails; no dispatch/join.')
 if a.encoder:
     print(f'Encoder planning gate: same-frame post-payload mean AND live maximum + measured {copy_cycles:,} cycles/input copy')
     print('  <= 135,827 cycles/frame for internal 8PSK; <= 203,685 for QPSK 9/10 at 26m667.')
@@ -260,17 +260,18 @@ def pace(mc,token,seconds,limit):
         assert r['encode_kernel_cycles_live_max'] + copy_cycles <= ceiling, r
     if token == '33m333' or (mc >= 12 and token == '26m667'):
         assert r['paced_wifi_up'] and r['wifi_free_up'] >= 20000 and r['wifi_min_free'] >= 20000, r
-        assert r['prepare_pages'] > 0 and r['local_pages'] > 0, r
-        assert r['queue_pages'] == 48 and r['queue_low_pages'] > 0 and r['queue_empty'] == 0, r
+        assert r['prepare_pages'] > 0 and r['encoder_cache_bytes'] > 23000, r
+        assert r['queue_pages'] == 32 and r['queue_low_pages'] > 0 and r['queue_empty'] == 0, r
         assert r['encode_kernel_cycles_mean']+copy_cycles <= limit['encode_cycles_mean'], r
         assert r['encode_kernel_cycles_live_max']+copy_cycles <= limit['encode_cycles_live_max'], r
-        # Fresh bank: ceil(15740/768)+1 = 22 touched pages, at most 15 prepared,
-        # 8 raw (separate conservative maxima). Include all ring/copy/publication
-        # work in page timing. Encoder work excludes synchronous preparation.
+        # Actual prepared page costs, with each partially touched edge charged
+        # in full. First bank touches ceil(16380/768)+1 <= 23 pages; steady
+        # banks <=22. Publication tails are bounded separately, never omitted.
         frame = 33282*7.2
         encoder = max(r['encode_frame_work_cycles_mean'],r['encode_frame_work_cycles_live_max'],
                       r['encode_work_cycles_mean']+copy_cycles,r['encode_work_cycles_live_max']+copy_cycles)
-        assert 15*r['prepare_max_cycles']+8*r['raw_max_cycles']+r['queue_wake_max_cycles']+encoder*47220/frame <= 40137, r
+        core0 = r['prepare_bank_max_cycles']+23*r['prepare_tail_max_cycles']+r['queue_wake_max_cycles']+encoder*47220/frame
+        assert core0 <= 40137, dict(core0_cycles=core0, **r)
     assert r['prefill_frames'] == r['ring_slots'] and r['frames_played'] > 0, r
     f = r['profile']
     assert f['shaped_words'] + f['reused_words'] == f['fill_words'], r

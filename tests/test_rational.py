@@ -14,7 +14,7 @@ import numpy as np
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT/'host'))
 import onair
-import moon_fill as moon
+import machine as moon
 from test_stream import compile_stream
 
 
@@ -45,23 +45,22 @@ def test(output=None, receiver=None):
             assert r['ring_format'] == ('quads' if quads else 'packed')
             assert r['packed_mapper'] == ('quads' if quads else 'direct')
             assert r['fill_kernel'] == 'moon-queue' and r['prepare_pages'] > 0
-            assert r['queue_empty'] == 0 and r['queue_low_pages'] > 0 and r['local_pages'] > 0
+            assert r['queue_empty'] == 0 and r['queue_low_pages'] > 0
             assert r['workspace_memory'] == r['payload_memory'] == r['ring_memory'] == 'internal'
-            assert r['workspace_heap_bytes'] == 12420
+            assert r['workspace_heap_bytes'] == 0 and r['encoder_cache_bytes'] > 23000
             assert not r['encoder_failed'] and r['underruns'] == r['overlap_mismatches'] == 0
-            assert r['bch_cache_bytes'] == (8192 if mc in (4,13) else 0)
-            kernel = 'qpsk24c' if quads else '8psk24' if num == 12 else '8psk3'
-            assert r['table_bytes'] == sum(t.nbytes for t in moon.table(kernel))
+            assert r['bch_cache_bytes'] == 8192
+            assert r['table_bytes'] == 24576
             symbols = onair.symbols(mc, frames+2, callsign='N0CALL', rolloff=alpha)
             phases = np.rint(np.angle(symbols)*4/np.pi).astype(int)%8
             actual = np.fromfile(iq, dtype='<i2').reshape(-1,2)
             count = (frames*onair.frame_symbols(mc)*num+den-1)//den
             assert len(actual) == r['samples'] == count
-            block = 5 if num == 12 else 4
-            pad = (-len(phases))%block
-            padded = np.r_[np.full(2*block,1 if quads else 0),phases,np.zeros(pad)].astype(np.uint8)
-            if quads and pad: padded[-pad:] = 1
-            expected = moon.shape(kernel,padded)[:count]
+            pad = (-len(phases))%5
+            c = np.r_[np.zeros(6,np.uint8),phases//2,np.zeros(pad+8,np.uint8)]
+            c = np.pad(c,(0,(-len(c))%4))
+            packed = np.sum(c.reshape(-1,4) << np.array([6,4,2,0]),axis=1).astype(np.uint8)
+            expected = moon.shape(packed.tobytes(),0,(count+11)//12)[:count]
             import shaper
             z = shaper.iq(expected)
             np.testing.assert_array_equal(actual,np.column_stack((z.real,z.imag)))

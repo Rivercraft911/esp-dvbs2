@@ -49,8 +49,6 @@
 // Samples, including the first bank's extra lead. Later banks re-read 2112 words, or 640 on the
 // 80 MS/s geometry, which keeps only its 768 (dvb.cached_words).
 #define CACHED_FOR(rate) (RADIO_S3_BANK_WORDS - RADIO_S3_STEP_FOR(rate) + RADIO_S3_LEAD_FOR(rate))
-#define CACHED_WORDS CACHED_FOR(RADIO_S3_DAC_RATE)
-_Static_assert(CACHED_FOR(RADIO_S3_DAC_RATE_80M) <= CACHED_WORDS, "sample cache too small");
 // Finished samples cover the overlap. The next fresh sample only needs filter history and
 // one symbol cut at each end, even when the output wraps in the middle of an 8-sps symbol.
 #define OVERLAP_SYMBOLS 16 // twelve history symbols plus cut edges in the rational path
@@ -61,7 +59,7 @@ typedef struct {
     uint8_t *win;                  // internal; borrows the tail of each internal fast workspace
     size_t win_bytes;
     uint8_t overlap[OVERLAP_SYMBOLS];
-    uint32_t samples[CACHED_WORDS] __attribute__((aligned(16)));
+    uint32_t *samples;             // active-rate overlap; heap probe retains the complete layout
     uint64_t sample_end;            // cached samples end here; only advances on fresh samples
     size_t sample_at;               // circular cache index of sample_end
     uint32_t max_fill_cycles;       // one fill call
@@ -77,11 +75,14 @@ typedef struct {
     uint32_t queue_low, queue_empty, queue_wakes;
     uint32_t wake_bank, wake_max;
     uint64_t bank_end;
-    uint32_t prepare_max, raw_max, local_max;
-    uint64_t prepare_cycles, local_cycles;
-    uint32_t prepare_pages, local_pages;
+    const uint32_t *sign_lut;
+    uint32_t prepare_max;
+    uint32_t prepare_bank, prepare_bank_max, prepare_tail_max;
+    bool costed_page;
+    uint64_t prepare_cycles;
+    uint32_t prepare_pages;
     uint32_t dac_rate;             // the run's bank geometry
-    size_t cached_words;           // active sample cache, within samples[]
+    size_t cached_words;           // active sample cache length
     stream_profile_t copy, whole, partial, save, notify;
     uint64_t fill_words, fill_cycles;
     uint32_t fill_calls;
@@ -90,14 +91,15 @@ typedef struct {
 } dvb_t;
 
 static DRAM_ATTR dvb_t dvb;
-_Static_assert(MACHINE_PAGE_BLOCKS%4 == 0 && MACHINE_PAGES%MACHINE_RAW_PERIOD == 0,
-               "queue pages retain prepare alignment and raw-page phase");
+_Static_assert(MACHINE_PAGE_BLOCKS%4 == 0 && sizeof(machine_page)%16 == 0,
+               "queue pages retain prepare and render alignment");
 _Static_assert(sizeof(dvbs2_workspace) - DVBS2_FAST_WORKSPACE_USED >=
                SHAPER_HISTORY + BANK_SYMBOLS + 1, "fast workspace tail holds n4 window");
 typedef struct {
     const dvbs2_mode *mode;
     dvbs2_fast *fast;               // fast encoder context for this mode, internal RAM
     dvbs2_workspace *ws;            // internal for fast QPSK / 4-sps 8PSK, otherwise PSRAM
+    uint8_t *tables;               // moon: complete resident encoder data
     uint8_t *bch;                  // resident byte table with internal workspace, t = 10/12
     bool bch_borrowed;
     bool ws_borrowed;
@@ -109,7 +111,7 @@ typedef struct {
     bool input_borrowed;
     uint8_t *slot[PACKED_SLOTS];    // packed frames, internal
     uint8_t *block;                 // packed ring's heap part: slot 2 (4 sps) or everything (8 sps)
-    uint8_t *slots, *filler;        // QPSK: PSRAM; packed: filler is the packed dummy
+    uint8_t *slots, *filler;        // n8 8PSK dummy borrows PSRAM workspace tail
     TaskHandle_t task;
     uint32_t stall_ms;
     volatile bool stop;
@@ -162,8 +164,8 @@ static uint32_t next_byte(uint32_t *x)
 
 // The encoder alone reads the frame ring. Prepared pages no longer refer to
 // frame slots, so ring_window can release them without a cross-core handshake.
-// Every third page moves preparation to core 1. Raw pages include six history
-// symbols, aligned at the start of the packet for the four-block prepare loop.
+// Pages own eleven-sign histories and a private trailing render guard.
+// Six history symbols precede the packed input, at a four-symbol boundary.
 static IRAM_ATTR void moon_pump(void)
 {
     while (dvb.moon && !enc.stop) {
@@ -175,20 +177,24 @@ static IRAM_ATTR void moon_pump(void)
         const uint32_t published = __atomic_load_n(&dvb.ring.published,__ATOMIC_ACQUIRE);
         if (symbol+MACHINE_PAGE_BLOCKS*5 > (uint64_t)published*dvb.ring.frame_symbols) break;
         machine_page *page = dvb.pages+dvb.put_index;
-        const bool raw = dvb.put_index%MACHINE_RAW_PERIOD == MACHINE_RAW_PERIOD-1;
-        uint8_t *win = raw ? page->raw : dvb.win;
+        uint8_t *win = dvb.win;
         if (ring_window(&dvb.ring,win,MACHINE_RAW_BYTES,symbol*12,
                         MACHINE_PAGE_BLOCKS*5*12,12,6,0) < 0) {
             enc.failed = true;
             break;
         }
-        if (!raw) machine_prepare(page->rows,win,0,MACHINE_PAGE_BLOCKS);
+        machine_prepare(page->signs,win,0,MACHINE_PAGE_BLOCKS,dvb.sign_lut);
+        page->signs[MACHINE_PAGE_BLOCKS] = 0;
         dvb.producer_symbol += MACHINE_PAGE_BLOCKS*5;
         if (++dvb.put_index == MACHINE_PAGES) dvb.put_index = 0;
+        // Store cost before publishing ownership. Bound the publication tail
+        // separately so the bank budget includes both clocks and the release.
+        page->prepare_cycles = esp_cpu_get_cycle_count()-before;
         __atomic_store_n(&dvb.produced,put+1,__ATOMIC_RELEASE);
         const uint32_t cycles = esp_cpu_get_cycle_count()-before;
-        uint32_t *maximum = raw ? &dvb.raw_max : &dvb.prepare_max;
-        if (cycles > *maximum) *maximum = cycles;
+        const uint32_t tail = cycles-page->prepare_cycles;
+        if (tail > dvb.prepare_tail_max) dvb.prepare_tail_max = tail;
+        if (cycles > dvb.prepare_max) dvb.prepare_max = cycles;
         dvb.prepare_cycles += cycles;
         ++dvb.prepare_pages;
     }
@@ -216,23 +222,18 @@ static IRAM_ATTR esp_err_t moon_shape(uint32_t *dst, uint64_t first, size_t coun
         if (ready < dvb.queue_low) dvb.queue_low = ready;
         if (!ready) { ++dvb.queue_empty; return ESP_FAIL; }
         machine_page *page = dvb.pages+dvb.get_index;
-        if (!dvb.page_sample && dvb.get_index%MACHINE_RAW_PERIOD == MACHINE_RAW_PERIOD-1) {
-            uint8_t raw[MACHINE_RAW_BYTES] __attribute__((aligned(16)));
-            memcpy(raw,page->raw,sizeof raw);
-            const uint32_t before = esp_cpu_get_cycle_count();
-            machine_prepare(page->rows,raw,0,MACHINE_PAGE_BLOCKS);
-            const uint32_t cycles = esp_cpu_get_cycle_count()-before;
-            if (cycles > dvb.local_max) dvb.local_max = cycles;
-            dvb.local_cycles += cycles;
-            ++dvb.local_pages;
+        if (!dvb.costed_page) {
+            dvb.prepare_bank += page->prepare_cycles;
+            dvb.costed_page = true;
         }
         const size_t left = MACHINE_PAGE_SAMPLES-dvb.page_sample;
         const size_t take = count < left ? count : left;
-        machine_samples(dst,page->rows+3*(dvb.page_sample/12),dvb.page_sample%12,take,shaper_store);
+        machine_samples(dst,page->signs+dvb.page_sample/12,dvb.page_sample%12,take,shaper_store);
         dst += take, count -= take, dvb.page_sample += take;
         dvb.queue_sample += take;
         if (dvb.page_sample == MACHINE_PAGE_SAMPLES) {
             dvb.page_sample = 0;
+            dvb.costed_page = false;
             if (++dvb.get_index == MACHINE_PAGES) dvb.get_index = 0;
             __atomic_store_n(&dvb.consumed,get+1,__ATOMIC_RELEASE);
             if (put-get-1 <= MACHINE_PAGES-4 &&
@@ -360,6 +361,9 @@ static IRAM_ATTR esp_err_t fill(uint32_t *dst, uint64_t first, size_t count, voi
     if (dvb.moon && first+count >= dvb.bank_end) {
         if (dvb.wake_bank > dvb.wake_max) dvb.wake_max = dvb.wake_bank;
         dvb.wake_bank = 0;
+        if (dvb.prepare_bank > dvb.prepare_bank_max) dvb.prepare_bank_max = dvb.prepare_bank;
+        dvb.prepare_bank = 0;
+        dvb.costed_page = false;
         dvb.bank_end = 0;
     }
     const uint32_t cycles = esp_cpu_get_cycle_count() - before;
@@ -548,6 +552,9 @@ static void release(void)
         cache_configured = false;
     }
     (void)heap_caps_monitor_local_minimum_free_size_stop();
+    heap_caps_free(dvb.samples);
+    dvb.samples = NULL;
+    heap_caps_free(enc.tables);
     heap_caps_free(enc.fast);
     if (!enc.input_borrowed) heap_caps_free(enc.input);
     enc.input = NULL;
@@ -562,6 +569,7 @@ static void release(void)
         heap_caps_free(enc.slots);
         heap_caps_free(enc.filler);
     }
+    enc.tables = NULL;
     enc.fast = NULL, enc.ws = NULL, enc.bch = enc.block = enc.payload = enc.slots = enc.filler = NULL;
 }
 
@@ -630,6 +638,7 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
     // At 10 Msym/s the 5/6 encoder needs about 69% of a frame period; a two-frame model keeps
     // as little as 244 symbols of lead there, three frames keep 18,871 even at 95% (test_ring).
     const unsigned nslots = !enc.packed ? RING_SLOTS : moon || (quads && sps == 3) ? 2 : sps <= 4 ? 3 : 2;
+    dvbs2_workspace *moon_ws = NULL;
     if (moon) {
         dvb.produced = dvb.consumed = dvb.page_sample = dvb.waiting = 0;
         dvb.put_index = dvb.get_index = 0;
@@ -637,9 +646,11 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
         dvb.queue_low = MACHINE_PAGES;
         dvb.queue_empty = dvb.queue_wakes = dvb.wake_max = dvb.wake_bank = 0;
         dvb.bank_end = 0;
-        dvb.prepare_max = dvb.raw_max = dvb.local_max = 0;
-        dvb.prepare_cycles = dvb.local_cycles = 0;
-        dvb.prepare_pages = dvb.local_pages = 0;
+        dvb.prepare_max = 0;
+        dvb.prepare_bank = dvb.prepare_bank_max = dvb.prepare_tail_max = 0;
+        dvb.costed_page = false;
+        dvb.prepare_cycles = 0;
+        dvb.prepare_pages = 0;
         machine_build(shaper_store,level);
         const size_t frame = ((symbols+3)/4+31) & ~(size_t)15;
         const size_t dummy = ((DVBS2_DUMMY_SYMBOLS+3)/4+31) & ~(size_t)15;
@@ -649,7 +660,11 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
         dvb.pages = (machine_page *)(enc.filler+dummy);
         dvb.win = (uint8_t *)(dvb.pages+MACHINE_PAGES);
         dvb.win_bytes = MACHINE_RAW_BYTES;
-        store_used = dvb.win+dvb.win_bytes-(uint8_t *)shaper_store;
+        uint32_t *lut = (uint32_t *)(dvb.win+dvb.win_bytes);
+        machine_lut(lut);
+        dvb.sign_lut = lut;
+        moon_ws = (dvbs2_workspace *)(lut+MACHINE_LUT_WORDS);
+        store_used = (uint8_t *)moon_ws+DVBS2_FAST_WORKSPACE_USED-(uint8_t *)shaper_store;
         if (store_used > sizeof shaper_store) { release(); return 0; }
     } else if (quads) {
         const size_t frame = ((symbols+3)/4 + 31) & ~(size_t)15;
@@ -704,7 +719,9 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
                     if (!enc.block) base = NULL;
                 }
             } else {
-                base = enc.block = heap_caps_aligned_alloc(16, need, internal);
+                // The slow n8 workspace is in PSRAM and has an unused fast-stage
+                // tail. Keep the rarely read dummy there, leaving frames internal.
+                base = enc.block = heap_caps_aligned_alloc(16, 2*frame, internal);
             }
             if (base) {
                 enc.slot[0] = base;
@@ -728,18 +745,20 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
     // Keep its context there too when SPI is selected, reserving internal RAM for Wi-Fi.
     enc.fast = heap_caps_aligned_alloc(16, dvbs2_fast_mode_size(mode),
                                       input && enc.packed && !resident ? MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT : internal);
-    enc.ws_borrowed = quads && !moon;
-    enc.ws = enc.ws_borrowed && sps == 4 ? (dvbs2_workspace *)(shaper_store + QPSK_TABLE_WORDS(4)) :
+    enc.ws_borrowed = quads;
+    enc.ws = moon ? moon_ws : enc.ws_borrowed && sps == 4 ? (dvbs2_workspace *)(shaper_store + QPSK_TABLE_WORDS(4)) :
         enc.ws_borrowed && sps == 3 ? (dvbs2_workspace *)((uint8_t *)shaper_store+store_used) :
         heap_caps_aligned_alloc(16, sizeof *enc.ws,
                                resident ? internal : MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (enc.packed && !resident)
+        enc.filler = enc.ws ? (uint8_t *)enc.ws+DVBS2_FAST_WORKSPACE_USED : NULL;
     if (!moon) dvb.win_bytes = quads ? 2 + (RADIO_S3_BANK_WORDS + 8*sps-2)/(4*sps) + 1 :
                            SHAPER_HISTORY + (RADIO_S3_BANK_WORDS + sps - 1) / sps + 2;
     if (enc.ws_borrowed && sps == 3) store_used += DVBS2_FAST_WORKSPACE_USED;
     if (enc.packed) enc.payload = dvbs2_fast_payload(enc.fast);
     if (!moon) dvb.win = enc.ws_borrowed && sps == 3 ? (uint8_t *)enc.ws+DVBS2_FAST_WORKSPACE_USED : resident ? (enc.ws ? (uint8_t *)enc.ws + DVBS2_FAST_WORKSPACE_USED : NULL) :
                         heap_caps_aligned_alloc(16, dvb.win_bytes, internal);
-    if (resident && mode->t > 8 && !input && !input_bch)
+    if (!moon && resident && mode->t > 8 && !input && !input_bch)
         enc.bch = heap_caps_aligned_alloc(16, DVBS2_BCH_CACHE_BYTES, internal);
     if (!enc.packed) {
         // QPSK: main's order and sizes, so the PSRAM addresses, and with them the data cache
@@ -754,7 +773,7 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
     // At 8-sps 8PSK the PSRAM workspace needs the sparse mapper's smaller
     // cache footprint. Its temporary phases reuse the existing context scratch.
     if (!dvb.win || !enc.fast || !enc.ws || !enc.payload || !enc.filler || !taps ||
-            (resident && mode->t > 8 && !input && !enc.bch) || (!enc.packed && !enc.slots) ||
+            (!moon && resident && mode->t > 8 && !input && !enc.bch) || (!enc.packed && !enc.slots) ||
             (quads && !enc.slot[nslots-1]) ||
             dvbs2_fast_prepare(enc.fast, mode, PILOTS,
                               15 | (fractional ? DVBS2_RO_20 : 0) | (quads ? DVBS2_MAP_QUADS : 0) |
@@ -766,6 +785,24 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
         heap_caps_free(taps);
         release();
         return 0;
+    }
+    if (moon) {
+        enc.tables = heap_caps_aligned_alloc(16,dvbs2_fast_cache_size(enc.fast),internal);
+        if (!enc.tables || dvbs2_fast_cache_tables(enc.fast,enc.tables)) {
+            heap_caps_free(taps);
+            release();
+            printf("@{\"cmd\":\"%s\",\"error\":\"encoder cache allocation failed\"}\n",cmd);
+            return 0;
+        }
+    }
+    if (enc.packed) {
+        dvb.samples = heap_caps_aligned_alloc(16,dvb.cached_words*sizeof *dvb.samples,internal);
+        if (!dvb.samples) {
+            heap_caps_free(taps);
+            release();
+            printf("@{\"cmd\":\"%s\",\"error\":\"overlap allocation failed\"}\n",cmd);
+            return 0;
+        }
     }
     if (enc.packed) {
         // Pack the dummy PLFRAME through the second slot, before the encoder owns it.
@@ -887,7 +924,7 @@ static void stop_encoder(void)
            "\"encode_kernel_cycles_mean\":%" PRIu64 ",\"encode_kernel_cycles_live_max\":%" PRIu32 ",\"prefill_frames\":%u,"
            "\"encoder_failed\":%s,\"max_fill_call_cycles\":%" PRIu32 ",\"free_internal\":%u,"
            "\"largest_internal\":%u,\"min_free_internal\":%u",
-           (int)r->nslots, enc.stall_ms, enc.frames, r->next_frame, r->next_position, r->underruns,
+           (int)r->nslots, enc.stall_ms, enc.frames, dvb.fill_calls ? r->next_frame : 0, dvb.fill_calls ? r->next_position : 0, r->underruns,
            r->min_lead == INT64_MAX ? -1LL : (long long)r->min_lead,
            enc.frames ? enc.cycles / enc.frames : 0, enc.frames ? enc.min_cycles : 0,
            enc.max_cycles, enc.live_max_cycles,
@@ -905,13 +942,12 @@ static void stop_encoder(void)
     if (dvb.moon) printf(",\"encode_work_cycles_mean\":%" PRIu64 ",\"encode_work_cycles_live_max\":%" PRIu32,
                          enc.frames ? enc.work_cycles/enc.frames : 0,enc.work_live_max);
     if (dvb.moon) printf(",\"queue_pages\":%u,\"queue_low_pages\":%u,\"queue_empty\":%u,"
-                         "\"queue_wake_max_cycles\":%u,\"queue_wakes\":%u,\"prepare_pages\":%u,\"local_pages\":%u,"
-                         "\"prepare_max_cycles\":%u,\"raw_max_cycles\":%u,\"local_max_cycles\":%u,"
-                         "\"prepare_cycles\":%" PRIu64 ",\"local_cycles\":%" PRIu64 ","
-                         "\"table_bytes\":%u,\"table_heap_bytes\":0",
+                         "\"queue_wake_max_cycles\":%u,\"queue_wakes\":%u,\"prepare_pages\":%u,"
+                         "\"prepare_max_cycles\":%u,\"prepare_bank_max_cycles\":%u,\"prepare_tail_max_cycles\":%u,\"prepare_cycles\":%" PRIu64 ","
+                         "\"table_bytes\":%u,\"table_heap_bytes\":0,\"encoder_cache_bytes\":%u",
                          MACHINE_PAGES,(unsigned)dvb.queue_low,(unsigned)dvb.queue_empty,(unsigned)dvb.wake_max,(unsigned)dvb.queue_wakes,
-                         (unsigned)dvb.prepare_pages,(unsigned)dvb.local_pages,(unsigned)dvb.prepare_max,(unsigned)dvb.raw_max,(unsigned)dvb.local_max,
-                         dvb.prepare_cycles,dvb.local_cycles,MACHINE_TABLE_WORDS*4);
+                         (unsigned)dvb.prepare_pages,(unsigned)dvb.prepare_max,(unsigned)dvb.prepare_bank_max,(unsigned)dvb.prepare_tail_max,dvb.prepare_cycles,MACHINE_TABLE_WORDS*4,
+                         (unsigned)dvbs2_fast_cache_size(enc.fast));
     printf(",\"workspace_memory\":\"%s\",\"workspace_bytes\":%u,\"fast_bytes\":%u,"
            "\"workspace_heap_bytes\":%u,\"fast_heap_bytes\":%u,\"bch_cache_heap_bytes\":%u,"
            "\"bch_cache_bytes\":%u,\"bch_variant\":\"%s\",\"packed_mapper\":\"%s\"",
@@ -920,8 +956,8 @@ static void stop_encoder(void)
            enc.ws_borrowed ? 0 : (unsigned)heap_caps_get_allocated_size(enc.ws),
            (unsigned)heap_caps_get_allocated_size(enc.fast),
            enc.bch && !enc.bch_borrowed ? (unsigned)heap_caps_get_allocated_size(enc.bch) : 0,
-           enc.bch ? DVBS2_BCH_CACHE_BYTES : 0,
-           enc.bch ? "resident-byte" : enc.packed && (dvb.moon || enc.mode->bits_per_symbol == 2 || dvb.table.n == 4)
+           enc.bch || enc.tables ? DVBS2_BCH_CACHE_BYTES : 0,
+           enc.tables ? (enc.mode->t == 8 ? "resident-pair" : "resident-byte") : enc.bch ? "resident-byte" : enc.packed && (dvb.moon || enc.mode->bits_per_symbol == 2 || dvb.table.n == 4)
                                       && enc.mode->t == 8 && (enc.quads || enc.mode->bits_per_symbol == 3) && !spi_input_type() ? "flash-pair" : "nibble",
            !enc.packed ? "none" : enc.quads ? "quads" : dvb.moon || enc.mode->bits_per_symbol == 2 || dvb.table.n == 4 ? "direct" : "sparse");
     printf(",\"encoder_stack_bytes\":%u,\"encoder_stack_min_free\":%u", ENCODER_STACK, (unsigned)enc.stack_min_free);
