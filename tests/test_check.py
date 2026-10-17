@@ -39,10 +39,13 @@ else:
         payload_source='internal-frame' if moon else 'xorshift32',input_frames=int(moon),
         input_memory='internal' if moon else 'none',encoder_priority=5,encoder_stack_min_free=1024,encoder_pie=15,
         packed_mapper='signs' if moon else 'none' if n==40 else 'quads' if quads else 'direct' if resident else 'sparse')
+ if mc>=12 and n==3:
+  r.update(pulse_symbols=5,ring_format='words',packed_mapper='words',fill_kernel='lofty-queue',
+           queue_pages=36,queue_wake_pages=2,encoder_cache_bytes=1088)
  if kind=='dvbdump':
   frames=int(x[3] if named else x[2]); decim=int(x[-1]); size=((frames*symbols*n+den-1)//den+decim-1)//decim*4
   if bad and moon and n==3:size+=4
-  key=f'{mc}/{n}/{rate//1000000}/{frames}'; crc=(json.loads(pathlib.Path('tests/data/waveform_crcs.json').read_text())|json.loads(pathlib.Path('tests/data/moon_stream_crcs.json').read_text()))[key]
+  key=f'{mc}/{n}/{rate//1000000}/{frames}'; crc=(json.loads(pathlib.Path('tests/data/waveform_crcs.json').read_text())|json.loads(pathlib.Path('tests/data/moon_stream_crcs.json').read_text())|json.loads(pathlib.Path('tests/data/lofty_crcs.json').read_text()))[key]
   # Forge only the final 32 bits; this tests the real file-size and CRC checker.
   zero=zlib.crc32(bytes(size)); basis={}
   for bit in range(32):
@@ -87,6 +90,10 @@ else:
    if mc==11 and os.getenv('COPY_BUDGET'):
     r['encode_kernel_cycles_mean']=r['encode_kernel_cycles_live_max']=ceiling-4823
     if os.getenv('COPY_BUDGET')!='exact':r[os.environ['COPY_BUDGET']]+=1
+   if mc==11 and os.getenv('LOFTY_GATES'):
+    records=[json.loads(l) for l in pathlib.Path('results/2026-10-17-moonshot/runs.jsonl').read_text().splitlines()]
+    base=next(b for b in records if b.get('command')=='dvbpace 11 33m333 30')
+    for metric in ('max_fill_cycles','encode_cycles_mean','encode_cycles_live_max'):r[metric]=base[metric]*102//100
   if os.getenv('ENCODER_GATES') and token=='20m':
    # Test both exact target boundaries and independent mean/live failures.
    r['encode_kernel_cycles_mean']=r['encode_kernel_cycles_live_max']=131004
@@ -98,7 +105,10 @@ else:
              '17 5m':'dvbpace 17 5m 30','13 10m':'dvbpace 13 10m 30','15 20m':'dvbpace 15 20ms6 30'}
    key=f'{mc} {token}'
    if key in commands and not bad:
-    records=[json.loads(l) for f in pathlib.Path('results').glob('*/*.jsonl') for l in f.read_text().splitlines()]
+    topics={'4 ':'2026-10-17-next4','11 5m':'2026-10-17-next5','11 10m':'2026-10-17-next5',
+            '11 20m':'2026-10-17-qpsk-goal','11 26m667':'2026-10-17-qpsk-goal',
+            '17 5m':'2026-10-17-qpsk-goal','13 10m':'2026-10-17-next4','15 20m':'2026-10-17-next4'}
+    records=[json.loads(l) for f in pathlib.Path('results',topics[key]).glob('*.jsonl') for l in f.read_text().splitlines()]
     base=next(b for b in records if b.get('command')==commands[key] and b.get('status')=='ESP_OK')
     for metric in ('max_fill_cycles','encode_cycles_mean','encode_cycles_live_max'):
      r[metric]=base[metric]*102//100
@@ -134,13 +144,13 @@ with tempfile.TemporaryDirectory() as tmp:
     root = pathlib.Path(tmp)
     for folder in ('host','tests/data','bin'):(root/folder).mkdir(parents=True)
     shutil.copy(ROOT/'host/check.sh',root/'host/check.sh')
-    for name in ('waveform_crcs.json','moon_stream_crcs.json'):shutil.copy(ROOT/'tests/data'/name,root/'tests/data'/name)
-    for topic in ('2026-10-17-qpsk-goal','2026-10-17-next4','2026-10-17-next5','2026-10-17-spi-in'):
+    for name in ('waveform_crcs.json','moon_stream_crcs.json','lofty_crcs.json'):shutil.copy(ROOT/'tests/data'/name,root/'tests/data'/name)
+    for topic in ('2026-10-17-qpsk-goal','2026-10-17-next4','2026-10-17-next5','2026-10-17-spi-in','2026-10-17-moonshot'):
         (root/'results'/topic).mkdir(parents=True)
         for file in (ROOT/'results'/topic).glob('*'):shutil.copy(file,root/'results'/topic/file.name)
     (root/'host/board.py').write_text(FAKE)
     (root/'host/onair.py').write_text(RX)
-    for name in ('test_stream.py','test_fecbench.py','test_rational.py'):(root/'tests'/name).write_text('print("fake host check")\n')
+    for name in ('test_stream.py','test_fecbench.py','test_rational.py','test_lofty.py'):(root/'tests'/name).write_text('print("fake host check")\n')
     (root/'bin/git').write_text('#!/bin/sh\nprintf "test-fw\\n"\n')
     (root/'bin/git').chmod(0o755)
     env=dict(os.environ,PYTHON=sys.executable,PATH=str(root/'bin')+os.pathsep+os.environ['PATH'])
@@ -216,4 +226,20 @@ with tempfile.TemporaryDirectory() as tmp:
         assert run.returncode==1, (run.stdout,run.stderr)
         summary=(out/'summary.tsv').read_text()
         assert 'PASS\tmain regression gate' in summary and 'FAIL\tQPSK admission' in summary
+    for fault in ('','candidate','main'):
+        (root/'commands.jsonl').unlink()
+        out = root/('lofty-'+(fault or 'good'))
+        extra = {'FAIL_8PSK':'1'} if fault == 'candidate' else {'REGRESS':'11 26m667:max_fill_cycles'} if fault else {}
+        run = subprocess.run(['sh','host/check.sh','--lofty',str(out)],cwd=root,env=dict(env,LOFTY_GATES='1',**extra),
+                             capture_output=True,text=True,timeout=60)
+        assert run.returncode == bool(fault),(run.stdout,run.stderr)
+        summary = (out/'summary.tsv').read_text()
+        assert ('FAIL\tmain regression gate' in summary) == (fault == 'main'),summary
+        assert ('FAIL\tcandidate admission' in summary) == bool(fault),summary
+        commands = [json.loads(l) for l in (root/'commands.jsonl').read_text().splitlines()]
+        assert commands.index('wifimem 13 20m') < commands.index('dvbpace 13 26m667 20')
+        assert commands.index('dvbpace 11 33m333 10') < commands.index('dvbpace 13 26m667 20')
+        assert commands[-1] == 'wifimem 17 26m667'
+        for mc,seconds in ((13,20),(15,20),(17,10)):
+            assert f'dvbpace {mc} 26m667 {seconds}' in commands
 print('check: dry plan, all commands run after failures, strict CRC/decode/2%/heap gates, final exit and summary pass')

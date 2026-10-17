@@ -171,4 +171,11 @@ int dvbs2_fast_sign_start(dvbs2_fast *f, const dvbs2_workspace *ws, dvbs2_sign_s
 unsigned dvbs2_fast_sign_read(const dvbs2_fast *f, dvbs2_sign_state *s, uint32_t *dst,
                               unsigned blocks, const uint32_t *lut);
 
+// 8PSK: four chronological phases per 12-bit word. Partial groups survive EOF.
+// table is 1088 caller-owned internal bytes; prepare first, then cache once.
+#define DVBS2_LOFTY_CACHE_BYTES 1088
+int dvbs2_fast_lofty_cache(dvbs2_fast *, uint32_t *table);
+int dvbs2_fast_lofty_start(dvbs2_fast *, const dvbs2_workspace *, dvbs2_sign_state *);
+unsigned dvbs2_fast_lofty_read(const dvbs2_fast *, dvbs2_sign_state *, uint16_t *, unsigned);
+
 #endif

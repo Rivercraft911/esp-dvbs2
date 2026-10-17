@@ -794,6 +794,93 @@ dvbs2_pie_run8_packed:
     retw
     .size dvbs2_pie_run8_packed, . - dvbs2_pie_run8_packed
 
+/* In-place four-phase words. Small cached instruction loops keep legacy heap floors. */
+    .section .text.lofty_mapper,"ax"
+    .align 4
+    .global dvbs2_pie_lofty
+    .type dvbs2_pie_lofty,@function
+dvbs2_pie_lofty:
+    entry a1,32
+    mov a5,a2
+    splat q6,0x00ff00ff
+    splat q7,0x000f000f
+    movi a6,1024
+    add a6,a6,a3
+    ssai 8
+    loopnez a4,.Llofty_end
+    ee.vld.128.ip q2,a2,16
+    ee.vsr.32 q0,q2
+    ee.andq q2,q2,q6
+    ee.andq q0,q0,q7
+    ee.ldxq.32 q1,q2,a3,0,0
+    ee.ldxq.32 q1,q2,a3,1,1
+    ee.ldxq.32 q1,q2,a3,2,2
+    ee.ldxq.32 q1,q2,a3,3,3
+    ee.ldxq.32 q3,q2,a3,0,4
+    ee.ldxq.32 q3,q2,a3,1,5
+    ee.ldxq.32 q3,q2,a3,2,6
+    ee.ldxq.32 q3,q2,a3,3,7
+    ee.vunzip.16 q1,q3
+    ee.ldxq.32 q4,q0,a6,0,0
+    ee.ldxq.32 q4,q0,a6,1,1
+    ee.ldxq.32 q4,q0,a6,2,2
+    ee.ldxq.32 q4,q0,a6,3,3
+    ee.ldxq.32 q5,q0,a6,0,4
+    ee.ldxq.32 q5,q0,a6,1,5
+    ee.ldxq.32 q5,q0,a6,2,6
+    ee.ldxq.32 q5,q0,a6,3,7
+    ee.vunzip.16 q4,q5
+    ee.orq q1,q1,q4
+    ee.vst.128.ip q1,a5,16
+.Llofty_end:
+    retw
+    .size dvbs2_pie_lofty,.-dvbs2_pie_lofty
+
+// Eight chronological words at a time; pending is 0 or 2 at a data boundary.
+// Aligned destination, unaligned source with 16 readable guard bytes.
+    .align 4
+    .global dvbs2_pie_lofty_copy
+    .type dvbs2_pie_lofty_copy,@function
+dvbs2_pie_lofty_copy:
+    entry a1,32
+    beqz a5,.Llofty_copy
+    splat q6,0x003f003f
+    splat q7,0x0fc00fc0
+    ee.zero.q q4
+    slli a6,a6,16
+    ee.movi.32.q q4,a6,3
+    ssai 6
+    movi a8,14
+    loopnez a4,.Llofty_shift_end
+    ee.ld.128.usar.ip q0,a3,16
+    ee.vld.128.ip q1,a3,0
+    ee.src.q q0,q0,q1
+    wur.sar_byte a8
+    ee.src.q q2,q4,q0
+    ee.orq q4,q0,q0
+    ee.vsr.32 q1,q0
+    ee.vsl.32 q2,q2
+    ee.andq q1,q1,q6
+    ee.andq q2,q2,q7
+    ee.orq q1,q1,q2
+    ee.vst.128.ip q1,a2,16
+.Llofty_shift_end:
+    j .Llofty_copy_done
+.Llofty_copy:
+    loopnez a4,.Llofty_copy_end
+    ee.ld.128.usar.ip q0,a3,16
+    ee.vld.128.ip q1,a3,0
+    ee.src.q q0,q0,q1
+    ee.vst.128.ip q0,a2,16
+.Llofty_copy_end:
+.Llofty_copy_done:
+    addi a3,a3,-2
+    l16ui a2,a3,0
+    retw
+    .size dvbs2_pie_lofty_copy,.-dvbs2_pie_lofty_copy
+
+    .section .iram1,"ax"
+
 /* QPSK: each byte-sized index maps four phases to a packed halfword.
  * Same shifted-store contract as run8_packed, symbols / 32 whole vectors.
  * The C caller emits a possible final 16 symbols without over-writing the frame. */

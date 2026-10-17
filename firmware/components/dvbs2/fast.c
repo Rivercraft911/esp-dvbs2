@@ -945,6 +945,121 @@ HOT int dvbs2_fast_sign_start(dvbs2_fast *f, const dvbs2_workspace *ws, dvbs2_si
     return 0;
 }
 
+int dvbs2_fast_lofty_cache(dvbs2_fast *f, uint32_t *table)
+{
+    if (!f || !table || ((uintptr_t)table&15) || f->mode->bits_per_symbol != 3) return -1;
+    for (unsigned i = 0; i < 256; ++i) {
+        uint32_t v = 0;
+        for (unsigned j = 0; j < 4; ++j)
+            v |= ((((i>>(3-j))&1)^1) | ((i>>(7-j))&1)<<2)<<(9-3*j);
+        table[i] = v;
+    }
+    for (unsigned i = 0; i < 16; ++i) {
+        uint32_t v = 0;
+        for (unsigned j = 0; j < 4; ++j) v |= ((i>>(3-j))&1)<<(10-3*j);
+        table[256+i] = v;
+    }
+    uint16_t *header = (uint16_t *)f->packed_header, *pilots = (uint16_t *)f->packed_pilots;
+    memset(header,0,sizeof f->packed_header);
+    memset(pilots,0,sizeof f->packed_pilots);
+    for (unsigned i = 0; i < 90; ++i) header[i/4] |= f->header[i]<<(9-3*(i&3));
+    for (unsigned i = 0; i < 36*f->pilot_blocks; ++i) pilots[i/4] |= fast_pilots[i]<<(9-3*(i&3));
+    f->map = table;
+    return 0;
+}
+
+__attribute__((noinline)) int dvbs2_fast_lofty_start(dvbs2_fast *f, const dvbs2_workspace *ws, dvbs2_sign_state *s)
+{
+    if (!f || !ws || !s || f->mode->bits_per_symbol != 3) return -1;
+    const uint8_t *a = ws->bits, *b = ws->bits+2700, *c = ws->bits+5400;
+    if (f->mode->modcod == 12) { a = ws->bits+5400; c = ws->bits; }
+#ifdef DVBS2_PIE
+    if (f->pie & DVBS2_PIE_MAP) {
+        void dvbs2_pie_lofty(uint16_t *, const uint32_t *, unsigned);
+        dvbs2_pie_index8(a,b,c,f->gold,(uint16_t *)f->scratch,(f->data_symbols+127)/128);
+        const uint32_t *table = (const uint32_t *)((const uint8_t *)f->map+f->ldxq_bias);
+        dvbs2_pie_lofty((uint16_t *)f->scratch,table,f->data_symbols/32);
+    } else
+#endif
+    {
+        uint16_t *out = (uint16_t *)f->scratch;
+        for (unsigned j = 0; j < f->data_symbols/8; ++j) {
+            unsigned x = b[j]^c[j], p0 = a[j]^x, p1 = a[j]^f->gold[j];
+            unsigned p2 = b[j]^(a[j]&x)^f->gold[GOLD+j]^(a[j]&f->gold[j]);
+            for (int shift = 4; shift >= 0; shift -= 4) {
+                unsigned index = (p0>>shift&15) | (p2>>shift&15)<<4 | (p1>>shift&15)<<8;
+                *out++ = f->map[index&255] | f->map[256+(index>>8)];
+            }
+        }
+    }
+    s->at = 0;
+    return 0;
+}
+
+__attribute__((noinline)) unsigned dvbs2_fast_lofty_read(const dvbs2_fast *f, dvbs2_sign_state *s,
+                                   uint16_t *dst, unsigned blocks)
+{
+    unsigned done = 0, end = 90+f->data_symbols+36*f->pilot_blocks;
+    while (done < blocks && s->at < end) {
+        const uint16_t *mapped = (const uint16_t *)f->scratch;
+        unsigned at, n;
+        if (s->at < 90) { mapped = (const uint16_t *)f->packed_header; at = s->at; n = 90-at; }
+        else {
+            unsigned k = s->at-90, run = f->pilots ? k/1476 : 0, pos = k-1476*run;
+            if (pos >= 1440 && run < f->pilot_blocks) {
+                mapped = (const uint16_t *)f->packed_pilots; at = 36*run+pos-1440; n = 1476-pos;
+            } else {
+                at = k-36*run;
+                unsigned left = f->data_symbols-at;
+                n = f->pilots && left > 1440-pos ? 1440-pos : left;
+            }
+        }
+        unsigned room = 4*(blocks-done)-s->pending;
+        if (n > room) n = room;
+        unsigned used = 0, pending = s->pending;
+        uint32_t h = s->history;
+        // Framing leaves two pending symbols in the common data spans.
+        while (used < n) {
+            if ((at&3) == 0 && n-used >= 4) {
+                unsigned runs = (n-used)/4;
+                const uint16_t *src = mapped+at/4;
+                const unsigned shift = 3*pending;
+#ifdef DVBS2_PIE
+                if (f->pie & DVBS2_PIE_MAP) {
+                    // Peel at most seven words; vector stores never touch a prefix.
+                    while (runs && ((uintptr_t)(dst+done)&15)) {
+                        uint32_t w = *src++, joined = (h<<12)|w;
+                        dst[done++] = (joined>>shift)&4095;
+                        h = w; --runs; at += 4; used += 4;
+                    }
+                    unsigned vectors = runs/8;
+                    if (vectors) {
+                        uint32_t dvbs2_pie_lofty_copy(uint16_t *, const uint16_t *, unsigned, unsigned, uint32_t);
+                        h = dvbs2_pie_lofty_copy(dst+done,src,vectors,pending,h);
+                        unsigned words = 8*vectors;
+                        src += words; done += words; runs -= words;
+                        at += 4*words; used += 4*words;
+                    }
+                }
+#endif
+                for (unsigned j = 0; j < runs; ++j) {
+                    uint32_t w = src[j], joined = (h<<12)|w;
+                    dst[done++] = (joined>>shift)&4095;
+                    h = w;
+                }
+                at += 4*runs, used += 4*runs;
+                continue;
+            }
+            unsigned phase = (mapped[at/4]>>(9-3*(at&3)))&7;
+            h = ((h<<3)|phase)&4095;
+            ++at, ++used;
+            if (++pending == 4) { dst[done++] = h; pending = 0; }
+        }
+        s->history = h, s->pending = pending, s->at += used;
+    }
+    return done;
+}
+
 HOT unsigned dvbs2_fast_sign_read(const dvbs2_fast *f, dvbs2_sign_state *s, uint32_t *dst,
                                   unsigned blocks, const uint32_t *lut)
 {

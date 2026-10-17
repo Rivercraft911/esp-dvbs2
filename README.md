@@ -40,6 +40,10 @@ receiver (LeanDVB) at every symbol rate here. **Not yet shown:** a receiver deco
 RF, which is the next measurement. 8PSK at 40 MHz (87.3 Mb/s) is the monster still lurking:
 its tables do not fit in RAM yet.
 
+8PSK `26m667` is an [offline candidate](docs/lofty.md): all samples match Python,
+and 2/3, 5/6 and 9/10 decode without corrections. Its trace model clears 15% reserve
+only at 9/10. Board timing, Wi-Fi heap and keyed operation remain unmeasured.
+
 ## Under the hood
 
 | | Best measured | |
@@ -114,10 +118,14 @@ flashes, changes NVS or keys the radio. [Exact gates](docs/bank-geometry.md#evid
 roll-off 0.20) with 15% reserve gates; today that mode passes its deadlines but not the
 reserve. [Design and gates](docs/moonshot.md).
 
+`host/check.sh --lofty --plan` prints the 8PSK candidate gates without opening a device.
+`--lofty` runs slim main regressions first, then three decoded dumps, 20/20/10 s
+Wi-Fi-up paces and heap probes. Every main timing ceiling and heap floor stays fixed.
+
 ## Console and host tools
 
 QPSK defaults to 1 Msym/s. Both modulations accept `5m`, `10m`, `20m`;
-`26m667` and `33m333` (roll-off 0.20, 40 MHz) are QPSK only. Rate tokens precede the frame count or duration.
+`26m667` also has an experimental 8PSK path; `33m333` (roll-off 0.20, 40 MHz) is QPSK only. Rate tokens precede the frame count or duration.
 Dumps emit little-endian int16 I/Q; full scale for analysis is 512.
 
 ```sh

@@ -17,10 +17,11 @@ A token names a symbol rate, not an experiment. `26m667` means exactly
 | `10m` | QPSK / 8PSK | 40 | 4 | 9 | 3 paired frames |
 | `20m` | QPSK | 80 | 4 | 9 | 3 quad frames |
 | `20m` | 8PSK | 80 | 4 | 6 | 3 paired frames |
-| `26m667` | QPSK | 80 | 3 | 9 | 3 quad frames |
+| `26m667` | QPSK | 80 | 3 | 9 | 2 quad frames |
+| `26m667` | 8PSK, experimental | 80 | 3 | 5 | 36 offset pages |
 
-The experimental `33m333` and 8PSK `26m667` correctness paths, rational sample
-timeline, RAM placement and unpassed timing gates are in [moonshot.md](moonshot.md).
+The `33m333` QPSK sign queue is in [moonshot.md](moonshot.md). The new 8PSK
+`26m667` offset queue, model limits and pending board gates are in [lofty.md](lofty.md).
 
 `20m` adopts the previously measured `20mq4` and `20ms6` kernels. QPSK 9/10
 whole-bank maxima were 36,766 cycles with q4 versus 45,852 with the old
