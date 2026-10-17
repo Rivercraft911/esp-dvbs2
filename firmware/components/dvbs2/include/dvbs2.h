@@ -82,9 +82,11 @@ typedef struct dvbs2_fast dvbs2_fast;
  * for all modes, LEGACY the original nibble kernel. SRAM copies the default
  * byte table into existing scratch each frame, including the copy in timing.
  * MAP_COMPACT selects the former 256-byte mapping table for A/B timing.
+ * MAP_SPARSE uses the sparse mapper then packs each run, keeping only 512 B
+ * of mapping cache lines hot. Use it with a PSRAM FEC workspace.
  * dvbs2_fast_pie() still reports only the four active stage bits. */
 enum { DVBS2_BCH_NIBBLE = 16, DVBS2_BCH_LEGACY = 32, DVBS2_BCH_SRAM = 64,
-       DVBS2_MAP_COMPACT = 128 };
+       DVBS2_MAP_COMPACT = 128, DVBS2_MAP_SPARSE = 256 };
 enum { DVBS2_PIE_BB = 1, DVBS2_PIE_BCH = 2, DVBS2_PIE_LDPC = 4, DVBS2_PIE_MAP = 8 };
 size_t dvbs2_fast_size(void);
 /* Smaller allocation valid only for this mode (15184 bytes for 8PSK 2/3
@@ -126,7 +128,8 @@ int dvbs2_encode_frame(dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_state *ts,
  * phase[2i] | phase[2i + 1] << 4, dvbs2_frame_symbols(mode, pilots) / 2 bytes
  * (every frame length is even). map_packed and pl_packed write the same symbols
  * as map and pl without a full-frame phase buffer; they use the context's
- * scratch and any output alignment. PIE maps directly to packed bytes; the
+ * scratch and any output alignment. PIE maps directly to packed bytes unless
+ * MAP_SPARSE is selected (MAP_COMPACT only affects unpacked output). The
  * fixed header and pilots are packed once by prepare. QPSK contexts return -1. dvbs2_pack packs
  * an even count of canonical phases, for example a dummy PLFRAME. */
 int dvbs2_fast_map_packed(dvbs2_fast *f, const dvbs2_workspace *ws, uint8_t *packed);

@@ -148,7 +148,7 @@ int dvbs2_fast_prepare(dvbs2_fast *f, const dvbs2_mode *mode, int pilots, unsign
     f->data_symbols = 64800 / mode->bits_per_symbol;
     f->pilot_blocks = pilots ? (f->data_symbols / 90 - 1) / 16 : 0;
     f->pie = pie & (PIE_MASK | DVBS2_BCH_NIBBLE | DVBS2_BCH_LEGACY |
-                    DVBS2_BCH_SRAM | DVBS2_MAP_COMPACT);
+                    DVBS2_BCH_SRAM | DVBS2_MAP_COMPACT | DVBS2_MAP_SPARSE);
     f->ldxq_bias = 0;
 #ifdef DVBS2_PIE
     if (f->pie & DVBS2_PIE_MAP) {
@@ -764,9 +764,9 @@ HOT void dvbs2_fast_map(dvbs2_fast *f, const dvbs2_workspace *ws, uint8_t *outpu
 
 /* ---------------------------------------------------------------- packed */
 
-/* Two symbols per byte. PIE maps four symbols directly to a packed halfword,
- * with no phase-byte temporary or second packing/copy pass. The C reference
- * still uses one run of temporary phases after the index area. */
+/* Two symbols per byte. Direct PIE mapping uses an 8 KiB table; MAP_SPARSE
+ * keeps main's 512 B of hot mapping lines for streams with a PSRAM workspace.
+ * Its temporary phases reuse existing scratch after the index area. */
 #define PACK_RUN 1440
 #define PACK_TEMP (169 * 64 + 16)   /* after the index; run8 writes 16 bytes before dst */
 
@@ -777,16 +777,44 @@ static HOT void pack_c(const uint8_t *raw, uint8_t *packed, unsigned symbols)
     }
 }
 
+/* Keep the fallback's control loop in flash, so restoring it adds no internal
+ * instruction RAM. The vector kernels and their existing scratch stay as before.
+ * The PIE index pass has already run when this is called. */
+static __attribute__((noinline)) int map_packed_runs(dvbs2_fast *f,
+                                                   const dvbs2_workspace *ws, uint8_t *packed)
+{
+    uint8_t *temp = f->scratch + PACK_TEMP;
+#ifdef DVBS2_PIE
+    const int pie = (f->pie & DVBS2_PIE_MAP) != 0;
+    uint16_t *index = (uint16_t *)f->scratch;
+    const uint32_t *table = (const uint32_t *)((const uint8_t *)f->map + f->ldxq_bias);
+#endif
+    for (unsigned k = 0; k < f->data_symbols; k += PACK_RUN) {
+#ifdef DVBS2_PIE
+        if (pie) {
+            dvbs2_pie_run8(index + k / 4, table, temp - 16, PACK_RUN / 16, 0, f->tail);
+            memcpy(temp + PACK_RUN - 16, f->tail, 16);
+            dvbs2_pie_nibbles(temp, temp, PACK_RUN / 32);
+        } else
+#endif
+        {
+            map_c_run(f, ws->bits, k, PACK_RUN, temp, 0);
+            pack_c(temp, temp, PACK_RUN);
+        }
+        const unsigned at = 90 + k + (f->pilots ? 36 * (k / 1440) : 0);
+        memcpy(packed + at / 2, temp, PACK_RUN / 2);
+    }
+    return 0;
+}
+
 HOT int dvbs2_fast_map_packed(dvbs2_fast *f, const dvbs2_workspace *ws, uint8_t *packed)
 {
     if (f->mode->bits_per_symbol != 3) {
         return -1;
     }
-    uint8_t *temp = f->scratch + PACK_TEMP;
 #ifdef DVBS2_PIE
     const int pie = (f->pie & DVBS2_PIE_MAP) != 0;
     uint16_t *index = (uint16_t *)f->scratch;
-    const uint32_t *table = (const uint32_t *)((const uint8_t *)fast_map_3_packed + f->ldxq_bias);
     if (pie) {
         const uint8_t *a = ws->bits, *c = ws->bits + 5400;
         if (f->mode->modcod == 12) {
@@ -794,6 +822,9 @@ HOT int dvbs2_fast_map_packed(dvbs2_fast *f, const dvbs2_workspace *ws, uint8_t 
             c = ws->bits;
         }
         dvbs2_pie_index8(a, ws->bits + 2700, c, f->gold, index, (f->data_symbols + 127) / 128);
+    }
+    if (pie && !(f->pie & DVBS2_MAP_SPARSE)) {
+        const uint32_t *table = (const uint32_t *)((const uint8_t *)fast_map_3_packed + f->ldxq_bias);
         const unsigned runs = f->pilots ? f->pilot_blocks + 1 : 1;
         for (unsigned r = 0; r < runs; ++r) {
             const unsigned k = f->pilots ? r * PACK_RUN : 0;
@@ -809,13 +840,7 @@ HOT int dvbs2_fast_map_packed(dvbs2_fast *f, const dvbs2_workspace *ws, uint8_t 
         return 0;
     }
 #endif
-    for (unsigned k = 0; k < f->data_symbols; k += PACK_RUN) {
-        map_c_run(f, ws->bits, k, PACK_RUN, temp, 0);
-        pack_c(temp, temp, PACK_RUN);
-        const unsigned at = 90 + k + (f->pilots ? 36 * (k / 1440) : 0);
-        memcpy(packed + at / 2, temp, PACK_RUN / 2);
-    }
-    return 0;
+    return map_packed_runs(f, ws, packed);
 }
 
 HOT void dvbs2_fast_pl_packed(const dvbs2_fast *f, uint8_t *packed)

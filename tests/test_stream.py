@@ -210,6 +210,7 @@ def test_stream(output=None):
                 assert r["bch_cache_bytes"] == (8192 if cached else 0)
                 assert r["bch_cache_heap_bytes"] == r["bch_cache_bytes"]
                 assert r["bch_variant"] == ("resident-byte" if cached else "nibble")
+                assert r["packed_mapper"] == ("direct" if sps == 4 else "sparse" if packed else "none")
                 assert bool(int(r["layout"]["bch"], 16)) == cached
                 slots = [int(a, 16) for a in r["layout"]["slots"]]
                 assert len(set(slots)) == r["ring_slots"]

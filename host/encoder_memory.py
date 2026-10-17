@@ -21,10 +21,12 @@ def symbols(text):
     return out
 
 
-def inventory(syms, modcod, workspace=None, resident_bch=False, line_bytes=32):
+def inventory(syms, modcod, workspace=None, resident_bch=False, line_bytes=32,
+              direct_packed=None):
     rate = {13: "2/3", 15: "5/6"}[modcod]
     kbch = BCH_PARAMS["normal"][rate][0] // 8
-    direct = "fast_map_3_packed" in syms
+    prepared_pl = "fast_map_3_packed" in syms
+    direct = prepared_pl if direct_packed is None else direct_packed
     stages = {k: set() for k in ("bb", "bch", "ldpc", "map", "pl")}
     tables = []
 
@@ -55,6 +57,7 @@ def inventory(syms, modcod, workspace=None, resident_bch=False, line_bytes=32):
         # Only 64 words of the old sparse 4 KiB table are addressed. At 32 B
         # per line they occupy 512 B, not the full allocation's 4096 B.
         span("map", "fast_map_3", offsets=[4 * i for i in range(1024) if not i & ~0x333])
+    if not prepared_pl:
         span("pl", "fast_headers", offset=90 * (2 * (modcod - 4) + 1), length=90)
         span("pl", "fast_pilots", length=14 * 36)
     flash = set().union(*stages.values())
@@ -83,10 +86,13 @@ def main():
     p.add_argument("--workspace", type=lambda v: int(v, 0),
                    help="PSRAM workspace address from a board layout record; omit for internal")
     p.add_argument("--resident-bch", action="store_true")
+    p.add_argument("--sparse-packed", action="store_true",
+                   help="select the 5 Msym/s mapper; fixed PL symbols still come from internal RAM")
     args = p.parse_args()
     syms = symbols(subprocess.check_output([args.nm, "-S", args.elf], text=True))
     for mc in (13, 15):
-        print(json.dumps(inventory(syms, mc, args.workspace, args.resident_bch)))
+        print(json.dumps(inventory(syms, mc, args.workspace, args.resident_bch,
+                                   direct_packed=False if args.sparse_packed else None)))
 
 
 if __name__ == "__main__":
