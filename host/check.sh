@@ -148,6 +148,9 @@ print('Serial ownership: lock across worktrees, reject cu/tty and reset-bridge o
 print('Decode lookahead: append 4096 zero samples to new-mode receiver input only, outside the dump CRC.')
 print('Continue after failures, print every result and exit nonzero if any gate fails.', flush=True)
 if a.plan: sys.exit(0)
+sys.path.insert(0,'host')
+import board as owner
+a.port = owner.resolve_port(a.port)
 out = a.out or pathlib.Path('notes',dt.datetime.now().strftime('check-%Y%m%d-%H%M%S'))
 out.mkdir(parents=True, exist_ok=False)
 summary = []
@@ -289,8 +292,6 @@ def fec():
     run([python,'tests/test_fecbench.py',str(out/'runs.jsonl'),'--correctness-only'],'fec-check.log')
 
 try:
-    sys.path.insert(0,'host')
-    import board as owner
     lock = owner.reserve_port(a.port, reset=True)
     os.environ['ESP_DVBS2_LOCK_FD'] = str(lock.fileno())
 except Exception as e:

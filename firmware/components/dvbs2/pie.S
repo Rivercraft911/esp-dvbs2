@@ -602,10 +602,10 @@ dvbs2_pie_signs:
     .endm
     .macro signword shift,off
     extui a10,a8,\shift,10
-    slli a11,a11,5
     addx4 a10,a10,a5
-    and a11,a11,a14
     l32i a10,a10,0
+    slli a11,a11,5
+    and a11,a11,a14
     or a11,a11,a10
     s32i a11,a2,\off
     .endm

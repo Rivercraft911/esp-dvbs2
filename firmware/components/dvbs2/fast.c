@@ -951,48 +951,70 @@ HOT unsigned dvbs2_fast_sign_read(const dvbs2_fast *f, dvbs2_sign_state *s, uint
     unsigned done = 0;
     const unsigned end = 90+f->data_symbols+36*f->pilot_blocks;
     while (done < blocks && s->at < end) {
-        unsigned c, k = s->at;
-        if (k < 90) c = f->pie & DVBS2_MAP_QUADS ?
-            (f->packed_header[k/4] >> (6-2*(k&3))) & 3 : f->header[k] >> 1;
-        else {
-            k -= 90;
+        const uint8_t *src;
+        unsigned at, n, packed = 1;
+        if (s->at < 90) {
+            packed = !!(f->pie & DVBS2_MAP_QUADS);
+            src = packed ? f->packed_header : f->header;
+            at = s->at;
+            n = 90-at;
+        } else {
+            const unsigned k = s->at-90;
             const unsigned run = f->pilots ? k/1476 : 0;
-            const unsigned at = f->pilots ? k%1476 : k;
-            if (at >= 1440 && run < f->pilot_blocks) {
-                const unsigned p = 36*run+at-1440;
-                c = f->pie & DVBS2_MAP_QUADS ?
-                    (f->packed_pilots[p/4] >> (6-2*(p&3))) & 3 : fast_pilots[p] >> 1;
+            const unsigned pos = k-1476*run;
+            if (pos >= 1440 && run < f->pilot_blocks) {
+                packed = !!(f->pie & DVBS2_MAP_QUADS);
+                src = packed ? f->packed_pilots : fast_pilots;
+                at = 36*run+pos-1440;
+                n = 1476-pos;
             } else {
-                const unsigned data = k-36*run;
-                const unsigned left = f->data_symbols-data;
-                unsigned n = f->pilots && left > 1440-at ? 1440-at : left;
-#ifdef DVBS2_PIE
-                // Four five-symbol groups read exactly five bytes. History is
-                // already in registers, so no six-symbol prefix or frame copy.
-                if (!s->pending && !(data&3) && n >= 20 && blocks-done >= 4) {
-                    unsigned runs = n/20;
-                    if (runs > (blocks-done)/4) runs = (blocks-done)/4;
-                    uint32_t dvbs2_pie_signs(uint32_t *, const uint8_t *, unsigned,
-                                            const uint32_t *, uint32_t);
-                    s->history = dvbs2_pie_signs(dst+done,f->scratch+data/4,runs,lut,s->history);
-                    s->at += 20*runs;
-                    done += 4*runs;
-                    continue;
-                }
-#else
-                (void)n;
-                (void)lut;
-#endif
-                c = (f->scratch[data/4] >> (6-2*(data&3))) & 3;
+                src = f->scratch;
+                at = k-36*run;
+                const unsigned left = f->data_symbols-at;
+                n = f->pilots && left > 1440-pos ? 1440-pos : left;
             }
         }
-        s->history = ((s->history << 1) & 0x7ff07ff0) |
-                     ((c ^ (c >> 1)) & 1) << 4 | (c >> 1) << 20;
-        ++s->at;
-        if (++s->pending == 5) {
-            dst[done++] = s->history;
-            s->pending = 0;
+        const unsigned room = (blocks-done)*5-s->pending;
+        if (n > room) n = room;
+        // Stay inside one header/data/pilot span. Do not divide the frame
+        // position and spill the rolling state again for every edge symbol.
+        uint32_t history = s->history;
+        unsigned pending = s->pending, used = 0;
+        while (used < n) {
+#ifdef DVBS2_PIE
+            if (packed && !pending && !(at&3) && n-used >= 20) {
+                const unsigned runs = (n-used)/20;
+                uint32_t dvbs2_pie_signs(uint32_t *, const uint8_t *, unsigned,
+                                        const uint32_t *, uint32_t);
+                history = dvbs2_pie_signs(dst+done,src+at/4,runs,lut,history);
+                at += 20*runs;
+                used += 20*runs;
+                done += 4*runs;
+                continue;
+            }
+#endif
+            // Five symbols always fit in two bytes, at every pair offset.
+            // This handles page/PL edges without five scalar history updates.
+            if (packed && !pending && n-used >= 5) {
+                const unsigned w = (unsigned)src[at/4] << 8 | src[at/4+1];
+                const unsigned index = (w >> (6-2*(at&3))) & 1023;
+                history = ((history << 5) & 0x7ff07ff0) | lut[index];
+                dst[done++] = history;
+                at += 5, used += 5;
+                continue;
+            }
+            const unsigned c = packed ? (src[at/4] >> (6-2*(at&3))) & 3 : src[at] >> 1;
+            history = ((history << 1) & 0x7ff07ff0) |
+                      ((c ^ (c >> 1)) & 1) << 4 | (c >> 1) << 20;
+            ++at, ++used;
+            if (++pending == 5) {
+                dst[done++] = history;
+                pending = 0;
+            }
         }
+        s->history = history;
+        s->pending = pending;
+        s->at += used;
     }
     return done;
 }

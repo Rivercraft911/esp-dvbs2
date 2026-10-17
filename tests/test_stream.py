@@ -75,7 +75,7 @@ static inline int heap_caps_monitor_local_minimum_free_size_start(void) { return
 static inline int heap_caps_monitor_local_minimum_free_size_stop(void) { return 0; }
 typedef struct {
     pthread_t thread; pthread_mutex_t mutex; pthread_cond_t cond;
-    unsigned notifications; void (*fn)(void *); void *arg;
+    unsigned notifications, notifications_sent; void (*fn)(void *); void *arg;
 } native_task;
 typedef native_task *TaskHandle_t;
 static _Thread_local TaskHandle_t current;
@@ -84,7 +84,7 @@ static inline void vTaskDelay(unsigned ticks) {
     struct timespec t = {ticks / 1000, (long)(ticks % 1000) * 1000000}; nanosleep(&t, NULL);
 }
 static inline void xTaskNotifyGive(TaskHandle_t t) {
-    pthread_mutex_lock(&t->mutex); ++t->notifications;
+    pthread_mutex_lock(&t->mutex); ++t->notifications; ++t->notifications_sent;
     pthread_cond_signal(&t->cond); pthread_mutex_unlock(&t->mutex);
 }
 static inline unsigned ulTaskNotifyTake(int clear, unsigned timeout) {

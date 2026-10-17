@@ -33,6 +33,15 @@ from serial.tools import list_ports
 DEFAULT_PORT = "/dev/cu.usbmodem101"
 
 
+def resolve_port(port: str = DEFAULT_PORT) -> str:
+    """Keep explicit ports; a missing default can use one unambiguous native USB port."""
+    if port == DEFAULT_PORT and not pathlib.Path(port).exists():
+        ports = sorted(pathlib.Path('/dev').glob('cu.usbmodem*'))
+        if len(ports) == 1:
+            return str(ports[0])
+    return port
+
+
 def reserve_port(port: str, reset: bool = False):
     """Lock across worktrees and reject existing cu/tty users before any reset/open.
 
@@ -195,6 +204,7 @@ def main() -> int:
     parser.add_argument("--out", type=pathlib.Path, help="append records to this JSON-lines file")
     parser.add_argument("--save", type=pathlib.Path, help="write binary data from the board here")
     args = parser.parse_args()
+    args.port = resolve_port(args.port)
 
     data = payload(args.send) if args.send else b""
     with reserve_port(args.port, args.reset):

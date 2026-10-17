@@ -28,16 +28,17 @@ else:
  r=dict(status='ESP_OK',encoder_failed=False,encoder_timed=True,callsign='N0CALL',underruns=0,stall_ms=0,
         modcod=mc,sps=n/den,sps_num=n,sps_den=den,symbol_rate=rate*den//n,dac_rate=rate,rolloff=.2 if n==12 else .35,
         pulse_symbols=7 if n==12 else 6 if mc>=12 and n in (3,4) and rate==80000000 else 9,
-        ring_slots=8 if n==40 else 2 if moon or (quads and n==3) else 3 if n<=4 else 2,ring_format='raw' if n==40 else 'quads' if quads else 'packed',
+        ring_slots=0 if moon else 8 if n==40 else 2 if quads and n==3 else 3 if n<=4 else 2,ring_format='signs' if moon else 'raw' if n==40 else 'quads' if quads else 'packed',
         workspace_memory='internal' if resident else 'psram',
         fill_kernel='moon-queue' if moon else 'pie',paced_wifi_up=moon,
-        wifi_free_up=50000,wifi_min_free=50000,prepare_pages=32,encoder_cache_bytes=25920,queue_pages=32,
+        wifi_free_up=50000,wifi_min_free=50000,prepare_pages=54,encoder_cache_bytes=25920,queue_pages=54,
+        queue_page_samples=1536,queue_wake_pages=8,queue_page_gap_max_cycles=1,queue_wait_cycles=1,
         queue_low_pages=1,queue_empty=0,prepare_max_cycles=1,prepare_bank_max_cycles=1,prepare_tail_max_cycles=1,queue_wake_max_cycles=1,
         dispatch_max_cycles=1,encode_work_cycles_mean=1,encode_work_cycles_live_max=1,
         encode_frame_work_cycles_mean=1,encode_frame_work_cycles_live_max=1,
         payload_source='internal-frame' if moon else 'xorshift32',input_frames=int(moon),
         input_memory='internal' if moon else 'none',encoder_priority=5,encoder_stack_min_free=1024,encoder_pie=15,
-        packed_mapper='none' if n==40 else 'quads' if quads else 'direct' if resident else 'sparse')
+        packed_mapper='signs' if moon else 'none' if n==40 else 'quads' if quads else 'direct' if resident else 'sparse')
  if kind=='dvbdump':
   frames=int(x[3] if named else x[2]); decim=int(x[-1]); size=((frames*symbols*n+den-1)//den+decim-1)//decim*4
   if bad and moon and n==3:size+=4
@@ -62,7 +63,7 @@ else:
   r.update(seconds=int(x[-1]),late_fills=0,late_switches=0,fatal_late=0,min_fill_slack_cycles=1,
            max_fill_cycles=1,encode_cycles_mean=1,encode_cycles_live_max=1,
            encode_kernel_cycles_mean=1,encode_kernel_cycles_live_max=1,
-           prefill_frames=r['ring_slots'],frames_played=10,frames_encoded=12,
+           prefill_frames=1 if moon else r['ring_slots'],frames_played=10,frames_encoded=12,
            profile=dict(shaped_words=8,reused_words=2,fill_words=10,
                         encoder={k:dict(cycles=10,prepare_cycles=1) for k in ('payload','bb','bch','ldpc','map','pl')}))
   # Exercise the exact two-percent boundary for each timing metric.
@@ -80,8 +81,8 @@ else:
    fault=os.getenv('QUEUE_GATES')
    if fault=='empty':r['queue_empty']=1
    if fault=='low':r['queue_low_pages']=0
-   if fault=='core0':r['prepare_bank_max_cycles']=40137
-   if fault=='tail':r['prepare_tail_max_cycles']=1750
+   if fault=='core0':r['encode_frame_work_cycles_live_max']=203685
+   if fault=='tail':r['prepare_tail_max_cycles']=3345
    if fault=='stack':r['encoder_stack_min_free']=511
    if mc==11 and os.getenv('COPY_BUDGET'):
     r['encode_kernel_cycles_mean']=r['encode_kernel_cycles_live_max']=ceiling-4823
@@ -114,7 +115,9 @@ else:
 with a.out.open('a') as f:
  for r in rows:f.write(json.dumps(dict(command=a.command,**r))+'\n')
 '''
-FAKE = '''def reserve_port(port, reset=False):
+FAKE = '''def resolve_port(port): return '/dev/cu.usbmodem1101' if port == '/dev/cu.usbmodem101' else port
+def reserve_port(port, reset=False):
+    assert port == '/dev/cu.usbmodem1101'
     if __import__('os').getenv('PORT_BUSY'): raise RuntimeError('serial port busy')
     return open('session.lock','a+')
 if __name__ == '__main__':
@@ -156,6 +159,7 @@ with tempfile.TemporaryDirectory() as tmp:
                            env=dict(env,**({'FAIL_GATES':'1'} if fail else {})),capture_output=True,text=True,timeout=60)
         assert run.returncode == int(fail), (run.stdout,run.stderr)
         assert json.loads((out/'revision.json').read_text())['host_firmware'] == 'test-fw'
+        assert json.loads((out/'revision.json').read_text())['port'] == '/dev/cu.usbmodem1101'
         assert json.loads((out/'board-info.json').read_text())[0]['firmware'] == 'test-fw'
         summary=(out/'summary.tsv').read_text().splitlines()
         assert len(summary)==(40 if moon else 33), summary

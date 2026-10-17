@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "console.h"
 
 #include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
@@ -288,6 +289,8 @@ void app_main(void)
     usb.tx_buffer_size = 8192;
     ESP_ERROR_CHECK(usb_serial_jtag_driver_install(&usb));
     usb_serial_jtag_vfs_use_driver();
+    static FILE output = FDEV_SETUP_STREAM(console_put, NULL, NULL, _FDEV_SETUP_WRITE);
+    stdout = &output;
     setvbuf(stdin, NULL, _IONBF, 0);
 
     const esp_err_t storage = station_store_init();

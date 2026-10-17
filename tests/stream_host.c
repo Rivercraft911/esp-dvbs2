@@ -30,7 +30,9 @@ static int checked_window(ring_t *r, uint8_t *dst, size_t room, uint64_t first,
 }
 #include "ingress_pattern.h"
 
-static uint32_t banks[2][RADIO_S3_BANK_WORDS] __attribute__((aligned(16)));
+// Match the physical bank alignment, including its four unused trailing words.
+static uint32_t (*banks)[16384];
+static unsigned bank_shift;
 static uint32_t reference[16440] __attribute__((aligned(16)));
 static uint8_t *phases;
 static size_t phase_count;
@@ -114,7 +116,7 @@ int usb_serial_jtag_write_bytes(const void *buf, size_t n, unsigned timeout)
 static void bank_fill(radio_s3_fill_fn fn, void *ctx, unsigned b, uint64_t first,
                        radio_s3_dry_stats_t *stats)
 {
-    const size_t offset = first % RADIO_S3_BANK_WORDS;
+    const size_t offset = (first+bank_shift) % RADIO_S3_BANK_WORDS;
     const size_t parts[] = {RADIO_S3_BANK_WORDS - offset, offset};
     uint64_t at = first;
     for (unsigned p = 0; p < 2; ++p) {
@@ -132,7 +134,13 @@ static void bank_fill(radio_s3_fill_fn fn, void *ctx, unsigned b, uint64_t first
             assert(tries++ < 5000);
             vTaskDelay(1);
         }
-        assert(fn(banks[b] + at % RADIO_S3_BANK_WORDS, at, count, ctx) == ESP_OK);
+        const unsigned sent = enc.task->notifications_sent;
+        if (dvb.moon && getenv("EARLY_WAKE")) xTaskNotifyGive(enc.task);
+        assert(fn(banks[b] + (at+bank_shift) % RADIO_S3_BANK_WORDS, at, count, ctx) == ESP_OK);
+        if (enc.packed && !dvb.moon) {
+            if (offset && !p) assert(enc.task->notifications_sent == sent);
+            else assert(!dvb.wake_pending);
+        }
         if (dvb.moon) {
             // The independent Python block/convolution oracle checks the whole
             // output, including both cores and every bank/frame seam.
@@ -151,7 +159,7 @@ static void bank_fill(radio_s3_fill_fn fn, void *ctx, unsigned b, uint64_t first
             }
             shaper_qpsk_c(reference, blocks+2, (skip+count+row-1)/row, dvb.table.blocks, sps);
             for (size_t i = 0; i < count; ++i)
-                assert(banks[b][(at+i)%RADIO_S3_BANK_WORDS] == reference[skip+i]);
+                assert(banks[b][(at+i+bank_shift)%RADIO_S3_BANK_WORDS] == reference[skip+i]);
             at += count;
             continue;
         }
@@ -164,7 +172,7 @@ static void bank_fill(radio_s3_fill_fn fn, void *ctx, unsigned b, uint64_t first
         shaper_fill_c(reference, shifted + SHAPER_HISTORY,
                        (int)(symbols - SHAPER_HISTORY), &dvb.table);
         for (size_t i = 0; i < count; ++i)
-            assert(banks[b][(at + i) % RADIO_S3_BANK_WORDS] == reference[at % sps + i]);
+            assert(banks[b][(at + i+bank_shift) % RADIO_S3_BANK_WORDS] == reference[at % sps + i]);
         at += count;
     }
     if (dvb.ring.packed) {
@@ -186,7 +194,12 @@ esp_err_t radio_s3_dry_run_rate(radio_s3_fill_fn fn, void *ctx, uint64_t samples
     for (uint64_t k = 0; k * step < samples; ++k) {
         const uint64_t first = k * step;
         const size_t count = samples - first < step ? (size_t)(samples - first) : (size_t)step;
-        assert(sink_fn(banks[k & 1], first, count, sink_ctx) == ESP_OK);
+        if (bank_shift) {
+            static uint32_t unshifted[RADIO_S3_BANK_WORDS];
+            for (unsigned i=0; i<RADIO_S3_BANK_WORDS; ++i)
+                unshifted[i] = banks[k & 1][(i+bank_shift)%RADIO_S3_BANK_WORDS];
+            assert(sink_fn(unshifted, first, count, sink_ctx) == ESP_OK);
+        } else assert(sink_fn(banks[k & 1], first, count, sink_ctx) == ESP_OK);
         if (first + step < samples)
             bank_fill(fn, ctx, k & 1, (k + 2) * step - lead, stats);
     }
@@ -217,6 +230,8 @@ esp_err_t radio_s3_wifi_probe(radio_s3_stats_t *stats)
 
 int main(int argc, char **argv)
 {
+    assert(!posix_memalign((void **)&banks, 65536, 2*sizeof *banks));
+    if (getenv("BANK_SHIFT")) bank_shift = strtoul(getenv("BANK_SHIFT"), NULL, 0);
     for (size_t n = 0; n < 18; ++n) {
         uint8_t got[20]; memset(got, 0xa5, sizeof got);
         uint32_t x = SEED, expected = SEED;
@@ -378,5 +393,5 @@ int main(int argc, char **argv)
         stop_encoder(); printf("}\n");
         assert(live_allocations == 0);
     }
-    free(source); free(phases);
+    free(source); free(phases); free(banks);
 }

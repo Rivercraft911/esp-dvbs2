@@ -23,6 +23,16 @@ class Link:
 
 
 def main():
+    for exists, ports, explicit, expected in (
+        (True, ['cu.usbmodem1101'], board.DEFAULT_PORT, board.DEFAULT_PORT),
+        (False, ['cu.usbmodem1101'], board.DEFAULT_PORT, '/dev/cu.usbmodem1101'),
+        (False, [], board.DEFAULT_PORT, board.DEFAULT_PORT),
+        (False, ['cu.usbmodem1101','cu.usbmodem5981'], board.DEFAULT_PORT, board.DEFAULT_PORT),
+        (False, ['cu.usbmodem1101'], '/dev/custom', '/dev/custom'),
+    ):
+        with patch.object(pathlib.Path, 'exists', return_value=exists), \
+             patch.object(pathlib.Path, 'glob', return_value=[pathlib.Path('/dev')/p for p in ports]):
+            assert board.resolve_port(explicit) == expected
     record = b'@{"cmd":"wifimem","wifi_min_free":19999}\n'
     for complete in (False, True):
         link = Link([b'Wi-Fi diagnostic\n', record,
