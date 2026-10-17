@@ -1,4 +1,4 @@
-"""New rate lifecycle and every output sample against the independent Python encoder/FIR.
+"""New rate lifecycle and every output sample against the independent Python encoder and block convolution.
 
 No silicon timing or heap claims. Optional --receiver decodes actual C stream dumps.
 """
@@ -14,24 +14,19 @@ import numpy as np
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT/'host'))
 import onair
-import rational
+import moon_fill as moon
 from test_stream import compile_stream
 
 
 def test(output=None, receiver=None):
-    assert (ROOT/'firmware/main/shaper_rational_taps.h').read_text() == rational.header()
-    for num,den,span,alpha in ((12,5,12,.2),(3,1,9,.35)):
-        margins = rational.mask(rational.taps(num,den,span,alpha),num,den,alpha)
-        assert min(margins.values()) > .1, margins
-        print('pulse-only mask with alias power and DAC hold:', num, den, margins)
     with tempfile.TemporaryDirectory() as tmp:
         folder = pathlib.Path(tmp)
         exe = compile_stream(folder)
         out = output or folder
         out.mkdir(parents=True, exist_ok=True)
         crcs = {}
-        for mc,num,den,span,alpha in ((11,12,5,12,.2),(17,12,5,12,.2),(17,3,1,9,.35),
-                                     (4,12,5,12,.2),(13,12,5,12,.2),(13,3,1,9,.35)):
+        for mc,num,den,span,alpha in ((11,12,5,9,.2),(17,12,5,9,.2),(17,3,1,9,.2),
+                                     (4,12,5,9,.2),(13,12,5,9,.2),(13,3,1,9,.2)):
             frames = 16
             name = f'{mc}-{num}-{den}'
             iq = out/(name+'.iq')
@@ -47,30 +42,29 @@ def test(output=None, receiver=None):
             assert r['sps_num'] == num and r['sps_den'] == den
             assert r['symbol_rate'] == 80000000*den//num
             assert r['pulse_symbols'] == span and r['ring_slots'] == 3
-            assert r['ring_format'] == 'packed' and r['packed_mapper'] == 'direct'
+            quads = mc < 12
+            assert r['ring_format'] == ('quads' if quads else 'packed')
+            assert r['packed_mapper'] == ('quads' if quads else 'direct')
+            assert r['fill_kernel'] == 'moon-pie-split' and r['helper_jobs'] > 0
             assert r['workspace_memory'] == r['payload_memory'] == r['ring_memory'] == 'internal'
-            assert r['ring_heap_bytes'] == 0 and r['workspace_heap_bytes'] == 12420
+            assert r['workspace_heap_bytes'] == 12420
             assert not r['encoder_failed'] and r['underruns'] == r['overlap_mismatches'] == 0
-            table = int(r['layout']['table'],16)
-            slots = [int(p,16) for p in r['layout']['slots']]
-            frame = ((onair.frame_symbols(mc)//2+31)//16)*16
-            used = ((span*num*4+15)//16)*16
-            assert slots == [table+used+i*frame for i in range(3)]
-            filler = int(r['layout']['filler'],16)
-            assert filler == table+used+3*frame
-            window_bytes = 12+(16380*den+num-1)//num+2
-            assert filler+1696+window_bytes <= table+65536
             assert r['bch_cache_bytes'] == (8192 if mc in (4,13) else 0)
+            kernel = 'qpsk24' if quads else '8psk24' if num == 12 else '8psk3a20'
+            assert r['table_bytes'] == sum(t.nbytes for t in moon.table(kernel))
             symbols = onair.symbols(mc, frames+2, callsign='N0CALL', rolloff=alpha)
             phases = np.rint(np.angle(symbols)*4/np.pi).astype(int)%8
             actual = np.fromfile(iq, dtype='<i2').reshape(-1,2)
             count = (frames*onair.frame_symbols(mc)*num+den-1)//den
             assert len(actual) == r['samples'] == count
-            coeff = rational.taps(num,den,span,alpha)
-            # Independent integer convolution covers each physical wrap and frame seam.
-            for first in range(0,count,16380):
-                expected = rational.shape(phases,first,min(16380,count-first),coeff,num,den)
-                np.testing.assert_array_equal(actual[first:first+len(expected)], expected)
+            block = 5 if num == 12 else 4
+            pad = (-len(phases))%block
+            padded = np.r_[np.full(2*block,1 if quads else 0),phases,np.zeros(pad)].astype(np.uint8)
+            if quads and pad: padded[-pad:] = 1
+            expected = moon.shape(kernel,padded)[:count]
+            import shaper
+            z = shaper.iq(expected)
+            np.testing.assert_array_equal(actual,np.column_stack((z.real,z.imag)))
             crc = zlib.crc32(iq.read_bytes())
             assert crc == r['crc32']
             crcs[f'{mc}/{num}/80/16'] = crc
@@ -95,7 +89,7 @@ def test(output=None, receiver=None):
             subprocess.run([str(exe),str(mc),'12',str(folder/'wrap.iq'),'N0CALL','80000000',str(frames)],
                            capture_output=True,text=True,timeout=120,check=True)
         print('new modes: complete physical-bank wrap cycle, no leaks or sample discontinuities')
-        golden = ROOT/'tests/data/rational_crcs.json'
+        golden = ROOT/'tests/data/moon_stream_crcs.json'
         if golden.exists(): assert crcs == json.loads(golden.read_text())
         if output: (output/'crcs.json').write_text(json.dumps(crcs,indent=2)+'\n')
 

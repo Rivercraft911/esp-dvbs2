@@ -101,7 +101,7 @@ static inline unsigned ulTaskNotifyTake(int clear, unsigned timeout) {
 }
 static inline void vTaskSuspend(TaskHandle_t t) { (void)t; pthread_exit(NULL); }
 static inline void vTaskDelete(TaskHandle_t t) {
-    assert(t == worker); pthread_join(t->thread, NULL);
+    pthread_join(t->thread, NULL);
     pthread_mutex_destroy(&t->mutex); pthread_cond_destroy(&t->cond); free(t);
 }
 static void *native_entry(void *arg) {
@@ -118,8 +118,11 @@ static inline int xTaskCreatePinnedToCore(void (*fn)(void *), const char *name,
 typedef struct { pthread_mutex_t mutex; pthread_cond_t cond; unsigned ready; } StaticSemaphore_t;
 typedef StaticSemaphore_t *SemaphoreHandle_t;
 static inline SemaphoreHandle_t xSemaphoreCreateBinaryStatic(StaticSemaphore_t *s) {
-    static int initialized;
-    if (!initialized) { pthread_mutex_init(&s->mutex, NULL); pthread_cond_init(&s->cond, NULL); initialized = 1; }
+    static SemaphoreHandle_t initialized[2];
+    if (s != initialized[0] && s != initialized[1]) {
+        pthread_mutex_init(&s->mutex, NULL); pthread_cond_init(&s->cond, NULL);
+        if (!initialized[0]) initialized[0] = s; else initialized[1] = s;
+    }
     s->ready = 0; return s;
 }
 static inline void xSemaphoreGive(SemaphoreHandle_t s) {
@@ -165,7 +168,7 @@ def compile_stream(folder):
                     str(ROOT / "tests/stream_host.c"), str(ROOT / "firmware/main/ring.c"),
                     str(ROOT / "firmware/main/shaper.c"),
                     str(ROOT / "firmware/main/shaper_short.c"),
-                    str(ROOT / "firmware/main/shaper_rational.c"),
+                    str(ROOT / "firmware/main/shaper_moon.c"),
                     str(ROOT / "firmware/main/shaper_qpsk.c"),
                     str(ROOT / "firmware/components/dvbs2/dvbs2.c"),
                     str(ROOT / "firmware/components/dvbs2/fast.c"),

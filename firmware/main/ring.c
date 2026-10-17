@@ -275,7 +275,7 @@ IRAM_ATTR int ring_window(ring_t *r, uint8_t *dst, size_t room, uint64_t first, 
             if (r->packed == 4) {
                 // Retain up to three full blocks plus the current partial block. A
                 // later fill may start earlier within this same four-symbol block.
-                keep = (end - 12) & ~(int64_t)3;
+                keep = (end - (r->cache_symbols > 16 ? 24 : 12)) & ~(int64_t)3;
                 if (keep < begin) keep = begin;
                 ring_copy_quads(r->cache, 0, dst, keep - begin, end - keep);
             } else if (keep < begin) {

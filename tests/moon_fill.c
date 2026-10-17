@@ -8,6 +8,8 @@
 static uint32_t table[24672] __attribute__((aligned(16)));
 static uint32_t expected[16392] __attribute__((aligned(16)));
 static uint32_t guarded[16400] __attribute__((aligned(16)));
+static uint8_t codes[6848];
+static uint16_t packed[1368];
 static uint16_t input[1368] __attribute__((aligned(16)));
 
 static uint32_t hash(const uint32_t *p, unsigned words)
@@ -23,7 +25,7 @@ int moon_check(void)
     const unsigned peaks[] = {16,128,508};
     const uint32_t seeds[] = {2026,7,UINT32_MAX};
     unsigned bad = 0, slices = 0, slice_bad = 0;
-    for (unsigned mode = 0; mode < 3; ++mode)
+    for (unsigned mode = 0; mode < 4; ++mode)
         for (unsigned level = 0; level < 3; ++level) {
             const unsigned peak = peaks[level], words = shaper_moon_words(mode);
             if (shaper_moon_build(table,mode,peak)) return 1;
@@ -31,7 +33,21 @@ int moon_check(void)
                 uint32_t x = seeds[seed];
                 for (unsigned i = 0; i < sizeof input/sizeof input[0]; ++i) {
                     x ^= x << 13, x ^= x >> 17, x ^= x << 5;
-                    input[i] = x & ((1u << (mode == 0 ? 12 : mode == 1 ? 10 : 15))-1);
+                    input[i] = x & ((1u << (mode == 0 || mode == 3 ? 12 : mode == 1 ? 10 : 15))-1);
+                }
+                // Exercise actual stream staging at all quad offsets, including
+                // duplicate history at a core split. Compare every packed word.
+                const unsigned block = mode == 0 || mode == 3 ? 4 : 5;
+                const unsigned bits = mode == 1 ? 2 : 3;
+                for (unsigned offset = 0; offset < 4; ++offset) {
+                    memset(codes,0,sizeof codes);
+                    for (unsigned k = 0; k < 1368*block; ++k) {
+                        unsigned v = input[k/block] >> (bits*(block-1-k%block)) & ((1u<<bits)-1);
+                        if (mode == 1) codes[(k+offset)/4] |= v << (6-2*((k+offset)&3));
+                        else codes[k+offset] = v<<4;
+                    }
+                    shaper_moon_pack(packed,codes,offset,1368,mode);
+                    if (memcmp(input,packed,sizeof input)) return 1;
                 }
                 for (unsigned c = 0; c < sizeof counts/sizeof counts[0]; ++c) {
                     const unsigned n = counts[c];
@@ -75,7 +91,7 @@ int main(int argc, char **argv)
     if (argc == 1) return moon_check();
     if (argc != 4) return 2;
     const unsigned mode = (unsigned)strtoul(argv[1],NULL,10);
-    if (mode >= 3) return 2;
+    if (mode >= 4) return 2;
     FILE *in = fopen(argv[2],"rb"), *out = fopen(argv[3],"wb");
     if (!in || !out) return 2;
     if (fseek(in,0,SEEK_END)) return 2;

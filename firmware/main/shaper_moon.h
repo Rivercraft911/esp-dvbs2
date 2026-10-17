@@ -2,8 +2,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// Experiment only, not selected by the transmitter. No allocation and no radio access.
-// mode 0: 8PSK 3 sps, 1: QPSK 12/5 sps, 2: 8PSK 12/5 sps.
+// No allocation or radio access. The transmitter uses modes 1/2/3.
+// mode 0: legacy 8PSK 3 sps/.35; 1: QPSK 12/5; 2: 8PSK 12/5; 3: 8PSK 3 sps/.20.
 // Inputs are chronological blocks of 4 (mode 0) or 5 symbols packed high first
 // in uint16_t words, 2 bits/symbol for QPSK phase>>1, 3 bits for 8PSK phase.
 // Keep two whole words of history before src[0]. Every group emits twelve samples.
@@ -22,3 +22,9 @@ void shaper_moon_fill(uint32_t *dst, const uint16_t *src, unsigned groups,
 // dst alignment and length; scalar word stores at edges, aligned vectors inside.
 void shaper_moon_samples(uint32_t *dst, const uint16_t *src, unsigned skip, size_t count,
                          const uint32_t *table, unsigned mode);
+
+void shaper_moon3a20_pie(uint32_t *, const uint16_t *, unsigned, const uint32_t *const *);
+void shaper_moon_fill_tables(uint32_t *, const uint16_t *, unsigned, const uint32_t *const *, unsigned);
+void shaper_moon_sample_tables(uint32_t *, const uint16_t *, unsigned, size_t,
+                               const uint32_t *const *, unsigned);
+void shaper_moon_pack(uint16_t *, const uint8_t *, unsigned, unsigned, unsigned);

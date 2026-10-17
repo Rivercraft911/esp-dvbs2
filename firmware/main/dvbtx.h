@@ -7,7 +7,8 @@
 
 // QPSK/8PSK encoded on core 0 and shaped on core 1. Measured 80 MS/s modes
 // use QPSK blocks at 3/4 sps and short 8PSK at 4 sps. New 12/5-sps and
-// 8PSK 3-sps modes use a portable correctness FIR, not a real-time kernel.
+// 8PSK 3-sps modes split block kernels across both cores, roll-off .20.
+// These experiment modes have not passed silicon timing or Wi-Fi memory gates.
 void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, unsigned level,
                 unsigned sps, uint32_t dac_rate);
 
@@ -18,7 +19,8 @@ void dvbtx_dump(unsigned modcod, unsigned frames, unsigned level, unsigned decim
                 unsigned stall_ms, unsigned sps, uint32_t dac_rate);
 
 // dvbpace command: the same encoder, fills and bank deadlines as dvb for `seconds`, timed against
-// the cycle counter with the radio off (radio_s3_paced_run_rate), at 40 or 80 MS/s.
+// the cycle counter, at 40 or 80 MS/s. Moonshot modes keep Wi-Fi NULL/RX up
+// (radio_s3_paced_wifi_rate); legacy modes leave Wi-Fi off. No DAC or TX keying.
 void dvbtx_pace(unsigned modcod, uint32_t seconds, unsigned level, unsigned stall_ms,
                  unsigned sps, uint32_t dac_rate);
 

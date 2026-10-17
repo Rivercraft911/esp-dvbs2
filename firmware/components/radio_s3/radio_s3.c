@@ -150,6 +150,7 @@ typedef struct {
     uint64_t samples;               /* exact sample count, including IDs */
     bool identify;
     bool limit_duration;
+    bool wifi_pace;
     bool probe;                     /* Wi-Fi start-up and shutdown only, no register access */
     radio_s3_sink_fn sink;
     void *sink_ctx;
@@ -500,6 +501,11 @@ static void worker(void *arg)
     }
     heap_now(&heap->free_up, &heap->largest_up);
     heap->min_free = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+    if (error == ESP_OK && run->wifi_pace) {
+        error = watch_begin(run, &watch_idle, &watch_worker);
+        if (error == ESP_OK) error = paced(run);
+        goto cleanup;
+    }
     if (error != ESP_OK || run->probe) {
         goto cleanup;
     }
@@ -726,6 +732,23 @@ esp_err_t radio_s3_paced_run_rate(uint32_t seconds, uint32_t dac_rate, radio_s3_
     if (stats->min_fill_slack_cycles == UINT32_MAX) {
         stats->min_fill_slack_cycles = 0;
     }
+    return error;
+}
+
+/* Wi-Fi NULL/promiscuous receive only. probe keeps all keyed setup and
+ * cleanup register accesses out of this path, including error returns. */
+esp_err_t radio_s3_paced_wifi_rate(uint32_t seconds, uint32_t dac_rate, radio_s3_fill_fn fill,
+                                   void *ctx, radio_s3_stats_t *stats)
+{
+    if (!fill || !stats || seconds == 0 || seconds > 600 || !known_rate(dac_rate) ||
+            !station_store_get()[0]) return ESP_ERR_INVALID_ARG;
+    memset(stats,0,sizeof *stats);
+    stats->min_fill_slack_cycles = UINT32_MAX;
+    run_t run = {.seconds=seconds, .samples=(uint64_t)seconds*dac_rate,
+                 .identify=true, .probe=true, .wifi_pace=true,
+                 .fill=fill, .ctx=ctx, .stats=stats, .geo=geometry(dac_rate)};
+    const esp_err_t error = on_core1(worker,&run);
+    if (stats->min_fill_slack_cycles == UINT32_MAX) stats->min_fill_slack_cycles = 0;
     return error;
 }
 

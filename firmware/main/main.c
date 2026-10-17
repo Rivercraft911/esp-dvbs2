@@ -12,7 +12,7 @@
 //              at 80 MS/s every test signal runs at twice its frequency; sweep requires 80 MS/s)
 //   dvb <MHz> <modcod> [5m|10m|20m|26m667|33m333] <1..60 seconds> [0..17 gain] [16..508 peak]  DVB-S2 on air (dvbtx.c)
 //   dvbdump <modcod> [5m|10m|20m|26m667|33m333] <frames> [peak] [decimation] [stall ms]  USB samples, no radio
-//   dvbpace <modcod> [5m|10m|20m|26m667|33m333] <seconds> [peak] [stall ms]  paced simulation, no radio
+//   dvbpace <modcod> [5m|10m|20m|26m667|33m333] <seconds> [peak] [stall ms]  paced simulation, no TX; moonshot keeps Wi-Fi RX up
 //              (20m and 26m667 use 80 MS/s; 33m333 uses 12/5 samples/symbol and roll-off 0.20)
 //   wifimem [<modcod> [5m|10m|20m|26m667|33m333]]  Wi-Fi start-up heap next to that transmitter's memory;
 //              starts and stops Wi-Fi like dvb but never keys, retunes or plays (dvbtx.c)

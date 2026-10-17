@@ -38,7 +38,7 @@ def operands(ins):
         return [(a[1],1)], [(a[0],1)]
     if op in ('l8ui','l16ui','l32i','l32r'):
         return ([] if op == 'l32r' else [(a[1],1)]), [(a[0],2)]
-    if op in ('s32i','s8i'):
+    if op in ('s32i','s16i','s8i'):
         return [(a[0],1),(a[1],1)], []
     if op in ('add','addi','addx2','addx4','addx8','and','or','sub','movi','extui','slli','srli'):
         return [(r,1) for r in a[1:] if reg(r)], [(a[0],1)]

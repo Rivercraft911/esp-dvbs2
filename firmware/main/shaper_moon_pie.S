@@ -95,7 +95,7 @@ shaper_moon3_pie:
     .endr
     .endm
 
-    .macro rational name,parts
+    .macro rational name,parts,three=0
     .global \name
     .type \name,@function
     .align 4
@@ -106,7 +106,9 @@ shaper_moon3_pie:
     addi a14,a3,-4
     l16ui a6,a14,0
     l16ui a8,a14,2
-    .if \parts == 4
+    .if \three
+    slli a6,a6,12
+    .elseif \parts == 4
     slli a6,a6,10
     .else
     slli a6,a6,15
@@ -115,7 +117,17 @@ shaper_moon3_pie:
     or a6,a6,a8
     loopnez a4,.Lend\@
     l16ui a8,a3,0
-    .if \parts == 4
+    .if \three
+    extui a7,a6,20,4
+    slli a6,a6,12
+    or a6,a6,a8
+    srli a9,a6,27
+    slli a7,a7,5
+    or a9,a9,a7
+    extui a10,a6,18,9
+    extui a11,a6,9,9
+    extui a12,a6,0,9
+    .elseif \parts == 4
     slli a6,a6,10
     or a6,a6,a8
     extui a9,a6,18,8
@@ -152,3 +164,5 @@ shaper_moon3_pie:
     .endm
     rational shaper_moon24q_pie,4
     rational shaper_moon24p_pie,5
+
+    rational shaper_moon3a20_pie,4,1

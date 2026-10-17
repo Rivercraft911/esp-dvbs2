@@ -10,12 +10,13 @@ static const struct {
 } modes[] = {
     {3,1,3,3,18,{0,3,6},{3,3,3},{18,9,0},moon_8psk3},
     {12,5,2,4,108,{0,4,8,12},{4,4,4,1},{18,10,2,0},moon_qpsk24},
-    {12,5,3,5,108,{0,3,6,9,12},{3,3,3,3,1},{30,21,12,3,0},moon_8psk24}
+    {12,5,3,5,108,{0,3,6,9,12},{3,3,3,3,1},{30,21,12,3,0},moon_8psk24},
+    {3,1,3,4,27,{0,3,6,9},{3,3,3,3},{27,18,9,0},moon_8psk3a20}
 };
 
 size_t shaper_moon_words(unsigned mode)
 {
-    if (mode >= 3) return 0;
+    if (mode >= 4) return 0;
     size_t words = 0;
     for (unsigned j = 0; j < modes[mode].parts; ++j)
         words += 12u << (modes[mode].bits*modes[mode].count[j]);
@@ -27,7 +28,7 @@ static int contribution(unsigned mode, const int32_t *taps, unsigned axis,
 {
     const int32_t *levels = axis ? shaper_level_q : shaper_level_i;
     const unsigned bits = modes[mode].bits, count = modes[mode].count[part];
-    const int origin = mode ? -8 : -5;
+    const int origin = mode == 0 ? -5 : -8;
     int64_t sum = 0;
     for (unsigned j = 0; j < count; ++j) {
         const int position = origin+modes[mode].first[part]+j;
@@ -43,7 +44,7 @@ static int contribution(unsigned mode, const int32_t *taps, unsigned axis,
 
 int shaper_moon_build(uint32_t *table, unsigned mode, unsigned peak)
 {
-    if (!table || ((uintptr_t)table & 15) || mode >= 3 || peak < 16 || peak > 508) return -1;
+    if (!table || ((uintptr_t)table & 15) || mode >= 4 || peak < 16 || peak > 508) return -1;
     int32_t taps[108];
     const unsigned parts = modes[mode].parts, bits = modes[mode].bits;
     for (unsigned i = 0; i < modes[mode].span; ++i)
@@ -75,7 +76,7 @@ int shaper_moon_build(uint32_t *table, unsigned mode, unsigned peak)
 void shaper_moon_c(uint32_t *dst, const uint16_t *src, unsigned groups,
                    const uint32_t *table, unsigned mode)
 {
-    const unsigned step = mode == 0 ? 12 : mode == 1 ? 10 : 15;
+    const unsigned step = mode == 0 || mode == 3 ? 12 : mode == 1 ? 10 : 15;
     uint64_t h = (uint64_t)src[-2] << step | src[-1];
     while (groups--) {
         h = h << step | *src++;
@@ -92,42 +93,114 @@ void shaper_moon_c(uint32_t *dst, const uint16_t *src, unsigned groups,
     }
 }
 
-IRAM_ATTR void shaper_moon_fill(uint32_t *dst, const uint16_t *src, unsigned groups,
-                               const uint32_t *table, unsigned mode)
+IRAM_ATTR void shaper_moon_fill_tables(uint32_t *dst, const uint16_t *src, unsigned groups,
+                                      const uint32_t *const *tables, unsigned mode)
 {
 #ifdef __XTENSA__
-    if (mode == 0) shaper_moon3_pie(dst,src,groups,table,table+6144,table+12288);
-    else {
-        const uint32_t *tables[5];
-        for (unsigned j = 0; j < modes[mode].parts; ++j) {
-            tables[j] = table;
-            table += 12u << (modes[mode].bits*modes[mode].count[j]);
-        }
-        if (mode == 1) shaper_moon24q_pie(dst,src,groups,tables);
-        else shaper_moon24p_pie(dst,src,groups,tables);
-    }
+    if (mode == 0) shaper_moon3_pie(dst,src,groups,tables[0],tables[1],tables[2]);
+    else if (mode == 1) shaper_moon24q_pie(dst,src,groups,tables);
+    else if (mode == 2) shaper_moon24p_pie(dst,src,groups,tables);
+    else shaper_moon3a20_pie(dst,src,groups,tables);
 #else
-    shaper_moon_c(dst,src,groups,table,mode);
+    const unsigned step = mode == 0 || mode == 3 ? 12 : mode == 1 ? 10 : 15;
+    uint64_t h = (uint64_t)src[-2] << step | src[-1];
+    while (groups--) {
+        h = h << step | *src++;
+        for (unsigned p = 0; p < 12; ++p) dst[p] = 0;
+        for (unsigned j = 0; j < modes[mode].parts; ++j) {
+            const unsigned rows = 1u << (modes[mode].bits*modes[mode].count[j]);
+            const unsigned w = h >> modes[mode].shift[j] & (rows-1);
+            for (unsigned p = 0; p < 12; ++p) dst[p] += tables[j][12*w+p];
+        }
+        for (unsigned p = 0; p < 12; ++p) dst[p] ^= 0x80200;
+        dst += 12;
+    }
 #endif
 }
 
-IRAM_ATTR void shaper_moon_samples(uint32_t *dst, const uint16_t *src, unsigned skip,
-                                  size_t count, const uint32_t *table, unsigned mode)
+IRAM_ATTR void shaper_moon_fill(uint32_t *dst, const uint16_t *src, unsigned groups,
+                               const uint32_t *table, unsigned mode)
+{
+    const uint32_t *tables[5];
+    for (unsigned j = 0; j < modes[mode].parts; ++j) {
+        tables[j] = table;
+        table += 12u << (modes[mode].bits*modes[mode].count[j]);
+    }
+    shaper_moon_fill_tables(dst,src,groups,tables,mode);
+}
+
+IRAM_ATTR void shaper_moon_sample_tables(uint32_t *dst, const uint16_t *src, unsigned skip,
+                                        size_t count, const uint32_t *const *tables, unsigned mode)
 {
     if (!count) return;
     uint32_t scratch[12] __attribute__((aligned(16)));
     while (count && (skip || ((uintptr_t)dst & 15) || count < 12)) {
-        shaper_moon_fill(scratch,src++,1,table,mode);
+        shaper_moon_fill_tables(scratch,src++,1,tables,mode);
         size_t take = 12-skip < count ? 12-skip : count;
         for (size_t i = 0; i < take; ++i) *dst++ = scratch[skip+i];
         count -= take;
         skip = 0;
     }
     const size_t groups = count/12;
-    if (groups) shaper_moon_fill(dst,src,groups,table,mode);
+    if (groups) shaper_moon_fill_tables(dst,src,groups,tables,mode);
     dst += 12*groups, src += groups, count -= 12*groups;
     if (count) {
-        shaper_moon_fill(scratch,src,1,table,mode);
+        shaper_moon_fill_tables(scratch,src,1,tables,mode);
         for (size_t i = 0; i < count; ++i) dst[i] = scratch[i];
+    }
+}
+
+void shaper_moon_samples(uint32_t *dst, const uint16_t *src, unsigned skip, size_t count,
+                         const uint32_t *table, unsigned mode)
+{
+    const uint32_t *tables[5];
+    for (unsigned j = 0; j < modes[mode].parts; ++j) {
+        tables[j] = table;
+        table += 12u << (modes[mode].bits*modes[mode].count[j]);
+    }
+    shaper_moon_sample_tables(dst,src,skip,count,tables,mode);
+}
+
+// Canonical 16*phase bytes for 8PSK; high-pair-first quad bytes for QPSK.
+// offset is in symbols. The caller includes two whole input blocks of history.
+IRAM_ATTR __attribute__((noinline)) void shaper_moon_pack(uint16_t *dst, const uint8_t *src,
+                                                        unsigned offset, unsigned groups, unsigned mode)
+{
+    if (mode == 1) {
+        while (groups && (offset&3)) {
+            const uint8_t *p = src+offset/4;
+            *dst++ = ((p[0]<<8 | p[1]) >> (6-2*(offset&3))) & 1023;
+            offset += 5;
+            --groups;
+        }
+        src += offset/4;
+        while (groups >= 4) {
+            dst[0] = src[0]<<2 | src[1]>>6;
+            dst[1] = (src[1]<<4 | src[2]>>4) & 1023;
+            dst[2] = (src[2]<<6 | src[3]>>2) & 1023;
+            dst[3] = (src[3]<<8 | src[4]) & 1023;
+            src += 5;
+            dst += 4;
+            groups -= 4;
+        }
+        offset = 0;
+        while (groups--) {
+            const uint8_t *p = src+offset/4;
+            *dst++ = ((p[0]<<8 | p[1]) >> (6-2*(offset&3))) & 1023;
+            offset += 5;
+        }
+    } else {
+        src += offset;
+        if (mode == 0 || mode == 3) {
+            while (groups--) {
+                *dst++ = src[0]<<5 | src[1]<<2 | src[2]>>1 | src[3]>>4;
+                src += 4;
+            }
+        } else {
+            while (groups--) {
+                *dst++ = src[0]<<8 | src[1]<<5 | src[2]<<2 | src[3]>>1 | src[4]>>4;
+                src += 5;
+            }
+        }
     }
 }

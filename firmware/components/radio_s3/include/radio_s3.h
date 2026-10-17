@@ -78,7 +78,7 @@ typedef struct {
     uint32_t id_count;        /* planned start, periodic and end segments */
     uint64_t planned_samples; /* payload + all IDs */
     radio_filter_stats_t filter; /* keyed runs only; snapshots before playback and cleanup */
-    radio_s3_wifi_heap_t wifi; /* radio_s3_run and radio_s3_wifi_probe only */
+    radio_s3_wifi_heap_t wifi; /* run, wifi_probe and paced_wifi */
 } radio_s3_stats_t;
 
 /* Synchronous, exclusive run on core 1, 240 MHz. Valid requests are integer MHz
@@ -156,3 +156,8 @@ esp_err_t radio_s3_run_bandwidth(uint32_t freq_mhz, uint8_t gain, uint32_t secon
  * before radio_s3_run's first register access: no retune, keying, gain, tone, bank grant or
  * DAC. NULL mode sends no frames. Fills stats->wifi; needs a stored callsign. */
 esp_err_t radio_s3_wifi_probe(radio_s3_stats_t *stats);
+
+/* The paced schedule with Wi-Fi NULL/promiscuous RX up. No PHY retune,
+ * tone, TX keying, DAC or bank-ownership register writes; no MAC frames. */
+esp_err_t radio_s3_paced_wifi_rate(uint32_t seconds, uint32_t dac_rate, radio_s3_fill_fn fill,
+                                   void *ctx, radio_s3_stats_t *stats);

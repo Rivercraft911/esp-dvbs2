@@ -88,5 +88,6 @@ void ring_unpack_qpsk(uint8_t *dst, const uint8_t *packed, size_t at, size_t n);
 // Four QPSK codes/byte (phase>>1, high pair first), including frame-boundary
 // nibble shifts. Set r->packed=4 before reads. ring_window uses byte room, rounds
 // its first symbol down to a four-symbol boundary and retains 12..15 history
-// symbols in four cache bytes. Source buffers need sixteen readable guard bytes.
+// symbols in four cache bytes. cache_symbols > 16 retains 24..27 symbols
+// for the fractional block shaper, requiring seven cache bytes. Source buffers need sixteen readable guard bytes.
 void ring_copy_quads(uint8_t *dst, size_t to, const uint8_t *src, size_t at, size_t n);

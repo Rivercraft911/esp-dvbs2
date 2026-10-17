@@ -15,12 +15,12 @@ import shaper as s
 
 def check_records(text):
     rows = [json.loads(x[1:]) for x in text.splitlines() if x.startswith('@{"test":"moon_fill"')]
-    assert len(rows) == 243,len(rows)
+    assert len(rows) == 324,len(rows)
     seen = set()
     for r in rows:
         name = tuple(m.MODES)[r['mode']]
         bits = m.MODES[name][4]
-        block = 4 if r['mode'] == 0 else 5
+        block = 4 if r['mode'] in (0,3) else 5
         x, src = r['seed'], []
         for _ in range(1367):
             x ^= x << 13 & 0xffffffff
@@ -34,17 +34,17 @@ def check_records(text):
         assert r['table'] == s.checksum(np.concatenate(m.table(name,r['peak'])).ravel()),r
         assert r['check'] == s.checksum(m.shape(name,phase[:(2+r['groups'])*block],r['peak'])),r
         seen.add((name,r['peak'],r['seed'],r['groups']))
-    assert len(seen) == 243
+    assert len(seen) == 324
     slices = [json.loads(x[1:]) for x in text.splitlines() if x.startswith('@{"test":"moon_slices"')]
-    assert slices == [dict(test='moon_slices',cases=11664,errors=0)],slices
-    print('moon C/PIE: 243 unique cases, whole tables and every block match Python')
+    assert slices == [dict(test='moon_slices',cases=15552,errors=0)],slices
+    print('moon C/PIE: 324 unique cases, whole tables and every block match Python')
 
 
 def test_model():
     assert m.HEADER.read_text() == m.header_text()
     rng = np.random.default_rng(2026)
     for name,(_,_,_,_,bits,groups) in m.MODES.items():
-        block = 4 if name == '8psk3' else 5
+        block = 4 if name in ('8psk3','8psk3a20') else 5
         phase = rng.integers(0,1 << bits,(257+2)*block,dtype=np.uint8)
         if bits == 2: phase = 2*phase+1
         for peak in (16,128,508):
@@ -55,7 +55,7 @@ def test_model():
             got, exact = s.iq(m.shape(name,phase,peak)),m.linear(name,phase,peak)
             error = max(abs(got.real-exact.real).max(),abs(got.imag-exact.imag).max())
             assert error <= len(groups)/2+1e-6,(name,peak,error)
-            assert sum(x.nbytes for x in tables) == {'8psk3':73728,'qpsk24':37056,'8psk24':98688}[name]
+            assert sum(x.nbytes for x in tables) == {'8psk3':73728,'qpsk24':37056,'8psk24':98688,'8psk3a20':98304}[name]
         margin = m.mask(name)
         assert min(margin[k] for k in ('upper_db','lower_db','far_db')) > 0,(name,margin)
         margin = m.mask(name,quantized=True)

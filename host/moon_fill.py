@@ -17,6 +17,7 @@ MODES = {
     '8psk3': (3, 1, 6, .35, 3, ((-5,-4,-3), (-2,-1,0), (1,2,3))),
     'qpsk24': (12, 5, 9, .20, 2, ((-8,-7,-6,-5), (-4,-3,-2,-1), (0,1,2,3), (4,))),
     '8psk24': (12, 5, 9, .20, 3, ((-8,-7,-6), (-5,-4,-3), (-2,-1,0), (1,2,3), (4,))),
+    '8psk3a20': (3, 1, 9, .20, 3, ((-8,-7,-6), (-5,-4,-3), (-2,-1,0), (1,2,3))),
 }
 HEADER = ROOT/'firmware/main/shaper_moon_taps.h'
 
@@ -299,7 +300,7 @@ def cycle_report(disassembly):
 def check_membench(path):
     rows = [json.loads(line.lstrip('@')) for line in pathlib.Path(path).read_text().splitlines()
             if line.lstrip('@').startswith('{')]
-    for mode,name in enumerate(MODES):
+    for mode,name in enumerate(tuple(MODES)[:3]):
         meta = [r for r in rows if r.get('cmd') == 'membench moon' and r.get('mode') == mode]
         timed = [r for r in rows if r.get('test') == f'moon{mode}_pie']
         assert len(meta) == len(timed) == 1,(meta,timed)

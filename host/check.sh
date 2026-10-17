@@ -1,5 +1,6 @@
 #!/bin/sh
-# Coordinator only. Never flashes or keys RF. --plan opens no devices.
+# Coordinator only. Never flashes or transmits. Moonshot paces start Wi-Fi RX.
+# --plan opens no devices.
 cd "$(dirname "$0")/.." || exit 1
 exec "${PYTHON:-python3}" - "$@" <<'PY'
 import argparse
@@ -11,13 +12,14 @@ import subprocess
 import sys
 import zlib
 
-p = argparse.ArgumentParser(description='Radio-off board gates, about five minutes after build/flash.')
+p = argparse.ArgumentParser(description='TX-off board gates, including Wi-Fi-up moonshot paces after build/flash.')
 p.add_argument('out', nargs='?', type=pathlib.Path)
 p.add_argument('--plan', action='store_true', help='print every criterion without running anything')
 p.add_argument('--moonshot', action='store_true', help='33m333 and 8PSK 26m667 gates, plus slim regressions')
 p.add_argument('--all-crcs', action='store_true', help='also dump every golden waveform on the board (much slower)')
 p.add_argument('--encoder', action='store_true', help='encoder candidate: target 9/10, stage timings and estimated 10k-cycle input')
 a = p.parse_args()
+if a.moonshot and a.encoder: p.error("choose --moonshot or --encoder")
 python = sys.executable
 receiver = os.getenv('RX', '/Users/river/Documents/stanford/SSI/esp-dvbs2/notes/leansdr/src/apps/leandvb')
 firmware = subprocess.check_output(['git','describe','--always','--dirty'], text=True).strip()
@@ -28,7 +30,7 @@ selected = ['4/40/40/16', '13/8/40/16', '13/4/40/40',
             '4/4/80/16', '11/4/80/16', '13/4/80/16', '15/4/80/16',
             '4/3/80/16', '11/3/80/16']
 if a.moonshot:
-    golden.update(json.loads(pathlib.Path('tests/data/rational_crcs.json').read_text()))
+    golden.update(json.loads(pathlib.Path('tests/data/moon_stream_crcs.json').read_text()))
     selected = ['4/40/40/16','13/8/40/16','15/4/80/16',
                 '11/12/80/16','17/12/80/16','17/3/80/16']
 if a.all_crcs: selected = list(golden)
@@ -85,7 +87,7 @@ if a.moonshot:
 def mode(mc, token):
     sps = {'':40,'5m':8,'10m':4,'20m':4,'26m667':3,'33m333':12}[token]
     rate = 80000000 if token in ('20m','26m667','33m333') else 40000000
-    quads = mc < 12 and rate == 80000000 and sps != 12
+    quads = mc < 12 and rate == 80000000
     return sps, rate, quads
 
 def dump_args(key):
@@ -95,8 +97,8 @@ def dump_args(key):
     return mc,token,frames,decim
 
 print(f'Pass criteria fixed before any command: firmware {firmware}, stored N0CALL; no NVS writes.')
-print('Host: all 57 waveform CRCs from 46f90af; every filled word equals the plain encoder.')
-if a.moonshot: print('New modes: six Python/C waveform CRCs; rational sample count and roll-off 0.20; 15% timing reserve, 20000 B heap floor.')
+print('Host: all 57 retained waveform CRCs plus the encoder fixture; every filled word equals the plain encoder.')
+if a.moonshot: print('New modes: six split-kernel Python/C CRCs; roll-off 0.20; Wi-Fi-up paces; 40137 cycles/core/bank, 20000 B heap floor.')
 print('FEC: 140 phase CRCs, 14 zero-mismatch PIE checks, all four stage bits active.')
 print('Every stream: ESP_OK, encoder timed/healthy, zero underruns/stalls, correct rate/pulse/ring/mapper.')
 print('Dumps: exact byte count, firmware/USB/file CRC equality, zero overlap errors; LeanDVB')
@@ -107,6 +109,9 @@ print('Paces: selected 30 s key runs and 10 s regressions; zero late fills/switc
 for (mc,token,seconds,topic,old),limit in zip(paces,limits):
     print(f'  {mc} {token or "1m"}, {seconds} s: ceilings {limit} cycles (encoder cycles/frame); '+(f'<=102% of {topic}: {old}' if topic else '85% of the exact deadline'))
 for mc,token,up,low in wifi: print(f'  wifimem {mc} {token}: up >= {up} B, minimum >= {low} B; no playback.')
+if a.moonshot:
+    print('Core 0 capacity: helper bank maximum + 4792 scheduling + (exclusive post-payload maximum + 10000 input) * 47220/frame <= 40137 cycles.')
+    print('  Dispatch <=2396 cycles/job; join wait is included in the full-bank core 1 maximum. This is a capacity screen, not a latency proof.')
 if a.encoder:
     print('Encoder planning gate: same-frame post-payload mean AND live maximum + estimated 10,000 cycles/input copy')
     print('  <= 135,827 cycles/frame for internal 8PSK; <= 203,685 for QPSK 9/10 at 26m667.')
@@ -152,16 +157,18 @@ def stream(rows, mc, token):
     assert len(results) == 1, rows
     r = results[0]
     n,rate,quads = mode(mc,token)
-    fir = n == 12 or (mc >= 12 and n == 3)
+    moon = n == 12 or (mc >= 12 and n == 3)
     den = 5 if n == 12 else 1
-    resident = n != 40 and (fir or mc < 12 or n == 4)
+    resident = n != 40 and (moon or mc < 12 or n == 4)
     assert r['status'] == 'ESP_OK' and not r['encoder_failed'] and r['encoder_timed'], r
     assert r['callsign'] == 'N0CALL' and r['underruns'] == r['stall_ms'] == 0, r
     assert r['modcod'] == mc and r['sps'] == n/den and r['symbol_rate'] == rate*den//n, r
-    assert r['rolloff'] == (.2 if n == 12 else .35), r
-    if fir: assert r['sps_num'] == n and r['sps_den'] == den, r
-    assert r['pulse_symbols'] == (12 if n == 12 else 6 if mc >= 12 and n == 4 and rate == 80000000 else 9), r
-    assert r['ring_slots'] == (8 if n == 40 else 3 if n <= 4 or fir else 2), r
+    assert r['rolloff'] == (.2 if moon else .35), r
+    if moon:
+        assert r['sps_num'] == n and r['sps_den'] == den, r
+        assert r['fill_kernel'] == 'moon-pie-split', r
+    assert r['pulse_symbols'] == (9 if moon else 6 if mc >= 12 and n == 4 and rate == 80000000 else 9), r
+    assert r['ring_slots'] == (8 if n == 40 else 3 if n <= 4 or moon else 2), r
     assert r['ring_format'] == ('raw' if n == 40 else 'quads' if quads else 'packed'), r
     assert r['workspace_memory'] == ('internal' if resident else 'psram'), r
     assert r['packed_mapper'] == ('none' if n == 40 else 'quads' if quads else 'direct' if resident else 'sparse'), r
@@ -186,7 +193,7 @@ def decode(key):
     n,rate,_ = mode(mc,token)
     name = key.replace('/','-')
     run([python,'host/onair.py',str(out/(name+'.iq')),'--rate',str(rate//decim),
-         '--symbol-rate',str(rate*(5 if n == 12 else 1)/n),'--rolloff',str(.2 if n == 12 else .35),'--scale','512','--stream',str(frames),'--modcod',str(mc),
+         '--symbol-rate',str(rate*(5 if n == 12 else 1)/n),'--rolloff',str(.2 if n == 12 or (mc >= 12 and n == 3) else .35),'--scale','512','--stream',str(frames),'--modcod',str(mc),
          '--callsign','N0CALL','--receiver',receiver,'--shift','0'],name+'.decode.json')
     r = json.loads((out/(name+'.decode.json')).read_text())
     assert r['frame_lock'] and r['status_complete'] and r['payload_match'], r
@@ -204,6 +211,18 @@ def pace(mc,token,seconds,limit):
         ceiling = 203685 if mc < 12 else 135827
         assert r['encode_kernel_cycles_mean'] + 10000 <= ceiling, r
         assert r['encode_kernel_cycles_live_max'] + 10000 <= ceiling, r
+    if token == '33m333' or (mc >= 12 and token == '26m667'):
+        assert r['paced_wifi_up'] and r['wifi_free_up'] >= 20000 and r['wifi_min_free'] >= 20000, r
+        assert r['helper_jobs'] > 0 and r['helper_bank_max_cycles'] > 0, r
+        # Capacity screen, not a WCET proof. Helper includes packing and kernel;
+        # 2,396 cycles/job covers scheduling, based on the prior notification max.
+        # Two physical pieces can dispatch twice. Never count helper time as encoder work.
+        n,rate,_ = mode(mc,token)
+        den = 5 if n == 12 else 1
+        frame = (33282 if mc < 12 else 22194)*240000000*n/(rate*den)
+        encoder = max(r['encode_work_cycles_mean'],r['encode_work_cycles_live_max'])+10000
+        assert r['helper_bank_max_cycles']+4792+encoder*47220/frame <= 40137, r
+        assert r['dispatch_max_cycles'] <= 2396, r
     assert r['prefill_frames'] == r['ring_slots'] and r['frames_played'] > 0, r
     f = r['profile']
     assert f['shaped_words'] + f['reused_words'] == f['fill_words'], r
