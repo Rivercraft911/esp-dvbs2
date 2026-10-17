@@ -189,9 +189,25 @@ carrying 46.6 Mb/s. This still does not establish receiver decoding over RF.
 ([radio off](../results/2026-10-17-qpsk-goal/README.md),
 [keyed](../results/2026-10-17-keyed-qpsk/README.md))
 
+## 14. 40 MHz
+
+The moonshot was the S3's widest Wi-Fi channel: 40 MHz occupied, 100/3 Msym/s at roll-off
+0.20, 2.4 samples per symbol. Twelve rounds across six branches got there. A fill helper on
+the second core kept fighting the encoder (rounds one to five). Two engineers given only the
+problem and the measurements found better shapes: a queue of precomputed table offsets, which
+rendered banks fast but cost core 0 too much, and **sign windows**, which treat QPSK's I and Q
+as two BPSK streams so each four-sample vector comes from small sign-indexed tables and one OR.
+Sign windows won once the mapper wrote sign histories directly. The last bugs were a truncated
+USB report that looked like a hang and a mapper read through the flash cache.
+
+Keyed in the box, QPSK 9/10 at 100/3 Msym/s carried 58.2 Mb/s for 30 s with no late fill and no
+underrun, and every older mode still passed the regression gate. The encoder uses 99% of a frame
+keyed, so the mode works without the 15% reserve. 8PSK at 40 MHz does not fit yet.
+([40 MHz](../results/2026-10-17-moonshot/README.md))
+
 ## Now
 
-The next measurement is a receiver decoding the signal over a cabled RF path.
-Payload over SPI and more fill margin remain. The current implementation and
+The next measurement is a receiver decoding the signal over a cabled RF path, then a
+live demo with video arriving over SPI. 8PSK at 40 MHz and APSK remain. The current implementation and
 its checks are in [fill](bank-fill.md), [encoder](encoder.md) and
 [radio/bank geometry](bank-geometry.md).

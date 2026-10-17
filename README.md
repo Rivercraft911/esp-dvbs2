@@ -4,10 +4,12 @@ A complete DVB-S2 transmitter on one ESP32-S3. Framing, error correction,
 modulation and pulse shaping run on the chip; samples leave through its own
 Wi-Fi radio. No PC encoder or external DAC.
 
-Main has keyed **QPSK 9/10 at 80/3 Msym/s (46.6 Mb/s)** and **8PSK 5/6 at
-20 Msym/s (48.4 Mb/s)** for 30 s each in a shielded box, with every bank deadline
-met. Those are measured playback results. A receiver has not yet decoded the
-signal over RF. [QPSK run](results/2026-10-17-keyed-qpsk/README.md),
+Main has keyed **QPSK 9/10 at 100/3 Msym/s in 40 MHz (58.2 Mb/s)**, QPSK 9/10 at
+80/3 Msym/s (46.6 Mb/s) and **8PSK 5/6 at 20 Msym/s (48.4 Mb/s)** for 30 s each in a
+shielded box, with every bank deadline met. Those are measured playback results; the
+40 MHz mode runs with a thin encoder margin. A receiver has not yet decoded the signal
+over RF. [40 MHz run](results/2026-10-17-moonshot/README.md),
+[QPSK 26.67 Msym/s](results/2026-10-17-keyed-qpsk/README.md),
 [8PSK run](results/2026-10-16-keyed-20m/README.md).
 
 The goal is live video. 8PSK 2/3 at 5 Msym/s carries 9.68 Mb/s before application
@@ -18,7 +20,7 @@ framing, with a nominal 6.75 MHz occupied bandwidth at roll-off 0.35.
 
 | Modulation | MODCOD | Symbol rates | Evidence |
 |---|---|---|---|
-| QPSK | 4..11, rates 1/2 through 9/10 | 1, 5, 10, 20, 80/3 Msym/s | [Host/board CRCs and independent decode](results/2026-10-17-qpsk-goal/README.md) |
+| QPSK | 4..11, rates 1/2 through 9/10 | 1, 5, 10, 20, 80/3 Msym/s; 100/3 Msym/s at roll-off 0.20 (40 MHz) | [Host/board CRCs and independent decode](results/2026-10-17-qpsk-goal/README.md), [40 MHz](results/2026-10-17-moonshot/README.md) |
 | 8PSK | 12..17, rates 3/5 through 9/10 | 5, 10, 20 Msym/s | [5/10 Msym/s](results/2026-10-16-8psk-board/README.md), [20 Msym/s short pulse](results/2026-10-17-next4/README.md) |
 
 The encoder supports every listed MODCOD. Board and receiver checks cover
@@ -29,12 +31,13 @@ Cleanup selects the fastest measured 20 Msym/s kernel per modulation: QPSK's
 four-symbol block kernel and 8PSK's six-symbol pulse. These previously used
 `20mq4` and `20ms6`; both are now `20m`. The duplicate `10m80` token is removed.
 All other waveforms retain their CRCs. The new defaults match the old opt-in
-kernels bit for bit; this branch still needs the coordinator's board checks.
+kernels bit for bit and passed the board checks ([cleanup](results/2026-10-17-cleanup/README.md)).
 The six-symbol 8PSK waveform has radio-off evidence, not keyed qualification.
 [Waveforms, CRCs and memory](docs/bank-fill.md).
 
-Quad SPI input verified 46.768 Mb/s in standalone loopback. Paced input and Wi-Fi
-reserve fixes await another board run; external senders remain unqualified.
+Quad SPI input verified 46.768 Mb/s in one-board loopback and feeds the transmitter on
+the board ([results](results/2026-10-17-spi-in/README.md)); external senders remain
+unqualified.
 [Wire format, XIAO/DevKit pins, sender, budget and radio-off gates](docs/spi-input.md).
 
 ## How it works
