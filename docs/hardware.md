@@ -164,7 +164,9 @@ Pass: every board status is `ESP_OK`, `encoder_failed=false`, dump CRC matches t
 must have `late_fills=0`, `fatal_late=0`, positive `min_fill_slack_cycles` and no underruns.
 Compare the whole-bank `max_fill_cycles` with 85,608 cycles, not the single-call maximum.
 Full-rate MER must acquire and exceed 38 dB. This is a model-based acceptance floor, not
-an RF specification. The host table models give about 42 dB at peak 128.
+an RF specification. The taps pre-correct the DAC hold, which a dump does not have, so
+the host table models give 43.8 dB at 5 Msym/s and 40.6 dB at 10 Msym/s at peak 128
+(41.6 dB at 10 Msym/s once an ideal hold is applied).
 
 Also rerun `dvbdump 4 40` / `dvbpace 4 60` for QPSK regression. To provoke dummy insertion,
 use `dvbpace 13 10m 60 128 10`: require nonzero underruns with zero late fills and no

@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from dataclasses import replace
 
 import numpy as np
 
@@ -30,7 +31,9 @@ def test_tables():
     for p in s.PROFILES.values():
         t = p.table
         assert t.shape == (p.windows, p.block_words) and not (t >> 20).any()
-        assert not t[:, 3 * p.n:].any()                                 # padding
+        assert not t[:, p.parts_count * p.row_words:].any()
+        for j in range(p.parts_count):
+            assert not t[:, j*p.row_words+p.n:(j+1)*p.row_words].any()
         for r, b in zip(p.parts, p.biases):
             assert (b.sum(axis=0) == 512).all()
             assert (r.min(axis=1) + b >= 0).all() and ((r.max(axis=1) + b).sum(axis=0) <= 1023).all()
@@ -95,6 +98,29 @@ def test_mer():
           "profiles (values: python3 host/shaper.py report)")
 
 
+def test_hold_correction():
+    # A finite inverse-transform pulse tends to the uncorrected RRC as Fs/Rs grows.
+    assert np.max(np.abs(s.corrected_rrc(.2, 400) - s.window_rrc(.2, 400))) < 2e-6
+    for p in s.PROFILES.values():
+        old = replace(p, equalized=False)
+        assert s.pulse_mer(p) > s.pulse_mer(old), p.name
+        # Independent long FFT implements the same inverse hold, without quadrature.
+        nfft = 1 << 18
+        f = np.fft.fftfreq(nfft) * p.n
+        h = s.rrc_response(f, p.alpha) / np.sinc(f / p.n)
+        h = h * np.exp(-2j*np.pi*f/p.n*(len(p.taps)-1)/2)
+        g = np.fft.ifft(h).real[:len(p.taps)] * p.n * np.kaiser(len(p.taps), s.KAISER_BETA)
+        assert np.max(np.abs(g - s.corrected_rrc(p.alpha, p.n))) < 2e-7, p.name
+    for span in (11, 13):
+        p = replace(s.PROFILES['8psk-n4-a20'], span=span)
+        sym = s.cyclic(p, 2048, 3)
+        y = s.iq(s.shape(p, sym))
+        assert len(y) == 2048*p.n
+        assert np.max(np.abs(y - s.linear(p, sym))) < p.parts_count / np.sqrt(2)
+        assert s.mer(p, y, sym[p.history:]) > 39
+    print('hold correction: FFT agrees with quadrature, high-sps limit, pulse MER improves; longer spans checked')
+
+
 def test_header():
     assert s.HEADER.read_text() == s.header_text(), "run: python3 host/shaper.py header"
     print("header: firmware/main/shaper_taps.h matches the model")
@@ -120,19 +146,25 @@ def test_firmware_c():
             assert np.array_equal(got_words, want_words), test
     got = {k: int(v) for k, v in (line.split() for line in out.splitlines())}
     want = s.expected_checks()
-    assert got == {k: v for k, v in want.items() if not k.endswith("_pie")}, (got, want)
+    assert got == {k: v for k, v in want.items() if k.endswith(("_c", "_build"))}, (got, want)
     print("firmware_c: shaper.c compiled for the host builds the same tables and fills the same "
           "words as the model (checks " + ", ".join(f"{k} {v}" for k, v in got.items()) + ")")
 
 
 def check_qemu(path):
     records = [json.loads(line[1:]) for line in pathlib.Path(path).read_text().splitlines()
-               if line.startswith('@{"test":"shape4_pie"')]
-    want_cases = {(name, count, seed) for name in ("8psk-n4-a20", "8psk-n4-a35")
-                  for count in (1, 7, 13, 4093, 4095) for seed in (2026, 7, 0xffffffff)}
+               if line.startswith('@{"test":"shape')]
+    want_cases = {(test, name, count, seed)
+                  for test, names, counts in (
+                      ('shape4_pie', ('8psk-n4-a20', '8psk-n4-a35'), (0,1,2,3,4,5,6,7,13,4093,4094,4095)),
+                      ('shape4_rows', ('8psk-n4-a20', '8psk-n4-a35'), (0,1,2,3,4,5,6,7,13,4093,4094,4095)),
+                      ('shape4_all', ('8psk-n4-a20', '8psk-n4-a35'), (0,1,2,3,4,5,6,7,13,4093,4094,4095)),
+                      ('shape4_rows_all', ('8psk-n4-a20', '8psk-n4-a35'), (0,1,2,3,4,5,6,7,13,4093,4094,4095)),
+                      ('shape5_pie', ('8psk-n5-a20', '8psk-n5-a35'), (0,4,8,12,16,3276)))
+                  for name in names for count in counts for seed in (2026,7,0xffffffff)}
     assert len(records) == len(want_cases), len(records)
     for r in records:
-        want_cases.remove((r["profile"], r["symbols"], r["seed"]))
+        want_cases.remove((r['test'], r["profile"], r["symbols"], r["seed"]))
         p = s.PROFILES[r["profile"]]
         sym = s.random_symbols(p, s.HISTORY + r["symbols"], r["seed"])
         assert r["mismatch"] == 0 and r["guards"] == 1, r

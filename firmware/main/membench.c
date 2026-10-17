@@ -135,14 +135,19 @@ static void shaper_bench(void)
     } cases[] = {
         {"shape4", shaper_taps_8psk_n4_a20, 4, 3, 4093},   // 16372 words, 6 * 682 + 1 symbols
         {"shape4a35", shaper_taps_8psk_n4_a35, 4, 3, 4093},
+        {"shape5", shaper_taps_8psk_n5_a20, 5, 3, 3276},
+        {"shape5a35", shaper_taps_8psk_n5_a35, 5, 3, 3276},
         {"shape8", shaper_taps_8psk_n8_a20, 8, 3, 2047},     // 16376 words
-        {"shape40", shaper_taps_qpsk_n40_a20, 40, 2, 409},   // 16360 words
+        {"shape8a35", shaper_taps_8psk_n8_a35, 8, 3, 2047},
+        {"shape40", shaper_taps_qpsk_n40_a20, 40, 2, 409},
+        {"shape40a35", shaper_taps_qpsk_n40_a35, 40, 2, 409},   // 16360 words
     };
     const uint32_t internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     uint32_t *bank = radio_s3_bank(0);
     uint8_t *sym = heap_caps_malloc(SHAPER_HISTORY + BANK_WORDS / 4, internal);
     uint32_t *blocks = shaper_store;
-    if (!sym) {
+    const uint32_t **rows = heap_caps_malloc((7 + 4093) * sizeof(*rows), internal);
+    if (!sym || !rows) {
         printf("@{\"cmd\":\"membench\",\"error\":\"shaper allocation failed\"}\n");
         goto done;
     }
@@ -174,6 +179,8 @@ static void shaper_bench(void)
         memset(bank, 0, BANK_WORDS * 4);
         if (n == 4) {
             TIME(cycles, shaper_fill4_pie(bank, s0, (nsym - 1) / 6, blocks));
+        } else if (n == 5) {
+            TIME(cycles, shaper_fill5_pie(bank, s0, nsym / 4, blocks));
         } else if (n == 8) {
             TIME(cycles, shaper_fill8_pie(bank, s0, (nsym - 1) / 6, blocks));
         } else {
@@ -181,9 +188,26 @@ static void shaper_bench(void)
         }
         snprintf(test, sizeof test, "%s_pie", cases[c].name);
         report(test, cycles, nsym * n, 0, checksum(bank, nsym * n));
+        if (n == 4) {
+            TIME(cycles, shaper_fill4_all_pie(bank, s0, nsym, blocks));
+            snprintf(test, sizeof test, "%s_all", cases[c].name);
+            report(test, cycles, nsym * n, 0, checksum(bank, nsym * n));
+            TIME(cycles, shaper_rows4(rows + 6, s0, nsym, blocks));
+            snprintf(test, sizeof test, "%s_stage", cases[c].name);
+            // Address hashes depend on placement; check the resulting samples below instead.
+            report(test, cycles, 0, 0, 0);
+            memset(bank, 0, BANK_WORDS * 4);
+            TIME(cycles, shaper_fill4_rows_pie(bank, rows + 6, (nsym - 1) / 6));
+            snprintf(test, sizeof test, "%s_rows", cases[c].name);
+            report(test, cycles, nsym * n, 0, checksum(bank, nsym * n));
+            TIME(cycles, shaper_fill4_rows_all_pie(bank, rows + 6, nsym));
+            snprintf(test, sizeof test, "%s_rows_all", cases[c].name);
+            report(test, cycles, nsym * n, 0, checksum(bank, nsym * n));
+        }
     }
 done:
     heap_caps_free(sym);
+    heap_caps_free(rows);
 }
 
 void membench_run(void)

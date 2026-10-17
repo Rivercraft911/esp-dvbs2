@@ -6,6 +6,8 @@
 // 5.5.1), preserving each choice for overlapping bank reads. No payload is skipped.
 // RRC roll-off 0.35 matches the BBHEADER (dvbs2.h). Peak scaling uses the
 // conservative bound sqrt(2)*508 LSB for every table (host/shaper.py Profile.taps).
+// The taps divide out the DAC's sample hold (host/shaper.py corrected_rrc) because the
+// radio sends the held signal; a raw dvbdump has no hold and measures differently.
 
 #include "dvbtx.h"
 
