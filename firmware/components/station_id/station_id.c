@@ -43,6 +43,12 @@ bool station_callsign(const char *in, char out[STATION_CALL_MAX + 1])
 bool station_id_init(station_id_t *id, const char *call, uint64_t samples,
                      station_fill_fn payload, void *ctx)
 {
+    return station_id_init_rate(id, call, samples, STATION_RATE, payload, ctx);
+}
+
+bool station_id_init_rate(station_id_t *id, const char *call, uint64_t samples, uint32_t rate,
+                          station_fill_fn payload, void *ctx)
+{
     // ITU-R M.1677-1 Annex 1, Part I, 1.1 pp. 2-3 (characters), 2 p. 3 (spacing).
     static const char *const code[] = {
         ".-", "-...", "-.-.", "-..", ".", "..-.", "--.", "....", "..", ".---",
@@ -52,29 +58,32 @@ bool station_id_init(station_id_t *id, const char *call, uint64_t samples,
         "-..-.",
     };
     char normalized[STATION_CALL_MAX + 1];
-    if (!station_callsign(call, normalized) || samples > 86400ULL * STATION_RATE) {
+    if (!station_callsign(call, normalized) ||
+            (rate != STATION_RATE && rate != 2 * STATION_RATE) || samples > 86400ULL * rate) {
         return false;
     }
     memset(id, 0, sizeof *id);
-    uint32_t at = STATION_DOT * 7; // silence to acquire the envelope floor
+    id->scale = rate / STATION_RATE;
+    const uint32_t dot = STATION_DOT * id->scale;
+    uint32_t at = dot * 7; // silence to acquire the envelope floor
     for (const char *c = normalized; *c; ++c) {
         unsigned k = *c == '/' ? 36 : *c >= 'A' ? *c - 'A' : 26 + *c - '0';
         for (const char *m = code[k]; *m; ++m) {
             station_mark_t *mark = &id->marks[id->nmarks++];
             mark->start = at;
-            at += STATION_DOT * (*m == '-' ? 3 : 1);
+            at += dot * (*m == '-' ? 3 : 1);
             mark->end = at;
-            at += STATION_DOT;
+            at += dot;
         }
-        at += STATION_DOT * 2; // three dots total between characters
+        at += dot * 2; // three dots total between characters
     }
-    id->length = at + STATION_DOT * 4; // seven dots total after last mark
+    id->length = at + dot * 4; // seven dots total after last mark
     id->payload_samples = samples;
     id->payload = payload;
     id->ctx = ctx;
     // Repeat begins every 540 s of wall sample time. The initial and final IDs
     // are additional to the requested payload duration; no payload is dropped.
-    uint64_t capacity = STATION_PERIOD - id->length;
+    uint64_t capacity = STATION_PERIOD * id->scale - id->length;
     uint64_t repeats = samples ? (samples - 1) / capacity : 0;
     id->total_samples = samples + (2 + repeats) * id->length;
     for (unsigned i = 0; i < 40; ++i) {
@@ -111,7 +120,7 @@ static void IRAM_ATTR repeat(volatile uint32_t *dst, const uint32_t *row,
         }
     }
 #ifdef __XTENSA__
-    // Bank wrap and 400-sample envelope cells preserve 16-byte alignment.
+    // Bank wrap and 400- or 800-sample envelope cells preserve 16-byte alignment.
     // Keep the scalar fallback for arbitrary seeks and partial test buffers.
     if (!((uintptr_t)dst & 15) && count >= 40) {
         size_t periods = count / 40;
@@ -136,6 +145,7 @@ static void IRAM_ATTR repeat(volatile uint32_t *dst, const uint32_t *row,
 int IRAM_ATTR station_cw_fill(uint32_t *dst, uint64_t first, size_t count, void *ctx)
 {
     const station_id_t *id = ctx;
+    const uint32_t ramp = STATION_EDGE * id->scale, cell = STATION_CELL * id->scale;
     unsigned m = 0;
     int previous_amp = -1;
     uint32_t row[40] __attribute__((aligned(16)));
@@ -150,17 +160,17 @@ int IRAM_ATTR station_cw_fill(uint32_t *dst, uint64_t first, size_t count, void 
             uint64_t boundary;
             if (first < start) {
                 boundary = start;
-            } else if (first - start < STATION_EDGE) {
-                unsigned k = (first - start) / 400;
+            } else if (first - start < ramp) {
+                unsigned k = (first - start) / cell;
                 amp = id->edge[k];
-                boundary = start + (k + 1) * 400;
-            } else if (end - first <= STATION_EDGE) {
-                unsigned k = (end - first - 1) / 400;
+                boundary = start + (k + 1) * cell;
+            } else if (end - first <= ramp) {
+                unsigned k = (end - first - 1) / cell;
                 amp = id->edge[k];
-                boundary = end - k * 400;
+                boundary = end - k * cell;
             } else {
                 amp = 128;
-                boundary = end - STATION_EDGE;
+                boundary = end - ramp;
             }
             if (boundary - first < take) {
                 take = boundary - first;
@@ -186,7 +196,8 @@ int IRAM_ATTR station_cw_fill(uint32_t *dst, uint64_t first, size_t count, void 
 int IRAM_ATTR station_id_fill(uint32_t *dst, uint64_t first, size_t count, void *ctx)
 {
     station_id_t *id = ctx;
-    const uint64_t capacity = STATION_PERIOD - id->length;
+    const uint64_t period = STATION_PERIOD * id->scale;
+    const uint64_t capacity = period - id->length;
     const uint64_t final = id->total_samples - id->length;
     while (count) {
         uint64_t end, local;
@@ -196,13 +207,13 @@ int IRAM_ATTR station_id_fill(uint32_t *dst, uint64_t first, size_t count, void 
             local = first - final;
             end = id->total_samples;
         } else {
-            uint64_t cycle = first / STATION_PERIOD;
-            local = first % STATION_PERIOD;
+            uint64_t cycle = first / period;
+            local = first % period;
             cw = local < id->length;
             if (cw) {
-                end = cycle * STATION_PERIOD + id->length;
+                end = cycle * period + id->length;
             } else {
-                end = (cycle + 1) * STATION_PERIOD;
+                end = (cycle + 1) * period;
                 local = cycle * capacity + local - id->length;
             }
             if (end > final) {
