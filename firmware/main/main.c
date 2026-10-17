@@ -4,12 +4,13 @@
 //
 //   info       chip, clocks, memory, firmware version and stored callsign
 //   callsign [CALL|clear]  read, store or erase the station callsign in NVS (station_commands.c)
-//   iddump [CALL]  the CW ID's bank samples at 10 kS/s over USB, no radio
+//   iddump [CALL] [40|80]  the CW ID's bank samples at 10 kS/s over USB at a 40 or 80 MS/s DAC, no radio
 //   membench   memory and bank-fill timing (membench.c)
 //   chain <forced|cw|cw40|cwgain>  how tx turns the transmit chain on (default cwgain)
-//   tx <integer MHz> <tone|two|tag|...> <1..60 seconds> [0..17 gain, default 0]
-//              (gap: a 128 tone with every bank's lead and tail silenced, the switch probe)
-//   dvb <MHz> <modcod> [5m|10m for 8PSK] <1..60 seconds> [0..17 gain] [16..508 peak]  DVB-S2 on air (dvbtx.c)
+//   tx <integer MHz> <tone|two|tag|...> <1..60 seconds> [0..17 gain, default 0] [40|80 MS/s]
+//              (gap: a 128 tone with every bank's lead and tail silenced, the switch probe;
+//              at 80 MS/s every test signal runs at twice its frequency)
+//   dvb <MHz> <modcod> [5m|10m|10m80|20m for 8PSK] <1..60 seconds> [0..17 gain] [16..508 peak]  DVB-S2 on air (dvbtx.c)
 //   dvbdump <modcod> [5m|10m|10m80|20m for 8PSK] <frames> [peak] [decimation] [stall ms]  the same samples over USB, no radio
 //   dvbpace <modcod> [5m|10m|10m80|20m for 8PSK] <seconds> [peak] [stall ms]  the same encoder, fills and deadlines, no radio
 //              (80 MS/s bank schedule, radio-off commands only: 10m80 is the 5m samples at
@@ -103,9 +104,7 @@ static void cmd_dvb(char *args)
     char *code = strtok_r(NULL, " \t", &save);
     char *duration = strtok_r(NULL, " \t", &save);
     uint32_t modcod, sps, rate;
-    // Keyed runs stay at 40 MS/s: the CW ID is generated at 40 MS/s (station_id.h).
-    const bool mode_ok = tx_mode(code, &duration, &save, &modcod, &sps, &rate) &&
-                         rate == RADIO_S3_DAC_RATE;
+    const bool mode_ok = tx_mode(code, &duration, &save, &modcod, &sps, &rate);
     char *level = strtok_r(NULL, " \t", &save);
     char *peak = strtok_r(NULL, " \t", &save);
     char *extra = strtok_r(NULL, " \t", &save);
@@ -114,11 +113,11 @@ static void cmd_dvb(char *args)
         !number(duration, 1, 60, &seconds) ||
         (level && !number(level, 0, RADIO_S3_GAIN_MAX, &gain)) ||
         (peak && !number(peak, 16, 508, &top)) || extra) {
-        printf("@{\"cmd\":\"dvb\",\"error\":\"usage: dvb <2390..2450 MHz> <modcod 4..11 | 12..17 5m|10m> "
+        printf("@{\"cmd\":\"dvb\",\"error\":\"usage: dvb <2390..2450 MHz> <modcod 4..11 | 12..17 5m|10m|10m80|20m> "
                "<1..60 seconds> [0..17 gain] [16..508 peak]\"}\n");
         return;
     }
-    dvbtx_run(freq, modcod, seconds, gain, top, sps);
+    dvbtx_run(freq, modcod, seconds, gain, top, sps, rate);
 }
 
 static void cmd_dvbdump(char *args)
@@ -190,19 +189,23 @@ static void cmd_tx(char *args)
     char *name = strtok_r(NULL, " \t", &save);
     char *duration = strtok_r(NULL, " \t", &save);
     char *level = strtok_r(NULL, " \t", &save);
+    char *msps = strtok_r(NULL, " \t", &save);
     char *extra = strtok_r(NULL, " \t", &save);
-    uint32_t freq, seconds, gain = RADIO_S3_GAIN_DEFAULT;
+    uint32_t freq, seconds, gain = RADIO_S3_GAIN_DEFAULT, rate = 40;
     if (!number(mhz, 2390, 2450, &freq) || !name ||
         !number(duration, 1, 60, &seconds) ||
-        (level && !number(level, 0, RADIO_S3_GAIN_MAX, &gain)) || extra ||
+        (level && !number(level, 0, RADIO_S3_GAIN_MAX, &gain)) ||
+        (msps && (!number(msps, 40, 80, &rate) || (rate != 40 && rate != 80))) || extra ||
         !radio_signal_init(tx_signal, name)) {
         printf("@{\"cmd\":\"tx\",\"error\":\"usage: tx <2390..2450 integer MHz> "
-               "<tone|tone<1..511>|two|tag|neg|low|ionly|qonly|zero|dci|dcq|gap> <1..60 seconds> [0..17 gain, default 0]\"}\n");
+               "<tone|tone<1..511>|two|tag|neg|low|ionly|qonly|zero|dci|dcq|gap> <1..60 seconds> [0..17 gain, default 0] "
+               "[40|80 MS/s]\"}\n");
         return;
     }
+    rate *= 1000000;
     radio_s3_stats_t s = {0};
     radio_s3_set_gaps(!strcmp(name, "gap"));
-    const esp_err_t err = radio_s3_run(freq, gain, seconds, fill_signal, tx_signal, &s);
+    const esp_err_t err = radio_s3_run_rate(freq, gain, seconds, rate, fill_signal, tx_signal, &s);
     radio_s3_set_gaps(false);
     printf("@{\"cmd\":\"tx\",\"freq_mhz\":%lu,\"signal\":\"%s\",\"seconds\":%lu,"
            "\"gain\":%lu,\"dac_rate_nominal\":%u,\"bank_words\":%u,\"step_words\":%u,"
@@ -212,7 +215,7 @@ static void cmd_tx(char *args)
            "\"min_fill_slack_cycles\":%lu,\"fatal_late\":%lu,\"fe_base_index\":%lu,"
            "\"fe_gain_index\":%lu,\"chain\":\"%s\",\"status\":\"%s\"",
            (unsigned long)freq, name, (unsigned long)seconds, (unsigned long)gain,
-           RADIO_S3_DAC_RATE, RADIO_S3_BANK_WORDS, RADIO_S3_STEP_WORDS,
+           (unsigned)rate, RADIO_S3_BANK_WORDS, (unsigned)RADIO_S3_STEP_FOR(rate),
            (unsigned long long)s.elapsed_samples, (unsigned long long)s.elapsed_cycles,
            (unsigned long)s.fills, (unsigned long)s.switches, (unsigned long)s.late_fills,
            (unsigned long)s.late_switches, (unsigned long)s.max_fill_cycles,

@@ -2,9 +2,10 @@
 
 #include <stdint.h>
 
-// QPSK (sps=40) or 8PSK (sps=8/4), encoded on core 0 and shaped on core 1.
+// QPSK (sps=40) or 8PSK (sps=8/4), encoded on core 0 and shaped on core 1, at 40 or (8PSK)
+// 80 MS/s.
 void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, unsigned level,
-                unsigned sps);
+                unsigned sps, uint32_t dac_rate);
 
 // dvbdump command: the same encoder and fill sequence without the radio. Every decim-th played
 // sample goes out over USB as int16 I/Q after a record carrying binary_bytes. dac_rate picks the

@@ -1,6 +1,6 @@
 // Continuous QPSK at 1 Msym/s (40 sps), or 8PSK at 5/10 Msym/s (8/4 sps).
 // 8PSK requires an explicit 5m or 10m before duration/frame count in all commands.
-// dvbdump and dvbpace also run the 8 and 4 sps samples on the 80 MS/s bank schedule (10m80, 20m).
+// 10m80 and 20m run the 8 and 4 sps samples at 80 MS/s, on its bank schedule (radio_s3.h).
 // 8PSK keeps its frames in internal RAM, packed two phases per byte (dvbs2.h), so neither core
 // touches PSRAM per symbol: at 4 sps three frames, two in the table store's unused half and one
 // on the heap; at 8 sps two frames in one heap block (docs/stream-profile.md). QPSK keeps eight
@@ -582,19 +582,20 @@ static void print_wifi(const radio_s3_wifi_heap_t *w)
 }
 
 void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, unsigned level,
-                unsigned sps)
+                unsigned sps, uint32_t dac_rate)
 {
     if (!station_require("dvb")) {
         return;
     }
-    const size_t symbols = start_encoder("dvb", modcod, level, 0, sps, RADIO_S3_DAC_RATE);
+    const size_t symbols = start_encoder("dvb", modcod, level, 0, sps, dac_rate);
     if (!symbols) {
         return;
     }
     radio_s3_stats_t s = {0};
-    const esp_err_t err = radio_s3_run(freq, (uint8_t)gain, seconds, fill, NULL, &s);
+    const esp_err_t err = radio_s3_run_rate(freq, (uint8_t)gain, seconds, dac_rate, fill, NULL, &s);
     print_mode("dvb", modcod, symbols, level);
-    printf(",\"freq_mhz\":%" PRIu32 ",\"seconds\":%" PRIu32 ",\"gain\":%u", freq, seconds, gain);
+    printf(",\"freq_mhz\":%" PRIu32 ",\"seconds\":%" PRIu32 ",\"gain\":%u,\"dac_rate\":%" PRIu32
+           ",\"step_words\":%u", freq, seconds, gain, dac_rate, RADIO_S3_STEP_FOR(dac_rate));
     print_timing(&s);
     printf(",\"fe_gain_index\":%" PRIu32, s.fe_gain_index);
     print_wifi(&s.wifi);

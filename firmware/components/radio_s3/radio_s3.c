@@ -66,6 +66,7 @@
 /* A run's bank geometry (radio_s3.h) and DAC rate, at 240 MHz. Copied into the run so that
  * the schedule reads it from internal RAM. */
 typedef struct {
+    uint32_t rate;              /* samples per second */
     uint32_t rate_bit;          /* DAC_CTRL */
     uint32_t cycles;            /* CPU cycles per sample */
     uint32_t lead, tail, step;  /* words */
@@ -74,10 +75,11 @@ typedef struct {
 static geometry_t geometry(uint32_t dac_rate)
 {
     if (dac_rate == RADIO_S3_DAC_RATE_80M) {
-        return (geometry_t){DAC_RATE_80M, 3, RADIO_S3_LEAD_WORDS_80M, RADIO_S3_TAIL_WORDS_80M,
-                            RADIO_S3_STEP_WORDS_80M};
+        return (geometry_t){dac_rate, DAC_RATE_80M, 3, RADIO_S3_LEAD_WORDS_80M,
+                            RADIO_S3_TAIL_WORDS_80M, RADIO_S3_STEP_WORDS_80M};
     }
-    return (geometry_t){0, 6, RADIO_S3_LEAD_WORDS, RADIO_S3_TAIL_WORDS, RADIO_S3_STEP_WORDS};
+    return (geometry_t){RADIO_S3_DAC_RATE, 0, 6, RADIO_S3_LEAD_WORDS, RADIO_S3_TAIL_WORDS,
+                        RADIO_S3_STEP_WORDS};
 }
 
 /* Reserve full physical banks, including the unused last four words. The linker
@@ -670,7 +672,8 @@ static esp_err_t on_core1(TaskFunction_t task, run_t *run)
             run->error = ESP_ERR_NO_MEM;
             goto finished;
         }
-        if (!station_id_init(id, station_store_get(), run->samples, run->fill, run->ctx)) {
+        if (!station_id_init_rate(id, station_store_get(), run->samples, run->geo.rate,
+                                  run->fill, run->ctx)) {
             run->error = ESP_ERR_INVALID_STATE;
             goto finished;
         }
@@ -682,8 +685,8 @@ static esp_err_t on_core1(TaskFunction_t task, run_t *run)
             while (id->total_samples > run->samples) {
                 uint64_t excess = id->total_samples - run->samples;
                 if (id->payload_samples <= excess ||
-                    !station_id_init(id, station_store_get(), id->payload_samples - excess,
-                                      run->fill, run->ctx)) {
+                    !station_id_init_rate(id, station_store_get(), id->payload_samples - excess,
+                                           run->geo.rate, run->fill, run->ctx)) {
                     run->error = ESP_ERR_INVALID_ARG;
                     goto finished;
                 }
@@ -787,8 +790,14 @@ esp_err_t radio_s3_wifi_probe(radio_s3_stats_t *stats)
 esp_err_t radio_s3_run(uint32_t freq_mhz, uint8_t gain, uint32_t seconds,
                        radio_s3_fill_fn fill, void *ctx, radio_s3_stats_t *stats)
 {
+    return radio_s3_run_rate(freq_mhz, gain, seconds, RADIO_S3_DAC_RATE, fill, ctx, stats);
+}
+
+esp_err_t radio_s3_run_rate(uint32_t freq_mhz, uint8_t gain, uint32_t seconds, uint32_t dac_rate,
+                            radio_s3_fill_fn fill, void *ctx, radio_s3_stats_t *stats)
+{
     if (!fill || !stats || freq_mhz < 2390 || freq_mhz > 2450 ||
-            gain > RADIO_S3_GAIN_MAX || seconds == 0 || seconds > 60) {
+            gain > RADIO_S3_GAIN_MAX || seconds == 0 || seconds > 60 || !known_rate(dac_rate)) {
         return ESP_ERR_INVALID_ARG;
     }
     // Refuse before task creation, Wi-Fi init, calibration or any register access.
@@ -798,10 +807,10 @@ esp_err_t radio_s3_run(uint32_t freq_mhz, uint8_t gain, uint32_t seconds,
     memset(stats, 0, sizeof *stats);
     stats->min_fill_slack_cycles = UINT32_MAX;
     run_t run = {
-        .samples = (uint64_t)seconds * RADIO_S3_DAC_RATE, .identify = true, .limit_duration = true,
+        .samples = (uint64_t)seconds * dac_rate, .identify = true, .limit_duration = true,
         .freq_mhz = freq_mhz, .gain = gain, .seconds = seconds,
         .fill = fill, .ctx = ctx, .stats = stats, .chain = chain, .gaps = gaps,
-        .geo = geometry(RADIO_S3_DAC_RATE), /* the ID generator is 40 MS/s only */
+        .geo = geometry(dac_rate),
     };
     esp_err_t error = on_core1(worker, &run);
     if (stats->min_fill_slack_cycles == UINT32_MAX) {

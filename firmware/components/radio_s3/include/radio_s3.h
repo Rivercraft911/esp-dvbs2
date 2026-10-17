@@ -5,8 +5,8 @@
 #include <stdint.h>
 #include "esp_err.h"
 
-#define RADIO_S3_DAC_RATE 40000000U      /* DAC_CTRL bit 15 clear; the keyed rate */
-#define RADIO_S3_DAC_RATE_80M 80000000U  /* bit 15 set; radio-off runs only so far */
+#define RADIO_S3_DAC_RATE 40000000U      /* DAC_CTRL bit 15 clear; keyed on air */
+#define RADIO_S3_DAC_RATE_80M 80000000U  /* bit 15 set; not yet keyed on silicon */
 #define RADIO_S3_BANK_WORDS 16380U
 
 /* Bank geometry (docs/bank-geometry.md). Bank k plays samples [k*STEP, (k+1)*STEP) and also
@@ -142,8 +142,7 @@ esp_err_t radio_s3_dry_run_rate(radio_s3_fill_fn fill, void *ctx, uint64_t sampl
  * otherwise keeps the original unwrapped run. seconds counts payload time. */
 esp_err_t radio_s3_paced_run(uint32_t seconds, radio_s3_fill_fn fill, void *ctx,
                              radio_s3_stats_t *stats);
-/* The same at dac_rate: its geometry and 240e6 / dac_rate cycles per sample. At 80 MS/s the
- * IDs are the 40 MS/s ID's samples (half its air time); only their bank timing is real. */
+/* The same at dac_rate: its geometry and 240e6 / dac_rate cycles per sample, IDs included. */
 esp_err_t radio_s3_paced_run_rate(uint32_t seconds, uint32_t dac_rate, radio_s3_fill_fn fill,
                                   void *ctx, radio_s3_stats_t *stats);
 
@@ -153,6 +152,10 @@ uint32_t *radio_s3_bank(unsigned n);
 
 esp_err_t radio_s3_run(uint32_t freq_mhz, uint8_t gain, uint32_t seconds,
                        radio_s3_fill_fn fill, void *ctx, radio_s3_stats_t *stats);
+/* The same at dac_rate (RADIO_S3_DAC_RATE or RADIO_S3_DAC_RATE_80M) and its bank geometry. The
+ * CW ID keeps 20 WPM at either rate; at 80 MS/s its tone is +2 MHz (station_id.h). */
+esp_err_t radio_s3_run_rate(uint32_t freq_mhz, uint8_t gain, uint32_t seconds, uint32_t dac_rate,
+                            radio_s3_fill_fn fill, void *ctx, radio_s3_stats_t *stats);
 
 /* Wi-Fi memory probe: radio_s3_run's set-up on core 1 (the 30 s run's station ID, the worker
  * task and stack) and its Wi-Fi start-up (init, NULL mode, start with the PHY's calibration,

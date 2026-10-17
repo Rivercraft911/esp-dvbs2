@@ -22,15 +22,19 @@ invalid = [
     "2400 tone 61 0", "2400 tone -1 0", "2400 tone 1.5 0",
     "2400 tone 1 18", "2400 tone 1 -1", "2400 tone 1 1.5",
     "2400 tone 1 nan", "2400 tone 1 99999999999999999999999999",
+    "2400 tone 1 0 60", "2400 tone 1 0 20", "2400 tone 1 0 80m", "2400 tone 1 0 80 x",
+    "2400 tone 1 0 0x50",
 ]
 valid = [
-    (" 2390 tone 1", 2390, 1, 0),
-    ("2450 two 60 17", 2450, 60, 17),
-    ("\t2400\ttag\t2\t3\t", 2400, 2, 3),
-    ("2420 gap 2", 2420, 2, 0),
+    (" 2390 tone 1", 2390, 1, 0, 40),
+    ("2450 two 60 17", 2450, 60, 17, 40),
+    ("\t2400\ttag\t2\t3\t", 2400, 2, 3, 40),
+    ("2420 gap 2", 2420, 2, 0, 40),
+    ("2420 gap 15 0 80", 2420, 15, 0, 80),
+    ("2420 tone 3 1 40", 2420, 3, 1, 40),
 ]
 # Commands handled by dvbtx.c: invalid arguments, then valid ones with the values each stub
-# must receive (freq, modcod, seconds, gain, level, sps) for dvb, (modcod, frames, level, decim,
+# must receive (freq, modcod, seconds, gain, level, sps, DAC rate) for dvb, (modcod, frames, level, decim,
 # stall, sps, DAC rate) for dvbdump and (modcod, seconds, level, stall, DAC rate, sps) for dvbpace.
 dvbtx = {
     "dvb": (["", "2400", "2400 4", "2389 4 1", "2451 4 1", "2400 3 1", "2400 12 1",
@@ -61,10 +65,12 @@ for name, (_, good) in dvbtx.items():
             else:
                 good.append((f"{mc} {rate} 60 128 25", (mc, 60, 128, 25, 40000000, sps)))
                 dvbtx[name][0].append(f"{mc} {rate} 601")
-    # 10m80 and 20m: the 8- and 4-sps samples on the 80 MS/s schedule, radio-off commands only.
+    # 10m80 and 20m: the 8- and 4-sps samples on the 80 MS/s schedule.
     for rate, sps in (("10m80", 8), ("20m", 4)):
         if name == "dvb":
-            dvbtx[name][0].extend([f"2400 {mc} {rate} 1" for mc in (12, 13, 17)])
+            good += [(f"2400 {mc} {rate} 30", (2400, mc, 30, 0, 128, sps, 80000000))
+                     for mc in (12, 13, 17)]
+            dvbtx[name][0].extend([f"2400 13 {rate} 61", f"2400 4 {rate} 1"])
         elif name == "dvbdump":
             good += [(f"{mc} {rate} 40", (mc, 40, 128, sps // 4, 0, sps, 80000000))
                      for mc in (12, 13, 17)]
@@ -75,6 +81,8 @@ for name, (_, good) in dvbtx.items():
             dvbtx[name][0].extend([f"13 {rate} 601", f"4 {rate} 1"])
     if name != "dvb":
         dvbtx[name][0].extend(["13 20 40", "13 20M 40", "13 40m 1", "13 10m40 1", "13 10m8 1"])
+    else:
+        dvbtx[name][0].extend(["2400 13 20 1", "2400 13 40m 1", "2400 13 10m8 1"])
     dvbtx[name][0].extend(["4 5m 1", "18 5m 1", "13 5m", "13 10m 1 128 0 extra"])
 
 # wifimem: optional MODCOD (and rate for 8PSK); it reaches dvbtx_wifi(modcod, sps) only.
@@ -98,7 +106,7 @@ static int signal_storage;
 static bool configured = true;
 static const char *station_store_get(void) { return configured ? "N0CALL" : ""; }
 
-static unsigned calls, got_freq, got_seconds, got_gain;
+static unsigned calls, got_freq, got_seconds, got_gain, got_rate;
 static bool radio_signal_init(void *ctx, const char *name)
 {
     (void)ctx;
@@ -112,12 +120,12 @@ static esp_err_t fill_signal(uint32_t *dst, uint64_t first, size_t count, void *
     (void)dst; (void)first; (void)count; (void)ctx;
     return ESP_OK;
 }
-esp_err_t radio_s3_run(uint32_t freq, uint8_t gain, uint32_t seconds,
-                       radio_s3_fill_fn fill, void *ctx, radio_s3_stats_t *stats)
+esp_err_t radio_s3_run_rate(uint32_t freq, uint8_t gain, uint32_t seconds, uint32_t rate,
+                            radio_s3_fill_fn fill, void *ctx, radio_s3_stats_t *stats)
 {
     assert(fill == fill_signal && ctx == tx_signal);
-    calls++; got_freq = freq; got_seconds = seconds; got_gain = gain;
-    assert(gaps == (calls == 4));  // only the "gap" request below probes the switches
+    calls++; got_freq = freq; got_seconds = seconds; got_gain = gain; got_rate = rate;
+    assert(gaps == (calls == 4 || calls == 5));  // only the "gap" requests probe the switches
     memset(stats, 0, sizeof *stats);
     return ESP_OK;
 }
@@ -135,9 +143,9 @@ static void stub(unsigned *count, unsigned a, unsigned b, unsigned c, unsigned d
     printf("@{\"status\":\"ESP_OK\"}\n");
 }
 static void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain,
-                      unsigned level, unsigned sps)
+                      unsigned level, unsigned sps, uint32_t rate)
 {
-    stub(&dvb_calls, freq, modcod, seconds, gain, level, sps, 0);
+    stub(&dvb_calls, freq, modcod, seconds, gain, level, sps, rate);
 }
 static void dvbtx_dump(unsigned modcod, unsigned frames, unsigned level, unsigned decim,
                        unsigned stall, unsigned sps, uint32_t rate)
@@ -163,10 +171,11 @@ with tempfile.TemporaryDirectory() as directory:
     for command in invalid:
         checks.append("{ char args[] = " + json.dumps(command) +
                       "; cmd_tx(args); assert(calls == 0); }")
-    for index, (command, freq, seconds, gain) in enumerate(valid, 1):
+    for index, (command, freq, seconds, gain, rate) in enumerate(valid, 1):
         checks.append("{ char args[] = " + json.dumps(command) + "; cmd_tx(args); " +
                       f"assert(calls == {index} && got_freq == {freq} && " +
-                      f"got_seconds == {seconds} && got_gain == {gain}); }}")
+                      f"got_seconds == {seconds} && got_gain == {gain} && " +
+                      f"got_rate == {rate}000000); }}")
     counters = {"dvb": "dvb_calls", "dvbdump": "dump_calls", "dvbpace": "pace_calls",
                 "wifimem": "wifi_calls"}
     for name, (bad, good) in dvbtx.items():
@@ -186,7 +195,7 @@ with tempfile.TemporaryDirectory() as directory:
     # 8PSK syntax too: the rate token must not move the refusal behind parsing.
     refused = ['{ char a[] = "2400 tone 1"; cmd_tx(a); assert(RF_CALLS == 0); }']
     refused += ['{ char a[] = "%s"; cmd_dvb(a); assert(RF_CALLS == 0); }' % a
-                for a in ("2400 4 1", "2400 13 5m 1", "2400 15 10m 1")]
+                for a in ("2400 4 1", "2400 13 5m 1", "2400 15 10m 1", "2400 13 20m 1")]
     allowed = ['{ char a[] = "%s"; %s(a); assert(%s == 1 && RF_CALLS == 0); %s = 0; }' % (a, f, c, c)
                for a, f, c in (("4 1", "cmd_dvbdump", "dump_calls"), ("4 1", "cmd_dvbpace", "pace_calls"),
                                ("13 5m 1", "cmd_dvbdump", "dump_calls"),
@@ -234,9 +243,10 @@ with tempfile.TemporaryDirectory() as directory:
 #include <stdbool.h>
 #include <string.h>
 #include "radio_s3.h"
-typedef struct { unsigned cycles; } geometry_t;
+typedef struct { unsigned rate, cycles; } geometry_t;
 static bool gaps;
-static geometry_t geometry(uint32_t rate) { return (geometry_t){240000000U / rate}; }
+static geometry_t geometry(uint32_t rate) { return (geometry_t){rate, 240000000U / rate}; }
+static bool known_rate(uint32_t rate) { return rate == 40000000 || rate == 80000000; }
 typedef struct {
     uint64_t samples;
     bool identify, limit_duration;
@@ -255,8 +265,8 @@ static const char *station_store_get(void) { return configured ? "N0CALL" : ""; 
 static void worker(void *arg) { (void)arg; }
 static int on_core1(void (*fn)(void *), run_t *run)
 {
-    assert(fn == worker && run->identify && run->limit_duration && run->samples == 40000000);
-    assert(run->geo.cycles == 6);   // keyed runs stay at 40 MS/s until the ID is rate-aware
+    assert(fn == worker && run->identify && run->limit_duration);
+    assert(run->samples == run->geo.rate && run->geo.cycles == 240000000U / run->geo.rate);
     workers++;
     return ESP_OK;
 }
@@ -268,8 +278,13 @@ int main(void)
     radio_s3_stats_t s = {0};
     assert(radio_s3_run(2420, 0, 1, fill, NULL, &s) == ESP_ERR_INVALID_STATE);
     assert(workers == 0);
+    assert(radio_s3_run_rate(2420, 0, 1, 80000000, fill, NULL, &s) == ESP_ERR_INVALID_STATE);
+    assert(workers == 0);
     configured = true;
+    assert(radio_s3_run_rate(2420, 0, 1, 20000000, fill, NULL, &s) == ESP_ERR_INVALID_ARG);
+    assert(workers == 0);
     assert(radio_s3_run(2420, 0, 1, fill, NULL, &s) == ESP_OK && workers == 1);
+    assert(radio_s3_run_rate(2420, 0, 1, 80000000, fill, NULL, &s) == ESP_OK && workers == 2);
 }
 ''')
     exe = tmp / "entry"
@@ -277,4 +292,5 @@ int main(void)
                     "-I", str(ROOT / "firmware/components/radio_s3/include"), str(harness),
                     "-o", str(exe)], check=True)
     subprocess.run([str(exe)], check=True)
-print("RF entry: missing callsign prevents worker creation; configured entry requires the ID wrapper")
+print("RF entry: missing callsign or unknown rate prevents worker creation; configured entry "
+      "requires the ID wrapper at 40 and 80 MS/s")
