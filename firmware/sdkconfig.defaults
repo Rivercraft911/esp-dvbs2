@@ -37,6 +37,10 @@ CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
 
 # Only the diagnostic loopback uses the SPI master. RX DMA callbacks stay in IRAM.
 CONFIG_SPI_MASTER_ISR_IN_IRAM=n
+# Allocate before streaming and free after stopping. The encoder, bank fill and
+# SPI ISRs never allocate (PV uses internal DMA buffers and NO_RETURN_RESULT).
+# Keep the allocator in flash rather than spending shared instruction/data RAM.
+CONFIG_HEAP_PLACE_FUNCTION_INTO_FLASH=y
 # Measure the sender separately from encoder preemption. Counters are in microseconds.
 CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
 CONFIG_FREERTOS_RUN_TIME_STATS_USING_ESP_TIMER=y
