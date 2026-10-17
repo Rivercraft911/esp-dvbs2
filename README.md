@@ -64,6 +64,11 @@ sample using the S3's 128-bit vector instructions. Each sample is the sum of thr
 so the whole 8PSK table fits in 64 KiB. That is 34% of one core at 40 MS/s, and 68% at 80 MS/s,
 the rate that would allow 20 Msym/s. [Run details](results/2026-10-16-shaper/README.md).
 
+Unlike the RP2350's external DAC, whose clock followed the symbol rate (4 samples per symbol),
+the S3's DAC engine only runs at 40 or 80 MS/s. Samples per symbol therefore follow from the
+symbol rate: 40 at 1 Msym/s, 8 at 5, 4 at 10, 3 at 13.33. The shaping work per second depends
+only on the DAC rate, so a higher symbol rate costs no extra shaping, only encoder time.
+
 ## Status
 
 | Step | State |
