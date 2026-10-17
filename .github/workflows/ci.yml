@@ -21,6 +21,7 @@ jobs:
       - run: python tests/test_filelink.py
       - run: python tests/test_shaper.py
       - run: python tests/test_shaper_budget.py
+      - run: python tests/test_maxrate.py
       - run: python tests/test_shaper_apsk.py
       - run: python tests/test_radio.py
       - run: python tests/test_tx_command.py
