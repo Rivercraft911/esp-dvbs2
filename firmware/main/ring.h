@@ -20,9 +20,10 @@
 
 #define RING_FILLER UINT32_MAX
 #define RING_CHOICES 8      // > ceil((16380/4 + 8)/3330) + 2, even with only dummies
+#define RING_MAX_SLOTS 8
 
 typedef struct {
-    uint8_t *slots;               // nslots frames of frame_symbols bytes
+    uint8_t *slots[RING_MAX_SLOTS]; // separate allocations are allowed
     const uint8_t *filler;        // played when the encoder is late
     uint32_t frame_symbols;
     uint32_t filler_symbols;
@@ -38,12 +39,22 @@ typedef struct {
     uint64_t chosen_end;          // first symbol not assigned to a position
     uint32_t underruns;           // positions that got the filler
     int64_t min_lead;             // fewest symbols ready beyond a read, over all reads
+    uint8_t *cache;               // optional copied overlap, owned by fill side
+    size_t cache_symbols;
+    int64_t cache_first, cache_end;
 } ring_t;
 
 void ring_init(ring_t *r, uint8_t *slots, uint32_t nslots, const uint8_t *filler,
                uint32_t frame_symbols);
+// Set up to RING_MAX_SLOTS pointers before either core starts. Each owns frame_symbols bytes.
+void ring_init_slots(ring_t *r, uint8_t *const *slots, uint32_t nslots,
+                     const uint8_t *filler, uint32_t frame_symbols);
 // Set before the first read; defaults to frame_symbols for legacy callers.
 void ring_filler_length(ring_t *r, uint32_t symbols);
+// Retain history + ceil(maximum bank overlap / sps) bytes in internal storage.
+// This lets slots be freed as soon as every later read of them is covered by cache.
+// Include the first bank's extra lead in maximum overlap. Set before the first fill.
+void ring_cache(ring_t *r, uint8_t *storage, size_t symbols);
 
 // Encoder: where frame e goes, or NULL while a later read may still need that slot.
 uint8_t *ring_slot(ring_t *r, uint32_t e);

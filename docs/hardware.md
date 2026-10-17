@@ -1,5 +1,9 @@
 # Bench setup
 
+Radio-off stream cycle/cache diagnostics and the experimental internal-frame layout are
+described in [stream profiling](stream-profile.md). Silicon timing must be measured with
+`dvbpace`; host and QEMU checks establish correctness and placement only.
+
 ## Board
 
 ESP32-S3 rev 0.2 with 8 MB embedded octal PSRAM and 16 MB flash, two 240 MHz cores (read by
