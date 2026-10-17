@@ -88,7 +88,7 @@ int main(int argc, char **argv)
 {
     assert(argc == 4 || argc == 5);
     if (argc == 5) callsign = argv[4];
-    const unsigned mc = (unsigned)atoi(argv[1]), sps = (unsigned)atoi(argv[2]), frames = 16;
+    const unsigned mc = (unsigned)atoi(argv[1]), sps = (unsigned)atoi(argv[2]), frames = 40;
     const dvbs2_mode *mode = dvbs2_find_mode(mc);
     const size_t length = dvbs2_frame_symbols(mode, 1), bytes = (mode->kbch - 80) / 8;
     phase_count = (frames + 2) * length;

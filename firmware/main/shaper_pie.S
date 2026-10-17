@@ -532,7 +532,7 @@ shaper_fill5_pie:
     unpack shaper_unpack_codes_pie, 1
 
 // Disjoint aligned word buffers, eight words per pair. Independent loads separate each
-// load from its consumer (TRM v1.8 1.7.1, pp65-66; 1.8.88-89, pp164-165).
+// load from its consumer (TRM v1.8 1.7.1, pp65-66; loads 1.8.88 p164, stores 1.8.192 p275).
     .section .iram1.shaper_copy, "ax"
     .global shaper_copy_pie
     .type shaper_copy_pie, @function
