@@ -60,7 +60,8 @@ during CW; the bank schedule and DAC epoch continue. A fill/deadline fault stops
 and cannot guarantee closing ID. Periodic CW requires DVB receiver reacquisition.
 
 The chosen +1 MHz tone, peak 128 DAC counts, avoids nominal DC leakage; include its offset
-when choosing the licensed channel. [ITU-R M.1677-1, Annex 1, Part I §§1–2, pp. 2–3](https://www.itu.int/dms_pubrec/itu-r/rec/m/r-rec-m.1677-1-200910-i!!pdf-e.pdf)
+when choosing the licensed channel. At 80 MS/s (`dvb ... 10m80|20m`) every ID duration doubles in
+samples, so the timing stays 20 WPM, and the 40-sample tone row plays at +2 MHz. [ITU-R M.1677-1, Annex 1, Part I §§1–2, pp. 2–3](https://www.itu.int/dms_pubrec/itu-r/rec/m/r-rec-m.1677-1-200910-i!!pdf-e.pdf)
 supplies Morse characters/timing. PARIS has 50 dot units, giving 60 s/(20 × 50) = 60 ms dots.
 Edges use (1 − cos(πt/5 ms))/2, held every 10 µs and rounded to one DAC count. The **host FFT
 estimate** integrates −60.5 dBc from 1 to 50 kHz offset for one dot, versus −27.8 dBc for hard

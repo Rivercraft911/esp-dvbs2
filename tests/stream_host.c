@@ -59,35 +59,39 @@ static void bank_fill(radio_s3_fill_fn fn, void *ctx, unsigned b, uint64_t first
     stats->fills++;
 }
 
-esp_err_t radio_s3_dry_run(radio_s3_fill_fn fn, void *ctx, uint64_t samples,
-                           radio_s3_sink_fn sink_fn, void *sink_ctx, radio_s3_dry_stats_t *stats)
+// The bank sequence of radio_s3.c's dry_worker at the rate's geometry (radio_s3.h).
+esp_err_t radio_s3_dry_run_rate(radio_s3_fill_fn fn, void *ctx, uint64_t samples,
+                                uint32_t rate, radio_s3_sink_fn sink_fn, void *sink_ctx,
+                                radio_s3_dry_stats_t *stats)
 {
+    const uint64_t step = RADIO_S3_STEP_FOR(rate), lead = RADIO_S3_LEAD_FOR(rate);
     *stats = (radio_s3_dry_stats_t){0};
     bank_fill(fn, ctx, 0, 0, stats);
-    bank_fill(fn, ctx, 1, RADIO_S3_STEP_WORDS - RADIO_S3_LEAD_WORDS, stats);
-    for (uint64_t k = 0; k * RADIO_S3_STEP_WORDS < samples; ++k) {
-        const uint64_t first = k * RADIO_S3_STEP_WORDS;
-        const size_t count = samples - first < RADIO_S3_STEP_WORDS ?
-                             (size_t)(samples - first) : RADIO_S3_STEP_WORDS;
+    bank_fill(fn, ctx, 1, step - lead, stats);
+    for (uint64_t k = 0; k * step < samples; ++k) {
+        const uint64_t first = k * step;
+        const size_t count = samples - first < step ? (size_t)(samples - first) : (size_t)step;
         assert(sink_fn(banks[k & 1], first, count, sink_ctx) == ESP_OK);
-        if (first + RADIO_S3_STEP_WORDS < samples)
-            bank_fill(fn, ctx, k & 1, (k + 2) * RADIO_S3_STEP_WORDS - RADIO_S3_LEAD_WORDS, stats);
+        if (first + step < samples)
+            bank_fill(fn, ctx, k & 1, (k + 2) * step - lead, stats);
     }
     assert(dvb.ring.underruns == 0);
     return ESP_OK;
 }
 
-esp_err_t radio_s3_paced_run(uint32_t sec, radio_s3_fill_fn fn, void *ctx, radio_s3_stats_t *stats)
-{ (void)sec; (void)fn; (void)ctx; (void)stats; abort(); }
-esp_err_t radio_s3_run(uint32_t freq, uint8_t gain, uint32_t sec, radio_s3_fill_fn fn,
-                       void *ctx, radio_s3_stats_t *stats)
-{ (void)freq; (void)gain; (void)sec; (void)fn; (void)ctx; (void)stats; abort(); }
+esp_err_t radio_s3_paced_run_rate(uint32_t sec, uint32_t rate, radio_s3_fill_fn fn, void *ctx,
+                                  radio_s3_stats_t *stats)
+{ (void)sec; (void)rate; (void)fn; (void)ctx; (void)stats; abort(); }
+esp_err_t radio_s3_run_rate(uint32_t freq, uint8_t gain, uint32_t sec, uint32_t rate,
+                            radio_s3_fill_fn fn, void *ctx, radio_s3_stats_t *stats)
+{ (void)freq; (void)gain; (void)sec; (void)rate; (void)fn; (void)ctx; (void)stats; abort(); }
 esp_err_t radio_s3_wifi_probe(radio_s3_stats_t *stats) { (void)stats; abort(); }
 
 int main(int argc, char **argv)
 {
-    assert(argc == 4 || argc == 5);
-    if (argc == 5) callsign = argv[4];
+    assert(argc == 4 || argc == 5 || argc == 6);
+    if (argc >= 5) callsign = argv[4];
+    const uint32_t rate = argc == 6 ? (uint32_t)atol(argv[5]) : RADIO_S3_DAC_RATE;
     const unsigned mc = (unsigned)atoi(argv[1]), sps = (unsigned)atoi(argv[2]), frames = 40;
     const dvbs2_mode *mode = dvbs2_find_mode(mc);
     const size_t length = dvbs2_frame_symbols(mode, 1), bytes = (mode->kbch - 80) / 8;
@@ -107,7 +111,7 @@ int main(int argc, char **argv)
     // Every command-owned allocation can fail: count them on a good start, then fail each.
     // Cleanup must leave no live allocations.
     allocation_count = 0;
-    assert(start_encoder("dvbdump", mc, 128, 0, sps));
+    assert(start_encoder("dvbdump", mc, 128, 0, sps, rate));
     const int allocations = allocation_count;
     assert(allocations == (sps == 40 ? 6 : 4 + (sps == 4 && mode->t > 8)));
     for (unsigned i = 0; i < 64; ++i) {
@@ -121,13 +125,13 @@ int main(int argc, char **argv)
     assert(live_allocations == 0);
     for (int i = 0; i < allocations; ++i) {
         fail_after = i;
-        assert(!start_encoder("dvbdump", mc, 128, 0, sps));
+        assert(!start_encoder("dvbdump", mc, 128, 0, sps, rate));
         assert(live_allocations == 0);
     }
     fail_after = -1;
     for (unsigned repeat = 0; repeat < 2; ++repeat) {
         capture = fopen(argv[3], "wb"); assert(capture);
-        dvbtx_dump(mc, frames, 128, sps == 40 ? 10 : 1, 0, sps);
+        dvbtx_dump(mc, frames, 128, sps == 40 ? 10 : 1, 0, sps, rate);
         fclose(capture);
         assert(live_allocations == 0);
         for (unsigned i = 0; i < 4; ++i) assert(native_ranges[i] == 0);

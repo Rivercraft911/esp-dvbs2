@@ -40,6 +40,7 @@ typedef struct {
     uint8_t bytes[4096];
     size_t used;
     uint32_t crc;
+    uint32_t step;              // DAC samples per output sample: 10 kS/s at either rate
 } dump_t;
 
 static void flush(dump_t *d)
@@ -52,9 +53,10 @@ static void flush(dump_t *d)
 static esp_err_t sink(const uint32_t *bank, uint64_t first, size_t count, void *ctx)
 {
     dump_t *d = ctx;
-    // 40 MS/s / 4000 = 10 kS/s. +1 MHz aliases exactly to DC. This is
-    // intentional envelope verification, NOT an antialiased spectral dump.
-    for (uint64_t n = (first + 3999) / 4000 * 4000; n < first + count; n += 4000) {
+    // 40 MS/s / 4000 = 10 kS/s, and 80 MS/s / 8000. The tone (+1 MHz, or +2 MHz at 80 MS/s)
+    // aliases exactly to DC. This is intentional envelope verification, NOT an antialiased
+    // spectral dump.
+    for (uint64_t n = (first + d->step - 1) / d->step * d->step; n < first + count; n += d->step) {
         uint32_t w = bank[n % RADIO_S3_BANK_WORDS];
         int16_t iq[2] = {(int16_t)((int32_t)(w << 22) >> 22),
                          (int16_t)((int32_t)(w << 12) >> 22)};
@@ -67,15 +69,32 @@ static esp_err_t sink(const uint32_t *bank, uint64_t first, size_t count, void *
     return ESP_OK;
 }
 
+static bool dac_rate(const char *token, uint32_t *rate)
+{
+    const uint32_t r = !strcmp(token, "40") ? RADIO_S3_DAC_RATE :
+                       !strcmp(token, "80") ? RADIO_S3_DAC_RATE_80M : 0;
+    if (r) *rate = r;
+    return r != 0;
+}
+
+// iddump [CALL] [40|80]: the ID at a 40 or 80 MS/s DAC rate (MS/s; neither is a callsign).
 void station_dump(char *args)
 {
     char *save, *call = strtok_r(args, " \t", &save);
+    char *rate_token = call ? strtok_r(NULL, " \t", &save) : NULL;
+    uint32_t rate = RADIO_S3_DAC_RATE;
+    if (call && !rate_token && dac_rate(call, &rate)) {
+        call = NULL;
+    } else if (rate_token && !dac_rate(rate_token, &rate)) {
+        call = "";
+    }
     if (!call) {
         call = (char *)station_store_get();
     }
     char normalized[STATION_CALL_MAX + 1];
     if (strtok_r(NULL, " \t", &save) || !station_callsign(call, normalized)) {
-        printf("@{\"cmd\":\"iddump\",\"error\":\"usage: iddump [CALL]; no NVS write, no radio\"}\n");
+        printf("@{\"cmd\":\"iddump\",\"error\":\"usage: iddump [CALL] [40|80 MS/s]; no NVS write, "
+               "no radio\"}\n");
         return;
     }
     station_id_t *id = heap_caps_calloc(1, sizeof *id, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
@@ -83,7 +102,7 @@ void station_dump(char *args)
         printf("@{\"cmd\":\"iddump\",\"error\":\"allocation failed\"}\n");
         return;
     }
-    station_id_init(id, normalized, 0, NULL, NULL);
+    station_id_init_rate(id, normalized, 0, rate, NULL, NULL);
     // USB staging buffer in PSRAM: the sink runs between fills, never inside one.
     dump_t *d = heap_caps_calloc(1, sizeof *d, MALLOC_CAP_SPIRAM);
     if (!d) {
@@ -91,21 +110,22 @@ void station_dump(char *args)
         printf("@{\"cmd\":\"iddump\",\"error\":\"allocation failed\"}\n");
         return;
     }
+    d->step = rate / 10000;
     printf("@{\"cmd\":\"iddump\",\"binary_bytes\":%lu,\"format\":\"int16 I/Q LE\","
            "\"sample_rate\":10000,\"tone_alias_hz\":0,\"callsign\":\"%s\"}\n",
-           (unsigned long)((id->length + 3999) / 4000 * 4), normalized);
+           (unsigned long)((id->length + d->step - 1) / d->step * 4), normalized);
     fflush(stdout);
     radio_s3_dry_stats_t s;
-    esp_err_t err = radio_s3_dry_run(station_cw_fill, id, id->length, sink, d, &s);
+    esp_err_t err = radio_s3_dry_run_rate(station_cw_fill, id, id->length, rate, sink, d, &s);
     if (d->used) {
         flush(d);
     }
-    printf("@{\"cmd\":\"iddump\",\"callsign\":\"%s\",\"wpm\":20,\"tone_hz\":1000000,"
-           "\"edge_us\":5000,\"dac_samples\":%lu,\"crc32\":%" PRIu32 ",\"fills\":%" PRIu32 ","
+    printf("@{\"cmd\":\"iddump\",\"callsign\":\"%s\",\"wpm\":20,\"dac_rate\":%" PRIu32
+           ",\"tone_hz\":%" PRIu32 ",\"edge_us\":5000,\"dac_samples\":%lu,\"crc32\":%" PRIu32 ",\"fills\":%" PRIu32 ","
            "\"max_fill_cycles\":%" PRIu32 ",\"overlap_words\":%" PRIu32 ","
            "\"overlap_mismatches\":%" PRIu32 ",\"free_internal\":%u,\"largest_internal\":%u,"
            "\"status\":\"%s\"}\n",
-           normalized, (unsigned long)id->length, d->crc, s.fills, s.max_fill_cycles,
+           normalized, rate, 1000000 * id->scale, (unsigned long)id->length, d->crc, s.fills, s.max_fill_cycles,
            s.overlap_words, s.overlap_mismatches,
            (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
            (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),

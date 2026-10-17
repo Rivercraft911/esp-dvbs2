@@ -170,11 +170,17 @@ def test_stream(output=None):
                         str(ROOT / "firmware/components/dvbs2/fast.c"),
                         str(ROOT / "firmware/components/station_id/station_id.c"),
                         "-lm", "-o", str(exe)], check=True)
-        for mc, sps, call in ((13, 4, "N0CALL"), (15, 4, "N0CALL"), (17, 4, ""), (12, 8, ""),
-                              (13, 8, "N0CALL"), (15, 8, "N0CALL"), (17, 8, ""), (4, 40, "N0CALL")):
-            iq = output / f'{mc}-n{sps}.iq' if output else folder / "dump.iq"
-            out = subprocess.run([str(exe), str(mc), str(sps), str(iq), call], capture_output=True,
-                                 text=True, timeout=60, check=True).stdout
+        # 80 MS/s: the same samples on the other bank geometry (other lead, tail and step).
+        crcs = {}
+        for mc, sps, call, rate in ((13, 4, "N0CALL", 40), (15, 4, "N0CALL", 40), (17, 4, "", 40),
+                                    (12, 8, "", 40), (13, 8, "N0CALL", 40), (15, 8, "N0CALL", 40),
+                                    (17, 8, "", 40), (4, 40, "N0CALL", 40), (13, 4, "N0CALL", 80),
+                                    (15, 4, "N0CALL", 80), (17, 4, "", 80), (12, 8, "", 80),
+                                    (13, 8, "N0CALL", 80)):
+            name = f'{mc}-n{sps}.iq' if rate == 40 else f'{mc}-n{sps}-80m.iq'
+            iq = output / name if output else folder / "dump.iq"
+            out = subprocess.run([str(exe), str(mc), str(sps), str(iq), call, str(rate * 1000000)],
+                                 capture_output=True, text=True, timeout=60, check=True).stdout
             records = [json.loads(line[1:]) for line in out.splitlines() if line.startswith("@")]
             dumps = [r for r in records if "crc32" in r]
             assert len(dumps) == 2
@@ -226,7 +232,11 @@ def test_stream(output=None):
                     else:
                         assert r["ring_heap_bytes"] == need
                 assert all(p["calls"] == r["frames_encoded"] for p in r["profile"]["encoder"].values())
-            print(f"stream host: MODCOD {mc}, {sps} sps, {dumps[0]['ring_format']} ring, "
+                assert r["symbol_rate"] == rate * 1000000 // sps
+            crcs[mc, sps, call, rate] = dumps[0]["crc32"]
+            if rate == 80:
+                assert crcs[mc, sps, call, 80] == crcs[mc, sps, call, 40]
+            print(f"stream host: MODCOD {mc}, {sps} sps at {rate} MS/s, {dumps[0]['ring_format']} ring, "
                   f"callsign {call or 'none'}, 2 x 40 frames, "
                   f"CRC {dumps[0]['crc32']}, "
                   "all DAC words match plain encoder; cleanup and notifications pass")

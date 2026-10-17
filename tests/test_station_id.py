@@ -5,6 +5,7 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+import zlib
 
 import numpy as np
 
@@ -45,14 +46,16 @@ typedef struct {
     void *ctx;
     struct stats *stats;
     int error;
+    struct { uint32_t rate; } geo;
 } run_t;
 static const char *stored;
 static const char *station_store_get(void) { return stored; }
-int probe_budget(const char *call, uint64_t budget, uint64_t *planned)
+int probe_budget(const char *call, uint64_t budget, uint32_t rate, uint64_t *planned)
 {
     stored = call;
     struct stats stats = {0};
-    run_t value = {.identify = true, .limit_duration = true, .samples = budget, .stats = &stats};
+    run_t value = {.identify = true, .limit_duration = true, .samples = budget, .stats = &stats,
+                   .geo = {rate}};
     run_t *run = &value;
     *planned = 0;
 ''' + preparation + r'''
@@ -71,19 +74,21 @@ finished:
             _fields_ = [("marks", Mark * 144), ("nmarks", C.c_uint), ("length", C.c_uint32),
                         ("payload_samples", C.c_uint64), ("total_samples", C.c_uint64),
                         ("payload", C.c_void_p), ("ctx", C.c_void_p), ("sine", C.c_int16 * 40),
-                        ("cosine", C.c_int16 * 40), ("edge", C.c_uint8 * 501)]
-        lib.probe_budget.argtypes = [C.c_char_p, C.c_uint64, C.POINTER(C.c_uint64)]
-        for call in ("N0CALL", "W6/N0CALL/P", "A" + "0" * 22):
-            for seconds in (1, 10, 11, 30, 60, 540, 550, 560, 600, 1200):
-                planned = C.c_uint64()
-                err = lib.probe_budget(call.encode(), seconds * RATE, C.byref(planned))
-                if seconds <= 2 * morse.duration(call):
-                    assert err != 0 and planned.value == 0
-                else:
-                    assert err == 0 and 0 < planned.value <= seconds * RATE
-                    if seconds <= 60:
-                        assert planned.value == seconds * RATE
-        print("RF duration: actual preparation rejects too-short IDs and never exceeds the wall-time bound")
+                        ("cosine", C.c_int16 * 40), ("edge", C.c_uint8 * 501), ("scale", C.c_uint32)]
+        lib.probe_budget.argtypes = [C.c_char_p, C.c_uint64, C.c_uint32, C.POINTER(C.c_uint64)]
+        for rate in (RATE, 2 * RATE):
+            for call in ("N0CALL", "W6/N0CALL/P", "A" + "0" * 22):
+                for seconds in (1, 10, 11, 30, 60, 540, 550, 560, 600, 1200):
+                    planned = C.c_uint64()
+                    err = lib.probe_budget(call.encode(), seconds * rate, rate, C.byref(planned))
+                    if seconds <= 2 * morse.duration(call):
+                        assert err != 0 and planned.value == 0
+                    else:
+                        assert err == 0 and 0 < planned.value <= seconds * rate
+                        if seconds <= 60:
+                            assert planned.value == seconds * rate
+        print("RF duration: actual preparation rejects too-short IDs and never exceeds the wall-time "
+              "bound, at 40 and 80 MS/s")
         u32p = C.POINTER(C.c_uint32)
         filltype = C.CFUNCTYPE(C.c_int, u32p, C.c_uint64, C.c_size_t, C.c_void_p)
         lib.station_id_init.argtypes = [C.POINTER(Id), C.c_char_p, C.c_uint64, C.c_void_p, C.c_void_p]
@@ -195,6 +200,51 @@ finished:
         assert lib.station_id_fill(arr.ctypes.data_as(u32p), broken.length, 100, C.byref(broken)) == 77
         print("schedule: start/end, 9-minute repeats, arbitrary seeks, overlap rereads, payload continuity, errors")
 
+        # 80 MS/s: every duration doubles (20 WPM), the 40-sample tone row becomes +2 MHz, and
+        # iddump's 10 kS/s envelope (every 8000th sample) equals the 40 MS/s one (every 4000th).
+        lib.station_id_init_rate.argtypes = [C.POINTER(Id), C.c_char_p, C.c_uint64, C.c_uint32,
+                                             C.c_void_p, C.c_void_p]
+        lib.station_id_init_rate.restype = C.c_bool
+        assert not lib.station_id_init_rate(C.byref(Id()), b"N0CALL", 0, 60_000_000, None, None)
+        for call in ("N0CALL", "W6/N0CALL/P"):
+            slow, fast = init(call, 0), Id()
+            assert lib.station_id_init_rate(C.byref(fast), call.encode(), 0, 2 * RATE, None, None)
+            assert fast.scale == 2 and slow.scale == 1 and fast.length == 2 * slow.length
+            assert [(m.start, m.end) for m in fast.marks[:fast.nmarks]] == [
+                (2 * m.start, 2 * m.end) for m in slow.marks[:slow.nmarks]]
+            dumps = {}
+            for id, step in ((slow, 4000), (fast, 8000)):
+                words = np.array([fill(id, n, 1, True)[0] for n in range(0, id.length, step)])
+                pairs = np.column_stack((iq(words).real, iq(words).imag)).astype("<i2")
+                dumps[step] = zlib.crc32(pairs.tobytes())
+                result = morse.decode(iq(words), 10000, tone=0)
+                assert result["text"] == call and result["wpm_assumed"] == 20, result
+            assert dumps[4000] == dumps[8000]
+            if call == "N0CALL":
+                assert dumps[4000] == 1965033598   # the board's iddump CRC
+            mark = fast.marks[0]
+            tone = iq(fill(fast, mark.start + 2 * 400000, 40, True))
+            assert np.argmax(abs(np.fft.fft(tone))) == 1      # 1/40 of 80 MS/s: +2 MHz
+            # The 5 ms edge is 400,000 samples of 800-sample steps.
+            ramp = abs(iq(fill(fast, mark.start, 400040, True)))
+            cells = ramp[:400000].reshape(500, 800)
+            assert (cells.max(1) - cells.min(1) <= 2).all()           # one level per 10 us cell
+            assert abs(cells[250].mean() - 64) < 2 and ramp[400000:].min() > 120
+        id80 = Id()
+        assert lib.station_id_init_rate(C.byref(id80), b"N0CALL", 1200 * 2 * RATE, 2 * RATE, payload,
+                                        None)
+        period = 2 * PERIOD
+        assert id80.total_samples == id80.payload_samples + (2 + (id80.payload_samples - 1) //
+                                                             (period - id80.length)) * id80.length
+        for b in (id80.length, period, period + id80.length, 2 * period):
+            first = b - 16000
+            bank = fill(id80, first, 16380)
+            assert np.array_equal(bank[:15740], fill(id80, first, 15740))
+            assert np.array_equal(fill(id80, first + 15740, 640), bank[15740:])
+        assert np.array_equal(fill(id80, period, 16380), fill(id80, 0, 16380))
+        print("80 MS/s: 20 WPM marks at twice the samples, +2 MHz tone, 5 ms edges, iddump envelope "
+              "and CRC equal to 40 MS/s, 9-minute repeats")
+
         for code in (4, 6, 11, 13, 17):  # QPSK and 8PSK frame sizes
             raw = bytearray(onair.payload(code, 3))
             per_frame = len(raw) // 3
@@ -257,5 +307,92 @@ finished:
 
 
 
+def iddump_command():
+    """station_commands.c's iddump parser and record, compiled with stubbed USB, heap and dry run."""
+    stubs = {
+        "esp_err.h": "#pragma once\ntypedef int esp_err_t;\n#define ESP_OK 0\n"
+            "#define ESP_ERR_INVALID_ARG 0x102\n",
+        "driver/usb_serial_jtag.h": "#pragma once\n#include <stddef.h>\n"
+            "static int usb_serial_jtag_write_bytes(const void *b, size_t n, unsigned t)"
+            "{ (void)b; (void)t; return (int)n; }\n",
+        "esp_heap_caps.h": "#pragma once\n#include <stdlib.h>\n#define MALLOC_CAP_INTERNAL 0\n"
+            "#define MALLOC_CAP_8BIT 0\n#define MALLOC_CAP_SPIRAM 0\n"
+            "#define heap_caps_calloc(n, s, c) calloc(n, s)\n#define heap_caps_free free\n"
+            "#define heap_caps_get_free_size(c) 0\n#define heap_caps_get_largest_free_block(c) 0\n",
+        "esp_rom_crc.h": "#pragma once\n#include <stddef.h>\n#include <stdint.h>\n"
+            "static uint32_t esp_rom_crc32_le(uint32_t c, const uint8_t *b, size_t n)"
+            "{ (void)b; return c + (uint32_t)n; }\n",
+        "freertos/FreeRTOS.h": "#pragma once\n#define portMAX_DELAY 0\n",
+    }
+    harness = r"""
+#include <assert.h>
+#include <stdio.h>
+#include <string.h>
+#include "radio_s3.h"
+#include "station_commands.h"
+static const char *stored = "K1ABC";
+const char *station_store_get(void) { return stored; }
+esp_err_t station_store_set(const char *call) { (void)call; return ESP_OK; }
+static const char *esp_err_to_name(esp_err_t e) { (void)e; return "ESP_OK"; }
+static uint32_t got_rate; static uint64_t got_samples; static unsigned runs;
+esp_err_t radio_s3_dry_run_rate(radio_s3_fill_fn fill, void *ctx, uint64_t samples, uint32_t rate,
+                                radio_s3_sink_fn sink, void *sink_ctx, radio_s3_dry_stats_t *stats)
+{
+    (void)fill; (void)ctx; (void)sink; (void)sink_ctx;
+    memset(stats, 0, sizeof *stats);
+    got_rate = rate, got_samples = samples, runs++;
+    return ESP_OK;
+}
+#include "station_commands.c"
+int main(int argc, char **argv)
+{
+    for (int i = 1; i < argc; ++i) {
+        char line[64];
+        snprintf(line, sizeof line, "%s", argv[i]);
+        runs = 0;
+        station_dump(line);
+        printf("@{\"runs\":%u,\"rate\":%u,\"samples\":%llu}\n", runs, (unsigned)got_rate,
+               (unsigned long long)got_samples);
+    }
+}
+"""
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = pathlib.Path(tmp)
+        for name, text in stubs.items():
+            (tmp / name).parent.mkdir(parents=True, exist_ok=True)
+            (tmp / name).write_text(text)
+        (tmp / "harness.c").write_text(harness)
+        exe = tmp / "iddump"
+        subprocess.run(["cc", "-std=gnu11", "-Wall", "-Wextra", "-Werror", "-O1", "-I", str(tmp),
+                        "-I", str(HEADER), "-I", str(ROOT / "firmware/main"),
+                        "-I", str(ROOT / "firmware/components/radio_s3/include"),
+                        str(tmp / "harness.c"), str(SOURCE), "-lm", "-o", str(exe)], check=True)
+        args = ["", "80", "40", "N0CALL", "N0CALL 80", "n0call 40", "N0CALL 60", "40 80",
+                "N0CALL 80 x", "80m"]
+        out = subprocess.run([str(exe), *args], capture_output=True, text=True, check=True).stdout
+    records = [json.loads(line[1:]) for line in out.splitlines() if line.startswith("@")]
+    results = [r for r in records if "runs" in r]
+    assert len(results) == len(args)
+    short, long = round(morse.duration("K1ABC") * RATE), round(morse.duration("N0CALL") * RATE)
+    expect = [(40, short), (80, 2 * short), (40, short), (40, long), (80, 2 * long), (40, long),
+              None, None, None, (40, round(morse.duration("80M") * RATE))]
+    for command, result, want in zip(args, results, expect):
+        if want is None:
+            assert result["runs"] == 0, command
+        else:
+            assert result["runs"] == 1 and (result["rate"], result["samples"]) == (
+                want[0] * 1_000_000, want[1]), (command, result)
+    finals = [r for r in records if "crc32" in r]
+    assert [r["dac_rate"] for r in finals] == [40_000_000, 80_000_000, 40_000_000, 40_000_000,
+                                               80_000_000, 40_000_000, 40_000_000]
+    assert all(r["tone_hz"] == r["dac_rate"] // 40 and r["wpm"] == 20 for r in finals)
+    heads = [r for r in records if "binary_bytes" in r]
+    assert all(h["binary_bytes"] == f["dac_samples"] // (f["dac_rate"] // 10000) * 4
+               for h, f in zip(heads, finals))
+    print("iddump: [CALL] [40|80] parsing, the stored call by default, 10 kS/s at either rate, "
+          "bad rates and extra tokens refused (\"80m\" is a callsign)")
+
+
 if __name__ == "__main__":
     run()
+    iddump_command()
