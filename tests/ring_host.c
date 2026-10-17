@@ -51,6 +51,8 @@ static uint64_t seen_symbols;
 static uint8_t *separate[RING_MAX_SLOTS];
 static uint8_t overlap[HISTORY + 2 + (BANK - STEP + LEAD + 3) / 4];
 static int packed;
+static int codes, reuse;
+static uint64_t read_end;
 
 static uint8_t frame_byte(uint32_t e, uint32_t i)
 {
@@ -72,6 +74,12 @@ static void fail(const char *what, long long a, long long b)
 // One fill call, as dvbtx.c makes it, then the overlap and content checks.
 static void fill(uint64_t first, size_t count)
 {
+    if (reuse && first < read_end) {
+        const size_t cached = read_end - first < count ? (size_t)(read_end - first) : count;
+        first += cached, count -= cached;
+    }
+    if (!count) return;
+    read_end = first + count;
     uint8_t buffer[WINDOW + 1];
     uint8_t *win = buffer + (first / SPS & 1);    // dvbtx.c's parity rule for packed reads
     const int nsym = ring_window(&ring, win, WINDOW, first, count, SPS, HISTORY, BANK);
@@ -85,6 +93,10 @@ static void fill(uint64_t first, size_t count)
     const int64_t s0 = (int64_t)(first / SPS) - HISTORY;
     for (int j = 0; j < HISTORY + nsym; ++j) {
         const int64_t i = s0 + j;
+        if (codes) {
+            if (win[j] & 15) fail("unshifted code", i, win[j]);
+            win[j] >>= 4;
+        }
         if (i < 0) {
             if (win[j]) {
                 fail("history before symbol 0", i, win[j]);
@@ -178,6 +190,8 @@ static void setup(uint32_t l, uint32_t s, uint32_t positions)
     dummy = getenv("RING_DUMMY") ? (unsigned)atoi(getenv("RING_DUMMY")) : l;
     sps = getenv("RING_SPS") ? (unsigned)atoi(getenv("RING_SPS")) : 40;
     packed = getenv("RING_PACKED") != NULL;
+    codes = getenv("RING_CODES") != NULL;
+    reuse = getenv("RING_REUSE") != NULL;
     uint8_t *slots = malloc((size_t)s * l), *filler = malloc(dummy + 16);
     memset(slots, POISON, (size_t)s * l);
     memset(filler, packed ? 0xFF : FILLER, dummy + 16);
@@ -194,10 +208,12 @@ static void setup(uint32_t l, uint32_t s, uint32_t positions)
         // dvbtx.c's OVERLAP_SYMBOLS: history, the longest re-read, one cut symbol at each end.
         const unsigned margin = getenv("RING_CACHE_MARGIN") ? (unsigned)atoi(getenv("RING_CACHE_MARGIN")) : 2;
         if (getenv("RING_CACHE"))
-            ring_cache(&ring, overlap, HISTORY + margin + (BANK - STEP + LEAD + SPS - 1) / SPS);
+            ring_cache(&ring, overlap, reuse ? HISTORY + 2 :
+                       HISTORY + margin + (BANK - STEP + LEAD + SPS - 1) / SPS);
     }
     if (packed) {
-        ring_packed(&ring);
+        if (codes) ring_packed_codes(&ring);
+        else ring_packed(&ring);
     }
     ring_filler_length(&ring, dummy);
     seen_symbols = (uint64_t)(positions + 2) * l;

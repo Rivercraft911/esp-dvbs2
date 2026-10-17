@@ -678,6 +678,43 @@ dvbs2_pie_run8:
     retw
     .size dvbs2_pie_run8, . - dvbs2_pie_run8
 
+/* Four-symbol indices to two packed phase bytes. Index bit 11 toggles output
+ * bit 1 and is handled by XOR, halving the table to 8 KiB. Each table word
+ * contains a halfword; VUNZIP.16 discards the zero high halves. One lookup per four
+ * symbols, rather than two lookups plus a phase-byte packing pass.
+ * Same shifted-store contract as run8, vectors = symbols / 32. */
+    .align 4
+    .global dvbs2_pie_run8_packed
+    .type dvbs2_pie_run8_packed, @function
+dvbs2_pie_run8_packed:
+    entry a1, 32
+    wur.sar_byte a6
+    ee.zero.q q4
+    splat q6, 0x07ff07ff
+    splat q7, 0x00020002
+    ssai 10
+    loopnez a5, 97f
+    ee.vld.128.ip q2, a2, 16
+    ee.vsr.32 q0, q2
+    ee.andq q2, q2, q6
+    ee.andq q0, q0, q7
+    ee.ldxq.32 q1, q2, a3, 0, 0
+    ee.ldxq.32 q1, q2, a3, 1, 1
+    ee.ldxq.32 q1, q2, a3, 2, 2
+    ee.ldxq.32 q1, q2, a3, 3, 3
+    ee.ldxq.32 q3, q2, a3, 0, 4
+    ee.ldxq.32 q3, q2, a3, 1, 5
+    ee.ldxq.32 q3, q2, a3, 2, 6
+    ee.ldxq.32 q3, q2, a3, 3, 7
+    ee.vunzip.16 q1, q3
+    ee.xorq q1, q1, q0
+    ee.srcq.128.st.incp q4, q1, a4
+    ee.orq q4, q1, q1
+97:
+    ee.srcq.128.st.incp q4, q1, a7
+    retw
+    .size dvbs2_pie_run8_packed, . - dvbs2_pie_run8_packed
+
 /* Former compact-table mapper, retained for radio-off A/B timing. */
     .align 4
     .global dvbs2_pie_run8_compact

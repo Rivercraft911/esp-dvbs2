@@ -52,6 +52,10 @@ static void bank_fill(radio_s3_fill_fn fn, void *ctx, unsigned b, uint64_t first
             assert(banks[b][(at + i) % RADIO_S3_BANK_WORDS] == reference[at % sps + i]);
         at += count;
     }
+    if (dvb.ring.packed) {
+        assert(dvb.shaped_words == dvb.sample_end);
+        assert(dvb.sample_end == first + RADIO_S3_BANK_WORDS);
+    }
     stats->fills++;
 }
 
@@ -88,7 +92,7 @@ int main(int argc, char **argv)
     assert(argc == 4 || argc == 5 || argc == 6);
     if (argc >= 5) callsign = argv[4];
     const uint32_t rate = argc == 6 ? (uint32_t)atol(argv[5]) : RADIO_S3_DAC_RATE;
-    const unsigned mc = (unsigned)atoi(argv[1]), sps = (unsigned)atoi(argv[2]), frames = 16;
+    const unsigned mc = (unsigned)atoi(argv[1]), sps = (unsigned)atoi(argv[2]), frames = 40;
     const dvbs2_mode *mode = dvbs2_find_mode(mc);
     const size_t length = dvbs2_frame_symbols(mode, 1), bytes = (mode->kbch - 80) / 8;
     phase_count = (frames + 2) * length;
@@ -109,7 +113,13 @@ int main(int argc, char **argv)
     allocation_count = 0;
     assert(start_encoder("dvbdump", mc, 128, 0, sps, rate));
     const int allocations = allocation_count;
-    assert(allocations == (sps == 40 ? 6 : 4));
+    assert(allocations == (sps == 40 ? 6 : 4 + (sps == 4 && mode->t > 8)));
+    for (unsigned i = 0; i < 64; ++i) {
+        if (native_blocks[i].p == enc.ws)
+            assert(native_blocks[i].caps == ((sps == 4 ? MALLOC_CAP_INTERNAL : MALLOC_CAP_SPIRAM) | MALLOC_CAP_8BIT));
+        if (enc.bch && native_blocks[i].p == enc.bch)
+            assert(native_blocks[i].n == DVBS2_BCH_CACHE_BYTES && (native_blocks[i].caps & MALLOC_CAP_INTERNAL));
+    }
     stop_encoder();
     printf("}\n");
     assert(live_allocations == 0);

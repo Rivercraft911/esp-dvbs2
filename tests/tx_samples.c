@@ -73,10 +73,44 @@ static int packed_check(void)
                 for (unsigned i = 0; i < n; ++i) h = (h ^ dst[i]) * 16777619u;
                 hash = (hash ^ h) * 16777619u;
                 ++cases;
+                ring_unpack_codes(dst, pk_packed, at, n);
+                for (unsigned i = 0; i < n; ++i) mismatch += dst[i] != pk_phases[at + i] * 16;
+                for (unsigned i = 0; i < 16 + off; ++i) guards &= pk_out[i] == 0x5a;
+                for (unsigned i = 0; i < 16; ++i) guards &= dst[n + i] == 0x5a;
+                h = 2166136261u;
+                for (unsigned i = 0; i < n; ++i) h = (h ^ dst[i]) * 16777619u;
+                hash = (hash ^ h) * 16777619u;
+                ++cases;
             }
         }
     }
     printf("@{\"test\":\"tx_samples\",\"packed\":1,\"cases\":%u,\"mismatch\":%u,"
+           "\"guards\":%u,\"check\":%" PRIu32 "}\n", cases, mismatch, guards, hash);
+    return mismatch || !guards;
+}
+
+static int copy_check(void)
+{
+    unsigned mismatch = 0, guards = 1, cases = 0;
+    uint32_t hash = 2166136261u;
+    for (unsigned i = 0; i < 16440; ++i) ref[i] = i * 2654435761u;
+    for (unsigned src = 0; src < 4; ++src) {
+        for (unsigned off = 0; off < 4; ++off) {
+            for (unsigned c = 0; c < 54; ++c) {
+                const unsigned n = c < 50 ? c : c == 50 ? 2112 : c == 51 ? 2176 :
+                                   c == 52 ? 14268 : 16380;
+                memset(guarded, 0xa5, sizeof guarded);
+                uint32_t *dst = guarded + 4 + off;
+                shaper_copy_words(dst, ref + src, n);
+                for (unsigned i = 0; i < n; ++i) mismatch += dst[i] != ref[src + i];
+                for (unsigned i = 0; i < 4 + off; ++i) guards &= guarded[i] == 0xa5a5a5a5u;
+                for (unsigned i = 0; i < 4; ++i) guards &= dst[n + i] == 0xa5a5a5a5u;
+                hash = (hash ^ check(dst, n)) * 16777619u;
+                ++cases;
+            }
+        }
+    }
+    printf("@{\"test\":\"tx_samples\",\"copy\":1,\"cases\":%u,\"mismatch\":%u,"
            "\"guards\":%u,\"check\":%" PRIu32 "}\n", cases, mismatch, guards, hash);
     return mismatch || !guards;
 }
@@ -119,7 +153,12 @@ int tx_samples_check(void)
                 for (unsigned i = 0; i < 4 + offset; ++i) guards &= guarded[i] == 0xa5a5a5a5u;
                 for (unsigned i = 0; i < 4; ++i) guards &= dst[count + i] == 0xa5a5a5a5u;
                 hash = (hash ^ check(dst, count)) * 16777619u;
-                ++cases;
+                shaper_samples_codes_profile(dst, shifted + SHAPER_HISTORY, skip, count, &t, NULL, NULL);
+                for (unsigned i = 0; i < count; ++i) mismatch += dst[i] != ref[skip + i];
+                for (unsigned i = 0; i < 4 + offset; ++i) guards &= guarded[i] == 0xa5a5a5a5u;
+                for (unsigned i = 0; i < 4; ++i) guards &= dst[count + i] == 0xa5a5a5a5u;
+                hash = (hash ^ check(dst, count)) * 16777619u;
+                cases += 2;
             }
         }
         // The real bank schedule, including its 16380%8 == 4 half-symbol wrap.
@@ -145,7 +184,7 @@ int tx_samples_check(void)
                "\"guards\":%u,\"check\":%" PRIu32 "}\n", n, cases, mismatch, guards, hash);
         bad |= mismatch || !guards;
     }
-    return bad | packed_check();
+    return bad | packed_check() | copy_check();
 }
 #ifdef TX_HOST
 int main(void) { return tx_samples_check(); }

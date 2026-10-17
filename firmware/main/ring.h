@@ -42,7 +42,7 @@ typedef struct {
     uint8_t *cache;               // optional copied overlap, owned by fill side
     size_t cache_symbols;
     int64_t cache_first, cache_end;
-    uint8_t packed;               // slots and filler hold two phases per byte
+    uint8_t packed;               // 1: unpack raw phases, 2: unpack legacy codes 16*k
 } ring_t;
 
 void ring_init(ring_t *r, uint8_t *slots, uint32_t nslots, const uint8_t *filler,
@@ -60,8 +60,11 @@ void ring_cache(ring_t *r, uint8_t *storage, size_t symbols);
 // reads unpack them. Each slot and the filler need 16 readable bytes after their last byte, and
 // reads are fastest when dst + symbol index is even (see ring_window). Set before the first fill.
 void ring_packed(ring_t *r);
+// Same packed source, but ring_window emits the shaper's legacy codes 16*k.
+void ring_packed_codes(ring_t *r);
 // Symbols [at, at + n) of a packed frame, one per byte. Vector loop when dst + at is even.
 void ring_unpack(uint8_t *dst, const uint8_t *packed, size_t at, size_t n);
+void ring_unpack_codes(uint8_t *dst, const uint8_t *packed, size_t at, size_t n);
 
 // Encoder: where frame e goes, or NULL while a later read may still need that slot.
 uint8_t *ring_slot(ring_t *r, uint32_t e);

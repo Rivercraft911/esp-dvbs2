@@ -488,24 +488,62 @@ shaper_fill5_pie:
 // after the last block are read. The low nibbles are the even phases, the high nibbles (shifted
 // down, then masked) the odd ones, and EE.VZIP.8 (1.8.212) interleaves them into 32 phases.
 // void shaper_unpack_pie(uint8_t *dst, const uint8_t *src, unsigned blocks), dst 16-byte aligned.
-shaper_unpack_pie:
+    .macro unpack name, codes
+    .global \name
+    .type \name, @function
+    .align 4
+\name:
     entry           a1, 32
+    .if \codes
+    movi            a8, 0xf0f0f0f0
+    .else
     movi            a8, 0x0f0f0f0f
+    .endif
     ee.movi.32.q    q7, a8, 0
     ee.movi.32.q    q7, a8, 1
     ee.movi.32.q    q7, a8, 2
     ee.movi.32.q    q7, a8, 3
     ssai            4
-    loopnez         a4, .Lunpack_end
+    loopnez         a4, .Lunpack_end\@
     ee.ld.128.usar.ip q0, a3, 16
     ee.vld.128.ip   q1, a3, 0
     ee.src.q        q0, q0, q1                  // 16 packed bytes
+    .if \codes
+    ee.vsl.32       q1, q0                      // even phases up; odd phases already in place
+    .else
     ee.vsr.32       q1, q0                      // high nibbles down; the mask drops the rest
+    .endif
     ee.andq         q0, q0, q7                  // phases 0, 2, ..., 30
     ee.andq         q1, q1, q7                  // phases 1, 3, ..., 31
+    .if \codes
+    ee.vzip.8       q1, q0
+    ee.vst.128.ip   q1, a2, 16
+    ee.vst.128.ip   q0, a2, 16
+    .else
     ee.vzip.8       q0, q1                      // phases 0..15 and 16..31
     ee.vst.128.ip   q0, a2, 16
     ee.vst.128.ip   q1, a2, 16
-.Lunpack_end:
+    .endif
+.Lunpack_end\@:
     retw
-    .size   shaper_unpack_pie, . - shaper_unpack_pie
+    .size \name, . - \name
+    .endm
+    unpack shaper_unpack_pie, 0
+    unpack shaper_unpack_codes_pie, 1
+
+// Disjoint aligned word buffers, eight words per pair. Independent loads separate each
+// load from its consumer (TRM v1.8 1.7.1, pp65-66; loads 1.8.88 p164, stores 1.8.192 p275).
+    .section .iram1.shaper_copy, "ax"
+    .global shaper_copy_pie
+    .type shaper_copy_pie, @function
+    .align 4
+shaper_copy_pie:
+    entry a1, 32
+    loopnez a4, .Lcopy_end
+    ee.vld.128.ip q0, a3, 16
+    ee.vld.128.ip q1, a3, 16
+    ee.vst.128.ip q0, a2, 16
+    ee.vst.128.ip q1, a2, 16
+.Lcopy_end:
+    retw
+    .size shaper_copy_pie, . - shaper_copy_pie

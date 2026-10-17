@@ -62,8 +62,10 @@ void dvbs2_plframe(const dvbs2_mode *mode, int pilots, uint8_t *output);
 /* Fast encoder (fast.c): shared immutable tables in flash, mutable scratch in
  * internal RAM. Allocate dvbs2_fast_size() bytes, 16-byte aligned (about 17 KB),
  * and prepare for one mode and pilot setting. Workspace must also be 16-byte
- * aligned; cached PSRAM is recommended. Use internal payload and 8PSK output
- * buffers for the cycle target; QPSK output can be in cached PSRAM. Both CPU
+ * aligned. The 4-sps stream uses an internal workspace and resident BCH table
+ * to avoid flash/PSRAM cache conflicts; other streams retain cached PSRAM.
+ * Use internal payload and 8PSK output buffers for the cycle target; QPSK output
+ * can be in cached PSRAM. Both CPU
  * cores share the data cache, so external-memory timing needs a board check.
  * The pie mask selects ESP32-S3 vector kernels (pie.S) per stage; without PIE
  * support the mask is ignored and portable C runs. dvbs2_fast_pie() tells
@@ -85,12 +87,18 @@ enum { DVBS2_BCH_NIBBLE = 16, DVBS2_BCH_LEGACY = 32, DVBS2_BCH_SRAM = 64,
        DVBS2_MAP_COMPACT = 128 };
 enum { DVBS2_PIE_BB = 1, DVBS2_PIE_BCH = 2, DVBS2_PIE_LDPC = 4, DVBS2_PIE_MAP = 8 };
 size_t dvbs2_fast_size(void);
-/* Smaller allocation valid only for this mode (14736 bytes for 8PSK 2/3
+/* Smaller allocation valid only for this mode (15184 bytes for 8PSK 2/3
  * on ESP32-S3). Allocate internal output first, then context, then payload to
  * preserve a large free block in the transmitter build. Reprepare with the same mode
  * and either pilot setting; allocate fast_size() to switch freely. */
 size_t dvbs2_fast_mode_size(const dvbs2_mode *mode);
 int dvbs2_fast_prepare(dvbs2_fast *f, const dvbs2_mode *mode, int pilots, unsigned pie);
+/* Optional resident byte-BCH table for t = 10/12. After prepare, copy once to
+ * an owned 16-byte-aligned buffer of this size, outside context/workspace/output.
+ * It stays valid until the next prepare or cache_bch call. NULL restores flash.
+ * Returns -1 for invalid context/alignment or t = 8. No allocation is hidden. */
+#define DVBS2_BCH_CACHE_BYTES 8192
+int dvbs2_fast_cache_bch(dvbs2_fast *f, uint8_t *table);
 unsigned dvbs2_fast_pie(const dvbs2_fast *f);
 int dvbs2_fast_ldxq_bias(const dvbs2_fast *f);
 int dvbs2_fast_bb_gcs(const dvbs2_fast *f, dvbs2_workspace *ws,
@@ -118,7 +126,8 @@ int dvbs2_encode_frame(dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_state *ts,
  * phase[2i] | phase[2i + 1] << 4, dvbs2_frame_symbols(mode, pilots) / 2 bytes
  * (every frame length is even). map_packed and pl_packed write the same symbols
  * as map and pl without a full-frame phase buffer; they use the context's
- * scratch and any output alignment. QPSK contexts return -1. dvbs2_pack packs
+ * scratch and any output alignment. PIE maps directly to packed bytes; the
+ * fixed header and pilots are packed once by prepare. QPSK contexts return -1. dvbs2_pack packs
  * an even count of canonical phases, for example a dummy PLFRAME. */
 int dvbs2_fast_map_packed(dvbs2_fast *f, const dvbs2_workspace *ws, uint8_t *packed);
 void dvbs2_fast_pl_packed(const dvbs2_fast *f, uint8_t *packed);
