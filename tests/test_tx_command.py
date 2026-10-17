@@ -29,8 +29,8 @@ valid = [
     ("\t2400\ttag\t2\t3\t", 2400, 2, 3),
 ]
 # Commands handled by dvbtx.c: invalid arguments, then valid ones with the values each stub
-# must receive (freq, modcod, seconds, gain, level) for dvb, (modcod, frames, level, decim,
-# stall) for dvbdump and (modcod, seconds, level, stall) for dvbpace.
+# must receive (freq, modcod, seconds, gain, level, sps) for dvb, (modcod, frames, level, decim,
+# stall, sps, DAC rate) for dvbdump and (modcod, seconds, level, stall, DAC rate, sps) for dvbpace.
 dvbtx = {
     "dvb": (["", "2400", "2400 4", "2389 4 1", "2451 4 1", "2400 3 1", "2400 12 1",
              "2400 4 0", "2400 4 61", "2400 4 1 18", "2400 4 1 0 15", "2400 4 1 0 509",
@@ -43,7 +43,8 @@ dvbtx = {
                  ("6 1 64 20", (6, 1, 64, 20, 0, 40))]),
     "dvbpace": (["", "4", "4 0", "4 601", "3 1", "12 1", "4 1 15", "4 1 128 2001",
                  "4 1 128 0 x", "4 1.5"],
-                [("4 30", (4, 30, 128, 0, 0, 40)), ("11 600 64 25", (11, 600, 64, 25, 0, 40))]),
+                [("4 30", (4, 30, 128, 0, 40000000, 40)),
+                 ("11 600 64 25", (11, 600, 64, 25, 40000000, 40))]),
 }
 
 for name, (_, good) in dvbtx.items():
@@ -53,12 +54,21 @@ for name, (_, good) in dvbtx.items():
                 good.append((f"2400 {mc} {rate} 1", (2400, mc, 1, 0, 128, sps)))
                 dvbtx[name][0].extend([f"2400 {mc} 1", f"2400 {mc} 1m 1"])
             elif name == "dvbdump":
-                good.append((f"{mc} {rate} 40", (mc, 40, 128, sps // 4, 0, sps)))
-                good.append((f"{mc} {rate} 2 64 1 20", (mc, 2, 64, 1, 20, sps)))
+                good.append((f"{mc} {rate} 40", (mc, 40, 128, sps // 4, 0, sps, 40000000)))
+                good.append((f"{mc} {rate} 2 64 1 20", (mc, 2, 64, 1, 20, sps, 40000000)))
                 dvbtx[name][0].extend([f"{mc} {rate} 40 128 10", f"{mc} {rate} 40 128 3"])
             else:
-                good.append((f"{mc} {rate} 60 128 25", (mc, 60, 128, 25, 0, sps)))
+                good.append((f"{mc} {rate} 60 128 25", (mc, 60, 128, 25, 40000000, sps)))
                 dvbtx[name][0].append(f"{mc} {rate} 601")
+    # 20m: the 4-sps samples on the 80 MS/s schedule, radio-off commands only.
+    if name == "dvb":
+        dvbtx[name][0].extend([f"2400 {mc} 20m 1" for mc in (12, 13, 17)])
+    elif name == "dvbdump":
+        good += [(f"{mc} 20m 40", (mc, 40, 128, 1, 0, 4, 80000000)) for mc in (12, 13, 17)]
+        dvbtx[name][0].extend(["13 20m 40 128 3", "4 20m 40", "13 20 40", "13 20M 40"])
+    else:
+        good += [(f"{mc} 20m 60 128 25", (mc, 60, 128, 25, 80000000, 4)) for mc in (12, 13, 17)]
+        dvbtx[name][0].extend(["13 20m 601", "4 20m 1", "13 40m 1"])
     dvbtx[name][0].extend(["4 5m 1", "18 5m 1", "13 5m", "13 10m 1 128 0 extra"])
 
 # wifimem: optional MODCOD (and rate for 8PSK); it reaches dvbtx_wifi(modcod, sps) only.
@@ -66,6 +76,7 @@ dvbtx["wifimem"] = (["x", "3", "18", "12", "12 1m", "4 5m", "13 5m extra", "4 ex
                      "13 10m 1", "13 5m 10m"],
                     [("", (0, 0)), ("4", (4, 40)), ("11", (11, 40)), ("13 5m", (13, 8)),
                      ("15 10m", (15, 4)), (" 17\t10m", (17, 4))])
+dvbtx["wifimem"][0].extend(["13 20m", "17 20m"])
 
 prelude = r'''
 #include <assert.h>
@@ -105,30 +116,32 @@ static const char *esp_err_to_name(esp_err_t error)
     (void)error;
     return "ESP_OK";
 }
-static unsigned dvb_calls, dump_calls, pace_calls, wifi_calls, got[6];
-static void stub(unsigned *count, unsigned a, unsigned b, unsigned c, unsigned d, unsigned e, unsigned f)
+static unsigned dvb_calls, dump_calls, pace_calls, wifi_calls, got[7];
+static void stub(unsigned *count, unsigned a, unsigned b, unsigned c, unsigned d, unsigned e,
+                 unsigned f, unsigned g)
 {
     ++*count;
-    got[0] = a, got[1] = b, got[2] = c, got[3] = d, got[4] = e, got[5] = f;
+    got[0] = a, got[1] = b, got[2] = c, got[3] = d, got[4] = e, got[5] = f, got[6] = g;
     printf("@{\"status\":\"ESP_OK\"}\n");
 }
 static void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain,
                       unsigned level, unsigned sps)
 {
-    stub(&dvb_calls, freq, modcod, seconds, gain, level, sps);
+    stub(&dvb_calls, freq, modcod, seconds, gain, level, sps, 0);
 }
 static void dvbtx_dump(unsigned modcod, unsigned frames, unsigned level, unsigned decim,
-                       unsigned stall, unsigned sps)
+                       unsigned stall, unsigned sps, uint32_t rate)
 {
-    stub(&dump_calls, modcod, frames, level, decim, stall, sps);
+    stub(&dump_calls, modcod, frames, level, decim, stall, sps, rate);
 }
-static void dvbtx_pace(unsigned modcod, uint32_t seconds, unsigned level, unsigned stall, unsigned sps)
+static void dvbtx_pace(unsigned modcod, uint32_t seconds, unsigned level, unsigned stall,
+                       unsigned sps, uint32_t rate)
 {
-    stub(&pace_calls, modcod, seconds, level, stall, 0, sps);
+    stub(&pace_calls, modcod, seconds, level, stall, rate, sps, 0);
 }
 static void dvbtx_wifi(unsigned modcod, unsigned sps)
 {
-    stub(&wifi_calls, modcod, sps, 0, 0, 0, 0);
+    stub(&wifi_calls, modcod, sps, 0, 0, 0, 0, 0);
 }
 #define RF_CALLS (calls + dvb_calls)
 '''
