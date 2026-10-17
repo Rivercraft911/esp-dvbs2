@@ -1,8 +1,8 @@
 # Bench setup
 
-Radio-off stream cycle/cache diagnostics and the experimental internal-frame layout are
-described in [stream profiling](stream-profile.md). Silicon timing must be measured with
-`dvbpace`; host and QEMU checks establish correctness and placement only.
+Radio-off stream cycle/cache diagnostics, the internal 8PSK frame layout and the Wi-Fi
+memory probe are described in [stream profiling](stream-profile.md). Silicon timing must be
+measured with `dvbpace`; host and QEMU checks establish correctness and placement only.
 
 ## Board
 
@@ -48,7 +48,8 @@ slashes, normalizes uppercase and commits to nonvolatile storage (NVS). `callsig
 `callsign clear` erases it, and `info` reports it. Invalid syntax preserves the old value;
 storage faults disable RF without automatically erasing NVS. With no callsign, `tx` and `dvb`
 refuse before waveform/encoder setup, Wi-Fi startup or calibration. The public radio entry also
-refuses. Radio-off `dvbdump`, `dvbpace`, `membench` and `fecbench` still work.
+refuses, and so does `wifimem`, which starts Wi-Fi without keying. Radio-off `dvbdump`,
+`dvbpace`, `membench` and `fecbench` still work.
 
 CW runs before/after each successful keyed run and repeats every 540 s of the nominal sample
 timeline. Requested RF seconds include both IDs and stay limited to 60 s; too-short runs fail
@@ -208,6 +209,9 @@ for mc in 13 15; do
   done
 done
 ```
+
+`wifimem 13 5m` (or any mode) measures the internal heap around Wi-Fi start-up next to that
+mode's memory without keying; see [stream profiling](stream-profile.md#wi-fi-start-up-memory).
 
 Pass: every board status is `ESP_OK`, `encoder_failed=false`, dump CRC matches the host,
 `overlap_mismatches=0`; LeanDVB reports `payload_match=true`, at least 30 payload frames,
