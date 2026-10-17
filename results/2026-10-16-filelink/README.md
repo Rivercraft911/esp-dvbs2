@@ -64,4 +64,4 @@ registered in CI; independent LeanDVB remains an optional local test.
 The default 16+4 code's four-erasure guarantee is per block, not per file.
 Its full-block 7.6619 Mb/s goodput at 5 Msym/s 8PSK 2/3 and 88.776 ms block time
 are **derived**, not measured throughput. See [docs/file-link.md](../../docs/file-link.md)
-for equations, sender/receiver candidates, integration gaps and coordinator checks.
+for the packet format, the erasure code and the frame-loss arithmetic.
