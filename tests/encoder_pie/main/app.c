@@ -32,20 +32,23 @@ static void packed_check(void)
             assert(!dvbs2_fast_prepare(f, mode, pilots, 0));
             assert(!dvbs2_encode_frame(f, ws, NULL, payload, bytes * 8, raw));
             dvbs2_pack(raw, raw, symbols);
-            for (unsigned offset = 0; offset < 16; ++offset) {
-                assert(!dvbs2_fast_prepare(f, mode, pilots, 15));
-                if (mode->t > 8) assert(!dvbs2_fast_cache_bch(f, cache));
-                memset(out, 0xa5, 11168);
-                uint8_t *dst = out + 16 + offset;
-                assert(!dvbs2_encode_frame_packed(f, ws, NULL, payload, bytes * 8, dst));
-                assert(!memcmp(dst, raw, n));
-                for (unsigned i = 0; i < 16 + offset; ++i) assert(out[i] == 0xa5);
-                for (unsigned i = 16 + offset + n; i < 11168; ++i) assert(out[i] == 0xa5);
-                ++cases;
+            for (unsigned sparse = 0; sparse < 2; ++sparse) {
+                for (unsigned offset = 0; offset < 16; ++offset) {
+                    const unsigned flags = sparse ? DVBS2_BCH_NIBBLE | DVBS2_MAP_SPARSE : 0;
+                    assert(!dvbs2_fast_prepare(f, mode, pilots, 15 | flags));
+                    if (!sparse && mode->t > 8) assert(!dvbs2_fast_cache_bch(f, cache));
+                    memset(out, 0xa5, 11168);
+                    uint8_t *dst = out + 16 + offset;
+                    assert(!dvbs2_encode_frame_packed(f, ws, NULL, payload, bytes * 8, dst));
+                    assert(!memcmp(dst, raw, n));
+                    for (unsigned i = 0; i < 16 + offset; ++i) assert(out[i] == 0xa5);
+                    for (unsigned i = 16 + offset + n; i < 11168; ++i) assert(out[i] == 0xa5);
+                    ++cases;
+                }
             }
         }
     }
-    printf("packed PIE: %u cases, six modes, both pilots, all 16 alignments, resident BCH, guards intact\n", cases);
+    printf("packed PIE: %u cases, direct/resident BCH and sparse/nibble BCH, six modes, both pilots, all 16 alignments, guards intact\n", cases);
     heap_caps_free(cache); heap_caps_free(out); heap_caps_free(raw);
     heap_caps_free(payload); heap_caps_free(f); heap_caps_free(ws);
 }

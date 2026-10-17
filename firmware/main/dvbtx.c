@@ -339,9 +339,12 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
     int32_t *taps = heap_caps_malloc(TAPS * sizeof *taps, MALLOC_CAP_SPIRAM);
     // Only resident tables use byte BCH. Flash byte tables lost in the stream
     // (results/2026-10-16-next); the other modes keep register-nibble BCH.
+    // At 8 sps the PSRAM workspace also needs the sparse mapper's smaller
+    // cache footprint. Its temporary phases reuse the existing context scratch.
     if (!enc.fast || !enc.ws || !enc.payload || !enc.filler || !taps ||
             (resident && mode->t > 8 && !enc.bch) || (!enc.packed && !enc.slots) ||
-            dvbs2_fast_prepare(enc.fast, mode, PILOTS, 15 | (resident ? 0 : DVBS2_BCH_NIBBLE)) ||
+            dvbs2_fast_prepare(enc.fast, mode, PILOTS,
+                              15 | (resident ? 0 : DVBS2_BCH_NIBBLE | DVBS2_MAP_SPARSE)) ||
             (enc.bch && dvbs2_fast_cache_bch(enc.fast, enc.bch))) {
         printf("@{\"cmd\":\"%s\",\"error\":\"allocation failed\"}\n", cmd);
         heap_caps_free(taps);
@@ -433,14 +436,15 @@ static void stop_encoder(void)
     printf(",\"callsign\":\"%s\"", station_store_get());
     printf(",\"workspace_memory\":\"%s\",\"workspace_bytes\":%u,\"fast_bytes\":%u,"
            "\"workspace_heap_bytes\":%u,\"fast_heap_bytes\":%u,\"bch_cache_heap_bytes\":%u,"
-           "\"bch_cache_bytes\":%u,\"bch_variant\":\"%s\"",
+           "\"bch_cache_bytes\":%u,\"bch_variant\":\"%s\",\"packed_mapper\":\"%s\"",
            enc.packed && dvb.table.n == 4 ? "internal" : "psram", (unsigned)sizeof *enc.ws,
            (unsigned)dvbs2_fast_mode_size(enc.mode),
            (unsigned)heap_caps_get_allocated_size(enc.ws),
            (unsigned)heap_caps_get_allocated_size(enc.fast),
            enc.bch ? (unsigned)heap_caps_get_allocated_size(enc.bch) : 0,
            enc.bch ? DVBS2_BCH_CACHE_BYTES : 0,
-           enc.bch ? "resident-byte" : "nibble");
+           enc.bch ? "resident-byte" : "nibble",
+           !enc.packed ? "none" : dvb.table.n == 4 ? "direct" : "sparse");
     printf(",\"ring_memory\":\"%s\",\"ring_format\":\"%s\",\"ring_heap_bytes\":%u,"
            "\"payload_memory\":\"%s\",\"slot_waits\":%" PRIu32,
            enc.packed ? "internal" : "psram", enc.packed ? "packed" : "raw",

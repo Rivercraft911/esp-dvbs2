@@ -28,6 +28,12 @@ def test_inventory():
     assert new["stage_cache_bytes"]["pl"] == 0
     assert new["stage_cache_bytes"]["map"] == 8192 + 5440
     assert new["union_cache_bytes"] == new["flash_cache_bytes"]
+    sparse = inventory(syms, 15, 0x3d000010, direct_packed=False)
+    direct = inventory(syms, 15, 0x3d000010)
+    assert not sparse["direct_packed"]
+    assert direct["union_cache_bytes"] - sparse["union_cache_bytes"] == 8192 - 512
+    assert sparse["stage_cache_bytes"]["pl"] == 0
+    assert sparse["stage_cache_bytes"]["map"] == 512 + 5440 + 8128
     # Overlapping tables must count a physical line once.
     syms["fast_crc8"] = syms["bb_prbs"]
     shared = inventory(syms, 15, resident_bch=True)
