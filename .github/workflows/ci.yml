@@ -19,6 +19,8 @@ jobs:
       - run: python tests/test_iq.py
       - run: python tests/test_decode.py
       - run: python tests/test_filelink.py
+      - run: python tests/test_qpsk_fill.py
+      - run: python tests/test_qpsk_probe.py
       - run: python tests/test_shaper.py
       - run: python tests/test_shaper_budget.py
       - run: python tests/test_maxrate.py

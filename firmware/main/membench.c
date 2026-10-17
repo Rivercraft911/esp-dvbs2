@@ -21,6 +21,7 @@
 #include "sdkconfig.h"
 #include "shaper.h"
 #include "shaper_block.h"
+#include "shaper_qpsk.h"
 #include "shaper_taps.h"
 
 #define BANK_WORDS 16380                  // one DAC bank
@@ -265,6 +266,28 @@ done:
     heap_caps_free(input);
 }
 
+static void qpsk_bench(void)
+{
+    uint8_t *src = (uint8_t *)radio_s3_bank(1);
+    uint32_t *dst = radio_s3_bank(0), cycles[REPEATS];
+    uint32_t x = 2026;
+    for (unsigned i = 0; i < 2+BANK_WORDS/12; ++i) {
+        x ^= x << 13, x ^= x >> 17, x ^= x << 5;
+        src[i] = x >> 16;
+    }
+    for (unsigned n = 3; n <= 4; ++n) {
+        char name[24];
+        const unsigned groups = BANK_WORDS/(4*n), words = groups*4*n;
+        shaper_qpsk_build(shaper_store,n,128);
+        snprintf(name,sizeof name,"qpsk%u_c",n);
+        TIME(cycles,shaper_qpsk_c(dst,src+2,groups,shaper_store,n));
+        report(name,cycles,words,0,checksum(dst,words));
+        snprintf(name,sizeof name,"qpsk%u_pie",n);
+        TIME(cycles,(n == 3 ? shaper_qpsk3_pie : shaper_qpsk4_pie)(dst,src+2,groups,shaper_store));
+        report(name,cycles,words,0,checksum(dst,words));
+    }
+}
+
 void membench_run(void)
 {
     const uint32_t internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
@@ -322,4 +345,5 @@ done:
     shaper_bench();
     block_bench();
     short_bench();
+    qpsk_bench();
 }

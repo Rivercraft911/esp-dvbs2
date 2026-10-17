@@ -39,6 +39,7 @@
 #include "dvbtx.h"
 #include "fecbench.h"
 #include "membench.h"
+#include "qpsk_probe.h"
 #include "radio_s3.h"
 #include "radio_signals.h"
 #include "shaper.h"
@@ -339,10 +340,12 @@ void app_main(void)
             // cmd_tx tokenizes its arguments in place. Keep the completion record stable.
             strcpy(line, "tx");
         } else if (strncmp(line, "dvbdump ", 8) == 0) {
-            cmd_dvbdump(line + 8);
+            if (!strncmp(line + 8, "qpsk", 4)) qpsk_probe_command("dvbdump", line + 8);
+            else cmd_dvbdump(line + 8);
             strcpy(line, "dvbdump");
         } else if (strncmp(line, "dvbpace ", 8) == 0) {
-            cmd_dvbpace(line + 8);
+            if (!strncmp(line + 8, "qpsk", 4)) qpsk_probe_command("dvbpace", line + 8);
+            else cmd_dvbpace(line + 8);
             strcpy(line, "dvbpace");
         } else if (strncmp(line, "dvb ", 4) == 0) {
             cmd_dvb(line + 4);

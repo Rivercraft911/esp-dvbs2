@@ -92,5 +92,7 @@ void app_main(void)
     if (maxrate_check()) { puts("MAXRATE-FAIL"); }
     int round2_check(void);
     if (round2_check()) { puts("ROUND2-FAIL"); }
+    int qpsk_fill_check(void);
+    if (qpsk_fill_check()) puts("QPSK-FILL-FAIL");
     puts("QEMU-END");
 }

@@ -58,3 +58,9 @@ allocates one 24 KiB table while running. Check with
 `python3 tests/test_maxrate.py notes/shaper-pie.log`; model its assembled loop with
 `python3 host/maxrate.py --disassembly notes/shaper.dis`. The model excludes bus
 contention and interrupts. See `docs/max-astra.md` for the whole-transmitter budget.
+The QPSK four-symbol kernel shares these buffers and runs 19,368 further cases:
+3/4 samples per symbol, all sample/output alignments, partial and bank-sized calls,
+three seeds, and peak levels 16/128/508. Empty calls also accept null buffers. Run
+`python3 tests/test_qpsk_fill.py notes/shaper-pie.log` to require all records, intact
+guards and exact Python table/output checks. See [QPSK fill](../../docs/qpsk-fill.md)
+for the separate radio-off probe and its timing gates.
