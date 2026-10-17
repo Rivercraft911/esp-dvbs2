@@ -180,6 +180,9 @@ def test_stream():
                 assert r["status"] == "ESP_OK" and not r["encoder_failed"]
                 assert r["callsign"] == call
                 packed = sps != 40
+                profile = r["profile"]
+                assert profile["shaped_words"] + profile["reused_words"] == profile["fill_words"]
+                assert profile["reused_words"] > 0 if packed else profile["reused_words"] == 0
                 assert r["ring_slots"] == (3 if sps == 4 else 2 if packed else 8)
                 assert r["ring_memory"] == ("internal" if packed else "psram")
                 assert r["ring_format"] == ("packed" if packed else "raw")

@@ -52,6 +52,10 @@ static void bank_fill(radio_s3_fill_fn fn, void *ctx, unsigned b, uint64_t first
             assert(banks[b][(at + i) % RADIO_S3_BANK_WORDS] == reference[at % sps + i]);
         at += count;
     }
+    if (dvb.ring.packed) {
+        assert(dvb.shaped_words == dvb.sample_end);
+        assert(dvb.sample_end == first + RADIO_S3_BANK_WORDS);
+    }
     stats->fills++;
 }
 

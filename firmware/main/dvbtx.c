@@ -44,22 +44,27 @@
 #define WORST_PEAK 718.4            // conservative sqrt(2)*508 LSB axis bound, before rounding
 #define SEED 2026
 #define ENCODER_PRIORITY 5          // above the command loop, below the Wi-Fi and IPC tasks
-// History plus the longest re-read: the bank overlap and the first bank's extra lead, plus one
-// symbol at each end that a bank edge may cut (16380 % 8 = 4). 554 symbols at 4 sps, 282 at 8.
-#define OVERLAP_SYMBOLS(sps) (SHAPER_HISTORY + 2 + (RADIO_S3_BANK_WORDS - RADIO_S3_STEP_WORDS + \
-                              RADIO_S3_LEAD_WORDS + (sps) - 1) / (sps))
+// Samples, including the first bank's extra lead. Later banks re-read 2112 words.
+#define CACHED_WORDS (RADIO_S3_BANK_WORDS - RADIO_S3_STEP_WORDS + RADIO_S3_LEAD_WORDS)
+// Finished samples cover the overlap. The next fresh sample only needs filter history and
+// one symbol cut at each end, even when the output wraps in the middle of an 8-sps symbol.
+#define OVERLAP_SYMBOLS (SHAPER_HISTORY + 2)
 
 typedef struct {
     ring_t ring;
     shaper_table_t table;
     uint8_t win[SHAPER_HISTORY + BANK_SYMBOLS + 1] __attribute__((aligned(16)));  // +1: parity
-    uint8_t overlap[OVERLAP_SYMBOLS(4)];
+    uint8_t overlap[OVERLAP_SYMBOLS];
+    uint32_t samples[CACHED_WORDS] __attribute__((aligned(16)));
+    uint64_t sample_end;            // cached samples end here; only advances on fresh samples
+    size_t sample_at;               // circular cache index of sample_end
     uint32_t max_fill_cycles;       // one fill call
     bool profile;                  // radio-off commands only
-    stream_profile_t copy, whole, partial;
+    stream_profile_t copy, whole, partial, save, notify;
     uint64_t fill_words, fill_cycles;
     uint32_t fill_calls;
-    uint32_t worst_copy, worst_whole, worst_partial; // components of the SAME slowest call
+    uint32_t worst_copy, worst_whole, worst_partial, worst_save, worst_notify;
+    uint64_t shaped_words, reused_words;
 } dvb_t;
 
 static DRAM_ATTR dvb_t dvb;
@@ -121,28 +126,76 @@ static IRAM_ATTR esp_err_t fill(uint32_t *dst, uint64_t first, size_t count, voi
     (void)ctx;
     const uint32_t before = esp_cpu_get_cycle_count();
     const stream_mark_t mark = dvb.profile ? stream_mark_for(&dvb.copy) : (stream_mark_t){0};
+    const size_t requested = count;
+    // Copy any re-read samples before touching the ring. Fresh reads then move strictly
+    // forwards, so a short second callback at the physical output wrap cannot shift hundreds
+    // of cached symbols. Never read the other physical DAC bank: it may belong to the radio.
+    if (enc.packed && first < dvb.sample_end) {
+        const uint64_t back = dvb.sample_end - first;
+        if (back > CACHED_WORDS) return ESP_FAIL;
+        size_t at = dvb.sample_at + CACHED_WORDS - (size_t)back;
+        if (at >= CACHED_WORDS) at -= CACHED_WORDS;
+        const size_t cached = back < count ? (size_t)back : count;
+        const size_t head = cached < CACHED_WORDS - at ? cached : CACHED_WORDS - at;
+        shaper_copy_words(dst, dvb.samples + at, head);
+        shaper_copy_words(dst + head, dvb.samples, cached - head);
+        dst += cached, first += cached, count -= cached;
+    }
     const unsigned sps = dvb.table.n;
     const uint32_t freed = dvb.ring.freed;
     // Packed reads unpack whole vectors when every symbol lands at an address of its own
     // parity (ring.h); the history is even, so shift the window by the first symbol's parity.
     // sps is 4 or 8 there, so that parity is bit log2(sps) of first. QPSK keeps the window.
     uint8_t *const win = dvb.win + (enc.packed && (first & sps));
-    if (ring_window(&dvb.ring, win, sizeof dvb.win - 1, first, count, sps,
+    if (count && ring_window(&dvb.ring, win, sizeof dvb.win - 1, first, count, sps,
                     SHAPER_HISTORY, RADIO_S3_BANK_WORDS) < 0) {
         return ESP_FAIL;
     }
-    // A two-frame ring cannot afford a 1 ms polling delay on core 0. Notify only on
-    // release, after ring_window's last slot read and release-store of freed. The notification
-    // costs this core up to 2.3k cycles, so QPSK's eight-frame ring polls instead, as before.
-    if (dvb.ring.freed != freed && enc.packed) xTaskNotifyGive(enc.task);
     const uint32_t copied = esp_cpu_get_cycle_count() - before;
     const uint64_t w0 = dvb.whole.cycles, p0 = dvb.partial.cycles;
     if (dvb.profile) stream_record(&dvb.copy, mark, stream_mark_for(&dvb.copy));
-    shaper_samples_profile(dst, win + SHAPER_HISTORY, first % sps, count, &dvb.table,
-                           dvb.profile ? &dvb.whole : NULL,
-                           dvb.profile ? &dvb.partial : NULL);
+    // A two-frame ring cannot afford a 1 ms polling delay on core 0. Notify only on
+    // release, after ring_window's last slot read and release-store of freed. The notification
+    // costs this core up to 2.3k cycles, so QPSK's eight-frame ring polls instead, as before.
+    uint32_t notified = 0, saved = 0;
+    if (dvb.ring.freed != freed && enc.packed) {
+        const stream_mark_t wake = dvb.profile ? stream_mark_for(&dvb.notify) : (stream_mark_t){0};
+        xTaskNotifyGive(enc.task);
+        if (dvb.profile) {
+            const stream_mark_t after = stream_mark_for(&dvb.notify);
+            stream_record(&dvb.notify, wake, after);
+            notified = after.cycles - wake.cycles;
+        }
+    }
+    (enc.packed ? shaper_samples_codes_profile : shaper_samples_profile)(dst,
+        win + SHAPER_HISTORY, first % sps, count, &dvb.table,
+        dvb.profile ? &dvb.whole : NULL, dvb.profile ? &dvb.partial : NULL);
+    if (enc.packed && count) {
+        // Save only new samples; a short callback appends without moving the preceding tail.
+        // A long callback replaces the cache with its last CACHED_WORDS samples.
+        const stream_mark_t save = dvb.profile ? stream_mark_for(&dvb.save) : (stream_mark_t){0};
+        if (count >= CACHED_WORDS) {
+            shaper_copy_words(dvb.samples, dst + count - CACHED_WORDS, CACHED_WORDS);
+            dvb.sample_at = 0;
+        } else {
+            const size_t head = count < CACHED_WORDS - dvb.sample_at ? count :
+                                CACHED_WORDS - dvb.sample_at;
+            shaper_copy_words(dvb.samples + dvb.sample_at, dst, head);
+            shaper_copy_words(dvb.samples, dst + head, count - head);
+            dvb.sample_at += count;
+            if (dvb.sample_at >= CACHED_WORDS) dvb.sample_at -= CACHED_WORDS;
+        }
+        dvb.sample_end = first + count;
+        if (dvb.profile) {
+            const stream_mark_t after = stream_mark_for(&dvb.save);
+            stream_record(&dvb.save, save, after);
+            saved = after.cycles - save.cycles;
+        }
+    }
     const uint32_t cycles = esp_cpu_get_cycle_count() - before;
-    dvb.fill_words += count;
+    dvb.fill_words += requested;
+    dvb.shaped_words += count;
+    dvb.reused_words += requested - count;
     dvb.fill_cycles += cycles;
     dvb.fill_calls++;
     if (cycles > dvb.max_fill_cycles) {
@@ -150,6 +203,8 @@ static IRAM_ATTR esp_err_t fill(uint32_t *dst, uint64_t first, size_t count, voi
         dvb.worst_copy = copied;
         dvb.worst_whole = dvb.whole.cycles - w0;
         dvb.worst_partial = dvb.partial.cycles - p0;
+        dvb.worst_save = saved;
+        dvb.worst_notify = notified;
     }
     return ESP_OK;
 }
@@ -273,12 +328,18 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
     memset(&dvb.copy, 0, sizeof dvb.copy);
     memset(&dvb.whole, 0, sizeof dvb.whole);
     memset(&dvb.partial, 0, sizeof dvb.partial);
+    memset(&dvb.save, 0, sizeof dvb.save);
+    memset(&dvb.notify, 0, sizeof dvb.notify);
     dvb.fill_words = dvb.fill_cycles = dvb.fill_calls = 0;
     dvb.worst_copy = dvb.worst_whole = dvb.worst_partial = 0;
+    dvb.worst_save = dvb.worst_notify = 0;
+    dvb.shaped_words = dvb.reused_words = 0;
+    dvb.sample_end = dvb.sample_at = 0;
     dvb.profile = !strcmp(cmd, "dvbpace") || !strcmp(cmd, "dvbdump");
     // The fill phases of a timed run record cycles only; an untimed dump also reads the
     // shared cache counters. Encoder stages always read them.
     dvb.copy.counters = dvb.whole.counters = dvb.partial.counters = !strcmp(cmd, "dvbdump");
+    dvb.save.counters = dvb.notify.counters = dvb.copy.counters;
     if (dvb.profile) cache_profile_start();
     enc.stall_ms = stall_ms;
     enc.min_cycles = UINT32_MAX;
@@ -358,8 +419,8 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
     dvb.max_fill_cycles = 0;
     if (enc.packed) {
         ring_init_slots(&dvb.ring, enc.slot, nslots, enc.filler, symbols);
-        ring_cache(&dvb.ring, dvb.overlap, OVERLAP_SYMBOLS(sps));
-        ring_packed(&dvb.ring);
+        ring_cache(&dvb.ring, dvb.overlap, OVERLAP_SYMBOLS);
+        ring_packed_codes(&dvb.ring);
     } else {
         ring_init(&dvb.ring, enc.slots, RING_SLOTS, enc.filler, symbols);
     }
@@ -439,12 +500,16 @@ static void stop_encoder(void)
         printf(",\"profile\":{\"cache_scope\":\"both cores and interrupts; windows overlap\","
                "\"fill_counters\":%s,\"fill_calls\":%" PRIu32 ",\"fill_words\":%" PRIu64
                ",\"fill_cycles\":%" PRIu64 ",\"worst_call\":{\"copy\":%" PRIu32 ",\"whole\":%" PRIu32
-               ",\"partial\":%" PRIu32 "},\"fill\":{",
+               ",\"partial\":%" PRIu32 ",\"save\":%" PRIu32 ",\"notify\":%" PRIu32 "},"
+               "\"shaped_words\":%" PRIu64 ",\"reused_words\":%" PRIu64 ",\"fill\":{",
                dvb.copy.counters ? "true" : "false", dvb.fill_calls, dvb.fill_words,
-               dvb.fill_cycles, dvb.worst_copy, dvb.worst_whole, dvb.worst_partial);
+               dvb.fill_cycles, dvb.worst_copy, dvb.worst_whole, dvb.worst_partial,
+               dvb.worst_save, dvb.worst_notify, dvb.shaped_words, dvb.reused_words);
         print_profile("copy", &dvb.copy); printf(",");
         print_profile("whole", &dvb.whole); printf(",");
-        print_profile("partial", &dvb.partial); printf("},\"encoder\":{");
+        print_profile("partial", &dvb.partial); printf(",");
+        print_profile("save", &dvb.save); printf(",");
+        print_profile("notify", &dvb.notify); printf("},\"encoder\":{");
         static const char *const names[] = {"payload", "bb", "bch", "ldpc", "map", "pl"};
         for (unsigned i = 0; i < 6; ++i) {
             if (i) printf(",");
