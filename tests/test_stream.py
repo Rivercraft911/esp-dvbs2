@@ -183,6 +183,12 @@ def test_stream():
                 assert r["ring_slots"] == (3 if sps == 4 else 2 if packed else 8)
                 assert r["ring_memory"] == ("internal" if packed else "psram")
                 assert r["ring_format"] == ("packed" if packed else "raw")
+                assert r["workspace_memory"] == ("internal" if sps == 4 else "psram")
+                assert r["workspace_bytes"] == 12420
+                cached = sps == 4 and mc != 17
+                assert r["bch_cache_bytes"] == (8192 if cached else 0)
+                assert r["bch_variant"] == ("resident-byte" if cached else "nibble")
+                assert bool(int(r["layout"]["bch"], 16)) == cached
                 slots = [int(a, 16) for a in r["layout"]["slots"]]
                 assert len(set(slots)) == r["ring_slots"]
                 payload = int(r["layout"]["payload"], 16)

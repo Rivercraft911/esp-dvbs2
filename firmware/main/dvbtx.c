@@ -67,7 +67,8 @@ static DRAM_ATTR dvb_t dvb;
 typedef struct {
     const dvbs2_mode *mode;
     dvbs2_fast *fast;               // fast encoder context for this mode, internal RAM
-    dvbs2_workspace *ws;            // cached PSRAM
+    dvbs2_workspace *ws;            // internal at 4 sps, otherwise cached PSRAM
+    uint8_t *bch;                  // resident byte table at 4 sps, t = 10/12
     bool packed;                    // 8PSK: packed internal ring
     uint8_t *payload;               // one frame of payload: next to a packed ring, or PSRAM
     uint8_t *slot[PACKED_SLOTS];    // packed frames, internal
@@ -241,13 +242,14 @@ static void release(void)
     (void)heap_caps_monitor_local_minimum_free_size_stop();
     heap_caps_free(enc.fast);
     heap_caps_free(enc.ws);
+    heap_caps_free(enc.bch);
     heap_caps_free(enc.block);
     if (!enc.packed) {
         heap_caps_free(enc.payload);
         heap_caps_free(enc.slots);
         heap_caps_free(enc.filler);
     }
-    enc.fast = NULL, enc.ws = NULL, enc.block = enc.payload = enc.slots = enc.filler = NULL;
+    enc.fast = NULL, enc.ws = NULL, enc.bch = enc.block = enc.payload = enc.slots = enc.filler = NULL;
 }
 
 // Bytes for a packed part, 16-byte aligned, with the 16 spare bytes the vector unpack may read.
@@ -318,10 +320,14 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
             enc.payload = enc.filler + dummy;
         }
     }
-    // Fast encoder: per-mode context in internal RAM, workspace in cached PSRAM
-    // (components/dvbs2/include/dvbs2.h).
+    // 4-sps 8PSK: keep the FEC workspace and byte BCH table off the shared data
+    // cache. The 8-sps table needs the whole store, so retain its old heap policy.
+    const bool resident = enc.packed && sps == 4;
     enc.fast = heap_caps_aligned_alloc(16, dvbs2_fast_mode_size(mode), internal);
-    enc.ws = heap_caps_aligned_alloc(16, sizeof *enc.ws, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    enc.ws = heap_caps_aligned_alloc(16, sizeof *enc.ws,
+                                    resident ? internal : MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (resident && mode->t > 8)
+        enc.bch = heap_caps_aligned_alloc(16, DVBS2_BCH_CACHE_BYTES, internal);
     if (!enc.packed) {
         // QPSK: main's order and sizes, so the PSRAM addresses, and with them the data cache
         // sets that the fill's frame reads share with the encoder, stay as they were.
@@ -330,11 +336,12 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
         enc.filler = heap_caps_malloc(DVBS2_DUMMY_SYMBOLS, MALLOC_CAP_SPIRAM);
     }
     int32_t *taps = heap_caps_malloc(TAPS * sizeof *taps, MALLOC_CAP_SPIRAM);
-    /* Register-nibble BCH in every mode: in the stream the 8 KiB byte table pushes the BB and
-     * PL tables out of the 32 KiB data cache, and 8PSK 5/6 costs 386k instead of 291k cycles
-     * per frame (results/2026-10-16-next). */
+    // Only resident tables use byte BCH. Flash byte tables lost in the stream
+    // (results/2026-10-16-next); the other modes keep register-nibble BCH.
     if (!enc.fast || !enc.ws || !enc.payload || !enc.filler || !taps ||
-            (!enc.packed && !enc.slots) || dvbs2_fast_prepare(enc.fast, mode, PILOTS, 15 | DVBS2_BCH_NIBBLE)) {
+            (resident && mode->t > 8 && !enc.bch) || (!enc.packed && !enc.slots) ||
+            dvbs2_fast_prepare(enc.fast, mode, PILOTS, 15 | (resident ? 0 : DVBS2_BCH_NIBBLE)) ||
+            (enc.bch && dvbs2_fast_cache_bch(enc.fast, enc.bch))) {
         printf("@{\"cmd\":\"%s\",\"error\":\"allocation failed\"}\n", cmd);
         heap_caps_free(taps);
         release();
@@ -421,6 +428,11 @@ static void stop_encoder(void)
            enc.max_cycles, enc.failed ? "true" : "false", dvb.max_fill_cycles,
            (unsigned)internal, (unsigned)largest, (unsigned)lowest);
     printf(",\"callsign\":\"%s\"", station_store_get());
+    printf(",\"workspace_memory\":\"%s\",\"workspace_bytes\":%u,\"fast_bytes\":%u,"
+           "\"bch_cache_bytes\":%u,\"bch_variant\":\"%s\"",
+           enc.packed && dvb.table.n == 4 ? "internal" : "psram", (unsigned)sizeof *enc.ws,
+           (unsigned)dvbs2_fast_mode_size(enc.mode), enc.bch ? DVBS2_BCH_CACHE_BYTES : 0,
+           enc.bch ? "resident-byte" : "nibble");
     printf(",\"ring_memory\":\"%s\",\"ring_format\":\"%s\",\"ring_heap_bytes\":%u,"
            "\"payload_memory\":\"%s\",\"slot_waits\":%" PRIu32,
            enc.packed ? "internal" : "psram", enc.packed ? "packed" : "raw",
@@ -428,9 +440,9 @@ static void stop_encoder(void)
            enc.packed ? "internal" : "psram", enc.slot_waits);
     printf(",\"layout\":{\"table\":\"0x%" PRIxPTR "\",\"fast\":\"0x%" PRIxPTR
            "\",\"workspace\":\"0x%" PRIxPTR "\",\"payload\":\"0x%" PRIxPTR
-           "\",\"filler\":\"0x%" PRIxPTR "\",\"slots\":[",
+           "\",\"filler\":\"0x%" PRIxPTR "\",\"bch\":\"0x%" PRIxPTR "\",\"slots\":[",
            (uintptr_t)dvb.table.blocks, (uintptr_t)enc.fast, (uintptr_t)enc.ws,
-           (uintptr_t)enc.payload, (uintptr_t)r->filler);
+           (uintptr_t)enc.payload, (uintptr_t)r->filler, (uintptr_t)enc.bch);
     for (unsigned i = 0; i < r->nslots; ++i) {
         printf(i ? ",\"0x%" PRIxPTR "\"" : "\"0x%" PRIxPTR "\"", (uintptr_t)r->slots[i]);
     }

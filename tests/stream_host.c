@@ -105,7 +105,13 @@ int main(int argc, char **argv)
     allocation_count = 0;
     assert(start_encoder("dvbdump", mc, 128, 0, sps));
     const int allocations = allocation_count;
-    assert(allocations == (sps == 40 ? 6 : 4));
+    assert(allocations == (sps == 40 ? 6 : 4 + (sps == 4 && mode->t > 8)));
+    for (unsigned i = 0; i < 64; ++i) {
+        if (native_blocks[i].p == enc.ws)
+            assert(native_blocks[i].caps == ((sps == 4 ? MALLOC_CAP_INTERNAL : MALLOC_CAP_SPIRAM) | MALLOC_CAP_8BIT));
+        if (enc.bch && native_blocks[i].p == enc.bch)
+            assert(native_blocks[i].n == DVBS2_BCH_CACHE_BYTES && (native_blocks[i].caps & MALLOC_CAP_INTERNAL));
+    }
     stop_encoder();
     printf("}\n");
     assert(live_allocations == 0);
