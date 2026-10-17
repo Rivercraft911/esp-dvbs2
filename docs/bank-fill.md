@@ -19,6 +19,9 @@ A token names a symbol rate, not an experiment. `26m667` means exactly
 | `20m` | 8PSK | 80 | 4 | 6 | 3 paired frames |
 | `26m667` | QPSK | 80 | 3 | 9 | 3 quad frames |
 
+The experimental `33m333` and 8PSK `26m667` correctness paths, rational sample
+timeline, RAM placement and unpassed timing gates are in [moonshot.md](moonshot.md).
+
 `20m` adopts the previously measured `20mq4` and `20ms6` kernels. QPSK 9/10
 whole-bank maxima were 36,766 cycles with q4 versus 45,852 with the old
 paired path. The six-symbol 8PSK 5/6 fill measured 40,546 cycles versus

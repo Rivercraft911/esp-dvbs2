@@ -20,19 +20,21 @@ if bad and a.command == 'dvbpace 11 26m667 30':sys.exit(7)
 if kind=='info': rows=[dict(firmware='test-fw',callsign='N0CALL')]
 elif kind=='fecbench': rows=[dict(cmd='fecbench',fake=True)]
 else:
- mc=int(x[1]); named=x[2] in ('5m','10m','20m','26m667'); token=x[2] if named else ''
- n={'':40,'5m':8,'10m':4,'20m':4,'26m667':3}[token]; rate=80000000 if token in ('20m','26m667') else 40000000
- quads=mc<12 and rate==80000000; resident=n!=40 and (mc<12 or n==4)
+ mc=int(x[1]); named=x[2] in ('5m','10m','20m','26m667','33m333'); token=x[2] if named else ''
+ n={'':40,'5m':8,'10m':4,'20m':4,'26m667':3,'33m333':12}[token]; rate=80000000 if token in ('20m','26m667','33m333') else 40000000
+ fir=n==12 or (mc>=12 and n==3); den=5 if n==12 else 1
+ quads=mc<12 and rate==80000000 and not fir; resident=n!=40 and (fir or mc<12 or n==4)
  symbols=33282 if mc<12 else 22194
  r=dict(status='ESP_OK',encoder_failed=False,encoder_timed=True,callsign='N0CALL',underruns=0,stall_ms=0,
-        modcod=mc,sps=n,symbol_rate=rate//n,dac_rate=rate,
-        pulse_symbols=6 if mc>=12 and rate==80000000 else 9,
-        ring_slots=8 if n==40 else 3 if n<=4 else 2,ring_format='raw' if n==40 else 'quads' if quads else 'packed',
+        modcod=mc,sps=n/den,sps_num=n,sps_den=den,symbol_rate=rate*den//n,dac_rate=rate,rolloff=.2 if n==12 else .35,
+        pulse_symbols=12 if n==12 else 6 if mc>=12 and n==4 and rate==80000000 else 9,
+        ring_slots=8 if n==40 else 3 if n<=4 or fir else 2,ring_format='raw' if n==40 else 'quads' if quads else 'packed',
         workspace_memory='internal' if resident else 'psram',
         packed_mapper='none' if n==40 else 'quads' if quads else 'direct' if resident else 'sparse')
  if kind=='dvbdump':
-  frames=int(x[3] if named else x[2]); decim=int(x[-1]); size=frames*symbols*n//decim*4
-  key=f'{mc}/{n}/{rate//1000000}/{frames}'; crc=json.loads(pathlib.Path('tests/data/waveform_crcs.json').read_text())[key]
+  frames=int(x[3] if named else x[2]); decim=int(x[-1]); size=((frames*symbols*n+den-1)//den+decim-1)//decim*4
+  if bad and fir and n==3:size+=4
+  key=f'{mc}/{n}/{rate//1000000}/{frames}'; crc=(json.loads(pathlib.Path('tests/data/waveform_crcs.json').read_text())|json.loads(pathlib.Path('tests/data/rational_crcs.json').read_text()))[key]
   # Forge only the final 32 bits; this tests the real file-size and CRC checker.
   zero=zlib.crc32(bytes(size)); basis={}
   for bit in range(32):
@@ -62,11 +64,15 @@ else:
    records=[json.loads(l) for f in pathlib.Path('results').glob('*/*.jsonl') for l in f.read_text().splitlines()]
    b=next(b for b in records if b.get('command')==command and b.get('status')=='ESP_OK')
    r[metric]=b[metric]*102//100+1
+  if fir:
+   ceiling=240000000*symbols*n*85//(rate*den*100)
+   r.update(max_fill_cycles=40137+bool(bad),encode_cycles_mean=ceiling,encode_cycles_live_max=ceiling)
   rows=[r]
  else:
   r.update(wifi_free_up=50000,wifi_min_free=50000,frames_played=0,positions=0,max_fill_call_cycles=0)
   if bad and mc==17:r['wifi_free_up']=22350
   if bad and mc==11:r['wifi_min_free']=41386
+  if bad and fir:r['wifi_min_free']=19999
   rows=[r]
 with a.out.open('a') as f:
  for r in rows:f.write(json.dumps(dict(command=a.command,**r))+'\n')
@@ -83,28 +89,31 @@ with tempfile.TemporaryDirectory() as tmp:
     root = pathlib.Path(tmp)
     for folder in ('host','tests/data','bin'):(root/folder).mkdir(parents=True)
     shutil.copy(ROOT/'host/check.sh',root/'host/check.sh')
-    shutil.copy(ROOT/'tests/data/waveform_crcs.json',root/'tests/data/waveform_crcs.json')
+    for name in ('waveform_crcs.json','rational_crcs.json'):shutil.copy(ROOT/'tests/data'/name,root/'tests/data'/name)
     for topic in ('2026-10-17-qpsk-goal','2026-10-17-next4','2026-10-17-next5'):
         (root/'results'/topic).mkdir(parents=True)
         for file in (ROOT/'results'/topic).glob('*.jsonl'):shutil.copy(file,root/'results'/topic/file.name)
     (root/'host/board.py').write_text(FAKE)
     (root/'host/onair.py').write_text(RX)
-    for name in ('test_stream.py','test_fecbench.py'):(root/'tests'/name).write_text('print("fake host check")\n')
+    for name in ('test_stream.py','test_fecbench.py','test_rational.py'):(root/'tests'/name).write_text('print("fake host check")\n')
     (root/'bin/git').write_text('#!/bin/sh\nprintf "test-fw\\n"\n')
     (root/'bin/git').chmod(0o755)
     env=dict(os.environ,PYTHON=sys.executable,PATH=str(root/'bin')+os.pathsep+os.environ['PATH'])
     plan=subprocess.run(['sh','host/check.sh','--plan'],cwd=root,env=env,capture_output=True,text=True,check=True)
     assert not (root/'commands.jsonl').exists() and '22351 B' in plan.stdout
-    for fail in (False,True):
-        out=root/('bad' if fail else 'good')
-        run=subprocess.run(['sh','host/check.sh',str(out)],cwd=root,
+    for moon in (False,True):
+      if (root/'commands.jsonl').exists(): (root/'commands.jsonl').unlink()
+      for fail in (False,True):
+        out=root/(('moon-' if moon else '')+('bad' if fail else 'good'))
+        run=subprocess.run(['sh','host/check.sh',str(out)]+(['--moonshot'] if moon else []),cwd=root,
                            env=dict(env,**({'FAIL_GATES':'1'} if fail else {})),capture_output=True,text=True,timeout=60)
         assert run.returncode == int(fail), (run.stdout,run.stderr)
         summary=(out/'summary.tsv').read_text().splitlines()
-        assert len(summary)==32, summary
+        assert len(summary)==(25 if moon else 32), summary
         failures=[line for line in summary if line.startswith('FAIL')]
-        assert len(failures)==(8 if fail else 0), failures
+        assert len(failures)==((9 if moon else 8) if fail else 0), failures
         assert run.stdout.index('Pass criteria') < run.stdout.index('PASS:')
         commands=[json.loads(line) for line in (root/'commands.jsonl').read_text().splitlines()]
-        assert commands[-1]=='wifimem 13 20m' and len(commands)==22*(2 if fail else 1), commands
+        assert commands[-1]==('wifimem 17 26m667' if moon else 'wifimem 13 20m'), commands
+        assert len(commands)==(17 if moon else 22)*(2 if fail else 1), commands
 print('check: dry plan, all commands run after failures, strict CRC/decode/2%/heap gates, final exit and summary pass')

@@ -50,6 +50,9 @@ typedef struct {
  * modify the workspace or TS state. GCS accepts arbitrary dfl_bits, including 0. */
 int dvbs2_bb_gcs(dvbs2_workspace *ws, const dvbs2_mode *mode,
                 const uint8_t *payload, size_t dfl_bits);
+/* RO is the two-bit MATYPE-1 code: 0=0.35, 1=0.25, 2=0.20 (5.1.6). */
+int dvbs2_bb_gcs_ro(dvbs2_workspace *ws, const dvbs2_mode *mode,
+                   const uint8_t *payload, size_t dfl_bits, unsigned ro);
 int dvbs2_bb_ts(dvbs2_workspace *ws, const dvbs2_mode *mode,
                dvbs2_ts_state *state, const uint8_t *input, size_t input_bytes);
 
@@ -86,8 +89,9 @@ typedef struct dvbs2_fast dvbs2_fast;
 /* NIBBLE uses register-based BCH rows for PSRAM workspaces; the default byte
  * rows are cached in internal RAM by the fast stream. MAP_SPARSE keeps the
  * 8PSK mapper's hot cache footprint at 512 B beside a PSRAM workspace.
- * MAP_QUADS selects the QPSK block shaper's four-symbol bytes. */
-enum { DVBS2_BCH_NIBBLE = 16, DVBS2_MAP_SPARSE = 256, DVBS2_MAP_QUADS = 512 };
+ * MAP_QUADS selects the QPSK block shaper's four-symbol bytes.
+ * RO_20 selects GCS BBHEADER roll-off 0.20; the default is 0.35. */
+enum { DVBS2_BCH_NIBBLE = 16, DVBS2_MAP_SPARSE = 256, DVBS2_MAP_QUADS = 512, DVBS2_RO_20 = 1024 };
 /* QPSK only: MAP_QUADS makes the packed APIs emit four phase>>1 codes per byte,
  * oldest in bits 7:6. The last byte's unused low bits are zero. */
 void dvbs2_pack_quads(const uint8_t *phases, uint8_t *packed, size_t symbols);

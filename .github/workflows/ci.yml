@@ -40,6 +40,7 @@ jobs:
       - run: python tests/test_stream_profile.py
       - run: python tests/test_check.py
       - run: python tests/test_encoder_memory.py
+      - run: python tests/test_rational.py
       - run: python tests/test_stream.py
 
   firmware:

@@ -97,9 +97,13 @@ for mc in range(4,12):
     dvbtx['dvbdump'][1].append((f'{mc} 26m667 16',(mc,16,128,1,0,3,80000000)))
     dvbtx['dvbpace'][1].append((f'{mc} 26m667 30',(mc,30,128,0,80000000,3)))
     dvbtx['wifimem'][1].append((f'{mc} 26m667',(mc,3,80000000)))
-for mc in range(12,18):
-    for cmd in dvbtx:
-        dvbtx[cmd][0].append(('2400 ' if cmd == 'dvb' else '')+f'{mc} 26m667'+('' if cmd == 'wifimem' else ' 30'))
+for mc in range(4,18):
+    for token,n in (("33m333",12), *(([("26m667",3)]) if mc >= 12 else [])):
+        dvbtx['dvb'][1].append((f'2400 {mc} {token} 30',(2400,mc,30,0,128,n,80000000)))
+        dvbtx['dvbdump'][1].append((f'{mc} {token} 16',(mc,16,128,1,0,n,80000000)))
+        dvbtx['dvbpace'][1].append((f'{mc} {token} 30',(mc,30,128,0,80000000,n)))
+        dvbtx['wifimem'][1].append((f'{mc} {token}',(mc,n,80000000)))
+dvbtx['dvbdump'][0].extend(['17 33m333 16 128 2','11 33m333 16 128 3'])
 dvbtx['dvbdump'][0].extend(['11 26m667 16 128 2','11 26m667 16 128 3'])
 
 prelude = r'''
@@ -147,6 +151,7 @@ static const char *esp_err_to_name(esp_err_t error)
     (void)error;
     return "ESP_OK";
 }
+#define DVB_SPS_12_5 12u
 static unsigned dvb_calls, dump_calls, pace_calls, wifi_calls, got[8];
 static void stub(unsigned *count, unsigned a, unsigned b, unsigned c, unsigned d, unsigned e,
                  unsigned f, unsigned g)

@@ -19,7 +19,7 @@
 #include <stdint.h>
 
 #define RING_FILLER UINT32_MAX
-#define RING_CHOICES 8      // > ceil((16380/4 + 8)/3330) + 2, even with only dummies
+#define RING_CHOICES 8      // > ceil((16380*5/12 + 12)/3330) + 2, even with only dummies
 #define RING_MAX_SLOTS 8
 
 typedef struct {

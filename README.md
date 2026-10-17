@@ -94,6 +94,12 @@ ends with a summary. It checks all golden waveforms on the host, selected
 8PSK 9/10 at 5 Msym/s must retain at least 22,351 B with Wi-Fi up. It never
 flashes, changes NVS or keys the radio. [Exact gates](docs/bank-geometry.md#evidence-and-acceptance).
 
+The experimental `33m333` token runs QPSK/8PSK at exactly 100/3 Msym/s with
+roll-off 0.20; 8PSK also accepts `26m667`. Host-generated C dumps decode bit-exact
+in LeanDVB. Their portable FIR fill misses the real-time budget; board timing,
+RAM and RF remain unmeasured. [System schedule and coordinator gates](docs/moonshot.md).
+`host/check.sh --moonshot --plan` prints the 15% reserve and 20,000 B heap gates.
+
 ## Console and host tools
 
 QPSK defaults to 1 Msym/s. Both modulations accept `5m`, `10m`, `20m`;

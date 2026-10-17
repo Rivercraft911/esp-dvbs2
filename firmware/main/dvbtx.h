@@ -2,8 +2,12 @@
 
 #include <stdint.h>
 
-// QPSK/8PSK encoded on core 0 and shaped on core 1. At 80 MS/s, QPSK uses
-// four-symbol blocks at 3/4 sps and 8PSK uses a six-symbol pulse at 4 sps.
+// The sps argument is an integer except DVB_SPS_12_5, meaning exactly 12/5.
+#define DVB_SPS_12_5 12u
+
+// QPSK/8PSK encoded on core 0 and shaped on core 1. Measured 80 MS/s modes
+// use QPSK blocks at 3/4 sps and short 8PSK at 4 sps. New 12/5-sps and
+// 8PSK 3-sps modes use a portable correctness FIR, not a real-time kernel.
 void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, unsigned level,
                 unsigned sps, uint32_t dac_rate);
 

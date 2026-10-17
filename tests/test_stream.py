@@ -146,6 +146,34 @@ int usb_serial_jtag_write_bytes(const void *, size_t, unsigned);
 '''
 
 
+def compile_stream(folder):
+    tmp = str(folder)
+    (folder / "native.h").write_text(NATIVE)
+    for header in ("esp_err.h", "esp_cpu.h", "esp_attr.h", "esp_heap_caps.h", "esp_rom_crc.h",
+                   "driver/usb_serial_jtag.h", "freertos/FreeRTOS.h", "freertos/semphr.h",
+                   "freertos/task.h"):
+        path = folder / header
+        path.parent.mkdir(exist_ok=True)
+        path.write_text('#include "native.h"\n')
+    exe = folder / "stream"
+    subprocess.run(["cc", "-O2", "-std=c11", "-D_POSIX_C_SOURCE=200809L",
+                    "-Wall", "-Wextra", "-Werror", "-pthread",
+                    "-I" + tmp, "-I" + str(ROOT / "firmware/main"),
+                    "-I" + str(ROOT / "firmware/components/dvbs2/include"),
+                    "-I" + str(ROOT / "firmware/components/radio_s3/include"),
+                    "-I" + str(ROOT / "firmware/components/station_id/include"),
+                    str(ROOT / "tests/stream_host.c"), str(ROOT / "firmware/main/ring.c"),
+                    str(ROOT / "firmware/main/shaper.c"),
+                    str(ROOT / "firmware/main/shaper_short.c"),
+                    str(ROOT / "firmware/main/shaper_rational.c"),
+                    str(ROOT / "firmware/main/shaper_qpsk.c"),
+                    str(ROOT / "firmware/components/dvbs2/dvbs2.c"),
+                    str(ROOT / "firmware/components/dvbs2/fast.c"),
+                    str(ROOT / "firmware/components/station_id/station_id.c"),
+                    "-lm", "-o", str(exe)], check=True)
+    return exe
+
+
 def test_stream(output=None, receiver=None):
     golden = json.loads((ROOT / "tests/data/waveform_crcs.json").read_text())
     seen = set()
@@ -153,28 +181,7 @@ def test_stream(output=None, receiver=None):
         output.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
         folder = pathlib.Path(tmp)
-        (folder / "native.h").write_text(NATIVE)
-        for header in ("esp_err.h", "esp_cpu.h", "esp_attr.h", "esp_heap_caps.h", "esp_rom_crc.h",
-                       "driver/usb_serial_jtag.h", "freertos/FreeRTOS.h", "freertos/semphr.h",
-                       "freertos/task.h"):
-            path = folder / header
-            path.parent.mkdir(exist_ok=True)
-            path.write_text('#include "native.h"\n')
-        exe = folder / "stream"
-        subprocess.run(["cc", "-O2", "-std=c11", "-D_POSIX_C_SOURCE=200809L",
-                        "-Wall", "-Wextra", "-Werror", "-pthread",
-                        "-I" + tmp, "-I" + str(ROOT / "firmware/main"),
-                        "-I" + str(ROOT / "firmware/components/dvbs2/include"),
-                        "-I" + str(ROOT / "firmware/components/radio_s3/include"),
-                        "-I" + str(ROOT / "firmware/components/station_id/include"),
-                        str(ROOT / "tests/stream_host.c"), str(ROOT / "firmware/main/ring.c"),
-                        str(ROOT / "firmware/main/shaper.c"),
-                        str(ROOT / "firmware/main/shaper_short.c"),
-                        str(ROOT / "firmware/main/shaper_qpsk.c"),
-                        str(ROOT / "firmware/components/dvbs2/dvbs2.c"),
-                        str(ROOT / "firmware/components/dvbs2/fast.c"),
-                        str(ROOT / "firmware/components/station_id/station_id.c"),
-                        "-lm", "-o", str(exe)], check=True)
+        exe = compile_stream(folder)
         cases = [(4, 40, "N0CALL", 40)]
         cases += [(mc,n,"N0CALL",40) for mc in range(4,18) for n in (8,4)]
         cases += [(mc,4,"N0CALL",80) for mc in range(4,18)]

@@ -4,7 +4,8 @@ Core 0 continuously encodes normal DVB-S2 frames. QPSK MODCODs 4..11 and 8PSK
 12..17 share BB framing, BCH and LDPC error correction. `host/dvbs2.py` is the
 independent bit-level reference. Firmware stages must match it bit for bit.
 The format is SIS/CCM, generic continuous stream, pilots on, roll-off 0.35,
-PL scrambling code 0. The library also tests transport-stream input and pilots off.
+PL scrambling code 0. Experimental `33m333` selects GCS roll-off 0.20 with
+`DVBS2_RO_20`; all defaults keep 0.35. The library also tests transport-stream input and pilots off.
 
 The equations and constellation labels come from EN 302 307-1: BB framing in
 5.1, BCH/LDPC in 5.3.1/5.3.2 and Table 5a, interleaving/mapping in 5.3.3/5.4,

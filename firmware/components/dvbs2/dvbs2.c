@@ -91,12 +91,18 @@ static inline void bb_header(uint8_t *out, uint8_t matype, unsigned dfl,
 HOT int dvbs2_bb_gcs(dvbs2_workspace *ws, const dvbs2_mode *mode,
                      const uint8_t *payload, size_t dfl_bits)
 {
-    if (!ws || !valid_mode(mode) || dfl_bits > (size_t)mode->kbch - 80 ||
+    return dvbs2_bb_gcs_ro(ws, mode, payload, dfl_bits, 0);
+}
+
+HOT int dvbs2_bb_gcs_ro(dvbs2_workspace *ws, const dvbs2_mode *mode,
+                        const uint8_t *payload, size_t dfl_bits, unsigned ro)
+{
+    if (ro > 2 || !ws || !valid_mode(mode) || dfl_bits > (size_t)mode->kbch - 80 ||
         (!payload && dfl_bits)) {
         return -1;
     }
     memset(ws->bits, 0, mode->kbch / 8);
-    bb_header(ws->bits, 0x70, (unsigned)dfl_bits, 0, 0, 0);
+    bb_header(ws->bits, 0x70 | ro, (unsigned)dfl_bits, 0, 0, 0);
     if (dfl_bits) {
         memcpy(ws->bits + 10, payload, (dfl_bits + 7) / 8);
         if (dfl_bits & 7) {

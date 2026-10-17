@@ -31,7 +31,7 @@ static void bank_fill(radio_s3_fill_fn fn, void *ctx, unsigned b, uint64_t first
         const size_t count = parts[p];
         if (!count) continue;
         const unsigned sps = dvb.table.n;
-        const size_t end_symbol = (at + count + sps - 1) / sps;
+        const size_t end_symbol = ((at + count)*dvb.den + sps - 1) / sps;
         const size_t needed = (end_symbol + dvb.ring.frame_symbols - 1) / dvb.ring.frame_symbols;
         // Host correctness test only: wait for the native encoder, with a deadlock timeout.
         unsigned tries = 0;
@@ -40,6 +40,20 @@ static void bank_fill(radio_s3_fill_fn fn, void *ctx, unsigned b, uint64_t first
             vTaskDelay(1);
         }
         assert(fn(banks[b] + at % RADIO_S3_BANK_WORDS, at, count, ctx) == ESP_OK);
+        if (dvb.fir) {
+            uint8_t shifted[7000];
+            const int64_t s0 = (int64_t)(at*dvb.den/sps)-dvb.history;
+            const size_t symbols = dvb.history+end_symbol-at*dvb.den/sps;
+            assert(symbols <= sizeof shifted && end_symbol <= phase_count);
+            for (size_t i = 0; i < symbols; ++i)
+                shifted[i] = s0+(int64_t)i < 0 ? 0 : phases[s0+i]<<4;
+            shaper_rational(reference, shifted+dvb.history, at*dvb.den%sps, count,
+                             dvb.taps, sps, dvb.den, dvb.span);
+            for (size_t i = 0; i < count; ++i)
+                assert(banks[b][(at+i)%RADIO_S3_BANK_WORDS] == reference[i]);
+            at += count;
+            continue;
+        }
         if (enc.quads) {
             uint8_t blocks[1400] = {0};
             const unsigned row = 4*sps, skip = at % row;
@@ -117,7 +131,8 @@ int main(int argc, char **argv)
     if (argc >= 5) callsign = argv[4];
     const uint32_t rate = argc >= 6 ? (uint32_t)atol(argv[5]) : RADIO_S3_DAC_RATE;
     const unsigned mc = (unsigned)atoi(argv[1]), sps = (unsigned)atoi(argv[2]), frames = (unsigned)atoi(argv[6]);
-    const bool quads = mc < 12 && rate == 80000000, short_pulse = mc >= 12 && rate == 80000000;
+    const bool fir = sps == DVB_SPS_12_5 || (mc >= 12 && sps == 3);
+    const bool quads = !fir && mc < 12 && rate == 80000000, short_pulse = !fir && mc >= 12 && rate == 80000000;
     const dvbs2_mode *mode = dvbs2_find_mode(mc);
     const size_t length = dvbs2_frame_symbols(mode, 1), bytes = (mode->kbch - 80) / 8;
     phase_count = (frames + 2) * length;
@@ -128,7 +143,7 @@ int main(int argc, char **argv)
     for (unsigned f = 0; f < frames + 2; ++f) {
         for (size_t i = 0; i < bytes; ++i) payload[i] = next_byte(&x);
         station_payload_header(payload, bytes, callsign);
-        assert(!dvbs2_bb_gcs(&ws, mode, payload, bytes * 8));
+        assert(!dvbs2_bb_gcs_ro(&ws, mode, payload, bytes * 8, sps == DVB_SPS_12_5 ? 2 : 0));
         dvbs2_bb_scramble(&ws, mode); dvbs2_bch(&ws, mode); dvbs2_ldpc(&ws, mode);
         uint8_t *out = phases + f * length;
         dvbs2_map(&ws, mode, out + 90); dvbs2_plframe(mode, 1, out);
@@ -138,8 +153,8 @@ int main(int argc, char **argv)
     allocation_count = 0;
     assert(start_encoder("dvbdump", mc, 128, 0, sps, rate));
     const int allocations = allocation_count;
-    const bool resident = sps != 40 && (mc < 12 || sps == 4);
-    assert(allocations == (sps == 40 ? 7 : 3 + (mc >= 12 && !short_pulse) +
+    const bool resident = sps != 40 && (fir || mc < 12 || sps == 4);
+    assert(allocations == (fir ? 3+(mode->t > 8) : sps == 40 ? 7 : 3 + (mc >= 12 && !short_pulse) +
                           (resident && mode->t > 8) + !resident));
     for (unsigned i = 0; i < 64; ++i) {
         if (native_blocks[i].p == enc.ws)
@@ -149,8 +164,8 @@ int main(int argc, char **argv)
     }
     if (quads && sps == 4) assert((uint32_t *)enc.ws == shaper_store+QPSK_TABLE_WORDS(4));
     assert(!((uintptr_t)enc.fast & 15) && !((uintptr_t)enc.ws & 15));
-    if (resident) assert(dvb.win == (uint8_t *)enc.ws + DVBS2_FAST_WORKSPACE_USED);
-    assert(dvb.win_bytes <= (sps == 3 ? 1370u : sps == 4 ? 4105u : sps == 8 ? 2058u : 420u));
+    if (resident && !fir) assert(dvb.win == (uint8_t *)enc.ws + DVBS2_FAST_WORKSPACE_USED);
+    assert(dvb.win_bytes <= (fir ? 6840u : sps == 3 ? 1370u : sps == 4 ? 4105u : sps == 8 ? 2058u : 420u));
     stop_encoder();
     printf("}\n");
     assert(live_allocations == 0);

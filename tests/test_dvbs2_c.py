@@ -45,6 +45,7 @@ class NativeEncoder:
             "dvbs2_find_mode": (ct.c_void_p, [ct.c_uint]),
             "dvbs2_frame_symbols": (ct.c_size_t, [ct.c_void_p, ct.c_int]),
             "dvbs2_bb_gcs": (ct.c_int, [ct.c_void_p, ct.c_void_p, U8P, ct.c_size_t]),
+            "dvbs2_bb_gcs_ro": (ct.c_int, [ct.c_void_p, ct.c_void_p, U8P, ct.c_size_t, ct.c_uint]),
             "dvbs2_bb_ts": (ct.c_int, [ct.c_void_p, ct.c_void_p, ct.c_void_p,
                                       U8P, ct.c_size_t]),
             "dvbs2_bb_scramble": (None, [ct.c_void_p, ct.c_void_p]),
@@ -181,6 +182,24 @@ def test_gcs(native):
             frames += 1
     print(f"C GCS: {frames} frames, all 14 modes, every stage, empty/partial/full fields, "
           "both pilot settings, zero/one/random payloads")
+
+
+def test_rolloff(native):
+    for mc, modulation, rate in MODES:
+        mode, c = native.lib.dvbs2_find_mode(mc), d.code(rate)
+        bits = np.random.default_rng(mc).integers(0, 2, c.kbch-80, dtype=np.uint8)
+        # Keep the payload alive while C reads it.
+        packed = np.packbits(bits)
+        for ro, alpha in enumerate((.35, .25, .20)):
+            assert native.lib.dvbs2_bb_gcs_ro(native.ws, mode, packed.ctypes.data_as(U8P), len(bits), ro) == 0
+            native.stages(d.bbframe(bits, rate, ro=alpha), mode, rate, modulation, 1)
+        assert native.lib.dvbs2_fast_prepare(native.fast, mode, 1, 15 | 1024) == 0
+        assert native.lib.dvbs2_fast_bb_gcs(native.fast, native.ws, packed.ctypes.data_as(U8P), len(bits)) == 0
+        native.fast_stages(d.bbframe(bits, rate, ro=.20), mode, rate, modulation, 1)
+        before = bytes(native.ws)
+        assert native.lib.dvbs2_bb_gcs_ro(native.ws, mode, packed.ctypes.data_as(U8P), len(bits), 3) == -1
+        assert bytes(native.ws) == before
+    print("roll-off: plain .35/.25/.20 and fast .20, every stage against Python, invalid code leaves workspace untouched")
 
 
 def test_ts(native):
@@ -462,5 +481,5 @@ def test_bch_cache(native):
 if __name__ == "__main__":
     with NativeEncoder() as native:
         for test in (test_modes, test_gcs, test_ts, test_ldpc_boundaries, test_invalid_inputs,
-                     test_fast, test_complete_frame, test_packed, test_bch_cache):
+                     test_rolloff, test_fast, test_complete_frame, test_packed, test_bch_cache):
             test(native)

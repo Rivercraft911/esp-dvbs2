@@ -14,8 +14,8 @@ B is a selection input, not measured occupied bandwidth. At B = 20 MHz auto stay
 at B = 20 MHz + 1 Hz it selects wide. DAC rate alone does not choose the filter.
 
 `filter auto|narrow|wide|analog` changes RAM configuration for later keyed commands. It does
-not start Wi-Fi or access PHY registers. Reset restores auto. Keep `chain cwgain` for RF.
-`cw40` is retained for historical comparisons: its packet-test flag does not select CW width.
+not start Wi-Fi or access PHY registers. Reset restores auto. RF uses the retained cwgain
+bring-up; its packet-test flag does not select CW width.
 The ordinary `tx` signals report their spectral span, including space for the station ID.
 Older component run APIs without a bandwidth argument conservatively use the full DAC band.
 USB dumps, paced simulation and `wifimem` do not apply or read these filter registers.
@@ -112,15 +112,10 @@ In the restricted agent sandbox only, the optional IDF component manager needs
 are used. Native compiler tests use ROM/MMIO fakes; synthetic spectra do not qualify hardware.
 
 After the coordinator builds/flashes, retain `info`, firmware hash, binary SHA-256, full commands
-and records in a new `results/<date>-widefilter/`. Do not edit past results. A slim regression:
-16-frame dumps `11 26m667`, `4 20mq4`, plus `4 1m` and `13 5m` regression dumps; existing
-[QPSK checks](qpsk-goal.md) supply exact CRCs and LeanDVB invocation (use legacy `dvbdump 4 40`
-for the 1 Msym/s regression). Require CRC equality, zero overlap errors, >=frames-2 contiguous
-bit-exact payloads, no LDPC flips/check failures or BCH corrections/failures. Samples are
-unchanged by filter controls. `dvbpace 11 26m667 30`: zero underruns, late fills, fatal misses;
-positive slack. `wifimem 11 26m667` and `wifimem 8 20mq4`: start/stop only, zero playback,
-internal free-up/low-water >=30000 B and >=20000 B respectively. Changing `filter` before these
-must not cause register access. Keep board work within the coordinator's usual regression set.
+and records in a new `results/<date>-widefilter/`. Do not edit past results.
+`host/check.sh --plan` gives the current CRC/decode/pace/heap regression gates;
+`host/check.sh --moonshot --plan` adds the experimental 33m333 and 8PSK 26m667 gates.
+Both scripts are radio off. Changing `filter` before them must not cause register access.
 
 ## Coordinator checks, keyed inside the box
 

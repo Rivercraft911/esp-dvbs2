@@ -14,6 +14,7 @@ import zlib
 p = argparse.ArgumentParser(description='Radio-off board gates, about five minutes after build/flash.')
 p.add_argument('out', nargs='?', type=pathlib.Path)
 p.add_argument('--plan', action='store_true', help='print every criterion without running anything')
+p.add_argument('--moonshot', action='store_true', help='33m333 and 8PSK 26m667 gates, plus slim regressions')
 p.add_argument('--all-crcs', action='store_true', help='also dump every golden waveform on the board (much slower)')
 a = p.parse_args()
 python = sys.executable
@@ -24,6 +25,10 @@ golden = json.loads(pathlib.Path('tests/data/waveform_crcs.json').read_text())
 selected = ['4/40/40/16', '13/8/40/16', '13/4/40/40',
             '4/4/80/16', '11/4/80/16', '13/4/80/16', '15/4/80/16',
             '4/3/80/16', '11/3/80/16']
+if a.moonshot:
+    golden.update(json.loads(pathlib.Path('tests/data/rational_crcs.json').read_text()))
+    selected = ['4/40/40/16','13/8/40/16','15/4/80/16',
+                '11/12/80/16','17/12/80/16','17/3/80/16']
 if a.all_crcs: selected = list(golden)
 # Every modulation/rate path; 30 s for the four critical paths, 10 s for regressions.
 # Sources are immutable 30 s board measurements; their cycle ceilings are never relaxed.
@@ -48,29 +53,44 @@ limits = [{k:baseline(topic,cmd)[k]*102//100 for k in metrics} for _,_,_,topic,c
 # Exact previously measured heap floors: free with Wi-Fi up / command low-water, bytes.
 wifi = [(17,'5m',22351,22351), (11,'26m667',43203,41387), (13,'20m',36727,34875)]
 
+if a.moonshot:
+    # Exact 240 MHz deadlines, 15% reserve. No host-clock timing thresholds.
+    paces = [paces[4], paces[7]] + [(mc,token,30,None,None) for mc,token in
+                                  ((11,'33m333'),(17,'33m333'),(17,'26m667'))]
+    limits = [limits[4],limits[7]]
+    for mc,token,_,_,_ in paces[2:]:
+        num,den = (12,5) if token == '33m333' else (3,1)
+        symbols = 33282 if mc < 12 else 22194
+        ceiling = 240000000*symbols*num*85//(80000000*den*100)
+        limits.append(dict(max_fill_cycles=40137, encode_cycles_mean=ceiling,
+                           encode_cycles_live_max=ceiling))
+    wifi = [(17,'5m',22351,22351)] + [(mc,token,20000,20000) for mc,token in
+                                   ((11,'33m333'),(17,'33m333'),(17,'26m667'))]
+
 def mode(mc, token):
-    sps = {'':40,'5m':8,'10m':4,'20m':4,'26m667':3}[token]
-    rate = 80000000 if token in ('20m','26m667') else 40000000
-    quads = mc < 12 and rate == 80000000
+    sps = {'':40,'5m':8,'10m':4,'20m':4,'26m667':3,'33m333':12}[token]
+    rate = 80000000 if token in ('20m','26m667','33m333') else 40000000
+    quads = mc < 12 and rate == 80000000 and sps != 12
     return sps, rate, quads
 
 def dump_args(key):
     mc,n,mhz,frames = map(int,key.split('/'))
-    token = '26m667' if n == 3 else '20m' if mhz == 80 else {40:'',8:'5m',4:'10m'}[n]
+    token = '33m333' if n == 12 else '26m667' if n == 3 else '20m' if mhz == 80 else {40:'',8:'5m',4:'10m'}[n]
     decim = 10 if n == 40 else 2 if mc < 12 and n == 8 else 1
     return mc,token,frames,decim
 
 print(f'Pass criteria fixed before any command: firmware {firmware}, stored N0CALL; no NVS writes.')
 print('Host: all 57 waveform CRCs from 46f90af; every filled word equals the plain encoder.')
+if a.moonshot: print('New modes: six Python/C waveform CRCs; rational sample count and roll-off 0.20; 15% timing reserve, 20000 B heap floor.')
 print('FEC: 140 phase CRCs, 14 zero-mismatch PIE checks, all four stage bits active.')
 print('Every stream: ESP_OK, encoder timed/healthy, zero underruns/stalls, correct rate/pulse/ring/mapper.')
 print('Dumps: exact byte count, firmware/USB/file CRC equality, zero overlap errors; LeanDVB')
 print('  recovers >=N-2 QPSK frames; 8PSK allows <=1 leading acquisition frame and <=3 EOF frames,')
 print('  with zero LDPC checks/flips, BCH errors/corrections and payload errors.')
 for key in selected: print('  dump', dump_args(key), 'CRC32', golden[key])
-print('Paces: four 30 s key runs and four 10 s regressions; zero late fills/switches/fatal lateness, positive slack, live encoder, conserved fill words.')
+print('Paces: selected 30 s key runs and 10 s regressions; zero late fills/switches/fatal lateness, positive slack, live encoder, conserved fill words.')
 for (mc,token,seconds,topic,old),limit in zip(paces,limits):
-    print(f'  {mc} {token or "1m"}, {seconds} s: ceilings {limit} cycles (encoder cycles/frame), <=102% of {topic}: {old}')
+    print(f'  {mc} {token or "1m"}, {seconds} s: ceilings {limit} cycles (encoder cycles/frame); '+(f'<=102% of {topic}: {old}' if topic else '85% of the exact deadline'))
 for mc,token,up,low in wifi: print(f'  wifimem {mc} {token}: up >= {up} B, minimum >= {low} B; no playback.')
 print('Continue after failures, print every result and exit nonzero if any gate fails.', flush=True)
 if a.plan: sys.exit(0)
@@ -113,12 +133,16 @@ def stream(rows, mc, token):
     assert len(results) == 1, rows
     r = results[0]
     n,rate,quads = mode(mc,token)
-    resident = n != 40 and (mc < 12 or n == 4)
+    fir = n == 12 or (mc >= 12 and n == 3)
+    den = 5 if n == 12 else 1
+    resident = n != 40 and (fir or mc < 12 or n == 4)
     assert r['status'] == 'ESP_OK' and not r['encoder_failed'] and r['encoder_timed'], r
     assert r['callsign'] == 'N0CALL' and r['underruns'] == r['stall_ms'] == 0, r
-    assert r['modcod'] == mc and r['sps'] == n and r['symbol_rate'] == rate//n, r
-    assert r['pulse_symbols'] == (6 if mc >= 12 and rate == 80000000 else 9), r
-    assert r['ring_slots'] == (8 if n == 40 else 3 if n <= 4 else 2), r
+    assert r['modcod'] == mc and r['sps'] == n/den and r['symbol_rate'] == rate*den//n, r
+    assert r['rolloff'] == (.2 if n == 12 else .35), r
+    if fir: assert r['sps_num'] == n and r['sps_den'] == den, r
+    assert r['pulse_symbols'] == (12 if n == 12 else 6 if mc >= 12 and n == 4 and rate == 80000000 else 9), r
+    assert r['ring_slots'] == (8 if n == 40 else 3 if n <= 4 or fir else 2), r
     assert r['ring_format'] == ('raw' if n == 40 else 'quads' if quads else 'packed'), r
     assert r['workspace_memory'] == ('internal' if resident else 'psram'), r
     assert r['packed_mapper'] == ('none' if n == 40 else 'quads' if quads else 'direct' if resident else 'sparse'), r
@@ -131,7 +155,10 @@ def dump(key):
     r = stream(rows,mc,token)
     binary = [b for b in rows if 'binary_bytes' in b]
     data = (out/(key.replace('/','-')+'.iq')).read_bytes()
-    assert len(binary) == 1 and len(data) == binary[0]['binary_bytes'] == frames*r['frame_symbols']*r['sps']//decim*4, r
+    num,_,_ = mode(mc,token)
+    den = 5 if token == '33m333' else 1
+    samples = (frames*r['frame_symbols']*num+den-1)//den
+    assert len(binary) == 1 and len(data) == binary[0]['binary_bytes'] == (samples+decim-1)//decim*4, r
     assert r['frames'] == frames and r['decimation'] == decim and r['overlap_mismatches'] == 0, r
     assert r['crc32'] == binary[0]['host_crc32'] == zlib.crc32(data) == golden[key], r
 
@@ -140,7 +167,7 @@ def decode(key):
     n,rate,_ = mode(mc,token)
     name = key.replace('/','-')
     run([python,'host/onair.py',str(out/(name+'.iq')),'--rate',str(rate//decim),
-         '--symbol-rate',str(rate/n),'--scale','512','--stream',str(frames),'--modcod',str(mc),
+         '--symbol-rate',str(rate*(5 if n == 12 else 1)/n),'--rolloff',str(.2 if n == 12 else .35),'--scale','512','--stream',str(frames),'--modcod',str(mc),
          '--callsign','N0CALL','--receiver',receiver,'--shift','0'],name+'.decode.json')
     r = json.loads((out/(name+'.decode.json')).read_text())
     assert r['frame_lock'] and r['status_complete'] and r['payload_match'], r
@@ -168,6 +195,7 @@ def fec():
     run([python,'tests/test_fecbench.py',str(out/'runs.jsonl'),'--correctness-only'],'fec-check.log')
 
 step('all host waveform CRCs', lambda:run([python,'tests/test_stream.py'],'host-crcs.log'))
+if a.moonshot: step('new host streams', lambda:run([python,'tests/test_rational.py'],'host-new.log'))
 step('info',info)
 step('fecbench pie',fec)
 for key in selected:
