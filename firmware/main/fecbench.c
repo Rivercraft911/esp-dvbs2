@@ -136,7 +136,7 @@ static unsigned impl;
 
 // Before timing a pie run: feed one GCS frame through each PIE stage and the portable C stage
 // from the same input. Returns a mask of stages that differ: 1 bb, 2 bch, 4 ldpc, 8 map + pl,
-// 16 packed map + pl (8PSK).
+// 16 packed map + pl.
 static unsigned check_pie(dvbs2_fast *f, const dvbs2_mode *mode, unsigned pie,
                           dvbs2_workspace *c, dvbs2_workspace *v, uint8_t *oc, uint8_t *ov,
                           const uint8_t *payload)
@@ -167,19 +167,17 @@ static unsigned check_pie(dvbs2_fast *f, const dvbs2_mode *mode, unsigned pie,
         }
         memcpy(v, c, sizeof *v);   // the next stage starts from the C result
     }
-    // 8PSK packed frames (the transmitter's internal ring): PIE and C map_packed + pl_packed
+    // Packed frames (the transmitter's internal ring): PIE and C map_packed + pl_packed
     // from the same codeword must both equal the C phases packed two per byte.
-    if (mode->bits_per_symbol == 3) {
-        dvbs2_pack(oc, oc, symbols);              // forward packing works in place
-        for (unsigned use = 0; use < 2; ++use) {
-            if (dvbs2_fast_prepare(f, mode, PILOTS, use ? pie : 0) != 0 ||
-                    dvbs2_fast_map_packed(f, c, ov) != 0) {
-                return 31;
-            }
-            dvbs2_fast_pl_packed(f, ov);
-            if (memcmp(oc, ov, symbols / 2) != 0) {
-                bad |= 16;
-            }
+    dvbs2_pack(oc, oc, symbols);              // forward packing works in place
+    for (unsigned use = 0; use < 2; ++use) {
+        if (dvbs2_fast_prepare(f, mode, PILOTS, use ? pie : 0) != 0 ||
+                dvbs2_fast_map_packed(f, c, ov) != 0) {
+            return 31;
+        }
+        dvbs2_fast_pl_packed(f, ov);
+        if (memcmp(oc, ov, symbols / 2) != 0) {
+            bad |= 16;
         }
     }
     return bad;

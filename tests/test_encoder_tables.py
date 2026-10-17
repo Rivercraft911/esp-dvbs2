@@ -70,8 +70,27 @@ def test_packed_four():
         assert table[v & 2047] ^ ((v >> 10) & 2) == expected
 
 
+def test_qpsk_packed():
+    import re
+    text = gen.generate().split("fast_map_2_packed[256]", 1)[1].split("};", 1)[0]
+    table = [int(v, 16) for v in re.findall(r"0x[0-9a-f]+", text)]
+    for x in range(256):
+        for g in range(256):
+            dd = x ^ (x >> 1)
+            index = ((dd ^ g) & 0x55) | (((x ^ (g >> 1) ^ (dd & g)) & 0x55) << 1)
+            seen = [(table[index] >> (4*i)) & 15 for i in range(4)]
+            expected = []
+            for i in range(4):
+                a, b = (x >> (7-2*i)) & 1, (x >> (6-2*i)) & 1
+                phase = (1, 7, 3, 5)[2*a+b]
+                rotation = ((g >> (7-2*i)) & 1)*2 + ((g >> (6-2*i)) & 1)
+                expected.append((phase + 2*rotation) & 7)
+            assert seen == expected
+
+
 if __name__ == "__main__":
     test_byte_bch()
     test_sparse_pairs()
     test_packed_four()
+    test_qpsk_packed()
     print("encoder tables: all byte remainders, full BCH tails and 4096 sparse map indices match")

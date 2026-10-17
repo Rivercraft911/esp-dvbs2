@@ -373,7 +373,7 @@ def pack(phases):
 
 
 def test_packed(native):
-    """Packed 8PSK frames (two phases per byte) equal the model's phases, packed."""
+    """Packed QPSK/8PSK frames (two phases per byte) equal the model's phases, packed."""
     lib = native.lib
     frames = 0
     for modcod, modulation, rate in MODES:
@@ -383,14 +383,6 @@ def test_packed(native):
         raw = np.full(size + 64, 0xA5, np.uint8)
         at = 16 + (-raw.ctypes.data % 16)
         f = raw.ctypes.data + at
-        out = np.zeros(DVBS2_MAX := 33282, np.uint8)
-        if modulation == "qpsk":
-            assert lib.dvbs2_fast_prepare(f, mode, 1, 15) == 0
-            assert lib.dvbs2_fast_map_packed(f, native.ws, out.ctypes.data_as(U8P)) == -1
-            assert lib.dvbs2_encode_frame_packed(f, native.ws, None,
-                                                 out.ctypes.data_as(U8P), 8 * n,
-                                                 out.ctypes.data_as(U8P)) == -1
-            continue
         rng = np.random.default_rng(100 + modcod)
         for pilots in (0, 1):
             assert lib.dvbs2_fast_prepare(f, mode, pilots, 15) == 0
@@ -436,8 +428,8 @@ def test_packed(native):
     np.testing.assert_array_equal(packed, pack(dummy))
     assert lib.dvbs2_encode_frame_packed(None, native.ws, None, packed.ctypes.data_as(U8P), 8,
                                          packed.ctypes.data_as(U8P)) == -1
-    print(f"packed 8PSK frames: {frames} GCS/TS frames, six MODCODs, pilots on/off, five output "
-          "alignments; equal to the model's phases packed two per byte; QPSK refused")
+    print(f"packed frames: {frames} GCS/TS frames, all 14 MODCODs, pilots on/off, five output "
+          "alignments; equal to the model's phases packed two per byte")
 
 
 def test_bch_cache(native):
