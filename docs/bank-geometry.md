@@ -232,25 +232,28 @@ Pass criteria are set before the run. Each command takes about a minute or less.
    `overlap_mismatches` 0.
 3. `dvbdump 13 20m 40 128 1`, `dvbdump 15 20m 40 128 1`: CRCs 474263962 and 1757765864 (the
    10m samples on the other geometry), `overlap_mismatches` 0, `sample_rate` 80000000.
-   `dvbdump 13 10m80 40 128 1`: CRC 1937985440, the 5m samples.
+   `dvbdump 13 10m80 40 128 1`: CRC 1937985440, the 5m samples. Informational: the `copy`
+   phase per fill in `profile` should be about 0.6k cycles (4 sps) and 0.3k (8 sps) below the
+   matching 40 MS/s dump, the smaller overlap cache (model).
 4. `dvbpace 13 10m 60`, `dvbpace 15 10m 60`, `dvbpace 13 5m 60`, `dvbpace 4 60`: `ESP_OK`;
    late fills, fatal and underruns 0; **`late_switches` 0 and `max_switch_late_cycles` 0**
-   (were about 612 and 735-755); longest fill within 1.5k cycles of the build-out (57.6k, 42.9k,
-   41.2k).
+   (were about 612 and 735-755); longest fill within 1.5k cycles of results/2026-10-16-next
+   (56.9k, 56.9k, 43.0k, 41.4k).
 5. `dvbpace 13 10m80 60`: `ESP_OK`, `dac_rate` 80000000, `step_words` 15740; late fills, fatal
    and late switches 0; longest fill at most 44,000 and smallest slack at least 3,000 cycles
    (model 42.6k and 4.6k). Underruns are expected 0 (ring model: 8,328 symbols of lead at 49%
    encoder load with two slots); if not, the two-slot ring is the cause, not the schedule.
 6. `dvbpace 13 20m 5`: expected to fail cleanly with `ESP_ERR_TIMEOUT` and `fatal_late` 1
    (model: 56.5k against 47,220 + 1,152). Pass: that status, no reset, and `info` answers
-   afterwards. Its `max_fill_cycles` is the first 80 MS/s fill number for 4 sps.
+   afterwards. This checks only that an overrun at 80 MS/s stops the run; it is optional.
 
 ## Keyed tests for the coordinator, inside the shielded box
 
 Not run by this branch. Each needs the usual callsign, ID and attenuation rules.
 
 - **K0, now, 40 MS/s, with the receiver** (cabled through at least 30 dB, as in
-  results/2026-10-16-radio): `tx 2420 gap 2 0`, capture at 61.44 MS/s, then
+  results/2026-10-16-radio): `tx 2420 gap 15 0` (the start and end IDs take about 10.4 s of
+  it), a 0.5 s capture at 61.44 MS/s between the IDs, then
   `capture.py <file> --format i16 --rate 61440000 --scale 2048 --signal gap`. It measures where
   the DAC really switches. Pass: every gap between 1 and 63 samples (inside the 64-sample lead);
   `off_grid` 0 apart from ID spaces. Report `lag_samples_median` (d) and the p1/p99 spread.
