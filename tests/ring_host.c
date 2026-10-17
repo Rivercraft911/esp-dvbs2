@@ -30,8 +30,10 @@
 #include "ring.h"
 
 #define BANK 16380
+#ifndef LEAD                      // the 40 MS/s geometry; test_ring.py also builds 80 MS/s's
 #define LEAD 64
 #define TAIL 2048
+#endif
 #define STEP (BANK - LEAD - TAIL)
 static unsigned sps = 40;
 #define SPS sps

@@ -52,3 +52,8 @@ jobs:
           esp_idf_version: v6.1
           target: esp32s3
           path: tests/shaper_pie
+      - uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v6.1
+          target: esp32s3
+          path: tests/radio_qemu

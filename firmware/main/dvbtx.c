@@ -1,5 +1,6 @@
 // Continuous QPSK at 1 Msym/s (40 sps), or 8PSK at 5/10 Msym/s (8/4 sps).
 // 8PSK requires an explicit 5m or 10m before duration/frame count in all commands.
+// dvbdump and dvbpace also run the 8 and 4 sps samples on the 80 MS/s bank schedule (10m80, 20m).
 // 8PSK keeps its frames in internal RAM, packed two phases per byte (dvbs2.h), so neither core
 // touches PSRAM per symbol: at 4 sps three frames, two in the table store's unused half and one
 // on the heap; at 8 sps two frames in one heap block (docs/stream-profile.md). QPSK keeps eight
@@ -60,6 +61,7 @@ typedef struct {
     size_t sample_at;               // circular cache index of sample_end
     uint32_t max_fill_cycles;       // one fill call
     bool profile;                  // radio-off commands only
+    uint32_t dac_rate;             // the run's bank geometry
     stream_profile_t copy, whole, partial, save, notify;
     uint64_t fill_words, fill_cycles;
     uint32_t fill_calls;
@@ -317,14 +319,16 @@ static size_t packed_bytes(size_t symbols)
 // Build the scaled table and the dummy frame, start the encoder on core 0 and wait until it has
 // filled every slot. Returns the frame length in symbols, or 0 after printing an error for `cmd`.
 static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, unsigned stall_ms,
-                            unsigned sps)
+                            unsigned sps, uint32_t dac_rate)
 {
     const dvbs2_mode *mode = dvbs2_find_mode(modcod);
-    if (!mode || (mode->bits_per_symbol == 2 ? sps != 40 : (sps != 8 && sps != 4))) {
+    if (!mode || (mode->bits_per_symbol == 2 ? sps != 40 : (sps != 8 && sps != 4)) ||
+            (dac_rate != RADIO_S3_DAC_RATE && (dac_rate != RADIO_S3_DAC_RATE_80M || sps == 40))) {
         printf("@{\"cmd\":\"%s\",\"error\":\"invalid MODCOD/sps\"}\n", cmd);
         return 0;
     }
     const size_t symbols = dvbs2_frame_symbols(mode, PILOTS);
+    dvb.dac_rate = dac_rate;
     (void)heap_caps_monitor_local_minimum_free_size_start();   // low-water mark of this command
     memset(&enc, 0, sizeof enc);
     enc.mode = mode;
@@ -545,7 +549,7 @@ static void print_mode(const char *cmd, unsigned modcod, size_t symbols, unsigne
     const dvbs2_mode *mode = dvbs2_find_mode(modcod);
     printf("@{\"cmd\":\"%s\",\"modcod\":%u,\"rate\":\"%s\",\"symbol_rate\":%u,\"rolloff\":0.35,"
            "\"pilots\":%d,\"frame_symbols\":%u,\"payload_bytes_per_frame\":%u,\"peak_level\":%u",
-           cmd, modcod, mode->rate, RADIO_S3_DAC_RATE / dvb.table.n, PILOTS, (unsigned)symbols,
+           cmd, modcod, mode->rate, (unsigned)(dvb.dac_rate / dvb.table.n), PILOTS, (unsigned)symbols,
            (unsigned)((mode->kbch - 80) / 8), level);
 }
 
@@ -578,7 +582,7 @@ void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, 
     if (!station_require("dvb")) {
         return;
     }
-    const size_t symbols = start_encoder("dvb", modcod, level, 0, sps);
+    const size_t symbols = start_encoder("dvb", modcod, level, 0, sps, RADIO_S3_DAC_RATE);
     if (!symbols) {
         return;
     }
@@ -596,16 +600,17 @@ void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, 
 }
 
 void dvbtx_pace(unsigned modcod, uint32_t seconds, unsigned level, unsigned stall_ms,
-                 unsigned sps)
+                 unsigned sps, uint32_t dac_rate)
 {
-    const size_t symbols = start_encoder("dvbpace", modcod, level, stall_ms, sps);
+    const size_t symbols = start_encoder("dvbpace", modcod, level, stall_ms, sps, dac_rate);
     if (!symbols) {
         return;
     }
     radio_s3_stats_t s;
-    const esp_err_t err = radio_s3_paced_run(seconds, fill, NULL, &s);
+    const esp_err_t err = radio_s3_paced_run_rate(seconds, dac_rate, fill, NULL, &s);
     print_mode("dvbpace", modcod, symbols, level);
-    printf(",\"seconds\":%" PRIu32 ",\"step_words\":%u", seconds, RADIO_S3_STEP_WORDS);
+    printf(",\"seconds\":%" PRIu32 ",\"dac_rate\":%" PRIu32 ",\"step_words\":%u", seconds,
+           dac_rate, RADIO_S3_STEP_FOR(dac_rate));
     print_timing(&s);
     stop_encoder();
     printf(",\"status\":\"%s\"%s}\n", esp_err_to_name(err),
@@ -645,9 +650,9 @@ static esp_err_t sink(const uint32_t *bank, uint64_t first, size_t count, void *
 }
 
 void dvbtx_dump(unsigned modcod, unsigned frames, unsigned level, unsigned decim,
-                unsigned stall_ms, unsigned sps)
+                unsigned stall_ms, unsigned sps, uint32_t dac_rate)
 {
-    const size_t symbols = start_encoder("dvbdump", modcod, level, stall_ms, sps);
+    const size_t symbols = start_encoder("dvbdump", modcod, level, stall_ms, sps, dac_rate);
     if (!symbols) {
         return;
     }
@@ -663,10 +668,10 @@ void dvbtx_dump(unsigned modcod, unsigned frames, unsigned level, unsigned decim
     }
     d->decim = decim, d->used = 0, d->crc = 0;
     printf("@{\"cmd\":\"dvbdump\",\"binary_bytes\":%" PRIu64 ",\"format\":\"int16 I/Q LE\","
-           "\"sample_rate\":%u}\n", bytes, RADIO_S3_DAC_RATE / decim);
+           "\"sample_rate\":%" PRIu32 "}\n", bytes, dac_rate / decim);
     fflush(stdout);
     radio_s3_dry_stats_t s;
-    const esp_err_t err = radio_s3_dry_run(fill, NULL, samples, sink, d, &s);
+    const esp_err_t err = radio_s3_dry_run_rate(fill, NULL, samples, dac_rate, sink, d, &s);
     if (d->used) {
         flush(d);
     }
@@ -689,7 +694,7 @@ void dvbtx_wifi(unsigned modcod, unsigned sps)
     }
     size_t symbols = 0;
     if (modcod) {
-        symbols = start_encoder("wifimem", modcod, 128, 0, sps);
+        symbols = start_encoder("wifimem", modcod, 128, 0, sps, RADIO_S3_DAC_RATE);
         if (!symbols) {
             return;
         }

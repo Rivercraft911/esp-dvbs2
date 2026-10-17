@@ -120,6 +120,24 @@ def test_ring():
             packed=True, margin=0, fails=True)
         run(exe, "sim", 22194, 2, 20, 400, 0, 0, 1, sps=4, dummy=3330, split=True, cache=True,
             packed=True, margin=0)
+        # The 80 MS/s bank geometry (radio_s3.h: lead 128, tail 512) with the packed 8PSK ring
+        # at 4 sps, the only rate it serves, and at 8 sps for the cut symbols.
+        exe80 = pathlib.Path(tmp) / "ring_host_80m"
+        subprocess.run([cc, "-O2", "-std=c11", "-Wall", "-Wextra", "-Werror", "-pthread",
+                        "-DLEAD=128", "-DTAIL=512", f"-I{tmp}", f"-I{main}", str(main / "ring.c"),
+                        str(ROOT / "tests" / "ring_host.c"), "-o", str(exe80)], check=True)
+        for sps in (4, 8):
+            for load in (400, 800, 950):
+                r = run(exe80, "sim", 22194, 3, 300, load, 0, 0, 1, sps=sps, dummy=3330,
+                        split=True, cache=True, packed=True)
+                assert r["underruns"] == 0, r
+            r = run(exe80, "sim", 22194, 3, 200, 600, 10, 3000, 1, sps=sps, dummy=3330,
+                    split=True, cache=True, packed=True)
+            assert r["underruns"] > 0, r
+            run(exe80, "threads", 22194, 3, 80, 53 + sps, sps=sps, dummy=3330, split=True,
+                cache=True, packed=True)
+        run(exe80, "sim", 22194, 3, 20, 400, 0, 0, 1, sps=8, dummy=3330, split=True, cache=True,
+            packed=True, margin=0, fails=True)
         threads = [run(exe, "threads", 3330, 4, 400, seed) for seed in (1, 2, 3)]
         threads.append(run(exe, "threads", L, SLOTS, 60, 7))
         assert sum(t["underruns"] for t in threads) > 0 and sum(t["frames"] for t in threads) > 0
@@ -128,7 +146,8 @@ def test_ring():
           f"give {slow['underruns']}, {bursts['underruns']} and {cold['underruns']} fillers; "
           f"short frames {short['underruns']}; two threads, {len(threads)} runs, "
           f"{sum(t['underruns'] for t in threads)} fillers; frames always in order, overlap "
-          "re-reads identical, no read of a slot being written")
+          "re-reads identical, no read of a slot being written; packed ring also on the 80 MS/s "
+          "bank geometry")
 
 
 if __name__ == "__main__":

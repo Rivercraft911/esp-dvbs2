@@ -114,7 +114,7 @@ python3 host/plots.py                           # redraw the figures from result
 | `host/` | Python reference encoder, board tool, figures |
 | `tests/` | Bit-exact checks of the reference |
 | `results/` | One folder per measurement run, with its raw records |
-| `docs/` | [The story so far](docs/story.md), [prior art](docs/prior-art.md), [bench setup](docs/hardware.md), [files over the link](docs/file-link.md), [APSK shaping](docs/apsk-shaping.md), figures |
+| `docs/` | [The story so far](docs/story.md), [prior art](docs/prior-art.md), [bench setup](docs/hardware.md), [files over the link](docs/file-link.md), [APSK shaping](docs/apsk-shaping.md), [bank geometry at 80 MS/s](docs/bank-geometry.md), figures |
 
 ## Transmitting
 
