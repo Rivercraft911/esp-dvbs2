@@ -140,5 +140,6 @@ Every failed stage is reported and later stages continue. The script never
 flashes or keys RF. The current targets are expected to fail timing/RAM.
 
 Host reproduction: `tests/test_rational.py --receiver /path/to/leandvb`.
-Instruction-model reproduction and hashes are in the two-core results record;
+Instruction-model reproduction and hashes are in the
+[two-core results record](../results/2026-10-17-moon-two-core/README.md);
 raw traces and the longer analysis remain in ignored `notes/moon-sys/`.

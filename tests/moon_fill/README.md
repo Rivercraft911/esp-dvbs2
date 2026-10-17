@@ -1,7 +1,8 @@
 # Fractional fill experiment
 
-This peripheral-free app tests three kernels: 8PSK at 3 samples/symbol and
-QPSK/8PSK at 12/5 samples/symbol. It checks 243 block cases and 11,664 guarded
+This peripheral-free app tests four kernels: 8PSK at 3 samples/symbol with
+roll-off .35/.20, and QPSK/8PSK at 12/5 samples/symbol with .20. It checks
+324 block cases and 15,552 guarded
 sample slices, including every fractional phase, destination alignment and a
 whole bank. QEMU checks instruction semantics, never silicon timing.
 
@@ -29,7 +30,10 @@ dumps with Python, then independently decodes six 16-frame streams. The CRCs
 in `tests/data/moon_waveform_crcs.json` use N0CALL, peak 128, and padding to a
 whole input block. They describe host dumps, not board measurements.
 
-These candidates fail the timing/RAM admission gates. They are not live
-transmitter modes. `membench moon` is an isolated coordinator probe; the normal
-transmitter and its waveforms retain their existing selection. Long findings,
-raw logs and the RAM account are in ignored `notes/moon-fill-report.md`.
+The transmitter now selects the .20 kernels through the two-core path. They
+remain experimental and fail the timing/RAM admission model. `membench moon`
+compares the original three isolated kernels; `tests/test_rational.py` checks
+the integrated encoder/ring/fill and six .20 LeanDVB streams. Admission belongs
+to `host/check.sh --moonshot`. The dispatch trace probe is `moon_handoff.c`;
+[build and replay instructions](../../results/2026-10-17-moon-two-core/README.md)
+separate executed instruction counts from silicon timing. Raw logs stay in notes/.
