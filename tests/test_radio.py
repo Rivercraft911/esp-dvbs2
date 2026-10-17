@@ -2,8 +2,10 @@
 
 No ESP-IDF or hardware is needed: python3 tests/test_radio.py. These tests verify the
 software timeline model. Only RF capture can establish whether the DAC follows that model.
+With a log argument, checks the QEMU run of radio_s3's dry run instead (tests/radio_qemu/README.md).
 """
 import ctypes as ct
+import json
 import pathlib
 import subprocess
 import sys
@@ -137,7 +139,29 @@ def run_checks(lib):
     print("radio: C tone sign/levels, two-tone offsets, PRBS seeks, guard words, 40 bank seams pass")
 
 
+def check_qemu(path):
+    """tests/radio_qemu.c: radio_s3's dry run at both bank geometries (radio_s3.h)."""
+    geometry = {40000000: (64, 2048), 80000000: (128, 512)}
+    records = [json.loads(line[1:]) for line in pathlib.Path(path).read_text().splitlines()
+               if line.startswith('@{"test":')]
+    dry = [r for r in records if r["test"] == "dry"]
+    assert len(dry) == 6 and {r["rate"] for r in dry} == set(geometry), records
+    for r in dry:
+        lead, tail = geometry[r["rate"]]
+        step = N - lead - tail
+        banks = -(-r["samples"] // step)
+        assert r["status"] == 0 and r["bad"] == 0 and r["overlap_mismatches"] == 0, r
+        assert r["played"] == r["samples"] and r["sink_calls"] == banks, r
+        assert r["fills"] == banks + 1 and r["overlap_words"] == banks * (lead + tail), r
+    assert [r["status"] for r in records if r["test"] == "bad_rate"] == [0x102]
+    print(f"qemu: radio_s3 dry run at 40 and 80 MS/s geometry, {sum(r['played'] for r in dry)} "
+          "played samples in order and correct, both banks equal over every lead and tail")
+
+
 if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        check_qemu(sys.argv[1])
+        sys.exit()
     with tempfile.TemporaryDirectory() as tmp:
         library = pathlib.Path(tmp) / "signals.so"
         subprocess.run(["cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-shared",
