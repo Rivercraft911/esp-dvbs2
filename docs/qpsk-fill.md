@@ -1,5 +1,9 @@
 # QPSK block fill
 
+The board follow-up found a misaligned encoder workspace in the isolated probe.
+It now uses `heap_caps_aligned_alloc(16,...)`. The fill and PIE kernels are unchanged.
+The corrected build still needs the radio-off recheck below.
+
 Candidate interface for the encoder engineer: `shaper_qpsk.h`. No `dvbtx.c` changes.
 
 `shaper_qpsk_samples(dst, src, skip, count, table, n)` consumes four QPSK symbols per
@@ -32,9 +36,10 @@ The assembled n3 loop models at **22 cycles per 12 samples** (1.833 cycles/sampl
 The n4 loop models at **27 cycles per 16 samples** (1.688 cycles/sample).
 The estimated worst steady whole banks, including an old 2,348-cycle notification
 allowance, are **35,455 cycles at n3** and **33,026 cycles at n4**. Both clear the
-40,137-cycle requested ceiling in this model. These are predictions, not silicon
-results. The isolated probe does not run the encoder during filling or start Wi-Fi.
-No serial port, board or radio was accessed.
+40,137-cycle requested ceiling in this model. These remain model estimates. The coordinator subsequently measured isolated
+maxima of 34,582/32,248 cycles on e975eb2; see the follow-up below. The isolated
+probe does not run the encoder during filling or start Wi-Fi. This agent used
+only supplied captures, host tests and QEMU, with no serial access or flashing.
 
 For output symbol j = 0..3 and sample phase p = 0..n-1, table part r = 0..2 uses
 four symbols at positions `3-k-4*r`, k = 0..3, relative to this block's start:
@@ -230,39 +235,82 @@ Run the [shaper QEMU procedure](../tests/shaper_pie/README.md), then pass its lo
 `IDF_COMPONENT_MANAGER=0` avoids this sandbox's denied process-discovery call;
 there are no managed components. It does not change the target configuration.
 
-## Coordinator: criteria before running
+## Board follow-up, 2026-10-17
 
-These commands are radio off and each should take about a minute or less. The
-coordinator builds/flashes through the normal workflow. Use a fresh folder and
-record the firmware revision. CRC constants require the existing N0CALL payload
-header; with another stored callsign, regenerate host expectations for that callsign.
-Do not change the stored callsign just for this experiment.
+The coordinator's e975eb2 captures first differ at sample 270 (n3) or 360 (n4),
+symbol 90, bank 0, four-symbol block 22, packed source byte 22 / window byte 24.
+Part 0 selects row `0x11` instead of `0x1f`; parts 1 and 2 match. This is the
+first data symbol after the 90-symbol PLHEADER, before any bank wrap.
 
-1. Correctness first: all old membench checks and four new QPSK checks match;
-   all 140 FEC CRCs and 14 PIE comparisons pass; no allocation failures.
-2. New dumps: USB CRC matches the table above, zero overlap mismatches, `ESP_OK`.
-   LeanDVB must recover at least 12 contiguous frames, zero payload errors,
-   LDPC flips/checks, BCH failures/corrections. MER at least 37 dB (n3), 40 dB (n4).
-3. Timing: n3 isolated whole-bank maximum **<=40,137 cycles**, n4 **<=36,000 cycles**;
-   minimum fill slack >=7,083 cycles, zero late fills/fatal late, `ESP_OK`.
-   `encoder_timed:false` and `source_memory:"internal"` must be present. This passes
-   only the isolated fill. Also compare membench minima with 30,057/27,646-cycle
-   kernel models; predeclared calibration ceilings are 31,000/29,000 cycles.
-4. Unchanged dump CRCs must still pass. Real-time integration later must re-run
-   the same bank ceiling with the new encoder, ring and notification active.
-   No keyed run or Wi-Fi startup test is requested here.
+The pre-encoder allocated `dvbs2_workspace` with ordinary malloc, violating the
+16-byte alignment contract in `dvbs2.h`. Captures imply offset 12 modulo 16:
+PIE BB stores round down by 12 bytes, leaving a stale 12-byte gap near the BB tail;
+QPSK mapping reads from 12 bytes before the workspace. BCH and LDPC then encode
+corrupted input. The gap's old contents explain why n3/n4 parity differs.
+
+Every sample can be inverted through the table to recover the packed input.
+QEMU at offset 12, seeded with only the recovered 12-byte prefix and 12-byte
+untouched gap, reproduces all four board dumps exactly, including their failing
+CRCs. Aligned QEMU output matches Python. No phase scaling, table placement,
+packing, bank/window or LDXQ compensation change is needed. The old native test
+always aligned malloc to 16 bytes; the regression now deliberately returns
+8-modulo-16 ordinary allocations and checks the encoder's alignment contract.
+It fails before the fix and passes after it.
+
+The corrected production preparation/window/PIE fill in QEMU matches all
+7,455,168 host samples. LeanDVB recovers 14 payload frames per dump with zero
+payload errors, LDPC flips/checks and BCH failures/corrections. MER remains
+37.98..37.99 dB (n3), 41.21..41.22 dB (n4). IDF v6.1 builds successfully.
+
+Coordinator records are in `notes/qpsk-fill-board/`; the full sample comparison,
+QEMU reproduction and stale-byte derivation are in `notes/qpsk-fill-fix.md`.
+These are supplied board measurements, not measurements of the corrected build:
+
+| e975eb2, radio off | n3 | n4 |
+|---|---:|---:|
+| PIE membench minimum, cycles | 30,069 | 27,659 |
+| 30 s pace maximum fill, cycles | 34,582 | 32,248 |
+| Minimum slack, cycles | 12,369 | 14,701 |
+| Late fills | 0 | 0 |
+
+Both paces report `ESP_OK`, internal input and `encoder_timed:false`. These maxima
+are below the 35,455/33,026-cycle estimates **including** a notification allowance.
+They exceed the fill-only 33,107/30,678-cycle estimates by 4.5%/5.1%. They do not
+measure encoder integration. The four membench hashes, 140 FEC CRCs, 14 PIE checks
+and the coordinator's four unchanged dumps passed. The corrected allocation runs
+only before filling; the timed fill and both kernel instruction streams are unchanged.
+
+## Coordinator: radio-off recheck
+
+Record the corrected firmware revision in a fresh folder. Keep the radio off.
+For N0CALL and 16 frames, the expected CRCs remain:
+
+| Command | IQ CRC32 |
+|---|---:|
+| `dvbdump qpsk3 16 4` | 3388792897 |
+| `dvbdump qpsk3 16 11` | 1271511239 |
+| `dvbdump qpsk4 16 4` | 3789273049 |
+| `dvbdump qpsk4 16 11` | 2081653259 |
+
+1. `membench`: require all existing checks and the four QPSK checks to match.
+   QPSK PIE minima should remain near 30,069/27,659 cycles.
+2. Four dumps above: require expected CRC, USB CRC agreement, zero overlap
+   mismatches and `ESP_OK`. Decode each with LeanDVB: expect 14 contiguous payload
+   frames, zero payload errors, LDPC flips/checks and BCH failures/corrections;
+   MER >=37 dB (n3), >=40 dB (n4).
+3. `dvbpace qpsk3 30 11` and `dvbpace qpsk4 30 11`: compare against the measured
+   maxima/slack above. Require zero late/fatal fills, `ESP_OK`, internal source,
+   `encoder_timed:false`; retain ceilings 40,137/36,000 cycles and slack >=7,083.
 
 ```sh
 PY=/Library/Frameworks/Python.framework/Versions/3.13/bin/python3
-OUT=notes/qpsk-fill-board
+OUT=notes/qpsk-fill-recheck
 RX=/Users/river/Documents/stanford/SSI/esp-dvbs2/notes/leansdr/src/apps/leandvb
 mkdir "$OUT"
-"$PY" host/board.py info --reset --out "$OUT/runs.jsonl"
+"$PY" host/board.py info --out "$OUT/runs.jsonl"
 "$PY" host/board.py membench --timeout 75 --out "$OUT/mem.jsonl"
 "$PY" host/shaper.py verify "$OUT/mem.jsonl"
 "$PY" host/qpsk_fill.py --membench "$OUT/mem.jsonl"
-"$PY" host/board.py 'fecbench nibble' --timeout 75 --out "$OUT/fec.jsonl"
-"$PY" tests/test_fecbench.py "$OUT/fec.jsonl" --correctness-only
 for n in 3 4; do
     for mc in 4 11; do
         "$PY" host/board.py "dvbdump qpsk$n 16 $mc" --timeout 75 \
@@ -270,23 +318,11 @@ for n in 3 4; do
         if [ "$n" = 3 ]; then RS=26666666.666666668; else RS=20000000; fi
         "$PY" host/onair.py "$OUT/qpsk$n-$mc.iq" --rate 80000000 --scale 512 \
             --symbol-rate "$RS" --modcod "$mc" --stream 16 --callsign N0CALL \
-            --mer --shift 0 --receiver "$RX"
+            --mer --shift 0 --receiver "$RX" > "$OUT/dec-$n-$mc.json"
     done
     "$PY" host/board.py "dvbpace qpsk$n 30 11" --timeout 60 --out "$OUT/pace.jsonl"
 done
-"$PY" host/board.py 'dvbdump 4 40' --timeout 75 --save "$OUT/old-qpsk.iq" --out "$OUT/old.jsonl"
-"$PY" host/board.py 'dvbdump 13 5m 40 128 1' --timeout 75 --save "$OUT/old-13-5m.iq" --out "$OUT/old.jsonl"
-"$PY" host/board.py 'dvbdump 15 5m 40 128 1' --timeout 75 --save "$OUT/old-15-5m.iq" --out "$OUT/old.jsonl"
-"$PY" host/board.py 'dvbdump 13 10m 40 128 1' --timeout 75 --save "$OUT/old-13-10m.iq" --out "$OUT/old.jsonl"
-"$PY" host/board.py 'dvbdump 15 10m 40 128 1' --timeout 75 --save "$OUT/old-15-10m.iq" --out "$OUT/old.jsonl"
 ```
-
-Unchanged CRCs in that order: 1435641601, 1937985440, 1163322913, 474263962,
-1757765864. Require zero overlap mismatches and matching USB CRCs for each.
-
-The next experiment is the coordinator's full n3 fill measurement, then integration
-with the other engineer's encoder through the packed-byte interface. A fill-only
-pass cannot establish the complete 46.6 Mb/s transmitter.
 
 ## Changed files
 

@@ -1,10 +1,47 @@
 // Run the real isolated command and callback under a host bank scheduler. No hardware.
 #include "native.h"
+#include "dvbs2.h"
 #include "radio_s3.h"
 #include "station_id.h"
 static FILE *capture;
 static unsigned calls, paced_calls;
 static const char *station_store_get(void) { return "N0CALL"; }
+
+// Ordinary malloc need not satisfy PIE's 16-byte workspace contract. The shared
+// native allocator used to align every allocation and hid the probe's bad caller.
+static void *unaligned[64];
+static void *probe_malloc(size_t n, unsigned caps)
+{
+    uint8_t *base = heap_caps_malloc(n+8,caps);
+    if (!base) return NULL;
+    for (unsigned i = 0; i < 64; ++i) if (!unaligned[i]) {
+        unaligned[i] = base+8;
+        return base+8;
+    }
+    abort();
+}
+static void *allocation_base(void *p)
+{
+    for (unsigned i = 0; i < 64; ++i)
+        if (p && unaligned[i] == p) return (uint8_t *)p-8;
+    return p;
+}
+static void probe_free(void *p)
+{
+    heap_caps_free(allocation_base(p));
+    for (unsigned i = 0; i < 64; ++i) if (unaligned[i] == p) unaligned[i] = NULL;
+}
+static size_t probe_size(void *p) { return heap_caps_get_allocated_size(allocation_base(p)); }
+static int checked_bb(const dvbs2_fast *f, dvbs2_workspace *ws,
+                       const uint8_t *payload, size_t bits)
+{
+    assert(!((uintptr_t)ws & 15));
+    return dvbs2_fast_bb_gcs(f,ws,payload,bits);
+}
+#define heap_caps_malloc probe_malloc
+#define heap_caps_free probe_free
+#define heap_caps_get_allocated_size probe_size
+#define dvbs2_fast_bb_gcs checked_bb
 #include "../firmware/main/qpsk_probe.c"
 
 static uint32_t banks[2][RADIO_S3_BANK_WORDS] __attribute__((aligned(16)));

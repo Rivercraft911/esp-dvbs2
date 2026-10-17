@@ -80,7 +80,8 @@ static uint8_t *prepare(unsigned modcod, unsigned frames, bool internal, size_t 
     *length = symbols*frames/4;
     uint8_t *packed = heap_caps_malloc(*length, (internal ? MALLOC_CAP_INTERNAL : MALLOC_CAP_SPIRAM)
                                                  | MALLOC_CAP_8BIT);
-    dvbs2_workspace *ws = heap_caps_malloc(sizeof *ws,MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    // PIE rounds vector addresses down. Plain malloc need only be word aligned.
+    dvbs2_workspace *ws = heap_caps_aligned_alloc(16,sizeof *ws,MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     dvbs2_fast *fast = heap_caps_aligned_alloc(16,dvbs2_fast_mode_size(mode),
                                               MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     uint8_t *payload = heap_caps_malloc(bytes,MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
