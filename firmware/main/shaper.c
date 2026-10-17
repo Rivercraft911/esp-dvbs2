@@ -97,10 +97,11 @@ void shaper_build(shaper_table_t *t, uint32_t *blocks, const int32_t *taps, int 
     }
 }
 
-IRAM_ATTR void shaper_fill_c(uint32_t *dst, const uint8_t *sym, int nsym, const shaper_table_t *t)
+static IRAM_ATTR void fill_c(uint32_t *dst, const uint8_t *sym, int nsym,
+                             const shaper_table_t *t, int shift)
 {
     const int n = t->n, row = (n + 3) / 4 * 4, bw = t->block_words;
-    const int b = t->bits, shift = b == 3 ? 4 : 5;
+    const int b = t->bits;
     const uint32_t wmask = (1u << (SPAN * b)) - 1;
     uint32_t h = 0;  // codes, newest in the low bits
     for (int i = -SHAPER_HISTORY; i < 0; ++i) {
@@ -127,6 +128,11 @@ IRAM_ATTR void shaper_fill_c(uint32_t *dst, const uint8_t *sym, int nsym, const 
             if (p2) p2 += 4;
         }
     }
+}
+
+IRAM_ATTR void shaper_fill_c(uint32_t *dst, const uint8_t *sym, int nsym, const shaper_table_t *t)
+{
+    fill_c(dst, sym, nsym, t, t->bits == 3 ? 4 : 5);
 }
 
 // At most five tail symbols. Keep the legacy C kernel as an independent oracle.
@@ -157,7 +163,9 @@ IRAM_ATTR void shaper_fill_raw(uint32_t *dst, const uint8_t *sym, int nsym,
         return;
     }
     const int groups = (nsym - 1) / 6, bulk = 6 * groups + 1;
-    (t->n == 8 ? shaper_fill8_raw_pie : shaper_fill4_raw_pie)(dst, sym, groups, t->blocks);
+    (t->bits == 2
+        ? (t->n == 8 ? shaper_fill8_qpsk_raw_pie : shaper_fill4_qpsk_raw_pie)
+        : (t->n == 8 ? shaper_fill8_raw_pie : shaper_fill4_raw_pie))(dst, sym, groups, t->blocks);
     raw_c(dst + bulk * t->n, sym + bulk, nsym - bulk, t);
 #else
     // Host execution of the same edge glue, without Xtensa instructions.
@@ -180,6 +188,14 @@ static IRAM_ATTR void fill_codes(uint32_t *dst, const uint8_t *sym, int nsym,
     if (!nsym) return;
     if (t->parts == 2) {
         shaper_short4_pie(dst, sym, nsym, t->blocks);
+    } else if (t->bits == 2 && t->n != 40) {
+        // Radix-four kernels consume 16*(phase>>1).
+        const int groups = (nsym - 1) / 6, bulk = 6 * groups + 1;
+        void (*kernel)(uint32_t *, const uint8_t *, int, const uint32_t *) =
+            t->n == 8 ? shaper_fill8_qpsk_pie : shaper_fill4_qpsk_pie;
+        kernel(dst, sym, groups, t->blocks);
+        for (int i = bulk; i < nsym; ++i)
+            kernel(dst + i * t->n, sym + i, 0, t->blocks);
     } else if (t->n == 4) {
         shaper_fill4_all_pie(dst, sym, nsym, t->blocks);
     } else if (t->n == 8) {
@@ -190,7 +206,7 @@ static IRAM_ATTR void fill_codes(uint32_t *dst, const uint8_t *sym, int nsym,
         shaper_fill40_pie(dst, sym, nsym, t->blocks);
     }
 #else
-    shaper_fill_c(dst, sym, nsym, t);
+    fill_c(dst, sym, nsym, t, t->n == 40 ? 5 : 4);
 #endif
 }
 

@@ -67,7 +67,7 @@ void shaper_samples(uint32_t *dst, const uint8_t *sym, unsigned skip, size_t cou
 void shaper_samples_profile(uint32_t *dst, const uint8_t *sym, unsigned skip, size_t count,
                             const shaper_table_t *t, stream_profile_t *whole,
                             stream_profile_t *partial);
-// Same sample/phase contract, consuming codes 16*k directly (ring_packed_codes).
+// Consumes 16*k for 8PSK / n40, or 16*(k>>1) for QPSK n4/n8 (ring_packed_qpsk).
 void shaper_samples_codes_profile(uint32_t *dst, const uint8_t *sym, unsigned skip, size_t count,
                                   const shaper_table_t *t, stream_profile_t *whole,
                                   stream_profile_t *partial);
@@ -90,3 +90,10 @@ void shaper_fill5_pie(uint32_t *dst, const uint8_t *sym, int groups, const uint3
 // Radio-off 20ms6 experiment. sym[-5..nsym] must be readable (one lookahead byte).
 void shaper_short_build(shaper_table_t *t, uint32_t *blocks, unsigned peak);
 void shaper_short4_pie(uint32_t *dst, const uint8_t *sym, int nsym, const uint32_t *blocks);
+
+// Radix-four specializations of the existing kernels. Same group/output contract.
+// Scaled entries consume 16*(phase>>1); raw entries consume phase 0..7.
+void shaper_fill4_qpsk_pie(uint32_t *, const uint8_t *, int, const uint32_t *);
+void shaper_fill8_qpsk_pie(uint32_t *, const uint8_t *, int, const uint32_t *);
+void shaper_fill4_qpsk_raw_pie(uint32_t *, const uint8_t *, int, const uint32_t *);
+void shaper_fill8_qpsk_raw_pie(uint32_t *, const uint8_t *, int, const uint32_t *);

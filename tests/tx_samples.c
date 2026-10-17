@@ -81,6 +81,14 @@ static int packed_check(void)
                 for (unsigned i = 0; i < n; ++i) h = (h ^ dst[i]) * 16777619u;
                 hash = (hash ^ h) * 16777619u;
                 ++cases;
+                ring_unpack_qpsk(dst, pk_packed, at, n);
+                for (unsigned i = 0; i < n; ++i) mismatch += dst[i] != (pk_phases[at + i] >> 1) * 16;
+                for (unsigned i = 0; i < 16 + off; ++i) guards &= pk_out[i] == 0x5a;
+                for (unsigned i = 0; i < 16; ++i) guards &= dst[n + i] == 0x5a;
+                h = 2166136261u;
+                for (unsigned i = 0; i < n; ++i) h = (h ^ dst[i]) * 16777619u;
+                hash = (hash ^ h) * 16777619u;
+                ++cases;
             }
         }
     }
@@ -117,18 +125,18 @@ static int copy_check(void)
 
 int tx_samples_check(void)
 {
-    const unsigned ns[] = {4, 8, 40};
+    const unsigned ns[] = {4, 8, 40, 4, 8};
     const int32_t *taps[] = {shaper_taps_8psk_n4_a35, shaper_taps_8psk_n8_a35,
-                              shaper_taps_qpsk_n40_a35};
+                              shaper_taps_qpsk_n40_a35, shaper_taps_8psk_n4_a35, shaper_taps_8psk_n8_a35};
     int bad = 0;
-    for (unsigned profile = 0; profile < 3; ++profile) {
+    for (unsigned profile = 0; profile < 5; ++profile) {
         const unsigned n = ns[profile];
         shaper_table_t t;
-        shaper_build(&t, shaper_store, taps[profile], n, n == 40 ? 2 : 3);
+        shaper_build(&t, shaper_store, taps[profile], n, profile >= 2 ? 2 : 3);
         uint32_t x = 2026;
         for (unsigned i = 0; i < sizeof raw; ++i) {
             x ^= x << 13, x ^= x >> 17, x ^= x << 5;
-            raw[i] = n == 40 ? 2 * ((x >> 16) & 3) + 1 : (x >> 16) & 7;
+            raw[i] = profile >= 2 ? 2 * ((x >> 16) & 3) + 1 : (x >> 16) & 7;
             shifted[i] = raw[i] << 4;
         }
         const uint8_t *sym = raw + SHAPER_HISTORY;
@@ -153,7 +161,11 @@ int tx_samples_check(void)
                 for (unsigned i = 0; i < 4 + offset; ++i) guards &= guarded[i] == 0xa5a5a5a5u;
                 for (unsigned i = 0; i < 4; ++i) guards &= dst[count + i] == 0xa5a5a5a5u;
                 hash = (hash ^ check(dst, count)) * 16777619u;
+                if (profile >= 3)
+                    for (unsigned i = 0; i < sizeof raw; ++i) shifted[i] = (raw[i] >> 1) << 4;
                 shaper_samples_codes_profile(dst, shifted + SHAPER_HISTORY, skip, count, &t, NULL, NULL);
+                if (profile >= 3)
+                    for (unsigned i = 0; i < sizeof raw; ++i) shifted[i] = raw[i] << 4;
                 for (unsigned i = 0; i < count; ++i) mismatch += dst[i] != ref[skip + i];
                 for (unsigned i = 0; i < 4 + offset; ++i) guards &= guarded[i] == 0xa5a5a5a5u;
                 for (unsigned i = 0; i < 4; ++i) guards &= dst[count + i] == 0xa5a5a5a5u;

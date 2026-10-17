@@ -3,6 +3,7 @@
 The plain encoder checks every DAC word. Test two-slot wraps, notifications, repeated
 commands, allocation failure cleanup and dump CRCs. All clocks/heap sizes are synthetic.
 """
+import argparse
 import json
 import pathlib
 import subprocess
@@ -145,7 +146,7 @@ int usb_serial_jtag_write_bytes(const void *, size_t, unsigned);
 '''
 
 
-def test_stream(output=None):
+def test_stream(output=None, receiver=None):
     if output:
         output.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
@@ -177,20 +178,25 @@ def test_stream(output=None):
                                     (17, 8, "", 40, 0), (4, 40, "N0CALL", 40, 0), (13, 4, "N0CALL", 80, 0),
                                     (15, 4, "N0CALL", 80, 0), (17, 4, "", 80, 0), (12, 8, "", 80, 0),
                                     (13, 8, "N0CALL", 80, 0), (13, 4, "N0CALL", 80, 1),
-                                    (15, 4, "N0CALL", 80, 1), (17, 4, "", 80, 1)):
+                                    (15, 4, "N0CALL", 80, 1), (17, 4, "", 80, 1),
+                                    (15, 8, "N0CALL", 80, 0),
+                                    *[(mc, n, "N0CALL", rate, 0) for mc in range(4, 12)
+                                      for n, rate in ((8, 40), (4, 40), (8, 80), (4, 80))]):
             iq = output / f'{mc}-n{sps}-{rate}m-s{6 if short else 9}.iq' if output else folder / "dump.iq"
             out = subprocess.run([str(exe), str(mc), str(sps), str(iq), call, str(rate * 1000000), str(short)],
                                  capture_output=True, text=True, timeout=60, check=True).stdout
             records = [json.loads(line[1:]) for line in out.splitlines() if line.startswith("@")]
             dumps = [r for r in records if "crc32" in r]
             assert len(dumps) == 2
-            # The five published 40-frame board CRCs, with N0CALL in the payload header.
+            # Published 40-frame board CRCs, with N0CALL in the payload header.
             expected = {(4, 40): 1435641601, (13, 8): 1937985440, (15, 8): 1163322913,
-                        (13, 4): 474263962, (15, 4): 1757765864}
+                        (13, 4): 474263962, (15, 4): 1757765864,
+                        (4, 8): 3933043456, (11, 8): 1552954365,
+                        (4, 4): 2594131925, (11, 4): 2779934507}
             for r in dumps:
                 assert r["crc32"] == zlib.crc32(iq.read_bytes())
                 if not short and (mc, sps) in expected:
-                    assert r["crc32"] == expected[mc, sps]
+                    assert r["crc32"] == expected[mc, sps], (mc, sps, rate, r["crc32"])
                 if short and mc in (13, 15):
                     assert r["crc32"] == {13: 3178964763, 15: 4256019779}[mc]
                 assert r["status"] == "ESP_OK" and not r["encoder_failed"]
@@ -204,15 +210,15 @@ def test_stream(output=None):
                 assert 0 <= r["encode_cycles_live_max"] <= r["encode_cycles_max"]
                 assert r["ring_memory"] == ("internal" if packed else "psram")
                 assert r["ring_format"] == ("packed" if packed else "raw")
-                assert r["workspace_memory"] == ("internal" if sps == 4 else "psram")
+                assert r["workspace_memory"] == ("internal" if packed and (mc < 12 or sps == 4) else "psram")
                 assert r["workspace_bytes"] == 12420
                 assert r["workspace_heap_bytes"] == r["workspace_bytes"]
                 assert r["fast_heap_bytes"] == r["fast_bytes"]
-                cached = sps == 4 and mc != 17
+                cached = packed and (mc < 12 or sps == 4) and mc not in (10, 11, 16, 17)
                 assert r["bch_cache_bytes"] == (8192 if cached else 0)
                 assert r["bch_cache_heap_bytes"] == r["bch_cache_bytes"]
                 assert r["bch_variant"] == ("resident-byte" if cached else "nibble")
-                assert r["packed_mapper"] == ("direct" if sps == 4 else "sparse" if packed else "none")
+                assert r["packed_mapper"] == ("none" if not packed else "direct" if mc < 12 or sps == 4 else "sparse")
                 assert bool(int(r["layout"]["bch"], 16)) == cached
                 slots = [int(a, 16) for a in r["layout"]["slots"]]
                 assert len(set(slots)) == r["ring_slots"]
@@ -221,13 +227,18 @@ def test_stream(output=None):
                 if packed:
                     # Two packed frames, the packed dummy, then the payload, each with the
                     # 16 bytes the vector unpack may read past its end.
-                    frame = (22194 // 2 + 31) // 16 * 16
+                    frame = ((33282 if mc < 12 else 22194) // 2 + 31) // 16 * 16
                     assert slots[:2] == [slots[0], slots[0] + frame]
                     assert all(a % 16 == 0 for a in slots)
-                    assert filler == slots[0] + 2 * frame
+                    assert filler == slots[0] + (r["ring_slots"] if mc < 12 else 2) * frame
                     assert payload == filler + (3330 // 2 + 31) // 16 * 16
                     need = payload - slots[0] + r["payload_bytes_per_frame"]
-                    if short:
+                    if mc < 12:
+                        used = 4096 if sps == 4 else 8192
+                        assert slots[0] == int(r["layout"]["table"], 16) + used
+                        assert slots == [slots[0] + i * frame for i in range(r["ring_slots"])]
+                        assert used + need <= 65536 and r["ring_heap_bytes"] == 0
+                    elif short:
                         assert slots[0] == int(r["layout"]["table"], 16) + 16384
                         assert slots[2] >= payload + r["payload_bytes_per_frame"]
                         assert slots[2] + frame <= int(r["layout"]["table"], 16) + 65536
@@ -241,6 +252,19 @@ def test_stream(output=None):
                         assert r["ring_heap_bytes"] == need
                 assert all(p["calls"] == r["frames_encoded"] for p in r["profile"]["encoder"].values())
                 assert r["symbol_rate"] == rate * 1000000 // sps
+            if receiver and mc < 12 and sps != 40:
+                cmd = [sys.executable, str(ROOT / "host/onair.py"), str(iq),
+                       "--rate", str(rate * 1000000 // (2 if sps == 8 else 1)), "--symbol-rate", str(rate * 1000000 // sps),
+                       "--scale", "512", "--modcod", str(mc), "--stream", "40",
+                       "--callsign", call, "--receiver", str(receiver)]
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+                assert result.returncode == 0, (cmd, result.stdout, result.stderr)
+                decoded = json.loads(result.stdout)
+                assert decoded["payload_match"] and decoded["payload_frames"] >= 30, decoded
+                assert all(decoded[k] == 0 for k in ("bch_failed_frames", "bch_corrected_bits",
+                           "ldpc_checks_before", "ldpc_bit_flips", "payload_bit_errors")), decoded
+                print(f"LeanDVB: MODCOD {mc}, {sps} sps at {rate} MS/s, "
+                      f"{decoded['payload_frames']} contiguous bit-exact frames")
             # The fill depends on the sample index only: the 80 MS/s bank geometry (other lead,
             # tail and step) must give the same samples as 40 MS/s.
             crcs[mc, sps, call, rate, short] = dumps[0]["crc32"]
@@ -260,4 +284,8 @@ def test_stream(output=None):
         print("stream host: complete 1365/819-bank wrap cycles, sample reuse matches the oracle")
 
 if __name__ == "__main__":
-    test_stream(pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else None)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("output", nargs="?", type=pathlib.Path)
+    parser.add_argument("--receiver", type=pathlib.Path, help="also decode new QPSK modes in LeanDVB")
+    args = parser.parse_args()
+    test_stream(args.output, args.receiver)

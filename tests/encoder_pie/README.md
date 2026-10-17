@@ -1,7 +1,7 @@
 # Encoder PIE checks in QEMU
 
-This app runs the actual `fecbench pie` command, then checks 384 complete packed
-frames: six 8PSK MODCODs, pilots on/off, all 16 output alignments, both the direct
+This app runs the actual `fecbench pie` command, then checks 896 complete packed
+frames: all 14 QPSK/8PSK MODCODs, pilots on/off, all 16 output alignments, both the direct
 mapper with resident byte BCH (t = 10/12) and sparse mapper with nibble BCH,
 and guarded output buffers. Its oracle is the portable C
 encoder, whose stages are checked against Python by `tests/test_dvbs2_c.py`.
@@ -29,13 +29,13 @@ JSONL checker:
 python3 - <<'PY'
 from pathlib import Path
 text = Path('notes/encoder-qemu.log').read_text()
-assert 'QEMU-END' in text and 'packed PIE: 384 cases' in text
+assert 'QEMU-END' in text and 'packed PIE: 896 cases' in text
 Path('notes/encoder-qemu.jsonl').write_text(
     '\n'.join(line[1:] for line in text.splitlines() if line.startswith('@{')) + '\n')
 PY
 python3 tests/test_fecbench.py notes/encoder-qemu.jsonl --correctness-only
 ```
 
-Pass: all 140 reference CRCs, 14 PIE checks with zero mismatch, the 384-case
+Pass: all 140 reference CRCs, 14 PIE checks with zero mismatch, the 896-case
 packed success line, and `QEMU-END` with no assertion or exception. The printed
 CCOUNT values are never performance results.

@@ -715,6 +715,34 @@ dvbs2_pie_run8_packed:
     retw
     .size dvbs2_pie_run8_packed, . - dvbs2_pie_run8_packed
 
+/* QPSK: each byte-sized index maps four phases to a packed halfword.
+ * Same shifted-store contract as run8_packed, symbols / 32 whole vectors.
+ * The C caller emits a possible final 16 symbols without over-writing the frame. */
+    .align 4
+    .global dvbs2_pie_run4_packed
+    .type dvbs2_pie_run4_packed, @function
+dvbs2_pie_run4_packed:
+    entry a1, 32
+    wur.sar_byte a6
+    ee.zero.q q4
+    loopnez a5, 96f
+    ee.vld.128.ip q2, a2, 16
+    ee.ldxq.32 q1, q2, a3, 0, 0
+    ee.ldxq.32 q1, q2, a3, 1, 1
+    ee.ldxq.32 q1, q2, a3, 2, 2
+    ee.ldxq.32 q1, q2, a3, 3, 3
+    ee.ldxq.32 q3, q2, a3, 0, 4
+    ee.ldxq.32 q3, q2, a3, 1, 5
+    ee.ldxq.32 q3, q2, a3, 2, 6
+    ee.ldxq.32 q3, q2, a3, 3, 7
+    ee.vunzip.16 q1, q3
+    ee.srcq.128.st.incp q4, q1, a4
+    ee.orq q4, q1, q1
+96:
+    ee.srcq.128.st.incp q4, q1, a7
+    retw
+    .size dvbs2_pie_run4_packed, . - dvbs2_pie_run4_packed
+
 /* Former compact-table mapper, retained for radio-off A/B timing. */
     .align 4
     .global dvbs2_pie_run8_compact

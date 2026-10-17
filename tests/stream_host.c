@@ -121,14 +121,16 @@ int main(int argc, char **argv)
     allocation_count = 0;
     assert(start_encoder("dvbdump", mc, 128, 0, sps, rate, short_pulse));
     const int allocations = allocation_count;
-    assert(allocations == (sps == 40 ? 7 : 4 + (sps == 4 && mode->t > 8) - short_pulse + (sps != 4)));
+    const bool resident = sps != 40 && (mc < 12 || sps == 4);
+    assert(allocations == (sps == 40 ? 7 : 3 + (mc >= 12 && !short_pulse) +
+                          (resident && mode->t > 8) + !resident));
     for (unsigned i = 0; i < 64; ++i) {
         if (native_blocks[i].p == enc.ws)
-            assert(native_blocks[i].caps == ((sps == 4 ? MALLOC_CAP_INTERNAL : MALLOC_CAP_SPIRAM) | MALLOC_CAP_8BIT));
+            assert(native_blocks[i].caps == ((resident ? MALLOC_CAP_INTERNAL : MALLOC_CAP_SPIRAM) | MALLOC_CAP_8BIT));
         if (enc.bch && native_blocks[i].p == enc.bch)
             assert(native_blocks[i].n == DVBS2_BCH_CACHE_BYTES && (native_blocks[i].caps & MALLOC_CAP_INTERNAL));
     }
-    if (sps == 4) assert(dvb.win == (uint8_t *)enc.ws + DVBS2_FAST_WORKSPACE_USED);
+    if (resident) assert(dvb.win == (uint8_t *)enc.ws + DVBS2_FAST_WORKSPACE_USED);
     assert(dvb.win_bytes <= (sps == 4 ? 4105u : sps == 8 ? 2058u : 420u));
     stop_encoder();
     printf("}\n");
@@ -146,7 +148,7 @@ int main(int argc, char **argv)
     }
     for (unsigned repeat = 0; repeat < 2; ++repeat) {
         capture = fopen(argv[3], "wb"); assert(capture);
-        dvbtx_dump(mc, frames, 128, sps == 40 ? 10 : 1, 0, sps, rate, short_pulse);
+        dvbtx_dump(mc, frames, 128, sps == 40 ? 10 : mc < 12 && sps == 8 ? 2 : 1, 0, sps, rate, short_pulse);
         fclose(capture);
         assert(live_allocations == 0);
         for (unsigned i = 0; i < 4; ++i) assert(native_ranges[i] == 0);

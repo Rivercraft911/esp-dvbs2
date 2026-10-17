@@ -53,11 +53,12 @@ dvbtx = {
 }
 
 for name, (_, good) in dvbtx.items():
-    for mc in range(12, 18):
+    for mc in range(4, 18):
         for rate, sps in (("5m", 8), ("10m", 4)):
             if name == "dvb":
                 good.append((f"2400 {mc} {rate} 1", (2400, mc, 1, 0, 128, sps)))
-                dvbtx[name][0].extend([f"2400 {mc} 1", f"2400 {mc} 1m 1"])
+                if mc >= 12: dvbtx[name][0].append(f"2400 {mc} 1")
+                dvbtx[name][0].append(f"2400 {mc} 1m 1")
             elif name == "dvbdump":
                 good.append((f"{mc} {rate} 40", (mc, 40, 128, sps // 4, 0, sps, 40000000)))
                 good.append((f"{mc} {rate} 2 64 1 20", (mc, 2, 64, 1, 20, sps, 40000000)))
@@ -69,28 +70,29 @@ for name, (_, good) in dvbtx.items():
     for rate, sps in (("10m80", 8), ("20m", 4)):
         if name == "dvb":
             good += [(f"2400 {mc} {rate} 30", (2400, mc, 30, 0, 128, sps, 80000000))
-                     for mc in (12, 13, 17)]
-            dvbtx[name][0].extend([f"2400 13 {rate} 61", f"2400 4 {rate} 1"])
+                     for mc in (4, 11, 12, 13, 17)]
+            dvbtx[name][0].extend([f"2400 13 {rate} 61", f"2400 4 {rate} 0"])
         elif name == "dvbdump":
             good += [(f"{mc} {rate} 40", (mc, 40, 128, sps // 4, 0, sps, 80000000))
-                     for mc in (12, 13, 17)]
-            dvbtx[name][0].extend([f"13 {rate} 40 128 3", f"4 {rate} 40"])
+                     for mc in (4, 11, 12, 13, 17)]
+            dvbtx[name][0].extend([f"13 {rate} 40 128 3", f"4 {rate} 0"])
         else:
             good += [(f"{mc} {rate} 60 128 25", (mc, 60, 128, 25, 80000000, sps))
-                     for mc in (12, 13, 17)]
-            dvbtx[name][0].extend([f"13 {rate} 601", f"4 {rate} 1"])
+                     for mc in (4, 11, 12, 13, 17)]
+            dvbtx[name][0].extend([f"13 {rate} 601", f"4 {rate} 0"])
     if name != "dvb":
         dvbtx[name][0].extend(["13 20 40", "13 20M 40", "13 40m 1", "13 10m40 1", "13 10m8 1"])
     else:
         dvbtx[name][0].extend(["2400 13 20 1", "2400 13 40m 1", "2400 13 10m8 1"])
-    dvbtx[name][0].extend(["4 5m 1", "18 5m 1", "13 5m", "13 10m 1 128 0 extra"])
+    dvbtx[name][0].extend(["4 5m 0", "18 5m 1", "13 5m", "13 10m 1 128 0 extra"])
 
 # wifimem: optional MODCOD and rate; it reaches only the allocation/Wi-Fi probe.
-dvbtx["wifimem"] = (["x", "3", "18", "12", "12 1m", "4 5m", "13 5m extra", "4 extra", "0x4",
+dvbtx["wifimem"] = (["x", "3", "18", "12", "12 1m", "4 5m extra", "13 5m extra", "4 extra", "0x4",
                      "13 10m 1", "13 5m 10m"],
                     [("", (0, 0, 40000000)), ("4", (4, 40, 40000000)), ("11", (11, 40, 40000000)),
                      ("13 5m", (13, 8, 40000000)), ("17 5m", (17, 8, 40000000)),
-                     ("15 10m", (15, 4, 40000000)), (" 17\t10m", (17, 4, 40000000))])
+                     ("4 5m", (4, 8, 40000000)), ("11 10m", (11, 4, 40000000)),
+                     ("8 10m", (8, 4, 40000000)), ("15 10m", (15, 4, 40000000)), (" 17\t10m", (17, 4, 40000000))])
 dvbtx["wifimem"][0].extend(["13 20m", "17 20m", "13 10m80"])
 
 dvbtx["dvb"][0].append("2400 13 20ms6 1")

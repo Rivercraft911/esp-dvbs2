@@ -101,6 +101,10 @@ def generate():
                 word |= phase << (8 * i)
             words.append(word)
         out.append(array(f"fast_map_{bps}", "uint32_t", words, 8))
+        if bps == 2:
+            packed = [sum(((word >> (8*i)) & 7) << (4*i) for i in range(4))
+                      for word in words]
+            out.append(array("fast_map_2_packed", "uint32_t", packed, 8))
         for pilots in (0, 1):
             gold = bytearray(8128 if bps == 2 else 5440)
             for k in range(64800 // bps):

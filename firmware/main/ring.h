@@ -42,7 +42,7 @@ typedef struct {
     uint8_t *cache;               // optional copied overlap, owned by fill side
     size_t cache_symbols;
     int64_t cache_first, cache_end;
-    uint8_t packed;               // 1: unpack raw phases, 2: unpack legacy codes 16*k
+    uint8_t packed;               // 1: unpack raw phases, 2: codes 16*k, 3: QPSK 16*(k>>1)
 } ring_t;
 
 void ring_init(ring_t *r, uint8_t *slots, uint32_t nslots, const uint8_t *filler,
@@ -80,3 +80,7 @@ void ring_publish(ring_t *r, uint32_t e);
 // the bank being filled, and that is at least first + count - bank_words.
 int ring_window(ring_t *r, uint8_t *dst, size_t room, uint64_t first, size_t count,
                 unsigned sps, unsigned history, unsigned bank_words);
+
+// Compact two-bit QPSK codes for the 4/8-sps shaper, with the same source/guard contract.
+void ring_packed_qpsk(ring_t *r);
+void ring_unpack_qpsk(uint8_t *dst, const uint8_t *packed, size_t at, size_t n);

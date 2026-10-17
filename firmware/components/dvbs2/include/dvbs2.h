@@ -70,9 +70,8 @@ void dvbs2_plframe(const dvbs2_mode *mode, int pilots, uint8_t *output);
  * internal RAM. Allocate dvbs2_fast_size() bytes, 16-byte aligned (about 17 KB),
  * and prepare for one mode and pilot setting. Workspace must also be 16-byte
  * aligned. The 4-sps stream uses an internal workspace and resident BCH table
- * to avoid flash/PSRAM cache conflicts; other streams retain cached PSRAM.
- * Use internal payload and 8PSK output buffers for the cycle target; QPSK output
- * can be in cached PSRAM. Both CPU
+ * to avoid flash/PSRAM cache conflicts; QPSK n8 does too. Legacy n40 retains PSRAM.
+ * Use internal payload and packed output buffers for the cycle target. Both CPU
  * cores share the data cache, so external-memory timing needs a board check.
  * The pie mask selects ESP32-S3 vector kernels (pie.S) per stage; without PIE
  * support the mask is ignored and portable C runs. dvbs2_fast_pie() tells
@@ -131,13 +130,14 @@ void dvbs2_fast_pl(const dvbs2_fast *f, uint8_t *output);
 int dvbs2_encode_frame(dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_state *ts,
                        const uint8_t *payload, size_t input_bits, uint8_t *output);
 
-/* 8PSK frames packed two symbols per byte, for rings in internal RAM: byte i =
+/* QPSK and 8PSK frames packed two symbols per byte, for rings in internal RAM: byte i =
  * phase[2i] | phase[2i + 1] << 4, dvbs2_frame_symbols(mode, pilots) / 2 bytes
  * (every frame length is even). map_packed and pl_packed write the same symbols
  * as map and pl without a full-frame phase buffer; they use the context's
  * scratch and any output alignment. PIE maps directly to packed bytes unless
- * MAP_SPARSE is selected (MAP_COMPACT only affects unpacked output). The
- * fixed header and pilots are packed once by prepare. QPSK contexts return -1. dvbs2_pack packs
+ * MAP_SPARSE is selected for 8PSK (MAP_COMPACT only affects unpacked output).
+ * QPSK always uses its direct packed mapper. The fixed header and pilots are
+ * packed once by prepare. dvbs2_pack packs
  * an even count of canonical phases, for example a dummy PLFRAME. */
 int dvbs2_fast_map_packed(dvbs2_fast *f, const dvbs2_workspace *ws, uint8_t *packed);
 void dvbs2_fast_pl_packed(const dvbs2_fast *f, uint8_t *packed);

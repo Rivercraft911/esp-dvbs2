@@ -104,6 +104,8 @@ void dvbs2_pie_run8_compact(const uint16_t *index, const uint32_t *table, uint8_
                             unsigned vectors, unsigned sar_byte, uint8_t *tail);
 void dvbs2_pie_run8(const uint16_t *index, const uint32_t *table, uint8_t *block,
                     unsigned vectors, unsigned sar_byte, uint8_t *tail);
+void dvbs2_pie_run4_packed(const uint16_t *index, const uint32_t *table, uint8_t *block,
+                           unsigned vectors, unsigned sar_byte, uint8_t *tail);
 void dvbs2_pie_run8_packed(const uint16_t *index, const uint32_t *table, uint8_t *block,
                            unsigned vectors, unsigned sar_byte, uint8_t *tail);
 void dvbs2_pie_run(const uint16_t *index, const uint32_t *table, uint8_t *block,
@@ -790,52 +792,65 @@ static __attribute__((noinline)) int map_packed_runs(dvbs2_fast *f,
     const uint32_t *table = (const uint32_t *)((const uint8_t *)f->map + f->ldxq_bias);
 #endif
     for (unsigned k = 0; k < f->data_symbols; k += PACK_RUN) {
+        const unsigned left = f->data_symbols - k;
+        const unsigned n = left < PACK_RUN ? left : PACK_RUN;
 #ifdef DVBS2_PIE
-        if (pie) {
+        if (pie && f->mode->bits_per_symbol == 3) {
             dvbs2_pie_run8(index + k / 4, table, temp - 16, PACK_RUN / 16, 0, f->tail);
             memcpy(temp + PACK_RUN - 16, f->tail, 16);
             dvbs2_pie_nibbles(temp, temp, PACK_RUN / 32);
         } else
 #endif
         {
-            map_c_run(f, ws->bits, k, PACK_RUN, temp, 0);
-            pack_c(temp, temp, PACK_RUN);
+            map_c_run(f, ws->bits, k, n, temp, 0);
+            pack_c(temp, temp, n);
         }
         const unsigned at = 90 + k + (f->pilots ? 36 * (k / 1440) : 0);
-        memcpy(packed + at / 2, temp, PACK_RUN / 2);
+        memcpy(packed + at / 2, temp, n / 2);
     }
     return 0;
 }
 
 HOT int dvbs2_fast_map_packed(dvbs2_fast *f, const dvbs2_workspace *ws, uint8_t *packed)
 {
-    if (f->mode->bits_per_symbol != 3) {
-        return -1;
-    }
+    if (!f || !ws || !packed) return -1;
 #ifdef DVBS2_PIE
     const int pie = (f->pie & DVBS2_PIE_MAP) != 0;
     uint16_t *index = (uint16_t *)f->scratch;
     if (pie) {
-        const uint8_t *a = ws->bits, *c = ws->bits + 5400;
-        if (f->mode->modcod == 12) {
-            a = ws->bits + 5400;
-            c = ws->bits;
+        if (f->mode->bits_per_symbol == 3) {
+            const uint8_t *a = ws->bits, *c = ws->bits + 5400;
+            if (f->mode->modcod == 12) {
+                a = ws->bits + 5400;
+                c = ws->bits;
+            }
+            dvbs2_pie_index8(a, ws->bits + 2700, c, f->gold, index, (f->data_symbols + 127) / 128);
+        } else {
+            dvbs2_pie_index4(ws->bits, f->gold, index, (f->data_symbols + 63) / 64);
         }
-        dvbs2_pie_index8(a, ws->bits + 2700, c, f->gold, index, (f->data_symbols + 127) / 128);
     }
-    if (pie && !(f->pie & DVBS2_MAP_SPARSE)) {
-        const uint32_t *table = (const uint32_t *)((const uint8_t *)fast_map_3_packed + f->ldxq_bias);
+    if (pie && (f->mode->bits_per_symbol == 2 || !(f->pie & DVBS2_MAP_SPARSE))) {
+        const uint32_t *map = f->mode->bits_per_symbol == 3 ? fast_map_3_packed : fast_map_2_packed;
+        const uint32_t *table = (const uint32_t *)((const uint8_t *)map + f->ldxq_bias);
         const unsigned runs = f->pilots ? f->pilot_blocks + 1 : 1;
         for (unsigned r = 0; r < runs; ++r) {
             const unsigned k = f->pilots ? r * PACK_RUN : 0;
-            const unsigned length = f->pilots ? PACK_RUN : f->data_symbols;
+            const unsigned left = f->data_symbols - k;
+            const unsigned length = f->pilots && left > PACK_RUN ? PACK_RUN : left;
             uint8_t *dst = packed + (90 + k + 36 * r) / 2;
             const uintptr_t at = (uintptr_t)dst;
             uint8_t *block = (uint8_t *)((at - 1) & ~(uintptr_t)15);
             const unsigned vectors = length / 32;
-            dvbs2_pie_run8_packed(index + k / 4, table, block, vectors,
+            (f->mode->bits_per_symbol == 3 ? dvbs2_pie_run8_packed : dvbs2_pie_run4_packed)(
+                                  index + k / 4, table, block, vectors,
                                   (unsigned)(-at & 15), f->tail);
             memcpy(block + 16 * vectors, f->tail, (at & 15) ? (at & 15) : 16);
+            // QPSK's last run has 720 symbols: 22 vectors and 16 symbols (8 bytes).
+            for (unsigned j = 32 * vectors; j < length; j += 4) {
+                const uint32_t v = map[index[(k + j) / 4]];
+                dst[j / 2] = (uint8_t)v;
+                dst[j / 2 + 1] = (uint8_t)(v >> 8);
+            }
         }
         return 0;
     }
@@ -879,7 +894,7 @@ HOT int dvbs2_encode_frame(dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_state *t
 HOT int dvbs2_encode_frame_packed(dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_state *ts,
                                   const uint8_t *payload, size_t input_bits, uint8_t *packed)
 {
-    if (!f || !packed || f->mode->bits_per_symbol != 3 || (ts && (input_bits & 7))) {
+    if (!f || !packed || (ts && (input_bits & 7))) {
         return -1;
     }
     const int rc = ts ? dvbs2_fast_bb_ts(f, ws, ts, payload, input_bits / 8)
