@@ -19,6 +19,7 @@ leaves through the S3's own Wi-Fi radio.
 | Continuous transmit | 8PSK 2/3 at 20 Msym/s (38.7 Mb/s) and 5/6 (48.4 Mb/s) from the 80 MS/s DAC, keyed for 30 s each in a shielded box, every bank deadline met, 4% slack | [keyed](results/2026-10-16-keyed-20m/README.md) |
 | Bit-exact from the chip | QPSK 1/2 to 9/10 at 1 Msym/s, 8PSK 2/3 and 5/6 at 5 and 10 Msym/s: the DAC samples decoded by LeanDVB, radio off | [QPSK](results/2026-10-16-dryrun/README.md), [8PSK](results/2026-10-16-8psk-board/README.md) |
 | MER of those samples | 47.0 dB QPSK at 1 Msym/s; 8PSK 43.3 dB at 5 and 41.6 dB at 10 Msym/s after a modelled DAC hold | [QPSK](results/2026-10-16-dryrun/README.md), [8PSK](results/2026-10-16-integrate/README.md) |
+| Fastest QPSK | QPSK 9/10 at 26.67 Msym/s (46.6 Mb/s, 36 MHz), keyed for 30 s in a shielded box, every bank deadline met, 17% slack | [keyed](results/2026-10-17-keyed-qpsk/README.md), [radio off](results/2026-10-17-qpsk-goal/README.md) |
 | Encoder | 166k cycles per 8PSK 2/3 frame in the live stream: 62% of one core at 20 Msym/s | [radio off](results/2026-10-16-next2/README.md), [keyed](results/2026-10-16-keyed-20m/README.md) |
 | Pulse shaping | 1.78 cycles per sample; a whole bank at 20 Msym/s in 45.1k of its 47.2k cycles | [shaper](results/2026-10-16-shaper/README.md), [20 Msym/s](results/2026-10-16-20msym/README.md) |
 | RF, test tone | image -35 dBc, carrier leak about -45 dBc | [first RF](results/2026-10-16-radio/README.md) |
