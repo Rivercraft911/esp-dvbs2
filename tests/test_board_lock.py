@@ -12,10 +12,10 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 serial = types.ModuleType('serial')
 serial.tools = types.ModuleType('serial.tools')
 serial.tools.list_ports = types.SimpleNamespace(comports=lambda: [])
-sys.modules.update({'serial': serial, 'serial.tools': serial.tools})
 spec = importlib.util.spec_from_file_location('board', ROOT/'host/board.py')
 board = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(board)
+with patch.dict(sys.modules, {'serial': serial, 'serial.tools': serial.tools}):
+    spec.loader.exec_module(board)
 
 with tempfile.TemporaryDirectory() as tmp:
     port = str(pathlib.Path(tmp)/'device')
