@@ -20,6 +20,10 @@ s = summarize(r)
 assert s["passes_60s_15_percent"]
 assert s["fill_cycles_per_equivalent_bank"] == dict(copy=50, whole=50, partial=50, other=50)
 assert s["encoder_kernel_cycles_per_frame"] == 250
+assert s['encoder_work_cycles_per_frame'] is None
+shared = dict(r, profile=dict(r['profile'],encoder={k:dict(v,helper_cycles=20) for k,v in r['profile']['encoder'].items()}))
+assert summarize(shared)['encoder_work_cycles_per_frame']['bch'] == 40
+assert summarize(shared)['encoder_helper_cycles_per_frame']['bch'] == 10
 assert s["cache_per_window"]["fill"]["copy"]["psram_miss"] == 4
 for key, value in (("late_fills", 1), ("fatal_late", 1), ("underruns", 1),
                    ("min_fill_slack_cycles", MIN_SLACK - 1), ("max_fill_cycles", MAX_FILL + 1),

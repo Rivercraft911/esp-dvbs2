@@ -33,6 +33,8 @@ else:
         fill_kernel='moon-pie-split' if moon else 'pie',paced_wifi_up=moon,
         wifi_free_up=50000,wifi_min_free=50000,helper_jobs=1,helper_bank_max_cycles=1,
         dispatch_max_cycles=1,encode_work_cycles_mean=1,encode_work_cycles_live_max=1,
+        encode_frame_work_cycles_mean=1,encode_frame_work_cycles_live_max=1,
+        payload_source='precomputed-ring',input_frames=8,input_memory='psram',encoder_pie=15,
         packed_mapper='none' if n==40 else 'quads' if quads else 'direct' if resident else 'sparse')
  if kind=='dvbdump':
   frames=int(x[3] if named else x[2]); decim=int(x[-1]); size=((frames*symbols*n+den-1)//den+decim-1)//decim*4
@@ -58,7 +60,9 @@ else:
   r.update(seconds=int(x[-1]),late_fills=0,late_switches=0,fatal_late=0,min_fill_slack_cycles=1,
            max_fill_cycles=1,encode_cycles_mean=1,encode_cycles_live_max=1,
            encode_kernel_cycles_mean=1,encode_kernel_cycles_live_max=1,
-           prefill_frames=r['ring_slots'],frames_played=10,profile=dict(shaped_words=8,reused_words=2,fill_words=10))
+           prefill_frames=r['ring_slots'],frames_played=10,frames_encoded=12,
+           profile=dict(shaped_words=8,reused_words=2,fill_words=10,
+                        encoder={k:dict(cycles=10,helper_cycles=1) for k in ('payload','bb','bch','ldpc','map','pl')}))
   # Exercise the exact two-percent boundary for each timing metric.
   old={'11 20m':('dvbpace 11 20mq4 30','max_fill_cycles'),
        '13 10m':('dvbpace 13 10m 30','encode_cycles_mean'),

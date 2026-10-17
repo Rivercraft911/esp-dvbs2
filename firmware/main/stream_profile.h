@@ -18,6 +18,7 @@ typedef struct {
 
 typedef struct {
     uint64_t cycles, flash_miss, psram_miss, data_access, instruction_miss;
+    uint64_t helper_cycles; // encoder windows: preempting helper bodies, same core
     uint32_t calls, max_cycles;
     uint8_t counters;   // also read the EXTMEM counters at each mark (stream_mark_for)
 } stream_profile_t;

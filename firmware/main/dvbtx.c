@@ -43,7 +43,9 @@
 #define TAPS (9 * 40)
 #define WORST_PEAK 718.4            // conservative sqrt(2)*508 LSB axis bound, before rounding
 #define SEED 2026
+#define INPUT_FRAMES 8              // pace only: precomputed PSRAM input, copied into payload
 #define ENCODER_PRIORITY 5          // above the command loop, below the Wi-Fi and IPC tasks
+#define HELPER_PRIORITY (configMAX_PRIORITIES - 1) // 24, above Wi-Fi's 23 (IDF performance/speed.rst)
 // Samples, including the first bank's extra lead. Later banks re-read 2112 words, or 640 on the
 // 80 MS/s geometry, which keeps only its 768 (dvb.cached_words).
 #define CACHED_FOR(rate) (RADIO_S3_BANK_WORDS - RADIO_S3_STEP_FOR(rate) + RADIO_S3_LEAD_FOR(rate))
@@ -106,6 +108,8 @@ typedef struct {
     bool quads;                     // four QPSK codes/byte, block shaper
     bool packed;                    // all fast rates: packed internal ring
     uint8_t *payload;               // one frame of payload: next to a packed ring, or PSRAM
+    uint8_t *input;                 // pace only; dumps and RF keep the contiguous PRNG stream
+    uint32_t input_prepare_cycles;
     uint8_t *slot[PACKED_SLOTS];    // packed frames, internal
     uint8_t *block;                 // packed ring's heap part: slot 2 (4 sps) or everything (8 sps)
     uint8_t *slots, *filler;        // QPSK: PSRAM; packed: filler is the packed dummy
@@ -121,6 +125,8 @@ typedef struct {
     uint32_t kernel_live_max;
     uint64_t work_cycles;          // kernel wall interval minus preempting helper
     uint32_t work_live_max;
+    uint64_t frame_work_cycles;     // measured input copy + kernel, minus helper bodies
+    uint32_t frame_work_live_max;
     stream_profile_t stage[6];      // payload, BB, BCH, LDPC, map, PL
     uint32_t slot_waits;
 } encoder_t;
@@ -168,7 +174,7 @@ static IRAM_ATTR void moon_wake_encoder(void)
     }
 }
 
-static void moon_helper(void *arg)
+static IRAM_ATTR void moon_helper(void *arg)
 {
     (void)arg;
     for (;;) {
@@ -371,6 +377,35 @@ static IRAM_ATTR esp_err_t fill(uint32_t *dst, uint64_t first, size_t count, voi
 }
 
 // Core 0: frame after frame into the ring, waiting while every slot is still needed.
+typedef struct {
+    stream_mark_t clock;
+    uint64_t helper;
+} encoder_mark_t;
+
+static inline __attribute__((always_inline)) encoder_mark_t encoder_mark(void)
+{
+    encoder_mark_t m = {.clock=dvb.profile ? stream_mark() : stream_mark_cycles()};
+    // The helper runs on this same core. Pair its total and CCOUNT without a
+    // task switch between them; cache-counter reads remain outside the mask.
+#ifdef __XTENSA__
+    const uint32_t irq = portSET_INTERRUPT_MASK_FROM_ISR();
+#endif
+    m.helper = dvb.helper_cycles;
+    m.clock.cycles = esp_cpu_get_cycle_count();
+#ifdef __XTENSA__
+    portCLEAR_INTERRUPT_MASK_FROM_ISR(irq);
+#endif
+    return m;
+}
+
+static inline __attribute__((always_inline)) encoder_mark_t encoder_record(stream_profile_t *p, encoder_mark_t before)
+{
+    const encoder_mark_t after = encoder_mark();
+    stream_record(p,before.clock,after.clock);
+    p->helper_cycles += after.helper-before.helper;
+    return after;
+}
+
 static void encoder_task(void *arg)
 {
     encoder_t *e = arg;
@@ -386,41 +421,35 @@ static void encoder_task(void *arg)
             e->slot_waits++;
             ulTaskNotifyTake(pdTRUE, e->packed ? portMAX_DELAY : 1);
         }
-        const uint32_t start = esp_cpu_get_cycle_count();
-        stream_mark_t before = dvb.profile ? stream_mark() : (stream_mark_t){0}, after;
-        for (size_t i = 0; i < bytes; ++i) {
-            payload[i] = next_byte(&x);
-        }
-        // Keep station ID and profiling in the interval paired with a future input copy.
-        const uint64_t helper_before = dvb.helper_cycles;
-        const uint32_t kernel_start = esp_cpu_get_cycle_count();
+        encoder_mark_t before = encoder_mark();
+        const uint32_t start = before.clock.cycles;
+        const encoder_mark_t frame_start = before;
+        if (e->input) memcpy(payload,e->input+(f%INPUT_FRAMES)*bytes,bytes);
+        else for (size_t i = 0; i < bytes; ++i) payload[i] = next_byte(&x);
         station_payload_header(payload, bytes, station_store_get());
-        if (dvb.profile) {
-            after = stream_mark();
-            stream_record(&e->stage[0], before, after);
-            before = after;
-        }
+        if (dvb.profile) before = encoder_record(&e->stage[0],before);
+        const encoder_mark_t kernel_start = dvb.profile ? before : encoder_mark();
         int rc;
         if (dvb.profile) {
             rc = dvbs2_fast_bb_gcs(e->fast, e->ws, payload, bytes * 8);
-            after = stream_mark(); stream_record(&e->stage[1], before, after); before = after;
+            before = encoder_record(&e->stage[1],before);
             if (!rc) {
                 dvbs2_fast_bch(e->fast, e->ws);
-                after = stream_mark(); stream_record(&e->stage[2], before, after); before = after;
+                before = encoder_record(&e->stage[2],before);
                 dvbs2_fast_ldpc(e->fast, e->ws);
-                after = stream_mark(); stream_record(&e->stage[3], before, after); before = after;
+                before = encoder_record(&e->stage[3],before);
                 if (e->packed) {
                     dvbs2_fast_map_packed(e->fast, e->ws, out);
                 } else {
                     dvbs2_fast_map(e->fast, e->ws, out);
                 }
-                after = stream_mark(); stream_record(&e->stage[4], before, after); before = after;
+                before = encoder_record(&e->stage[4],before);
                 if (e->packed) {
                     dvbs2_fast_pl_packed(e->fast, out);
                 } else {
                     dvbs2_fast_pl(e->fast, out);
                 }
-                after = stream_mark(); stream_record(&e->stage[5], before, after);
+                before = encoder_record(&e->stage[5],before);
             }
         } else if (e->packed) {
             rc = dvbs2_encode_frame_packed(e->fast, e->ws, NULL, payload, bytes * 8, out);
@@ -431,9 +460,14 @@ static void encoder_task(void *arg)
             e->failed = true;
             goto done;
         }
-        const uint32_t end = esp_cpu_get_cycle_count();
-        const uint32_t spent = end - start, kernel_spent = end - kernel_start;
-        const uint32_t work = kernel_spent-(uint32_t)(dvb.helper_cycles-helper_before);
+        const encoder_mark_t end = encoder_mark();
+        const uint32_t spent = end.clock.cycles-start;
+        const uint32_t kernel_spent = end.clock.cycles-kernel_start.clock.cycles;
+        const uint32_t work = kernel_spent-(uint32_t)(end.helper-kernel_start.helper);
+        const uint32_t frame_work = end.clock.cycles-frame_start.clock.cycles-
+                                   (uint32_t)(end.helper-frame_start.helper);
+        e->frame_work_cycles += frame_work;
+        if (f >= dvb.ring.nslots && frame_work > e->frame_work_live_max) e->frame_work_live_max = frame_work;
         e->work_cycles += work;
         if (f >= dvb.ring.nslots && work > e->work_live_max) e->work_live_max = work;
         ring_publish(&dvb.ring, f);
@@ -468,6 +502,8 @@ static void release(void)
     heap_caps_free(dvb.moon_extra);
     dvb.moon_extra = NULL;
     heap_caps_free(enc.fast);
+    heap_caps_free(enc.input);
+    enc.input = NULL;
     if (!(enc.quads && !dvb.moon && dvb.table.n == 4)) heap_caps_free(enc.ws);
     if (dvb.win && !dvb.moon && (!enc.packed || (enc.mode->bits_per_symbol == 3 && dvb.table.n != 4)))
         heap_caps_free(dvb.win);
@@ -734,6 +770,19 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
     }
     ring_filler_length(&dvb.ring, DVBS2_DUMMY_SYMBOLS);
 
+    if (!strcmp(cmd,"dvbpace")) {
+        enc.input = heap_caps_malloc(INPUT_FRAMES*payload_bytes,MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!enc.input) {
+            release();
+            printf("@{\"cmd\":\"%s\",\"error\":\"input ring allocation failed\"}\n",cmd);
+            return 0;
+        }
+        uint32_t x = SEED;
+        const uint32_t before = esp_cpu_get_cycle_count();
+        for (size_t i = 0; i < INPUT_FRAMES*payload_bytes; ++i) enc.input[i] = next_byte(&x);
+        enc.input_prepare_cycles = esp_cpu_get_cycle_count()-before;
+    }
+
     enc.exited = xSemaphoreCreateBinaryStatic(&exited_storage);
     if (xTaskCreatePinnedToCore(encoder_task, "encoder", 4096, &enc, ENCODER_PRIORITY, &enc.task, 0)
             != pdPASS) {
@@ -757,7 +806,7 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
     }
     if (moon) {
         dvb_helper_exited = xSemaphoreCreateBinaryStatic(&helper_exited_storage);
-        if (xTaskCreatePinnedToCore(moon_helper,"fill helper",2048,NULL,ENCODER_PRIORITY+1,&dvb.helper,0) != pdPASS) {
+        if (xTaskCreatePinnedToCore(moon_helper,"fill helper",2048,NULL,HELPER_PRIORITY,&dvb.helper,0) != pdPASS) {
             enc.stop = true;
             xTaskNotifyGive(enc.task);
             xSemaphoreTake(enc.exited,portMAX_DELAY);
@@ -775,9 +824,9 @@ static void print_profile(const char *name, const stream_profile_t *p)
 {
     printf("\"%s\":{\"calls\":%" PRIu32 ",\"cycles\":%" PRIu64 ",\"max_cycles\":%" PRIu32
            ",\"flash_miss\":%" PRIu64 ",\"psram_miss\":%" PRIu64
-           ",\"data_access\":%" PRIu64 ",\"instruction_miss\":%" PRIu64 "}",
+           ",\"data_access\":%" PRIu64 ",\"instruction_miss\":%" PRIu64 ",\"helper_cycles\":%" PRIu64 "}",
            name, p->calls, p->cycles, p->max_cycles, p->flash_miss, p->psram_miss,
-           p->data_access, p->instruction_miss);
+           p->data_access, p->instruction_miss, p->helper_cycles);
 }
 
 static void stop_encoder(void)
@@ -814,6 +863,11 @@ static void stop_encoder(void)
     printf(",\"callsign\":\"%s\",\"encoder_timed\":true,\"sps\":%.8g,\"sps_num\":%u,\"sps_den\":%u,\"fill_kernel\":\"%s\"",
            station_store_get(), (double)dvb.table.n/dvb.den, dvb.table.n, dvb.den,
            dvb.moon ? "moon-pie-split" : "pie");
+    printf(",\"payload_source\":\"%s\",\"input_frames\":%u,\"input_memory\":\"%s\",\"input_prepare_cycles\":%" PRIu32
+           ",\"encoder_pie\":%u,\"encode_frame_work_cycles_mean\":%" PRIu64 ",\"encode_frame_work_cycles_live_max\":%" PRIu32,
+           enc.input ? "precomputed-ring" : "xorshift32",enc.input ? INPUT_FRAMES : 0,
+           enc.input ? "psram" : "none",enc.input_prepare_cycles,dvbs2_fast_pie(enc.fast),
+           enc.frames ? enc.frame_work_cycles/enc.frames : 0,enc.frame_work_live_max);
     if (dvb.moon) printf(",\"encode_work_cycles_mean\":%" PRIu64 ",\"encode_work_cycles_live_max\":%" PRIu32,
                          enc.frames ? enc.work_cycles/enc.frames : 0,enc.work_live_max);
     if (dvb.moon) printf(",\"helper_jobs\":%" PRIu32 ",\"helper_cycles\":%" PRIu64

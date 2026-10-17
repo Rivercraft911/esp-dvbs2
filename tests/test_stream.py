@@ -35,6 +35,7 @@ static inline const char *esp_err_to_name(int e) { return e ? "ESP_FAIL" : "ESP_
 #define pdTRUE 1
 #define pdPASS 1
 #define portMAX_DELAY UINT32_MAX
+#define configMAX_PRIORITIES 25
 #define pdMS_TO_TICKS(x) (x)
 typedef uint32_t TickType_t;
 static inline TickType_t xTaskGetTickCount(void) {

@@ -21,8 +21,12 @@ def summarize(r):
         fill["other"] = p["fill_cycles"] * BANK / p["fill_words"] - sum(fill.values())
     encoder = {name: stage["cycles"] / stage["calls"] if stage["calls"] else 0
                for name, stage in p["encoder"].items()}
+    helper = {name: stage['helper_cycles']/stage['calls'] if stage['calls'] else 0
+              for name, stage in p['encoder'].items()} if all('helper_cycles' in s for s in p['encoder'].values()) else None
     out = dict(command=r.get("command", r["cmd"]),
                fill_cycles_per_equivalent_bank=fill, encoder_cycles_per_frame=encoder,
+               encoder_helper_cycles_per_frame=helper,
+               encoder_work_cycles_per_frame={k: v-helper[k] for k,v in encoder.items()} if helper is not None else None,
                encoder_kernel_cycles_per_frame=sum(v for k, v in encoder.items() if k != "payload"),
                encode_cycles_mean=r["encode_cycles_mean"],
                cache_scope=p["cache_scope"],

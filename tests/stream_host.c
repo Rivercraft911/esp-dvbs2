@@ -125,6 +125,8 @@ esp_err_t radio_s3_run_bandwidth(uint32_t freq, uint8_t gain, uint32_t sec, uint
 { (void)freq; (void)gain; (void)sec; (void)rate; (void)bandwidth; (void)fn; (void)ctx; (void)stats; abort(); }
 void radio_filter_print(const radio_filter_stats_t *stats) { (void)stats; }
 static unsigned wifi_probes;
+static esp_err_t discard(const uint32_t *bank, uint64_t first, size_t count, void *ctx)
+{ (void)bank; (void)first; (void)count; (void)ctx; return ESP_OK; }
 esp_err_t radio_s3_wifi_probe(radio_s3_stats_t *stats)
 {
     assert(enc.fast && enc.ws && enc.payload && dvb.win);
@@ -194,6 +196,36 @@ int main(int argc, char **argv)
         fclose(capture);
         assert(live_allocations == 0);
         for (unsigned i = 0; i < 4; ++i) assert(native_ranges[i] == 0);
+    }
+    if ((mc == 15 && sps == 4 && rate == 80000000) || (mc == 11 && moon)) {
+        // The paced input deliberately repeats after eight frames. Compare
+        // actual encoded/shaped words on both sides of that wrap to the oracle.
+        for (unsigned f = 0; f < frames+2; ++f) {
+            if (!(f%INPUT_FRAMES)) x = SEED;
+            for (size_t i = 0; i < bytes; ++i) payload[i] = next_byte(&x);
+            station_payload_header(payload,bytes,callsign);
+            assert(!dvbs2_bb_gcs_ro(&ws,mode,payload,bytes*8,sps == DVB_SPS_12_5 ? 2 : 0));
+            dvbs2_bb_scramble(&ws,mode); dvbs2_bch(&ws,mode); dvbs2_ldpc(&ws,mode);
+            dvbs2_map(&ws,mode,phases+f*length+90); dvbs2_plframe(mode,1,phases+f*length);
+        }
+        allocation_count = 0;
+        assert(start_encoder("dvbpace",mc,128,0,sps,rate));
+        const int pace_allocations = allocation_count;
+        assert(enc.input);
+        x = SEED;
+        for (size_t i = 0; i < INPUT_FRAMES*bytes; ++i) assert(enc.input[i] == next_byte(&x));
+        for (unsigned i = 0; i < 64; ++i)
+            if (native_blocks[i].p == enc.input)
+                assert(native_blocks[i].caps == (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        radio_s3_dry_stats_t stats;
+        assert(!radio_s3_dry_run_rate(fill,NULL,((uint64_t)frames*length*sps+dvb.den-1)/dvb.den,
+                                      rate,discard,NULL,&stats));
+        stop_encoder(); printf("}\n");
+        assert(live_allocations == 0);
+        fail_after = pace_allocations-1; // input allocation is last
+        assert(!start_encoder("dvbpace",mc,128,0,sps,rate));
+        assert(live_allocations == 0);
+        fail_after = -1;
     }
     free(phases);
 }

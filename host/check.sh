@@ -107,11 +107,12 @@ print('  recovers >=N-2 QPSK frames; 8PSK allows <=1 leading acquisition frame a
 print('  with zero LDPC checks/flips, BCH errors/corrections and payload errors.')
 for key in selected: print('  dump', dump_args(key), 'CRC32', golden[key])
 print('Paces: selected 30 s key runs and 10 s regressions; zero late fills/switches/fatal lateness, positive slack, live encoder, conserved fill words.')
+print('Pace input: eight precomputed PSRAM frames, measured copy and station header; all four PIE stage bits active.')
 for (mc,token,seconds,topic,old),limit in zip(paces,limits):
     print(f'  {mc} {token or "1m"}, {seconds} s: ceilings {limit} cycles (encoder cycles/frame); '+(f'<=102% of {topic}: {old}' if topic else '85% of the exact deadline'))
 for mc,token,up,low in wifi: print(f'  wifimem {mc} {token}: up >= {up} B, minimum >= {low} B; no playback.')
 if a.moonshot:
-    print('Core 0 capacity: helper bank maximum + 4792 scheduling + (exclusive post-payload maximum + 10000 input) * 47220/frame <= 40137 cycles.')
+    print('Core 0 capacity: helper bank maximum + 4792 scheduling + measured frame work (input included) * 47220/frame <= 40137 cycles.')
     print('  Dispatch <=2396 cycles/job; join wait is included in the full-bank core 1 maximum. This is a capacity screen, not a latency proof.')
 if a.encoder:
     print('Encoder planning gate: same-frame post-payload mean AND live maximum + estimated 10,000 cycles/input copy')
@@ -220,6 +221,10 @@ def pace(mc,token,seconds,limit):
     assert r['seconds'] == seconds and r['dac_rate'] == mode(mc,token)[1], r
     assert all(r[k] == 0 for k in ('late_fills','late_switches','fatal_late')), r
     assert r['min_fill_slack_cycles'] > 0 and all(r[k] <= v for k,v in limit.items()), r
+    assert r['payload_source'] == 'precomputed-ring' and r['input_frames'] == 8 and r['input_memory'] == 'psram', r
+    assert r['encoder_pie'] == 15 and r['frames_encoded'] > r['prefill_frames'], r
+    stages = r['profile']['encoder'].values()
+    assert all(0 <= p['helper_cycles'] <= p['cycles'] for p in stages), r
     if a.encoder and (token == '20m' or mc == 11):
         ceiling = 203685 if mc < 12 else 135827
         assert r['encode_kernel_cycles_mean'] + 10000 <= ceiling, r
@@ -233,7 +238,7 @@ def pace(mc,token,seconds,limit):
         n,rate,_ = mode(mc,token)
         den = 5 if n == 12 else 1
         frame = (33282 if mc < 12 else 22194)*240000000*n/(rate*den)
-        encoder = max(r['encode_work_cycles_mean'],r['encode_work_cycles_live_max'])+10000
+        encoder = max(r['encode_frame_work_cycles_mean'],r['encode_frame_work_cycles_live_max'])
         assert r['helper_bank_max_cycles']+4792+encoder*47220/frame <= 40137, r
         assert r['dispatch_max_cycles'] <= 2396, r
     assert r['prefill_frames'] == r['ring_slots'] and r['frames_played'] > 0, r
