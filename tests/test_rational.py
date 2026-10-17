@@ -40,10 +40,10 @@ def test(output=None, receiver=None):
             assert r['rolloff'] == alpha and r['sps'] == num/den
             assert r['sps_num'] == num and r['sps_den'] == den
             assert r['symbol_rate'] == 80000000*den//num
-            assert r['pulse_symbols'] == span and r['ring_slots'] == 2
+            assert r['pulse_symbols'] == span and r['ring_slots'] == 0
             quads = mc < 12
-            assert r['ring_format'] == ('quads' if quads else 'packed')
-            assert r['packed_mapper'] == ('quads' if quads else 'direct')
+            assert r['ring_format'] == 'signs'
+            assert r['packed_mapper'] == 'signs'
             assert r['fill_kernel'] == 'moon-queue' and r['prepare_pages'] > 0
             assert r['queue_empty'] == 0 and r['queue_low_pages'] > 0
             assert r['workspace_memory'] == r['payload_memory'] == r['ring_memory'] == 'internal'

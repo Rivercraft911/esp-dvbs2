@@ -158,4 +158,17 @@ int dvbs2_encode_frame_packed(dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_state
                               const uint8_t *payload, size_t input_bits, uint8_t *packed);
 void dvbs2_pack(const uint8_t *phases, uint8_t *packed, size_t symbols);
 
+/* Streaming QPSK mapper. Keep history/pending across frames, initially zero
+ * (six phase-1 history symbols). start maps FEC bytes, read writes one eleven-
+ * sign history per five PL symbols, including header/pilots. No packed frame.
+ * at reaches frame_symbols at EOF; a partial five-symbol group survives EOF.
+ * lut has 1024 words: five phase>>1 codes to I bits 8:4 and Q bits 24:20. */
+typedef struct {
+    uint32_t history;
+    unsigned pending, at;
+} dvbs2_sign_state;
+int dvbs2_fast_sign_start(dvbs2_fast *f, const dvbs2_workspace *ws, dvbs2_sign_state *s);
+unsigned dvbs2_fast_sign_read(const dvbs2_fast *f, dvbs2_sign_state *s, uint32_t *dst,
+                              unsigned blocks, const uint32_t *lut);
+
 #endif

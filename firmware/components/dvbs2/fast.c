@@ -925,6 +925,78 @@ static HOT int map_quads(dvbs2_fast *f, const uint8_t *bits, uint8_t *packed)
     return 0;
 }
 
+HOT int dvbs2_fast_sign_start(dvbs2_fast *f, const dvbs2_workspace *ws, dvbs2_sign_state *s)
+{
+    if (!f || !ws || !s || f->mode->bits_per_symbol != 2) return -1;
+#ifdef DVBS2_PIE
+    if (f->pie & DVBS2_PIE_MAP) {
+        void dvbs2_pie_quads(const uint8_t *, const uint8_t *, uint8_t *, unsigned);
+        dvbs2_pie_quads(ws->bits, f->gold, f->scratch, (f->data_symbols+63)/64);
+    } else
+#endif
+    {
+        for (unsigned j = 0; j < f->data_symbols/4; ++j) {
+            const unsigned x = ws->bits[j], g = f->gold[j], d = x ^ (x >> 1);
+            const unsigned p2 = x ^ (g >> 1) ^ (d & g), p1 = d ^ g;
+            f->scratch[j] = (p1 & 0x55) | ((p2 & 0x55) << 1);
+        }
+    }
+    s->at = 0;
+    return 0;
+}
+
+HOT unsigned dvbs2_fast_sign_read(const dvbs2_fast *f, dvbs2_sign_state *s, uint32_t *dst,
+                                  unsigned blocks, const uint32_t *lut)
+{
+    unsigned done = 0;
+    const unsigned end = 90+f->data_symbols+36*f->pilot_blocks;
+    while (done < blocks && s->at < end) {
+        unsigned c, k = s->at;
+        if (k < 90) c = f->pie & DVBS2_MAP_QUADS ?
+            (f->packed_header[k/4] >> (6-2*(k&3))) & 3 : f->header[k] >> 1;
+        else {
+            k -= 90;
+            const unsigned run = f->pilots ? k/1476 : 0;
+            const unsigned at = f->pilots ? k%1476 : k;
+            if (at >= 1440 && run < f->pilot_blocks) {
+                const unsigned p = 36*run+at-1440;
+                c = f->pie & DVBS2_MAP_QUADS ?
+                    (f->packed_pilots[p/4] >> (6-2*(p&3))) & 3 : fast_pilots[p] >> 1;
+            } else {
+                const unsigned data = k-36*run;
+                const unsigned left = f->data_symbols-data;
+                unsigned n = f->pilots && left > 1440-at ? 1440-at : left;
+#ifdef DVBS2_PIE
+                // Four five-symbol groups read exactly five bytes. History is
+                // already in registers, so no six-symbol prefix or frame copy.
+                if (!s->pending && !(data&3) && n >= 20 && blocks-done >= 4) {
+                    unsigned runs = n/20;
+                    if (runs > (blocks-done)/4) runs = (blocks-done)/4;
+                    uint32_t dvbs2_pie_signs(uint32_t *, const uint8_t *, unsigned,
+                                            const uint32_t *, uint32_t);
+                    s->history = dvbs2_pie_signs(dst+done,f->scratch+data/4,runs,lut,s->history);
+                    s->at += 20*runs;
+                    done += 4*runs;
+                    continue;
+                }
+#else
+                (void)n;
+                (void)lut;
+#endif
+                c = (f->scratch[data/4] >> (6-2*(data&3))) & 3;
+            }
+        }
+        s->history = ((s->history << 1) & 0x7ff07ff0) |
+                     ((c ^ (c >> 1)) & 1) << 4 | (c >> 1) << 20;
+        ++s->at;
+        if (++s->pending == 5) {
+            dst[done++] = s->history;
+            s->pending = 0;
+        }
+    }
+    return done;
+}
+
 HOT int dvbs2_fast_map_packed(dvbs2_fast *f, const dvbs2_workspace *ws, uint8_t *packed)
 {
     if (!f || !ws || !packed) return -1;

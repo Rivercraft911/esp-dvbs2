@@ -584,6 +584,48 @@ dvbs2_pie_index8:
     qpsk_codes dvbs2_pie_index4,1
     qpsk_codes dvbs2_pie_quads,0
 
+/* Four five-symbol groups to sign histories. Source is the mapper's own
+ * chronological quad bytes, with no PL offset or prefix conversion.
+ * Return the rolling history. No source guard needed: exactly five bytes/run.
+ * dst, src, runs, lut, history. */
+    .align 4
+    .global dvbs2_pie_signs
+    .type dvbs2_pie_signs,@function
+dvbs2_pie_signs:
+    entry a1,32
+    movi a14,0x7ff07ff0
+    mov a11,a6
+    .macro signbyte off
+    l8ui a9,a3,\off
+    slli a8,a8,8
+    or a8,a8,a9
+    .endm
+    .macro signword shift,off
+    extui a10,a8,\shift,10
+    slli a11,a11,5
+    addx4 a10,a10,a5
+    and a11,a11,a14
+    l32i a10,a10,0
+    or a11,a11,a10
+    s32i a11,a2,\off
+    .endm
+    loopnez a4,.Lsigns_end
+    l8ui a8,a3,0
+    signbyte 1
+    signword 6,0
+    signbyte 2
+    signword 4,4
+    signbyte 3
+    signword 2,8
+    signbyte 4
+    signword 0,12
+    addi a3,a3,5
+    addi a2,a2,16
+.Lsigns_end:
+    mov a2,a11
+    retw
+    .size dvbs2_pie_signs,.-dvbs2_pie_signs
+
 /* Shift a QPSK code run by one nibble: byte i = low(src[i-1]) << 4 |
  * high(src[i]), initially src[-1] = 0. This is the half-byte PL header offset.
  * Source may be unaligned (successive 360-byte data runs alternate by 8).

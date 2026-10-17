@@ -16,6 +16,8 @@ to check every table/history/sample hash against Python. QEMU tests instruction
 semantics, never silicon timing. `MACHINE_TRACE=ON` selects short prepare/render
 calls for issue-model traces. No QEMU address compensation is needed here.
 
-The live image links only the page-sized sign preparation and full-speed sign
-renderer, with a 24 KiB table and 4 KiB LUT. It has no wild-b row program, shared
-renderer or raw-page handoff. [Gate and layout](../../docs/moonshot.md).
+The live mapper writes sign histories directly into 54 guarded pages of 128
+blocks. It has no packed-frame ring or producer window. The standalone packed
+prepare remains only as a kernel oracle and is discarded from the live image.
+The 24 KiB rendering table and 4 KiB sign LUT stay internal.
+[Gate and layout](../../docs/moonshot.md).

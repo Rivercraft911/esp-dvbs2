@@ -103,6 +103,8 @@ void app_main(void)
     puts("QEMU-START");
     assert(!fecbench_run("pie"));
     packed_check();
+    void sign_mapper_check(void);
+    sign_mapper_check();
     puts("QEMU-END");
     fflush(stdout);
     for (;;) vTaskDelay(1000);

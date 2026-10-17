@@ -55,6 +55,7 @@ machine_render_pie:
 // Packed bytes, four five-symbol blocks per five bytes. A 4 KiB LUT separates
 // the newest five I/Q signs; the previous six signs stay in scalar registers.
 // Unlike the wild-a probe, timing includes extracting groups from quad bytes.
+    .section .iram1.machine_prepare,"ax"
     .macro byte off
     l8ui a9,a3,\off
     slli a8,a8,8

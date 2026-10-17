@@ -125,8 +125,10 @@ static void bank_fill(radio_s3_fill_fn fn, void *ctx, unsigned b, uint64_t first
         const size_t needed = (end_symbol + dvb.ring.frame_symbols - 1) / dvb.ring.frame_symbols;
         // Host correctness test only: wait for the native encoder, with a deadlock timeout.
         unsigned tries = 0;
-        while (dvb.moon ? __atomic_load_n(&dvb.producer_symbol,__ATOMIC_ACQUIRE)*12/5 < at+count :
-               __atomic_load_n(&dvb.ring.published, __ATOMIC_ACQUIRE) < needed) {
+        while (dvb.moon ? dvb.queue_sample+
+               (uint32_t)(__atomic_load_n(&dvb.produced,__ATOMIC_ACQUIRE)-dvb.consumed)*MACHINE_PAGE_SAMPLES-
+               dvb.page_sample < at+count :
+               __atomic_load_n(&dvb.ring.published,__ATOMIC_ACQUIRE) < needed) {
             assert(tries++ < 5000);
             vTaskDelay(1);
         }
@@ -206,7 +208,7 @@ static esp_err_t discard(const uint32_t *bank, uint64_t first, size_t count, voi
 { (void)bank; (void)first; (void)count; (void)ctx; return ESP_OK; }
 esp_err_t radio_s3_wifi_probe(radio_s3_stats_t *stats)
 {
-    assert(enc.fast && enc.ws && enc.payload && dvb.win);
+    assert(enc.fast && enc.ws && enc.payload && (dvb.moon || dvb.win));
     assert(!enc.packed || dvb.samples); // the heap probe must own the playback cache
     memset(stats, 0, sizeof *stats);
     ++wifi_probes;

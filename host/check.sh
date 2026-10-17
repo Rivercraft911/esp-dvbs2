@@ -138,7 +138,7 @@ for (mc,token,seconds,topic,old),limit in zip(paces,limits):
 for mc,token,up,low in wifi: print(f'  wifimem {mc} {token}: up >= {up} B, minimum >= {low} B; no playback.')
 if a.moonshot:
     print(f'Copy planning floor: {copy_cycles} cycles/frame from main SPI GCS replay; actual new-mode payload is timed too.')
-    print('Core 0 capacity: measured sum of actual prepared pages per bank + 23 publication tails + wake allowance + encoder work * 47220/frame <= 40137 cycles.')
+    print('Core 0 capacity: fused encoder work * 47220/frame + measured publication/wake allowance <= 40137 cycles; queue waits reported separately.')
     print('  Core 1 includes sign render, queue and cache in the full-bank maximum. Queue starvation fails; no dispatch/join.')
 if a.encoder:
     print(f'Encoder planning gate: same-frame post-payload mean AND live maximum + measured {copy_cycles:,} cycles/input copy')
@@ -204,10 +204,10 @@ def stream(rows, mc, token):
         assert r['sps_num'] == n and r['sps_den'] == den, r
         assert r['fill_kernel'] == 'moon-queue', r
     assert r['pulse_symbols'] == (7 if n == 12 else 6 if mc >= 12 and n in (3,4) and rate == 80000000 else 9), r
-    assert r['ring_slots'] == (8 if n == 40 else 2 if moon or (quads and n == 3) else 3 if n <= 4 else 2), r
-    assert r['ring_format'] == ('raw' if n == 40 else 'quads' if quads else 'packed'), r
+    assert r['ring_slots'] == (0 if moon else 8 if n == 40 else 2 if quads and n == 3 else 3 if n <= 4 else 2), r
+    assert r['ring_format'] == ('signs' if moon else 'raw' if n == 40 else 'quads' if quads else 'packed'), r
     assert r['workspace_memory'] == ('internal' if resident else 'psram'), r
-    assert r['packed_mapper'] == ('none' if n == 40 else 'quads' if quads else 'direct' if resident else 'sparse'), r
+    assert r['packed_mapper'] == ('signs' if moon else 'none' if n == 40 else 'quads' if quads else 'direct' if resident else 'sparse'), r
     return r
 
 def dump(key):
@@ -261,18 +261,21 @@ def pace(mc,token,seconds,limit):
     if token == '33m333' or (mc >= 12 and token == '26m667'):
         assert r['paced_wifi_up'] and r['wifi_free_up'] >= 20000 and r['wifi_min_free'] >= 20000, r
         assert r['prepare_pages'] > 0 and r['encoder_cache_bytes'] > 23000, r
-        assert r['queue_pages'] == 32 and r['queue_low_pages'] > 0 and r['queue_empty'] == 0, r
+        assert r['queue_pages'] == 54 and r['queue_page_samples'] == 1536 and r['queue_wake_pages'] == 8 and r['queue_low_pages'] > 0 and r['queue_empty'] == 0, r
         assert r['encode_kernel_cycles_mean']+copy_cycles <= limit['encode_cycles_mean'], r
         assert r['encode_kernel_cycles_live_max']+copy_cycles <= limit['encode_cycles_live_max'], r
-        # Actual prepared page costs, with each partially touched edge charged
-        # in full. First bank touches ceil(16380/768)+1 <= 23 pages; steady
-        # banks <=22. Publication tails are bounded separately, never omitted.
+        # Sign extraction belongs to MAP, counted once in encoder work. A
+        # 16,380-sample initial bank touches at most 12 guarded pages.
         frame = 33282*7.2
         encoder = max(r['encode_frame_work_cycles_mean'],r['encode_frame_work_cycles_live_max'],
                       r['encode_work_cycles_mean']+copy_cycles,r['encode_work_cycles_live_max']+copy_cycles)
-        core0 = r['prepare_bank_max_cycles']+23*r['prepare_tail_max_cycles']+r['queue_wake_max_cycles']+encoder*47220/frame
+        core0 = 12*r['prepare_tail_max_cycles']+r['queue_wake_max_cycles']+encoder*47220/frame
         assert core0 <= 40137, dict(core0_cycles=core0, **r)
-    assert r['prefill_frames'] == r['ring_slots'] and r['frames_played'] > 0, r
+        reserve = (r['queue_pages']-r['queue_wake_pages'])*r['queue_page_samples']*3
+        assert r['queue_page_gap_max_cycles']+r['queue_wake_max_cycles'] < reserve-16380*3, r
+        assert r['queue_wait_cycles'] > 0, r
+    assert r['prefill_frames'] >= 1 and (moon or r['prefill_frames'] == r['ring_slots']), r
+    assert r['frames_played'] > 0, r
     f = r['profile']
     assert f['shaped_words'] + f['reused_words'] == f['fill_words'], r
 

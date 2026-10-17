@@ -4,13 +4,12 @@
 
 #define MACHINE_TABLE_WORDS 6144
 #define MACHINE_LUT_WORDS 1024
-#define MACHINE_PAGE_BLOCKS 64
+#define MACHINE_PAGE_BLOCKS 128
 #define MACHINE_PAGE_SAMPLES (12*MACHINE_PAGE_BLOCKS)
-#define MACHINE_PAGES 32
-#define MACHINE_RAW_BYTES 96
+#define MACHINE_PAGES 54
+#define MACHINE_WAKE_PAGES 8
 typedef struct {
     uint32_t signs[MACHINE_PAGE_BLOCKS+1]; // renderer's readable guard belongs to this page
-    uint32_t prepare_cycles;
 } __attribute__((aligned(16))) machine_page;
 
 // QPSK sign windows, seven-symbol .20 pulse, twelve samples/five symbols.

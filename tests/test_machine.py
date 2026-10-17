@@ -40,6 +40,15 @@ def native(folder):
     return exe
 
 
+def sign_mapper(folder):
+    component = ROOT/'firmware/components/dvbs2'
+    exe = folder/'sign_mapper'
+    subprocess.run(['cc','-std=c11','-O2','-Wall','-Wextra','-Werror','-DSIGN_HOST',
+                    f'-I{component}/include',str(ROOT/'tests/sign_mapper.c'),
+                    str(component/'fast.c'),str(component/'dvbs2.c'),'-o',str(exe)],check=True)
+    subprocess.run([str(exe)],check=True)
+
+
 def loopback(exe,out,receiver):
     import decode
     import dvbs2
@@ -90,9 +99,9 @@ def loopback(exe,out,receiver):
 
 def storage_and_capacity():
     # 16-aligned pages include their own readable trailing source-word guard.
-    used = 24576+16704+864+32*272+96+4096+8144
-    assert used == 63184 and used <= 65536
-    print('63184 B store: full sign tables, two frames, dummy, 32 guarded pages, LUT, workspace')
+    used = 24576+54*528+4096+8144
+    assert used == 65328 and used <= 65536
+    print('65328 B store: sign tables, 54 guarded pages, LUT, workspace; no packed frame ring')
 
 
 
@@ -106,5 +115,6 @@ if __name__ == '__main__':
     with tempfile.TemporaryDirectory() as tmp:
         folder = pathlib.Path(tmp)
         exe = native(folder)
+        sign_mapper(folder)
         loopback(exe,a.out or folder/'decode',a.receiver)
     if a.qemu: records(a.qemu.read_text())
