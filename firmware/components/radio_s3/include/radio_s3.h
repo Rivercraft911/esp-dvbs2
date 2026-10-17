@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "esp_err.h"
+#include "radio_filter.h"
 
 #define RADIO_S3_DAC_RATE 40000000U      /* DAC_CTRL bit 15 clear; keyed on air */
 #define RADIO_S3_DAC_RATE_80M 80000000U  /* bit 15 set; not yet keyed on silicon */
@@ -77,6 +78,7 @@ typedef struct {
     uint32_t id_samples;      /* one CW segment at the nominal DAC rate */
     uint32_t id_count;        /* planned start, periodic and end segments */
     uint64_t planned_samples; /* payload + all IDs */
+    radio_filter_stats_t filter; /* keyed runs only; snapshots before playback and cleanup */
     radio_s3_wifi_heap_t wifi; /* radio_s3_run and radio_s3_wifi_probe only */
 } radio_s3_stats_t;
 
@@ -95,9 +97,10 @@ typedef struct {
  * CW_GAIN (default): start and stop the vendor CW tone, which brings up both DAC
  * branches with the PHY's calibrated settings, then pin gain slot 0 as FORCED does.
  * CW: the CW bring-up alone, backoff (17 - gain) * 2 dB; the vendor power control
- * stays on and the level varies between runs. CW40: CW in the vendor's 40 MHz
- * channel mode. FORCED: front end and gain slot 0 forced directly; on the bench
- * only the I branch reached the mixer and the carrier leak exceeded the signal.
+ * stays on and the level varies between runs. CW40: legacy packet-test flag
+ * experiment; CW still resets the bandwidth to mode 0. Filter selection follows
+ * CW setup in every mode. FORCED: front end and gain slot 0 forced directly; on
+ * the bench only I reached the mixer and carrier leak exceeded the signal.
  */
 typedef enum {
     RADIO_S3_CHAIN_FORCED, RADIO_S3_CHAIN_CW, RADIO_S3_CHAIN_CW40, RADIO_S3_CHAIN_CW_GAIN
@@ -156,6 +159,12 @@ esp_err_t radio_s3_run(uint32_t freq_mhz, uint8_t gain, uint32_t seconds,
  * CW ID keeps 20 WPM at either rate; at 80 MS/s its tone is +2 MHz (station_id.h). */
 esp_err_t radio_s3_run_rate(uint32_t freq_mhz, uint8_t gain, uint32_t seconds, uint32_t dac_rate,
                             radio_s3_fill_fn fill, void *ctx, radio_s3_stats_t *stats);
+
+/* Explicit total occupied bandwidth in Hz for automatic filter selection. The older
+ * run/run_rate entries conservatively assume the full DAC Nyquist band. */
+esp_err_t radio_s3_run_bandwidth(uint32_t freq_mhz, uint8_t gain, uint32_t seconds,
+                                 uint32_t dac_rate, uint32_t occupied_hz, radio_s3_fill_fn fill,
+                                 void *ctx, radio_s3_stats_t *stats);
 
 /* Wi-Fi memory probe: radio_s3_run's set-up on core 1 (the 30 s run's station ID, the worker
  * task and stack) and its Wi-Fi start-up (init, NULL mode, start with the PHY's calibration,

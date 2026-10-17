@@ -70,7 +70,20 @@ static const struct {
 bool radio_signal_init(radio_signal_t *signal, const char *name)
 {
     signal->tag = strcmp(name, "tag") == 0;
+    signal->sweep = strcmp(name, "sweep") == 0;
+    signal->bandwidth_40m = signal->tag ? 40000000 : 2000000;
+    if (signal->sweep) {
+        // Only exposed at 80 MS/s: +/-1..20 MHz, 0.25 s each, amplitude 64.
+        // Each step is a permutation of this 80-sample unit-frequency table.
+        signal->bandwidth_40m = 20000000;
+        for (unsigned n = 0; n < 80; ++n) {
+            const double p = 6.2831853071795864769 * n / 80;
+            signal->tone[n] = pack(lround(64 * cos(p)), lround(64 * sin(p)));
+        }
+        return true;
+    }
     if (!strcmp(name, "two")) {
+        signal->bandwidth_40m = 6000000;
         for (unsigned n = 0; n < 40; ++n) {
             // fs=40 MHz: +1 MHz has phase 2*pi*n/40. Two equal +1,+3 MHz tones.
             const double p = 6.2831853071795864769 * n / 40;
@@ -133,6 +146,26 @@ static inline __attribute__((always_inline)) void copy8(uint32_t *dst, const uin
     dst[4] = src[4], dst[5] = src[5], dst[6] = src[6], dst[7] = src[7];
 }
 
+static void IRAM_ATTR periodic(uint32_t *dst, uint64_t first, size_t count,
+                                const uint32_t *tone, unsigned length)
+{
+    unsigned index = first % length;
+    while (count) {
+        size_t part = length - index;
+        if (part > count) part = count;
+        count -= part;
+        const uint32_t *src = tone + index;
+        while (part >= 8) {
+            copy8(dst, src);
+            dst += 8;
+            src += 8;
+            part -= 8;
+        }
+        while (part--) *dst++ = *src++;
+        index = 0;
+    }
+}
+
 void IRAM_ATTR radio_signal_fill(uint32_t *dst, uint64_t first, size_t count,
                                  radio_signal_t *signal)
 {
@@ -149,25 +182,25 @@ void IRAM_ATTR radio_signal_fill(uint32_t *dst, uint64_t first, size_t count,
             *dst++ = (s & 1u) ? 256u : 768u;
             s = step(s);
         }
-    } else {
-        unsigned index = first % 40;
+    } else if (signal->sweep) {
         while (count) {
-            size_t part = 40 - index;
-            if (part > count) {
-                part = count;
+            const uint64_t dwell = 20000000; // 0.25 s at the required 80 MS/s
+            const unsigned step = (first / dwell) % 40;
+            const unsigned bin = step < 20 ? step + 1 : 80 - (step - 19);
+            size_t take = dwell - first % dwell;
+            if (take > count) take = count;
+            uint32_t row[80];
+            for (unsigned n = 0, phase = 0; n < 80; ++n) {
+                row[n] = signal->tone[phase];
+                phase += bin;
+                if (phase >= 80) phase -= 80;
             }
-            count -= part;
-            const uint32_t *src = signal->tone + index;
-            while (part >= 8) {
-                copy8(dst, src);
-                dst += 8;
-                src += 8;
-                part -= 8;
-            }
-            while (part--) {
-                *dst++ = *src++;
-            }
-            index = 0;
+            periodic(dst, first, take, row, 80);
+            dst += take;
+            first += take;
+            count -= take;
         }
+    } else {
+        periodic(dst, first, count, signal->tone, 40);
     }
 }

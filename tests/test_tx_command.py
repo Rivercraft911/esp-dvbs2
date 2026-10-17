@@ -23,7 +23,7 @@ invalid = [
     "2400 tone 1 18", "2400 tone 1 -1", "2400 tone 1 1.5",
     "2400 tone 1 nan", "2400 tone 1 99999999999999999999999999",
     "2400 tone 1 0 60", "2400 tone 1 0 20", "2400 tone 1 0 80m", "2400 tone 1 0 80 x",
-    "2400 tone 1 0 0x50",
+    "2400 tone 1 0 0x50", "2420 sweep 30", "2420 sweep 30 0 40",
 ]
 valid = [
     (" 2390 tone 1", 2390, 1, 0, 40),
@@ -32,6 +32,7 @@ valid = [
     ("2420 gap 2", 2420, 2, 0, 40),
     ("2420 gap 15 0 80", 2420, 15, 0, 80),
     ("2420 tone 3 1 40", 2420, 3, 1, 40),
+    ("2420 sweep 30 0 80", 2420, 30, 0, 80),
 ]
 # Commands handled by dvbtx.c: invalid arguments, then valid ones with the values each stub
 # must receive (freq, modcod, seconds, gain, level, sps, DAC rate) for dvb, (modcod, frames, level, decim,
@@ -124,8 +125,8 @@ prelude = r'''
 #include <string.h>
 #include "radio_s3.h"
 enum { DVB_PULSE_LEGACY, DVB_PULSE_SHORT, DVB_PULSE_QUADS };
-static int signal_storage;
-#define tx_signal ((void *)&signal_storage)
+static struct { unsigned bandwidth_40m; } signal_storage;
+#define tx_signal (&signal_storage)
 static bool configured = true;
 static const char *station_store_get(void) { return configured ? "N0CALL" : ""; }
 
@@ -133,7 +134,8 @@ static unsigned calls, got_freq, got_seconds, got_gain, got_rate;
 static bool radio_signal_init(void *ctx, const char *name)
 {
     (void)ctx;
-    return !strcmp(name, "tone") || !strcmp(name, "two") || !strcmp(name, "tag") ||
+    signal_storage.bandwidth_40m = !strcmp(name, "sweep") ? 20000000 : 2000000;
+    return !strcmp(name, "sweep") || !strcmp(name, "tone") || !strcmp(name, "two") || !strcmp(name, "tag") ||
            !strcmp(name, "gap");
 }
 static bool gaps, gaps_seen;
@@ -143,10 +145,12 @@ static esp_err_t fill_signal(uint32_t *dst, uint64_t first, size_t count, void *
     (void)dst; (void)first; (void)count; (void)ctx;
     return ESP_OK;
 }
-esp_err_t radio_s3_run_rate(uint32_t freq, uint8_t gain, uint32_t seconds, uint32_t rate,
-                            radio_s3_fill_fn fill, void *ctx, radio_s3_stats_t *stats)
+void radio_filter_print(const radio_filter_stats_t *s) { (void)s; }
+esp_err_t radio_s3_run_bandwidth(uint32_t freq, uint8_t gain, uint32_t seconds, uint32_t rate,
+                                uint32_t bandwidth, radio_s3_fill_fn fill, void *ctx, radio_s3_stats_t *stats)
 {
     assert(fill == fill_signal && ctx == tx_signal);
+    assert(bandwidth == tx_signal->bandwidth_40m * (rate / RADIO_S3_DAC_RATE));
     calls++; got_freq = freq; got_seconds = seconds; got_gain = gain; got_rate = rate;
     assert(gaps == (calls == 4 || calls == 5));  // only the "gap" requests probe the switches
     memset(stats, 0, sizeof *stats);
@@ -286,6 +290,7 @@ typedef struct {
     bool gaps;
 } run_t;
 static radio_s3_chain_t chain;
+radio_filter_mode_t radio_filter_get(void) { return RADIO_FILTER_AUTO; }
 static bool configured;
 static unsigned workers;
 static const char *station_store_get(void) { return configured ? "N0CALL" : ""; }
@@ -309,6 +314,9 @@ int main(void)
     assert(workers == 0);
     configured = true;
     assert(radio_s3_run_rate(2420, 0, 1, 20000000, fill, NULL, &s) == ESP_ERR_INVALID_ARG);
+    assert(workers == 0);
+    assert(radio_s3_run_bandwidth(2420, 0, 1, 80000000, 0, fill, NULL, &s) == ESP_ERR_INVALID_ARG);
+    assert(radio_s3_run_bandwidth(2420, 0, 1, 80000000, 80000001, fill, NULL, &s) == ESP_ERR_INVALID_ARG);
     assert(workers == 0);
     assert(radio_s3_run(2420, 0, 1, fill, NULL, &s) == ESP_OK && workers == 1);
     assert(radio_s3_run_rate(2420, 0, 1, 80000000, fill, NULL, &s) == ESP_OK && workers == 2);

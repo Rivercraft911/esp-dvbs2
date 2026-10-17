@@ -672,13 +672,17 @@ void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, 
         return;
     }
     radio_s3_stats_t s = {0};
-    const esp_err_t err = radio_s3_run_rate(freq, (uint8_t)gain, seconds, dac_rate, fill, NULL, &s);
+    // RRC support B = Rs * (1 + alpha), alpha = 0.35. Round upward in integer Hz.
+    const uint32_t bandwidth = ((uint64_t)dac_rate * 135 + sps * 100 - 1) / (sps * 100);
+    const esp_err_t err = radio_s3_run_bandwidth(freq, (uint8_t)gain, seconds, dac_rate, bandwidth,
+                                               fill, NULL, &s);
     print_mode("dvb", modcod, symbols, level);
     printf(",\"freq_mhz\":%" PRIu32 ",\"seconds\":%" PRIu32 ",\"gain\":%u,\"dac_rate\":%" PRIu32
            ",\"step_words\":%u", freq, seconds, gain, dac_rate, RADIO_S3_STEP_FOR(dac_rate));
     printf(",\"pulse_symbols\":%u", dvb.table.parts == 2 ? 6 : 9);
     print_timing(&s);
-    printf(",\"fe_gain_index\":%" PRIu32, s.fe_gain_index);
+    printf(",\"fe_gain_index\":%" PRIu32 ",\"chain\":%" PRIu32, s.fe_gain_index, s.chain);
+    radio_filter_print(&s.filter);
     print_wifi(&s.wifi);
     stop_encoder();
     printf(",\"status\":\"%s\"%s}\n", esp_err_to_name(err),

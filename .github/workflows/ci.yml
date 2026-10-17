@@ -26,6 +26,8 @@ jobs:
       - run: python tests/test_maxrate.py
       - run: python tests/test_round2.py
       - run: python tests/test_shaper_apsk.py
+      - run: python tests/test_radio_filter.py
+      - run: python tests/test_filter_response.py
       - run: python tests/test_radio.py
       - run: python tests/test_tx_command.py
       - run: python tests/test_tx_samples.py
