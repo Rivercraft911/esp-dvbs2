@@ -94,6 +94,16 @@ def test_ring():
             assert r["underruns"] > 0, r
             run(exe, "threads", 22194, 2, 80, 41 + sps, sps=sps, dummy=3330, split=True,
                 cache=True, packed=True)
+        # 10 Msym/s keeps three packed frames: two leave as little as 244 symbols of lead at
+        # 70-80% encoder load and underrun at 90%; three hold 95%.
+        two = run(exe, "sim", 22194, 2, 300, 800, 0, 0, 1, sps=4, dummy=3330, split=True,
+                  cache=True, packed=True)
+        for load in (800, 950):
+            r = run(exe, "sim", 22194, 3, 300, load, 0, 0, 1, sps=4, dummy=3330, split=True,
+                    cache=True, packed=True)
+            assert r["underruns"] == 0 and r["min_lead"] > 50 * two["min_lead"], (r, two)
+        run(exe, "threads", 22194, 3, 80, 47, sps=4, dummy=3330, split=True, cache=True,
+            packed=True)
         # The cache's two end symbols are needed at 8 sps (bank edges cut symbols), not at 4.
         run(exe, "sim", 22194, 2, 20, 400, 0, 0, 1, sps=8, dummy=3330, split=True, cache=True,
             packed=True, margin=0, fails=True)

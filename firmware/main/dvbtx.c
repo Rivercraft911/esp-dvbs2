@@ -1,8 +1,9 @@
 // Continuous QPSK at 1 Msym/s (40 sps), or 8PSK at 5/10 Msym/s (8/4 sps).
 // 8PSK requires an explicit 5m or 10m before duration/frame count in all commands.
-// 8PSK keeps two frames in internal RAM, packed two phases per byte (dvbs2.h), so neither
-// core touches PSRAM per symbol: at 4 sps in the table store's unused half, at 8 sps in one
-// heap block (docs/stream-profile.md). QPSK keeps eight raw frames in PSRAM.
+// 8PSK keeps its frames in internal RAM, packed two phases per byte (dvbs2.h), so neither core
+// touches PSRAM per symbol: at 4 sps three frames, two in the table store's unused half and one
+// on the heap; at 8 sps two frames in one heap block (docs/stream-profile.md). QPSK keeps eight
+// raw frames in PSRAM.
 // Payload: xorshift32 seed 2026, one contiguous byte stream across data frames.
 // On underrun the ring inserts a 3330-symbol dummy PLFRAME (EN 302 307-1 5.1.5,
 // 5.5.1), preserving each choice for overlapping bank reads. No payload is skipped.
@@ -36,7 +37,7 @@
 #include "shaper_taps.h"
 
 #define RING_SLOTS 8                // QPSK frames the encoder may run ahead: 233 ms at 1 Msym/s
-#define PACKED_SLOTS 2              // 8PSK: two packed frames and an overlap cache
+#define PACKED_SLOTS 3              // 8PSK: three packed frames at 4 sps, two at 8, plus a cache
 #define PILOTS 1
 #define BANK_SYMBOLS 4096           // ceil(16380/4) + 1, worst offset at 4 sps
 #define TAPS (9 * 40)
@@ -70,7 +71,7 @@ typedef struct {
     bool packed;                    // 8PSK: packed internal ring
     uint8_t *payload;               // one frame of payload: next to a packed ring, or PSRAM
     uint8_t *slot[PACKED_SLOTS];    // packed frames, internal
-    uint8_t *block;                 // 8 sps: the heap block holding the packed ring and payload
+    uint8_t *block;                 // packed ring's heap part: slot 2 (4 sps) or everything (8 sps)
     uint8_t *slots, *filler;        // QPSK: PSRAM; packed: filler is the packed dummy
     TaskHandle_t task;
     uint32_t stall_ms;
@@ -124,7 +125,8 @@ static IRAM_ATTR esp_err_t fill(uint32_t *dst, uint64_t first, size_t count, voi
     const uint32_t freed = dvb.ring.freed;
     // Packed reads unpack whole vectors when every symbol lands at an address of its own
     // parity (ring.h); the history is even, so shift the window by the first symbol's parity.
-    uint8_t *const win = dvb.win + (first / sps & 1);
+    // sps is 4 or 8 there, so that parity is bit log2(sps) of first. QPSK keeps the window.
+    uint8_t *const win = dvb.win + (enc.packed && (first & sps));
     if (ring_window(&dvb.ring, win, sizeof dvb.win - 1, first, count, sps,
                     SHAPER_HISTORY, RADIO_S3_BANK_WORDS) < 0) {
         return ESP_FAIL;
@@ -283,11 +285,14 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
     const uint32_t internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     const size_t payload_bytes = (mode->kbch - 80) / 8;
     enc.packed = mode->bits_per_symbol == 3;
-    const unsigned nslots = enc.packed ? PACKED_SLOTS : RING_SLOTS;
+    // At 10 Msym/s the 5/6 encoder needs about 69% of a frame period; a two-frame model keeps
+    // as little as 244 symbols of lead there, three frames keep 18,871 even at 95% (test_ring).
+    const unsigned nslots = !enc.packed ? RING_SLOTS : sps == 4 ? 3 : 2;
     if (enc.packed) {
-        // Two packed frames, the packed dummy and the payload, 16-byte aligned (4 sps: 31,200 B
-        // at most, for MODCOD 17). The 4-sps table uses the store's first 32 KiB; at 8 sps the
-        // table fills it, so the ring is one heap block, made before the context.
+        // Two packed frames, the packed dummy and the payload, 16-byte aligned (31,200 B at
+        // most, for MODCOD 17). The 4-sps table uses the store's first 32 KiB, so they go in the
+        // rest and the third frame on the heap. At 8 sps the table fills the store, so all of
+        // it is one heap block. Heap parts are made before the context.
         const size_t frame = packed_bytes(symbols), dummy = packed_bytes(DVBS2_DUMMY_SYMBOLS);
         const size_t need = 2 * frame + dummy + payload_bytes;
         uint8_t *base;
@@ -299,10 +304,11 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
                 return 0;
             }
             base = (uint8_t *)shaper_store + used;
+            enc.slot[2] = enc.block = heap_caps_aligned_alloc(16, frame, internal);
         } else {
             base = enc.block = heap_caps_aligned_alloc(16, need, internal);
         }
-        if (base) {
+        if (enc.block) {
             enc.slot[0] = base;
             enc.slot[1] = base + frame;
             enc.filler = base + 2 * frame;
@@ -342,7 +348,7 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
     heap_caps_free(taps);
     dvb.max_fill_cycles = 0;
     if (enc.packed) {
-        ring_init_slots(&dvb.ring, enc.slot, PACKED_SLOTS, enc.filler, symbols);
+        ring_init_slots(&dvb.ring, enc.slot, nslots, enc.filler, symbols);
         ring_cache(&dvb.ring, dvb.overlap, OVERLAP_SYMBOLS(sps));
         ring_packed(&dvb.ring);
     } else {

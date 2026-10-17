@@ -105,7 +105,7 @@ int main(int argc, char **argv)
     allocation_count = 0;
     assert(start_encoder("dvbdump", mc, 128, 0, sps));
     const int allocations = allocation_count;
-    assert(allocations == (sps == 4 ? 3 : sps == 8 ? 4 : 6));
+    assert(allocations == (sps == 40 ? 6 : 4));
     stop_encoder();
     printf("}\n");
     assert(live_allocations == 0);

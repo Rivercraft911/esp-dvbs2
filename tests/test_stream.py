@@ -180,7 +180,7 @@ def test_stream():
                 assert r["status"] == "ESP_OK" and not r["encoder_failed"]
                 assert r["callsign"] == call
                 packed = sps != 40
-                assert r["ring_slots"] == (2 if packed else 8)
+                assert r["ring_slots"] == (3 if sps == 4 else 2 if packed else 8)
                 assert r["ring_memory"] == ("internal" if packed else "psram")
                 assert r["ring_format"] == ("packed" if packed else "raw")
                 slots = [int(a, 16) for a in r["layout"]["slots"]]
@@ -191,13 +191,16 @@ def test_stream():
                     # Two packed frames, the packed dummy, then the payload, each with the
                     # 16 bytes the vector unpack may read past its end.
                     frame = (22194 // 2 + 31) // 16 * 16
-                    assert slots == [slots[0], slots[0] + frame] and slots[0] % 16 == 0
+                    assert slots[:2] == [slots[0], slots[0] + frame]
+                    assert all(a % 16 == 0 for a in slots)
                     assert filler == slots[0] + 2 * frame
                     assert payload == filler + (3330 // 2 + 31) // 16 * 16
                     need = payload - slots[0] + r["payload_bytes_per_frame"]
                     if sps == 4:
+                        # Two frames, dummy and payload in the store; the third on the heap.
                         assert slots[0] == int(r["layout"]["table"], 16) + 32768
-                        assert r["ring_heap_bytes"] == 0 and need <= 32768
+                        assert need <= 32768 and r["ring_heap_bytes"] == frame
+                        assert not slots[0] <= slots[2] < slots[0] + 32768
                     else:
                         assert r["ring_heap_bytes"] == need
                 assert all(p["calls"] == r["frames_encoded"] for p in r["profile"]["encoder"].values())
