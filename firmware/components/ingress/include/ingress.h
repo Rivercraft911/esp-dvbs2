@@ -90,6 +90,7 @@ typedef struct {
     uint32_t overruns;                      /* data arrived with no armed slot (set by hardware) */
     uint32_t restarts;                      /* DMA restarts after an overrun */
     uint32_t ready_falls;                   /* READY high to low transitions */
+    uint32_t ts_packets, crc_chain;         /* TS_DATA only; chain the four wire CRC bytes */
 } ingress_stats;
 
 typedef struct {

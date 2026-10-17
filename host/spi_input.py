@@ -9,6 +9,20 @@ import zlib
 PAYLOAD = 1316
 
 
+def pv_pattern(seq):
+    seq &= 65535
+    return b''.join(bytes((0x47, 1, 0, 0x10 | ((7*seq+i) & 15))) +
+                    bytes(((7*seq+i) % 112+j) & 255 for j in range(184)) for i in range(7))
+
+
+def pv_chain(messages):
+    chain = 0
+    for seq in range(messages):
+        body = struct.pack('<HBBHHI', 0x5650, 1, 1, seq & 65535, PAYLOAD, 0) + pv_pattern(seq)
+        chain = zlib.crc32(struct.pack('<I', zlib.crc32(body)), chain)
+    return chain
+
+
 def pattern(seq, kind):
     seq &= 65535
     out = bytearray()
@@ -32,6 +46,12 @@ def record_check(r):
     if r.get('done') or 'cmd' not in r:
         return
     assert 'error' not in r, r
+    if r.get('input_wire') == 'pv' and r.get('input_loop') and not r.get('input_fault'):
+        s = r['spi']
+        assert s['messages'] == s['msgs'] > 0 and s['ts_packets'] == 7*s['messages'], r
+        assert s['payload_bytes'] == s['bytes'] == PAYLOAD*s['messages'], r
+        assert s['next_seq'] == (s['messages'] & 65535), r
+        assert s['crc_chain'] == pv_chain(s['messages']), r
     if 'sender' in r:
         assert r['sender']['cpu_timed'] and r['sender']['errors'] == 0, r
         assert r['sender']['stack_min_free'] >= 256, r
@@ -49,8 +69,13 @@ def record_check(r):
             assert all(s[k] == 0 for k in (*names, 'lost', 'overruns')), r
             want = 0
             for seq in range(r['verified_msgs']):
-                want = zlib.crc32(pattern(seq, 1 if r['input'] == 'ts' else 2), want)
+                payload = pv_pattern(seq) if r.get('input_wire') == 'pv' else pattern(seq, 1 if r['input'] == 'ts' else 2)
+                want = zlib.crc32(payload, want)
             assert want == r['crc32'], r
+            if r.get('input_wire') == 'pv' and not r.get('input_loop'):
+                assert s['messages'] == r['verified_msgs'] and s['ts_packets'] == 7*s['messages'], r
+                assert s['payload_bytes'] == s['bytes'] and s['next_seq'] == (s['messages'] & 65535), r
+                assert s['crc_chain'] == pv_chain(s['messages']), r
         if f in (1, 2, 3):
             name = {1: 'crc', 2: 'short', 3: 'long'}[f]
             assert s[name] > 0 and all(s[k] == 0 for k in names if k != name), r
@@ -82,7 +107,8 @@ def record_check(r):
             if command:
                 assert r['seconds'] == int(command.split()[3]), r
             assert r['late_fills'] == r['late_switches'] == r['fatal_late'] == 0 and r['min_fill_slack_cycles'] > 0, r
-            if r.get('input_fault') == 6 or 'starve' in r.get('test', ''):
+            if (r.get('input_fault') == 6 or 'starve' in r.get('test', '') or
+                    (r.get('input_wire') == 'pv' and 0 < r.get('input_target', 0) <= 9)):
                 assert r['underruns'] > 0 and r['frames_encoded'] > 0, r
             else:
                 assert r['underruns'] == 0, r
@@ -120,14 +146,15 @@ def encoder_check(rows):
         assert r['seconds'] == base['seconds'] and r['encode_cycles_mean'] <= limit, r
 
 
-def decode_dump(path, kind, mc, sps, rate, frames, receiver, replay=False):
+def decode_dump(path, kind, mc, sps, rate, frames, receiver, replay=False, pv=False):
     import tempfile
     import numpy as np
     import decode
     import dvbs2
     rate_code = dvbs2.RATES[mc-1] if mc < 12 else dvbs2.PSK8_RATES[mc-12]
     per_frame = (dvbs2.code(rate_code).kbch-80)//8
-    expected = b''.join(pattern(seq % 4 if replay else seq, kind) for seq in range(math.ceil((frames+3)*per_frame/PAYLOAD)))
+    expected = b''.join(pv_pattern(seq) if pv else pattern(seq % 4 if replay else seq, kind)
+                        for seq in range(math.ceil((frames+3)*per_frame/PAYLOAD)))
     data = np.fromfile(path, '<i2').reshape(-1, 2).astype(np.float32)/512
     with tempfile.TemporaryDirectory() as tmp:
         capture = Path(tmp)/'input.cf32'
@@ -160,6 +187,7 @@ def main():
     d.add_argument('iq', type=Path)
     d.add_argument('--kind', choices=('ts','gcs'), required=True)
     d.add_argument('--replay', action='store_true')
+    d.add_argument('--pv', action='store_true', help='PigeonVision raw-loopback pattern')
     d.add_argument('--modcod', type=int, default=11)
     d.add_argument('--sps', type=int, default=3)
     d.add_argument('--rate', type=int, default=80000000)
@@ -209,7 +237,7 @@ def main():
         if failures:
             raise SystemExit(1)
     else:
-        decode_dump(a.iq, 1 if a.kind == 'ts' else 2, a.modcod, a.sps, a.rate, a.frames, a.receiver, a.replay)
+        decode_dump(a.iq, 1 if a.kind == 'ts' else 2, a.modcod, a.sps, a.rate, a.frames, a.receiver, a.replay, a.pv)
 
 
 if __name__ == '__main__':

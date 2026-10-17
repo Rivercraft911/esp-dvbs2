@@ -278,6 +278,10 @@ HOT static bool advance(ingress_ring *r)
         r->held = true;
         r->st.msgs++;
         r->st.bytes += r->left;
+        if (m[3] == PV_TS) {
+            r->st.ts_packets += r->left / PV_TS_PACKET;
+            r->st.crc_chain = pv_crc32(r->st.crc_chain, m + PV_MSG_BYTES - 4, 4);
+        }
         return true;
     }
     return false;  /* yield under a continuous flood of invalid messages */

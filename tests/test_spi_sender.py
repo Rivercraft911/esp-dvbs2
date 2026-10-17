@@ -51,6 +51,7 @@ static unsigned alarms, delays, transfers;
 static unsigned tasks;
 static uint16_t sequence;
 static int allocations;
+static bool raw_wire;
 static inline int64_t esp_timer_get_time(void) { return now_us++; }
 static inline uint32_t esp_cpu_get_cycle_count(void) { return now_us++*240; }
 static inline int xPortGetCoreID(void) { return 0; }
@@ -90,7 +91,8 @@ static inline void heap_caps_free(void *p) { if(p) { --allocations; free(p); } }
 static inline int spi_bus_initialize(int h,const spi_bus_config_t *c,int dma) { (void)h;(void)c;(void)dma; return 0; }
 static inline void spi_bus_free(int h) { (void)h; }
 static inline int spi_bus_add_device(int h,const spi_device_interface_config_t *c,spi_device_handle_t *d) {
-    (void)h; assert(c->mode==0 && c->dummy_bits==8); *d=(void *)1; return 0;
+    (void)h; assert(c->mode==0); raw_wire=c->dummy_bits==0;
+    assert(c->command_bits==(raw_wire?0:8) && c->address_bits==(raw_wire?0:8)); *d=(void *)1; return 0;
 }
 static inline void spi_bus_remove_device(spi_device_handle_t d) { (void)d; }
 static inline void spi_device_get_actual_freq(spi_device_handle_t d,int *khz) { (void)d; *khz=40000; }
@@ -102,8 +104,12 @@ APP = r'''
 #include "spi_input.c"
 int spi_device_polling_start(spi_device_handle_t d,spi_transaction_t *t,unsigned ticks) {
     (void)d;(void)ticks;
-    assert(t->flags==SPI_TRANS_MODE_QIO && t->cmd==0x23 && t->addr==0 && t->length==1332*8);
+    assert(t->flags==(raw_wire?0:SPI_TRANS_MODE_QIO) && t->cmd==(raw_wire?0:0x23) && t->addr==0 && t->length==1332*8);
     assert(pv_check(t->tx_buffer,1332)==PV_OK && now_us>=ready_at);
+    if (raw_wire) {
+        uint8_t want[1316]; ingress_pv_pattern(want,sequence);
+        assert(memcmp(want,(const uint8_t *)t->tx_buffer+12,1316)==0);
+    }
     const uint8_t *m=t->tx_buffer;
     assert((m[4] | m[5]<<8)==sequence++);
     if (!transfers) first_tx=now_us;
@@ -117,21 +123,36 @@ esp_err_t ingress_spi_start(const ingress_spi_config *cfg,ingress_ring **ring) {
 void ingress_spi_stop(void) {}
 void ingress_spi_get_stats(ingress_spi_stats *out) { memset(out,0,sizeof *out); }
 int main(void) {
-    for (unsigned test=0;test<3;++test) {
+    for (unsigned test=0;test<6;++test) {
+        pv_mode=test>=3;
         now_us=alarms=delays=transfers=sequence=0; ready_at=test?2000:0;
-        assert(tx_init(PV_TS,40,test==2?0:22,0,10)==ESP_OK);
+        assert(tx_init(PV_TS,pv_mode?20:40,test%3==2?0:22,0,10)==ESP_OK);
         tx_run();
         assert(tx.errors==0 && transfers>14 && alarms>10 && first_tx>=ready_at);
         assert(first_tx < ready_at+100 && delays==0); // READY resumes within a poll, no 1 ms sleep
         tx_free(); assert(allocations==0 && !tx.timer);
     }
-    input_type=PV_TS; loop=true;
+    pv_mode=false; input_type=PV_TS; loop=true;
     for (sender_core=0;sender_core<2;++sender_core) {
         assert(spi_input_start()==ESP_OK && tx.task);
         tx.finished=true; spi_input_stop();
         assert(!rx && !tx.task && allocations==0);
     }
     assert(tasks==2);
+    spi_input_command("spiinput","pv loop 9");
+    assert(pv_mode && loop && input_type==PV_TS && target==9);
+    spi_input_command("spiinput","pv replay"); // rejected without changing preferences
+    assert(pv_mode && loop && target==9);
+    spi_input_command("spiinput","ts");
+    assert(!pv_mode && !loop && input_type==PV_TS);
+    spi_input_command("spisend","100 pv 21"); // no raw clock above 20 MHz
+    assert(!pv_mode && !allocations);
+    spi_input_command("spipins","xiao");
+    assert(pins.sclk==7 && pins.cs==1 && pins.d0==2 && pins.ready==8);
+    spi_input_command("spipins","devkit");
+    assert(pins.sclk==12 && pins.cs==10 && pins.d0==11 && pins.ready==8);
+    spi_input_command("spiinput","off");
+    assert(!pv_mode && !loop && !input_type);
     puts("SPI sender: real scheduler, timer sleeps, 22 Mb/s pacing, fresh READY, CRC and cleanup: ok");
 }
 '''
@@ -154,4 +175,7 @@ def main():
         subprocess.run([str(exe)],check=True,timeout=10)
 
 
-if __name__ == '__main__': main()
+if __name__ == '__main__':
+    main()
+    from test_spi_pv import main as receiver_checks
+    receiver_checks()

@@ -1,5 +1,118 @@
 # Payload over SPI
 
+`spiinput pv` accepts PigeonVision's **raw PV-SPI v1** TS messages: mode 0,
+MSB first, single-line, up to **20 MHz**, exactly **1,332 bytes per CS assertion**.
+There is **no command, address or dummy-clock prefix**. Native `pv-capture`
+works directly with its existing SPI configuration and starts sequence zero.
+Select a fresh S3 receiver run before starting each sender. `spiinput off`
+restores synthetic input. These commands only select input for the next run;
+they do not start the receiver or enable RF.
+
+This revision is host-tested and builds with ESP-IDF v6.1. No board, serial port
+or radio was accessed during development. External 20 MHz reception and sustained
+9 Mb/s camera input still need the coordinator's hardware check.
+
+## Coordinator radio-off check, about five minutes
+
+**Pass criteria first:** clean loopback has nonzero accepted TS, correct pattern,
+matching message CRC chain and zero short/long/header/CRC/sync/sequence/overrun
+errors. Deliberate faults must increment their respective counters and recover.
+The PV dump must decode to the offered TS; synthetic dump CRCs must remain
+**QPSK 1271511239** and **8PSK 3178964763**. Paced output must have zero late bank
+switches/fills and no encoder failure. At **9 Mb/s**, dummy frames are expected
+because MODCOD 13 at 10 Msym/s consumes **19.356583 Mb/s** TS. Dummies do not mean
+SPI loss. Missing tools, failed commands and failed gates must produce FAIL,
+while later steps still run. Inspect every PASS/FAIL line and retain the logs.
+
+On an already flashed, **bare board**, disconnect the CM5 and every SPI jumper.
+The coordinator owns the only board session. Set `PORT`, `PINS=devkit` or `xiao`,
+and `RX` to the LeanDVB executable as needed, then run:
+
+```sh
+PINS=devkit bash host/pv-spi-board.sh
+```
+
+The script keeps going, stores evidence under `notes/`, and restores input off
+on exit. It runs a 20 MHz raw one-board sender at 9 Mb/s, CRC/short/long faults,
+a 5 Msym/s PV dump at a 12 Mb/s offered ceiling, a 30 s 9 Mb/s paced run, the
+kept quad mode, and both synthetic CRC regressions. SPI3 drives SPI2's inputs
+through the same pads; no loopback wires are needed. It cannot establish CM5
+scheduling margin, cable timing or RF performance. An individual check is
+`spirx 3000 pv loop 9`; encoding uses `spiinput pv loop 9` before `dvbpace`.
+`spisend ms pv [MHz [Mb/s [fault]]]` also supports a second S3, capped at 20 MHz.
+
+## CM5 with unchanged pv-capture
+
+Enable SPI0 (`dtparam=spi=on`). Keep the existing camera settings, including:
+
+```json
+{"mux_bitrate":9000000,"udp_destination":null,
+ "spi":{"device":"/dev/spidev0.0","hz":20000000,"ready_line":25}}
+```
+
+`spi.gpiochip` can identify the RP1 chip explicitly; otherwise native pv-capture
+finds it. Start an S3 radio-off receiver run such as `spiinput pv`, then
+`dvbpace 13 10m 120`, before starting capture. Stop capture several seconds before
+the S3 run ends, and let accepted input drain. Do not change the capture transport
+or add the old S3 prefix. Camera capture and recording remain owned by PigeonVision.
+
+Compare final `outputs.transport.spi` with S3 `spi`: **messages, ts_packets,
+payload_bytes, crc_chain, next_seq** must agree after draining, with zero receiver
+protocol errors and no capture transport drops/timeouts/uncertain writes.
+`crc_chain = zlib.crc32(message[1328:1332], previous_chain)`, initially zero,
+for accepted TS_DATA only. NOP advances sequence but does not enter these counts.
+`msgs`/`bytes` remain aliases of accepted data-message/payload counts. Receiver
+counts mean parsed acceptance, including any partial encoder frame pending at
+stop; sender counts mean completed writes, with no acknowledgment. At run expiry,
+unparsed/prefetched bytes can be discarded. Sequence gaps count skipped messages;
+duplicates/backward messages are rejected. Start a new receiver run when restarting
+capture. The counters are 32-bit; compare runs below 4 GiB of payload.
+
+The S3 keeps TS bytes in order across message and DATA FIELD boundaries. Its
+existing TS adapter replaces sync bytes with packet CRC-8 during DVB-S2 encoding.
+When input is empty, the timed output emits **3,330-symbol DVB-S2 dummy frames**;
+it preserves partial TS state until more data arrives. Unlike the RP2350 receiver,
+it does not synthesize PID 0x1fff TS null packets. No dummy or null byte enters the
+SPI acceptance counts or CRC chain. TS continuity counters and PCR remain the mux's job.
+
+## Raw PV-SPI contract
+
+The payload layout is the table in the kept-format section below, restricted to
+NOP (type 0, length 0) and TS_DATA (type 1, 1..7 complete 188-byte TS packets).
+All multibyte fields are little endian, reserved fields zero, and unused payload
+bytes are zero padded by the sender. CRC-32 covers bytes 0..1327, reflected IEEE
+polynomial 0xedb88320, init/final XOR 0xffffffff. The check value for `123456789`
+is `0xcbf43926`; the one-packet sequence-1 vector seals to **0x51be328d**.
+`examples/pi-sender/send.py --vector` verifies that vector without hardware.
+
+READY is active high only after DMA is armed with room for another message.
+After CS rises, wait **at least 10 µs**, then read READY immediately before each
+transfer. Send only while high; finish a started message even if READY falls.
+Do not queue from an earlier READY sample. The raw slave lowers READY in its
+completion callback and raises it after the next DMA setup, subject to the
+existing two-slot credit margin. Four internal 1,336-byte buffers hold one CS
+transaction each. A short/long or bad message is discarded as a unit; the next
+CS starts fresh. Clocks sent while no transaction is armed are outside the
+contract and may not be counted. MISO is unused; v1 has no ACK or retry.
+
+Wire budget at 20 MHz: `T = 1332*8/20e6 + 10e-6 = 542.8 µs/message`.
+The ideal payload ceiling is `1316*8/T = 19.396 Mb/s`, before GPIO, ioctl and
+scheduling costs. A 9 Mb/s stream needs `9e6/(1316*8) = 854.86 messages/s`,
+so ideal bus occupancy is **46.4%**. This calculation is not measured throughput.
+Check SCK, mode, CS lengths/gaps and READY on the final wiring at 1 MHz, then 20 MHz.
+
+Read-only contract sources: [PigeonVision flight SPI notes](https://github.com/stanford-ssi/PigeonVision/blob/main/software/flight/spi.md),
+its `software/python/pigeonvision/spi_transport.py` and native
+`software/flight/include/pv/spi_protocol.hpp` / `src/spi_output.cpp`, plus the
+[RP2350 specification](https://github.com/Rivercraft911/RP2350_IQ_Benchmark/blob/main/docs/pv-spi-spec.md),
+`firmware/src/ingress/pvspi.c`, `pvproto.c` and
+[CM5 results](https://github.com/Rivercraft911/RP2350_IQ_Benchmark/tree/main/results/cm5-spi).
+The raw path uses the [ESP-IDF SPI slave driver](https://docs.espressif.com/projects/esp-idf/en/v6.0/esp32s3/api-reference/peripherals/spi_slave.html),
+with word-aligned DMA buffers and setup/completion callbacks. The quad path below
+retains its original GDMA descriptor chain and command phases.
+
+## Earlier quad measurements
+
 The [clean third run](../results/2026-10-17-spi-in-third/README.md), firmware 39d9c04,
 passed replay and standalone 46.6 Mb/s, but the demo loopback still inserted
 5,839 dummy frames in 30 s. Its sender preempted the encoder on core 0, and input
@@ -28,7 +141,15 @@ or logic-analyser check on the actual cable.
 | D2 | 14 | 5 / D4 | unconnected |
 | D3 | 9 | 6 / D5 | unconnected |
 | READY | 8 | 8 / D9 | GPIO25 input, pin 22 |
-| GND | GND | GND | pin 6 |
+| GND | GND | GND | pin 20 or 25 (pin 6 also GND) |
+
+For raw PV-SPI, connect only CLK, CS, D0/MOSI, READY and GND. Leave
+MISO and D1/D2/D3 disconnected. Fit a 4.7 kΩ pull-up from CS to **S3 3.3 V**
+and a 4.7–6.8 kΩ pull-down from READY to GND. Power the S3 before the CM5 drives
+SPI. Both boards use **3.3 V signals**; no 5 V GPIO or power-header connection.
+Use more than one ground lead if available, with ground alongside CLK.
+DevKit defaults are GPIO12/10/11/8; XIAO defaults are GPIO7/1/2/8.
+The unused quad pins are neither configured nor driven in raw mode.
 
 The CM5 table assumes the standard IO-board header, not bare module connector
 numbers. [Raspberry Pi SPI pin mapping and enablement](https://www.raspberrypi.com/documentation/computers/raspberry-pi.html#serial-peripheral-interface-spi);
@@ -40,8 +161,10 @@ Two S3s use the same row-to-row wiring, all four data lines, slave READY to mast
 READY. A single bare board instead reads SPI3 outputs through SPI2 on the same pads.
 **Disconnect all external devices and jumpers for `loop` tests.**
 
-## PV-SPI v1
+## Prefixed S3 format (kept)
 
+`spiinput ts` and `spiinput gcs` keep the original prefixed format.
+This is distinct from raw PV-SPI v1 selected by `spiinput pv`.
 One message per CS assertion, mode 0, MSB first. Command **0x03** selects single-line
 CM5 data; **0x23** selects four-line S3 data. Command and address are always on D0:
 command byte, address **0x00**, **eight dummy clocks**, then 1,332 data bytes.
@@ -87,7 +210,7 @@ It never waits for SPI: complete 3,330-symbol dummy frames cover starvation, the
 data resumes in order. TS packet state survives dummies. There is no finite-stream
 flush; stopping discards partial/prefetched data.
 
-## Monday: CM5, 8PSK 2/3 at 10 Msym/s
+## Legacy prefixed sender: 8PSK 2/3 at 10 Msym/s
 
 Use MODCOD 13 and rate token `10m` (40 MS/s, four samples/symbol), external TS.
 Payload `B=(43040-80)/8=5370 B`; pilots give `S=21600+90+14*36=22194 symbols`.
@@ -106,7 +229,7 @@ than `gpiochip0`. Give the sender account access to that chip and SPI device.
 [Python SPI API](https://github.com/doceme/py-spidev),
 [libgpiod bindings](https://git.kernel.org/pub/scm/libs/libgpiod/libgpiod.git/tree/bindings/python).
 
-The independently written [sender](../host/cm5_spi.py) uses mode 0, 8 bits/word,
+The legacy prefixed [sender](../host/cm5_spi.py) uses mode 0, 8 bits/word,
 25 MHz requested SCK, one synchronous `xfer2` of **1,335 bytes** (three prefix bytes
 plus PV message), and a fresh READY read after each 10 µs gap. It never queues SPI.
 It validates TS sync, pads a final 1..7-packet batch and calculates each CRC.

@@ -1,10 +1,11 @@
 """Coordinator gates reject corrupted, slow and late records. No serial access."""
 import copy
 import pathlib
+import struct
 import sys
 import zlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / 'host'))
-from spi_input import pattern, record_check, encoder_check
+from spi_input import pattern, pv_pattern, record_check, encoder_check
 
 
 def rejected(r):
@@ -22,6 +23,17 @@ def main():
              verified_msgs=2, verified_bytes=2632, bad_payload=0, mbps=87,
              crc32=zlib.crc32(pattern(0, 2)+pattern(1, 2)))
     record_check(r)
+    pv = copy.deepcopy(r)
+    pv.update(command='spirx 3000 pv loop 9', input='ts', input_wire='pv', input_loop=True,
+              mbps=9, crc32=zlib.crc32(pv_pattern(0)+pv_pattern(1)))
+    chain = 0
+    for seq in range(2):
+        body = b'PV\x01\x01'+struct.pack('<HHI', seq, 1316, 0)+pv_pattern(seq)
+        chain = zlib.crc32(struct.pack('<I', zlib.crc32(body)), chain)
+    pv['spi'].update(messages=2, ts_packets=14, payload_bytes=2632, crc_chain=chain, next_seq=2)
+    record_check(pv)
+    for key in ('messages','ts_packets','payload_bytes','crc_chain','next_seq'):
+        bad = copy.deepcopy(pv); bad['spi'][key] += 1; rejected(bad)
     for key, value in (('crc32', 0), ('bad_payload', 1), ('mbps', 80), ('verified_msgs', 0)):
         bad = copy.deepcopy(r); bad[key] = value; rejected(bad)
     capacity = copy.deepcopy(r)
@@ -57,6 +69,10 @@ def main():
     demo.update(command='dvbpace 13 10m 30', input_fault=0, underruns=0, sps=4,
                 frame_symbols=22194, symbol_rate=10000000, encode_cycles_live_max=532656)
     record_check(demo)
+    pvpace = dict(demo, input_wire='pv', input_loop=True, input_target=9, spi=pv['spi'])
+    rejected(pvpace)  # a 9 Mb/s source cannot fill this 19.36 Mb/s mode
+    pvpace['underruns'] = 1
+    record_check(pvpace)
     demo['encode_cycles_live_max'] += 1; rejected(demo)
     demo.update(encode_cycles_live_max=532656, input_copy_cycles=2, input_cycles=1)
     rejected(demo)

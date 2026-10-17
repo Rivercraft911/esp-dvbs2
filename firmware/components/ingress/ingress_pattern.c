@@ -1,6 +1,15 @@
 #include "ingress_pattern.h"
 #include <string.h>
 
+void ingress_pv_pattern(uint8_t *p, uint16_t seq)
+{
+    for (unsigned i = 0; i < 7; ++i, p += PV_TS_PACKET) {
+        const unsigned k = 7u * seq + i;
+        p[0] = 0x47; p[1] = 1; p[2] = 0; p[3] = 0x10 | (k & 15);
+        for (unsigned j = 0; j < 184; ++j) p[4+j] = (k % 112 + j) & 255;
+    }
+}
+
 void ingress_pattern(uint8_t *p, uint16_t seq, unsigned type)
 {
     for (unsigned j = 0; j < 7; ++j, p += PV_TS_PACKET) {
