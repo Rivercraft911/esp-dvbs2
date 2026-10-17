@@ -52,8 +52,9 @@ with tables and whole-word operations (4.1 M to 0.38 M cycles per frame).
 
 The transmitter now uses the fast complete-frame API. Its 8PSK 2/3 context takes 14,736 bytes
 of internal RAM; shared tables stay in flash and the workspace uses cached PSRAM. Host tests
-and QEMU agree bit for bit. The instruction pipeline model predicts 179k cycles per GCS frame
-and 205k with TS input after warmup. Board timing and shared-cache contention are still unverified.
+and QEMU agree bit for bit. Byte BCH, scheduled nibble BCH and sparse mapping now have
+[radio-off A/B commands](docs/encoder.md). Their board timing and shared-cache contention
+still need measurement.
 
 ## Pulse shaping at 1.78 cycles per sample
 

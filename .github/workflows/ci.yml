@@ -15,6 +15,7 @@ jobs:
       - run: python tests/test_dvbs2_apsk.py
       - run: python tests/test_dvbs2_c.py
       - run: python tests/test_fecbench.py
+      - run: python tests/test_encoder_tables.py
       - run: python tests/test_iq.py
       - run: python tests/test_decode.py
       - run: python tests/test_filelink.py

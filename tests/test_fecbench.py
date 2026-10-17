@@ -1,7 +1,7 @@
 """Check fecbench source/CRCs natively, or verify coordinator JSONL from the board.
 
     python3 tests/test_fecbench.py
-    python3 tests/test_fecbench.py results/<date>-fec/runs.jsonl
+    python3 tests/test_fecbench.py results/<date>-fec/runs.jsonl [--correctness-only]
 
 fecbench runs one implementation per command: plain (dvbs2.c), c (fast.c in
 portable C) or pie (fast.c with the ESP32-S3 vector kernels). All three must
@@ -175,6 +175,9 @@ def check_records(records, expected):
             assert record["firmware"] and record["idf"]
             impl = record.get("impl", "plain")   # records before exp/fec-limit had no impl
             assert impl in IMPLS, impl
+            if "bch_variant" in record:
+                assert record["bch_variant"] in (("pie", "legacy", "nibble", "sram")
+                                                  if impl == "pie" else (impl,)), record
             if impl == "pie":
                 assert record["pie_mask"] == 15, ("PIE kernels not all in use", record)
             active = dict(metadata=record, impl=impl, frames={})
@@ -207,7 +210,9 @@ def check_records(records, expected):
             assert active is not None and active["impl"] == "pie", "pie_check outside a pie run"
             assert record["mismatch"] == 0, ("PIE stage differs from C (1 bb, 2 bch, 4 ldpc, "
                                              "8 map+pl)", record)
-            active.setdefault("checked", set()).add(record["modcod"])
+            checked = active.setdefault("checked", set())
+            assert record["modcod"] not in checked, "duplicate pie_check"
+            checked.add(record["modcod"])
         elif event == "end":
             assert active is not None, "end without begin"
             assert record["frames_reported"] == len(expected)
@@ -237,6 +242,22 @@ def test_checker(expected):
     end = dict(cmd="fecbench", event="end", frames_reported=140)
     good = [begin, *frames, end]
     assert len(check_records(good * 2, expected)) == 2
+    for variant in ("pie", "legacy", "nibble", "sram"):
+        pie_begin = dict(begin, impl="pie", pie_mask=15, bch_variant=variant)
+        pie_frames = [dict(row, impl="pie", cycles=dict(row["cycles"], bb_scramble=0))
+                      for row in frames]
+        checks = [dict(cmd="fecbench", event="pie_check", modcod=m, mismatch=0)
+                  for m, _, _ in MODES]
+        pie_run = [pie_begin, *checks, *pie_frames, end]
+        assert check_records(pie_run, expected)[0]["metadata"]["bch_variant"] == variant
+        for broken in ([dict(pie_begin, bch_variant="unknown"), *pie_run[1:]],
+                       [*pie_run[:-1], checks[0], end]):
+            try:
+                check_records(broken, expected)
+            except AssertionError:
+                pass
+            else:
+                raise AssertionError("checker accepted an invalid variant or duplicate check")
     bad_crc = dict(frames[0], crc32=frames[0]["crc32"] ^ 1)
     bad_cycles = dict(frames[0], cycles=dict(frames[0]["cycles"], total=1))
     for bad in ([dict(begin, workspace_memory="psram"), *frames, end],
@@ -266,7 +287,7 @@ def report(runs):
                   f"{memory['largest_internal']} largest: {'PASS' if fits else 'FAIL'}")
             passed &= fits
         print(f"run {index}: all 140 CRCs match; firmware {run['metadata']['firmware']}, "
-              f"impl {run['impl']}")
+              f"impl {run['impl']}, BCH {run['metadata'].get('bch_variant', 'original')}")
         worst = 0
         for modcod, modulation, rate in MODES:
             for input_name in ("gcs", "ts"):
@@ -303,10 +324,17 @@ if __name__ == "__main__":
               "reference; checker rejects missing, duplicate and corrupt records. "
               "Native clock counts are synthetic; no performance was measured.")
     else:
-        assert len(sys.argv) == 2, __doc__
+        correctness_only = "--correctness-only" in sys.argv[1:]
+        paths = [arg for arg in sys.argv[1:] if arg != "--correctness-only"]
+        assert len(paths) == 1, __doc__
         records = [json.loads(line.removeprefix("@"))
-                   for line in pathlib.Path(sys.argv[1]).read_text().splitlines() if line.strip()]
+                   for line in pathlib.Path(paths[0]).read_text().splitlines() if line.strip()]
         runs = check_records(records, reference_records())
+        if correctness_only:
+            for run in runs:
+                print(f"{run['metadata'].get('bch_variant', run['impl'])}: 140 CRCs match, "
+                      f"{len(run.get('checked', []))} PIE checks; timing not judged")
+            raise SystemExit(0)
         ok = report(runs)
         if any(run["impl"] != "plain" for run in runs):
             print(("PASS" if ok else "FAIL") + ": every c run < 1065312 cycles (8PSK 2/3 at "

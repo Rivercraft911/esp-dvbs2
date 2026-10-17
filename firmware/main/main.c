@@ -11,7 +11,7 @@
 //   dvb <MHz> <modcod> [5m|10m for 8PSK] <1..60 seconds> [0..17 gain] [16..508 peak]  DVB-S2 on air (dvbtx.c)
 //   dvbdump <modcod> [5m|10m for 8PSK] <frames> [peak] [decimation] [stall ms]  the same samples over USB, no radio
 //   dvbpace <modcod> [5m|10m for 8PSK] <seconds> [peak] [stall ms]  the same encoder, fills and deadlines, no radio
-//   fecbench [plain|c|pie]  normal-frame encoder correctness and stage timing (fecbench.c)
+//   fecbench [plain|c|pie|legacy|nibble|sram]  normal-frame encoder correctness and stage timing (fecbench.c)
 //   usbrx N    receive N bytes over USB as fast as the host sends them; report the rate
 
 #include <errno.h>

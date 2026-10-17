@@ -8,6 +8,9 @@
 //   c      fast.c in portable C (bb_scramble is part of bb, so it reads 0)
 //   pie    fast.c with the ESP32-S3 vector kernels from pie.S. Before the timed frames of each
 //          mode, a pie_check record compares every PIE stage with the C stage on one frame.
+//   legacy also selects the original compact mapper. nibble/sram select the BCH controls
+//   documented in dvbs2.h; all
+//   report impl:"pie", bch_variant:<name>. Copy time is inside BCH timing.
 // Preparing the fast tables for each mode happens before the warmup frame and is not timed.
 
 #include "fecbench.h"
@@ -128,7 +131,7 @@ static int encode(dvbs2_fast *f, dvbs2_workspace *ws, const dvbs2_mode *mode,
     return 0;
 }
 
-static const char *const impl_names[] = {"plain", "c", "pie"};
+static const char *const impl_names[] = {"plain", "c", "pie", "legacy", "nibble", "sram"};
 static unsigned impl;
 
 // Before timing a pie run: feed one GCS frame through each PIE stage and the portable C stage
@@ -174,11 +177,12 @@ static void fecbench_task(void *waiter)
     uint8_t *payload = NULL;
     uint8_t *output = NULL;
     dvbs2_fast *fast = impl ? heap_caps_aligned_alloc(16, dvbs2_fast_size(), internal) : NULL;
-    dvbs2_workspace *ws2 = impl == 2 ? heap_caps_aligned_alloc(16, sizeof *ws2, external) : NULL;
-    uint8_t *output2 = impl == 2 ? heap_caps_malloc(DVBS2_MAX_SYMBOLS, external) : NULL;
-    const unsigned pie = impl == 2 ? DVBS2_PIE_BB | DVBS2_PIE_BCH | DVBS2_PIE_LDPC | DVBS2_PIE_MAP
-                                   : 0;
-    if (!ws || (impl && !fast) || (impl == 2 && (!ws2 || !output2))) {
+    dvbs2_workspace *ws2 = impl >= 2 ? heap_caps_aligned_alloc(16, sizeof *ws2, external) : NULL;
+    uint8_t *output2 = impl >= 2 ? heap_caps_malloc(DVBS2_MAX_SYMBOLS, external) : NULL;
+    const unsigned options[] = {0, 0, 0, DVBS2_BCH_LEGACY | DVBS2_MAP_COMPACT,
+                                DVBS2_BCH_NIBBLE, DVBS2_BCH_SRAM};
+    const unsigned pie = impl >= 2 ? 15u | options[impl] : 0;
+    if (!ws || (impl && !fast) || (impl >= 2 && (!ws2 || !output2))) {
         printf("@{\"cmd\":\"fecbench\",\"error\":\"encoder allocation failed\"}\n");
         goto done;
     }
@@ -200,12 +204,13 @@ static void fecbench_task(void *waiter)
            "\"frames_per_mode\":%d,\"warmup_frames\":1,\"pilots\":true,\"pl_code\":0,"
            "\"rolloff\":0.35,\"inputs\":[\"gcs\",\"ts\"],\"workspace_bytes\":%u,"
            "\"payload_buffer_bytes\":%d,\"phase_buffer_bytes\":%d,\"impl\":\"%s\","
-           "\"fast_bytes\":%u,\"pie_mask\":%u,\"ldxq_bias\":%d,"
+           "\"bch_variant\":\"%s\",\"fast_bytes\":%u,\"pie_mask\":%u,\"ldxq_bias\":%d,"
            "\"payload_memory\":\"internal\",\"workspace_memory\":\"psram\","
            "\"free_internal\":%u,\"largest_internal\":%u}\n",
            app->version, app->idf_ver, esp_timer_get_time(), CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
            xPortGetCoreID(), (unsigned)dvbs2_mode_count, FRAMES, (unsigned)sizeof *ws,
-           DVBS2_FEC_BYTES, DVBS2_MAX_SYMBOLS, impl_names[impl],
+           DVBS2_FEC_BYTES, DVBS2_MAX_SYMBOLS, impl_names[impl >= 2 ? 2 : impl],
+           impl_names[impl],
            fast ? (unsigned)dvbs2_fast_size() : 0, pie_used, ldxq_bias,
            (unsigned)heap_caps_get_free_size(internal),
            (unsigned)heap_caps_get_largest_free_block(internal));
@@ -249,7 +254,7 @@ static void fecbench_task(void *waiter)
                 goto done;
             }
             fill_payload(payload, payload_bytes, input, 0, &state);
-            if (impl == 2 && input == 0) {
+            if (impl >= 2 && input == 0) {
                 const unsigned mismatch = check_pie(fast, mode, pie, ws2, ws, output2, output,
                                                     payload);
                 printf("@{\"cmd\":\"fecbench\",\"event\":\"pie_check\",\"modcod\":%u,"
@@ -284,7 +289,7 @@ static void fecbench_task(void *waiter)
                        "\"bb\":%" PRIu32 ",\"bb_scramble\":%" PRIu32 ",\"bch\":%" PRIu32 ","
                        "\"ldpc\":%" PRIu32 ",\"interleave_map\":%" PRIu32 ","
                        "\"pl\":%" PRIu32 ",\"total\":%" PRIu32 "}}\n",
-                       mode->modcod, impl_names[impl], mode->rate,
+                       mode->modcod, impl_names[impl >= 2 ? 2 : impl], mode->rate,
                        mode->bits_per_symbol == 3 ? "8psk" : "qpsk",
                        input ? "ts" : "gcs", frame, seed, (unsigned)offset,
                        (unsigned)payload_bytes, (unsigned)symbols, crc, cycles[0], cycles[1],
@@ -309,10 +314,11 @@ done:
 
 int fecbench_run(const char *name)
 {
-    for (impl = 0; impl < 3 && strcmp(name, impl_names[impl]) != 0; ++impl) {
+    for (impl = 0; impl < sizeof impl_names / sizeof impl_names[0] &&
+                   strcmp(name, impl_names[impl]) != 0; ++impl) {
     }
-    if (impl == 3) {
-        printf("@{\"cmd\":\"fecbench\",\"error\":\"implementation is plain, c or pie\"}\n");
+    if (impl == sizeof impl_names / sizeof impl_names[0]) {
+        printf("@{\"cmd\":\"fecbench\",\"error\":\"implementation is plain, c, pie, legacy, nibble or sram\"}\n");
         return -1;
     }
     if (xTaskCreatePinnedToCore(fecbench_task, "fecbench", 4096,
