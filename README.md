@@ -77,14 +77,16 @@ the rate that would allow 20 Msym/s. [Run details](results/2026-10-16-shaper/REA
 | DAC bank streaming received on an SDR | done, [first RF](results/2026-10-16-radio/README.md) |
 | Whole chain on the chip, bank samples decoded by LeanDVB (radio off) | done, [dry run](results/2026-10-16-dryrun/README.md), 47 dB MER |
 | Continuous encoding on one core while the other fills banks (radio off) | done, [stream](results/2026-10-16-stream/README.md), every deadline met |
+| 8PSK in the transmitter, radio off | 5 Msym/s bit-exact with 7% fill slack; 10 Msym/s bit-exact but misses the fill deadline ([run](results/2026-10-16-8psk-board/README.md)) |
 | QPSK at 1 Msym/s decoded by a DVB-S2 receiver | |
 | 8PSK 2/3 at 5 Msym/s with the payload arriving over SPI | |
 
 8PSK MODCOD 12..17 is now wired into the continuous transmitter at 5 and 10 Msym/s.
 Use an explicit rate token: `dvbdump 13 5m 40` or `dvbpace 15 10m 60`.
 QPSK commands keep their syntax. The pulse and BBHEADER both use roll-off 0.35.
-Underruns insert standard 3,330-symbol dummy PLFRAMEs. Host loopback and QEMU checks
-cover the new path; board timing and RF still need the [coordinator checks](docs/hardware.md#8psk-radio-off-checks).
+Underruns insert standard 3,330-symbol dummy PLFRAMEs. On the board, radio off, all four
+8PSK cases decode bit-exact; 5 Msym/s holds its deadlines with thin margin, and 10 Msym/s
+does not fit yet ([board run](results/2026-10-16-8psk-board/README.md)). RF is still to come.
 
 ## Build and run
 
