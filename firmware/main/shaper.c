@@ -93,8 +93,18 @@ IRAM_ATTR void shaper_fill_c(uint32_t *dst, const uint8_t *sym, int nsym, const 
         const uint32_t *p0 = t->blocks + (h & wmask) * bw;
         const uint32_t *p1 = t->blocks + (h >> (SPAN * b) & wmask) * bw + row;
         const uint32_t *p2 = t->blocks + (h >> (2 * SPAN * b) & wmask) * bw + 2 * row;
-        for (int i = 0; i < n; ++i) {
-            *dst++ = (p0[i] + p1[i] + p2[i]) ^ SHAPER_XOR;
+        if (n & 3) {  // 5 samples/symbol, rows padded to eight words
+            for (int i = 0; i < n; ++i) {
+                *dst++ = (p0[i] + p1[i] + p2[i]) ^ SHAPER_XOR;
+            }
+            continue;
+        }
+        for (int i = 0; i < n; i += 4) {
+            dst[0] = (p0[0] + p1[0] + p2[0]) ^ SHAPER_XOR;
+            dst[1] = (p0[1] + p1[1] + p2[1]) ^ SHAPER_XOR;
+            dst[2] = (p0[2] + p1[2] + p2[2]) ^ SHAPER_XOR;
+            dst[3] = (p0[3] + p1[3] + p2[3]) ^ SHAPER_XOR;
+            dst += 4, p0 += 4, p1 += 4, p2 += 4;
         }
     }
 }
