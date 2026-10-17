@@ -1,0 +1,1 @@
+{"host_time": "2026-10-17T03:48:57+00:00", "command": "info", "callsign": "N0CALL", "cmd": "info", "firmware": "503b26a", "idf": "v6.1", "cores": 2, "revision": 2, "cpu_mhz": 240, "psram_bytes": 8388608, "free_internal": 108663, "largest_internal": 31744, "free_psram": 8386192, "uptime_ms": 2362}
