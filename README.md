@@ -96,8 +96,9 @@ flashes, changes NVS or keys the radio. [Exact gates](docs/bank-geometry.md#evid
 
 The experimental `33m333` token runs QPSK/8PSK at exactly 100/3 Msym/s with
 roll-off 0.20; 8PSK also accepts `26m667`. Host-generated C dumps decode bit-exact
-in LeanDVB. Their portable FIR fill misses the real-time budget; board timing,
-RAM and RF remain unmeasured. [System schedule and coordinator gates](docs/moonshot.md).
+in LeanDVB. The split QPSK fill fails its first silicon pace; its measured
+Wi-Fi heap passes. Both new 8PSK modes fail allocation. RF remains unmeasured.
+[System schedule and coordinator gates](docs/moonshot.md).
 `host/check.sh --moonshot --plan` prints the 15% reserve and 20,000 B heap gates.
 
 ## Console and host tools
