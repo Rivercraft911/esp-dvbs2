@@ -8,6 +8,16 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+static unsigned handoffs;
+static void clobber_vectors(void)
+{
+    ++handoffs;
+    // A helper can use every PIE register while the encoder is blocked.
+    __asm__ volatile("ee.zero.q q0\n ee.zero.q q1\n ee.zero.q q2\n ee.zero.q q3\n"
+                     "ee.zero.q q4\n ee.zero.q q5\n ee.zero.q q6\n ee.zero.q q7\n"
+                     "ssai 7\n movi a8, 3\n wur.sar_byte a8" ::: "a8", "memory");
+}
+
 static void packed_check(void)
 {
     const unsigned caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
@@ -31,8 +41,11 @@ static void packed_check(void)
         }
         for (unsigned pilots = 0; pilots < 2; ++pilots) {
             const unsigned symbols = dvbs2_frame_symbols(mode, pilots), n = symbols / 2;
+            const unsigned before = handoffs;
             assert(!dvbs2_fast_prepare(f, mode, pilots, 0));
             assert(!dvbs2_encode_frame(f, ws, NULL, payload, bytes * 8, raw));
+            assert(handoffs == before); // prepare removed the previous callback
+
             if (mc < 12) dvbs2_pack_quads(raw, quad, symbols);
             dvbs2_pack(raw, raw, symbols);
             for (unsigned sparse = 0; sparse < 2; ++sparse) {
@@ -56,6 +69,7 @@ static void packed_check(void)
                     if (mc < 12) {
                         assert(!dvbs2_fast_prepare(f, mode, pilots, 15 | flags | DVBS2_MAP_QUADS));
                         if (!sparse && mode->t > 8) assert(!dvbs2_fast_cache_bch(f, cache));
+                        dvbs2_fast_cooperate(f,clobber_vectors);
                         uint8_t *borrowed = dvbs2_fast_payload(f);
                         memcpy(borrowed, payload, bytes);
                         memset(out, 0xa5, 16704);
@@ -81,6 +95,8 @@ static void packed_check(void)
     }
     printf("packed PIE: %u cases, direct/resident BCH and sparse/nibble BCH, all 14 modes, both pilots, all 16 alignments, guards intact\n", cases);
     printf("quad mapper: %u cases, borrowed payload, all alignments and guards intact\n", quads);
+    assert(handoffs > quads);
+    printf("encoder handoffs: %u, vector/SAR clobbers, resumed BCH and LDPC match the plain encoder\n",handoffs);
     heap_caps_free(quad);
     heap_caps_free(cache); heap_caps_free(out); heap_caps_free(raw);
     heap_caps_free(payload); heap_caps_free(f); heap_caps_free(ws);

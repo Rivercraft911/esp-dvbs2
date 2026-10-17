@@ -113,6 +113,10 @@ int dvbs2_fast_prepare(dvbs2_fast *f, const dvbs2_mode *mode, int pilots, unsign
  * Returns -1 for invalid context/alignment or t = 8. No allocation is hidden. */
 #define DVBS2_BCH_CACHE_BYTES 8192
 int dvbs2_fast_cache_bch(dvbs2_fast *f, uint8_t *table);
+/* Optional task handoff for the split QPSK shaper. prepare clears it. Callbacks
+ * run between kernels, after 256 BCH bytes, each LDPC row and each QPSK map run.
+ * They may block; they must not mutate this encoder or workspace. */
+void dvbs2_fast_cooperate(dvbs2_fast *f, void (*fn)(void));
 unsigned dvbs2_fast_pie(const dvbs2_fast *f);
 int dvbs2_fast_ldxq_bias(const dvbs2_fast *f);
 int dvbs2_fast_bb_gcs(const dvbs2_fast *f, dvbs2_workspace *ws,

@@ -40,6 +40,7 @@ struct dvbs2_fast {
     uint8_t packed_header[48], packed_pilots[400];
     const uint8_t *header;
     const dvbs2_mode *mode;
+    void (*cooperate)(void);       // optional task handoff, between vector calls only
     unsigned pilots, pie, ldxq_bias;
     unsigned bch_bytes, groups, q, data_symbols, pilot_blocks;
     uint8_t scratch[] __attribute__((aligned(16)));
@@ -92,6 +93,8 @@ void dvbs2_pie_bch_regs16(const uint8_t *msg, unsigned words, const uint8_t *tab
 void dvbs2_pie_bch_regs32(const uint8_t *msg, unsigned words, const uint8_t *tables, uint8_t *r);
 void dvbs2_pie_bch_byte(const uint8_t *msg, unsigned bytes, const uint8_t *tables, uint8_t *r);
 void dvbs2_pie_bch_pair(const uint8_t *msg, unsigned pairs, const uint8_t *tables, uint8_t *r);
+void dvbs2_pie_bch_pair_update(const uint8_t *, unsigned, const uint8_t *, uint8_t *);
+void dvbs2_pie_rows_next(const uint8_t *, const uint16_t *, uint8_t *, unsigned);
 void dvbs2_pie_u2(const uint8_t *bits, uint8_t *u2, unsigned groups);
 void dvbs2_pie_rows(const uint8_t *u2, const uint16_t *prog, uint8_t *p, unsigned q);
 void dvbs2_pie_transpose(uint8_t *p, unsigned blocks, const uint8_t *carry);
@@ -131,6 +134,8 @@ void dvbs2_pack_quads(const uint8_t *phases, uint8_t *packed, size_t symbols)
 
 uint8_t *dvbs2_fast_payload(dvbs2_fast *f) { return f ? f->scratch : NULL; }
 
+void dvbs2_fast_cooperate(dvbs2_fast *f, void (*fn)(void)) { f->cooperate = fn; }
+
 /* ---------------------------------------------------------------- prepare */
 
 static void pack_c(const uint8_t *raw, uint8_t *packed, unsigned symbols);
@@ -158,6 +163,7 @@ int dvbs2_fast_prepare(dvbs2_fast *f, const dvbs2_mode *mode, int pilots, unsign
         return -1;
     }
     f->mode = mode;
+    f->cooperate = NULL;
     f->pilots = pilots ? 1 : 0;
     f->bch_bytes = (mode->nbch - mode->kbch) / 8;
     f->groups = mode->nbch / 360;
@@ -370,7 +376,7 @@ int dvbs2_fast_bb_ts(const dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_state *s
 static __attribute__((noinline)) void bch_c(const dvbs2_fast *f, const uint8_t *bits, unsigned words, uint32_t r[8])
 {
     const uint8_t *t = f->bch;
-    uint32_t w0 = 0, w1 = 0, w2 = 0, w3 = 0, w4 = 0, w5 = 0;
+    uint32_t w0 = r[0], w1 = r[1], w2 = r[2], w3 = r[3], w4 = r[4], w5 = r[5];
     for (unsigned i = 0; i < words; ++i) {
         const uint32_t x = w0 ^ W(bits + 4 * i);
         w0 = w1; w1 = w2; w2 = w3; w3 = w4; w4 = w5; w5 = 0;
@@ -391,7 +397,15 @@ HOT void dvbs2_fast_bch(dvbs2_fast *f, dvbs2_workspace *ws)
 #ifdef DVBS2_PIE
     if (f->pie & DVBS2_PIE_BCH) {
         if (f->bch_bytes == 16 && !(f->pie & DVBS2_BCH_NIBBLE)) {
-            dvbs2_pie_bch_pair(ws->bits, bytes/2, fast_bch_pair_8, (uint8_t *)w);
+            if (f->cooperate) {
+                // Persist the remainder between 256-byte slices. The task may
+                // switch here, with no live PIE registers across the callback.
+                for (unsigned at = 0; at < bytes; at += 256) {
+                    const unsigned n = bytes-at < 256 ? bytes-at : 256;
+                    dvbs2_pie_bch_pair_update(ws->bits+at,n/2,fast_bch_pair_8,(uint8_t *)w);
+                    f->cooperate();
+                }
+            } else dvbs2_pie_bch_pair(ws->bits, bytes/2, fast_bch_pair_8, (uint8_t *)w);
             words = (bytes + 3) / 4;
         } else if (f->bch_bytes > 16 && !(f->pie & DVBS2_BCH_NIBBLE)) {
             dvbs2_pie_bch_byte(ws->bits, bytes, f->byte_bch, (uint8_t *)w);
@@ -403,7 +417,12 @@ HOT void dvbs2_fast_bch(dvbs2_fast *f, dvbs2_workspace *ws)
     } else
 #endif
     {
-        bch_c(f, ws->bits, words, w);
+        if (f->cooperate && f->bch_bytes == 16) {
+            for (unsigned at = 0; at < words; at += 64) {
+                bch_c(f,ws->bits+4*at,words-at < 64 ? words-at : 64,w);
+                f->cooperate();
+            }
+        } else bch_c(f, ws->bits, words, w);
     }
     /* A final partial word: two nibble-table steps per remaining byte. */
     uint8_t *r = (uint8_t *)w;
@@ -462,6 +481,7 @@ static __attribute__((noinline)) void rows_c(dvbs2_fast *f)
             }
             W(p + ROW * r + 4 * w) = h[w];
         }
+        if (f->cooperate) f->cooperate();
     }
 }
 
@@ -586,9 +606,20 @@ HOT void dvbs2_fast_ldpc(dvbs2_fast *f, dvbs2_workspace *ws)
 #ifdef DVBS2_PIE
     if (f->pie & DVBS2_PIE_LDPC) {
         dvbs2_pie_u2(ws->bits, f->scratch, f->groups);
-        dvbs2_pie_rows(f->scratch, f->prog, f->p, f->q);
+        if (f->cooperate) {
+            f->cooperate();
+            const uint16_t *prog = f->prog;
+            for (unsigned r = 0; r < f->q; ++r) {
+                // The continuation entry includes the previous accumulated row.
+                (r ? dvbs2_pie_rows_next : dvbs2_pie_rows)(f->scratch,prog,f->p+ROW*r,r ? 2 : 1);
+                unsigned levels = *prog++;
+                while (levels--) { const unsigned n = *prog++; prog += n; }
+                f->cooperate();
+            }
+        } else dvbs2_pie_rows(f->scratch, f->prog, f->p, f->q);
         carry_row(f);
         dvbs2_pie_transpose(f->p, blocks, f->carry);
+        if (f->cooperate) f->cooperate();
         /* Pack big-endian words into the free u2 area, then reverse their
          * bytes into ws->bits from the word holding the parity start. */
         const unsigned start = f->mode->nbch / 8, base = start - start % 4;
@@ -833,6 +864,7 @@ static HOT int map_quads(dvbs2_fast *f, const uint8_t *bits, uint8_t *packed)
         void dvbs2_pie_quads(const uint8_t *, const uint8_t *, uint8_t *, unsigned);
         dvbs2_pie_quads(bits, f->gold, f->scratch, (f->data_symbols+63)/64);
         mapped = f->scratch;
+        if (f->cooperate) f->cooperate();
     }
 #endif
     const unsigned runs = f->pilots ? f->pilot_blocks + 1 : 1;
@@ -858,6 +890,7 @@ static HOT int map_quads(dvbs2_fast *f, const uint8_t *bits, uint8_t *packed)
                 previous = (mapped[j] & 15) << 4;
             }
             dst[n/4] = previous;
+            if (f->cooperate) f->cooperate();
             continue;
         }
 #endif
@@ -871,6 +904,7 @@ static HOT int map_quads(dvbs2_fast *f, const uint8_t *bits, uint8_t *packed)
         }
         writer_end(&w, 1);
         dst[n/4] = previous;
+        if (f->cooperate) f->cooperate();
     }
     return 0;
 }

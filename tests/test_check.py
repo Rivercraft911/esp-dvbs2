@@ -34,7 +34,8 @@ else:
         wifi_free_up=50000,wifi_min_free=50000,helper_jobs=1,helper_bank_max_cycles=1,
         dispatch_max_cycles=1,encode_work_cycles_mean=1,encode_work_cycles_live_max=1,
         encode_frame_work_cycles_mean=1,encode_frame_work_cycles_live_max=1,
-        payload_source='precomputed-ring',input_frames=8,input_memory='psram',encoder_pie=15,
+        payload_source='internal-frame' if moon else 'xorshift32',input_frames=int(moon),
+        input_memory='internal' if moon else 'none',encoder_priority=5,helper_priority=4,encoder_pie=15,
         packed_mapper='none' if n==40 else 'quads' if quads else 'direct' if resident else 'sparse')
  if kind=='dvbdump':
   frames=int(x[3] if named else x[2]); decim=int(x[-1]); size=((frames*symbols*n+den-1)//den+decim-1)//decim*4
@@ -74,10 +75,13 @@ else:
    r[metric]=b[metric]*102//100+1
   if moon:
    ceiling=240000000*symbols*n*85//(rate*den*100)
-   r.update(max_fill_cycles=40137+bool(bad),encode_cycles_mean=ceiling,encode_cycles_live_max=ceiling)
+   r.update(max_fill_cycles=40137+bool(bad or (os.getenv('FAIL_8PSK') and mc>=12)),encode_cycles_mean=ceiling,encode_cycles_live_max=ceiling)
+   if mc==11 and os.getenv('COPY_BUDGET'):
+    r['encode_kernel_cycles_mean']=r['encode_kernel_cycles_live_max']=ceiling-4823
+    if os.getenv('COPY_BUDGET')!='exact':r[os.environ['COPY_BUDGET']]+=1
   if os.getenv('ENCODER_GATES') and token=='20m':
    # Test both exact target boundaries and independent mean/live failures.
-   r['encode_kernel_cycles_mean']=r['encode_kernel_cycles_live_max']=125827
+   r['encode_kernel_cycles_mean']=r['encode_kernel_cycles_live_max']=131004
    if bad and mc==13:r['encode_kernel_cycles_mean']+=1
    if bad and mc==15:r['encode_kernel_cycles_live_max']+=1
   if not moon:
@@ -121,9 +125,9 @@ with tempfile.TemporaryDirectory() as tmp:
     for folder in ('host','tests/data','bin'):(root/folder).mkdir(parents=True)
     shutil.copy(ROOT/'host/check.sh',root/'host/check.sh')
     for name in ('waveform_crcs.json','moon_stream_crcs.json'):shutil.copy(ROOT/'tests/data'/name,root/'tests/data'/name)
-    for topic in ('2026-10-17-qpsk-goal','2026-10-17-next4','2026-10-17-next5'):
+    for topic in ('2026-10-17-qpsk-goal','2026-10-17-next4','2026-10-17-next5','2026-10-17-spi-in'):
         (root/'results'/topic).mkdir(parents=True)
-        for file in (ROOT/'results'/topic).glob('*.jsonl'):shutil.copy(file,root/'results'/topic/file.name)
+        for file in (ROOT/'results'/topic).glob('*'):shutil.copy(file,root/'results'/topic/file.name)
     (root/'host/board.py').write_text(FAKE)
     (root/'host/onair.py').write_text(RX)
     for name in ('test_stream.py','test_fecbench.py','test_rational.py'):(root/'tests'/name).write_text('print("fake host check")\n')
@@ -147,7 +151,7 @@ with tempfile.TemporaryDirectory() as tmp:
         assert json.loads((out/'revision.json').read_text())['host_firmware'] == 'test-fw'
         assert json.loads((out/'board-info.json').read_text())[0]['firmware'] == 'test-fw'
         summary=(out/'summary.tsv').read_text().splitlines()
-        assert len(summary)==(47 if moon else 33), summary
+        assert len(summary)==(48 if moon else 33), summary
         failures=[line for line in summary if line.startswith('FAIL')]
         assert bool(failures)==fail, failures
         assert any('main regression gate' in line for line in failures)==fail
@@ -188,4 +192,17 @@ with tempfile.TemporaryDirectory() as tmp:
             assert 'FAIL\tpace '+mode+'\t' in summary
             assert 'FAIL\tmain regression gate\t' in summary and 'FAIL\tcandidate admission\t' in summary
             assert 'PASS\tpace 11 33m333\t' in summary
+    for metric in ('exact','encode_kernel_cycles_mean','encode_kernel_cycles_live_max'):
+        out=root/('copy-'+metric)
+        run=subprocess.run(['sh','host/check.sh','--moonshot',str(out)],cwd=root,
+                           env=dict(env,COPY_BUDGET=metric),capture_output=True,text=True,timeout=60)
+        assert run.returncode==int(metric!='exact'), (run.stdout,run.stderr)
+        assert ('FAIL\tQPSK admission' in (out/'summary.tsv').read_text()) == (metric!='exact')
+    out=root/'8psk-only'
+    run=subprocess.run(['sh','host/check.sh','--moonshot',str(out)],cwd=root,
+                       env=dict(env,FAIL_8PSK='1'),capture_output=True,text=True,timeout=60)
+    assert run.returncode==1, (run.stdout,run.stderr)
+    summary=(out/'summary.tsv').read_text()
+    assert 'PASS\tmain regression gate' in summary and 'PASS\tQPSK admission' in summary
+    assert 'FAIL\tcandidate admission' in summary
 print('check: dry plan, all commands run after failures, strict CRC/decode/2%/heap gates, final exit and summary pass')

@@ -1,95 +1,85 @@
 # Two-core experiment
 
-**QPSK 9/10 at 33.333333 Msym/s fails its first silicon pace.** The
-[coordinator's 5527cfa records](../results/2026-10-17-moon-silicon/runs.jsonl)
-report 49,075 cycles/full bank, 312 underruns and ESP_ERR_TIMEOUT. Minimum
-Wi-Fi heap is 38,331 B. The two new 8PSK modes fail table allocation. The
-round-four fixes below have host validation and a firmware build, but no new
-board measurements. This agent's USB open was denied by the sandbox; RF stayed off.
+**QPSK 9/10 at 33.333333 Msym/s is not admitted.** The round-five candidate
+has host correctness checks and an ESP-IDF build. Silicon timing and heap
+remain unmeasured. No USB access or RF operation was attempted.
 
-## Fixes awaiting silicon
+Round four (`d05b368`, coordinator records in `notes/moon-round4-board/`)
+failed even the retained modes: 8PSK 5/6 at 20 Msym/s averaged 312,051
+cycles/frame with 4,401 underruns. QPSK at 33.333333 Msym/s averaged 613,713
+cycles/frame and reached 435,957 cycles/full bank. Its measured helper bodies
+account for 167,545 cycles/frame; subtracting them still leaves 446,168.
+Legacy runs without a helper also inflated BB and map time. This is consistent
+with cache interference from the PSRAM source, but does not prove its cause.
 
-The 20 Msym/s 8PSK regression came from a boolean becoming a byte count in
-`fill`: `(first & sps)` in a ternary shifted odd-symbol windows by 4 or 8
-bytes instead of 1. The packed-ring unpacker then could not reach its aligned
-vector loop. The restored boolean preserves the source/output parity.
-The stream test fails on the old expression, passes on the fix and still
-checks every filled word. Only three prefill frames existed in the failed
-20m run, so its 293,140-cycle mean says nothing about steady-state encoding.
-The coordinator must remeasure the full bank before this regression is closed.
+## Round five
 
-`dvbpace` now copies an eight-frame precomputed PSRAM ring into the normal
-payload buffer. QPSK requests `8 * 7264 = 58112 B` of PSRAM; no additional
-internal payload ring is allocated. It repeats after eight frames. Dumps and
-RF retain the original contiguous xorshift32 stream, keeping all 57 retained
-CRCs and the encoder fixture unchanged. The stage named payload measures the
-copy plus station header. `input_prepare_cycles` reports startup generation
-outside the paced interval. This measures a memory copy, not SPI ingress.
-Native tests compare both sides of the input-ring wrap to the plain encoder
-and cover allocation failure/cleanup.
+Merged `origin/main` at `bf28f7b`, retaining quad SPI input and the unpack-parity
+fix from `88800e8`. Legacy paces now use main's original contiguous xorshift
+stream. Dumps retain their original payload and CRCs.
 
-The helper wrapper now resides in instruction RAM and runs at priority 24,
-above Wi-Fi's priority 23. IDF v6.1 `docs/en/api-guides/performance/speed.rst`
-documents Wi-Fi priority; `components/esp_system/esp_ipc.c` gives IPC priority
-24 too. The old priority-6 helper could be delayed by Wi-Fi while core 1
-waited. Interrupts, equal-priority IPC, context switches and SRAM contention
-remain possible delays. This is a latency change to measure, not a timing bound.
+New-mode paces copy one precomputed internal-RAM frame in chunks of at most
+1,316 B, the real ingress payload size. QPSK's 7,264 B source borrows the unused
+shaper-store tail, adding no internal heap allocation. It repeats every frame.
+8PSK falls back to an internal allocation when the tail is too small. Startup
+generation is excluded from pacing. This fixture measures a copy and station
+header, not DMA, CRC validation, descriptor handling or interrupts.
 
-Each encoder stage now reports helper-body cycles inside that same window.
-Core-0 CCOUNT and helper totals are paired under a short local interrupt mask;
-the cache-counter reads remain outside it. `cycles - helper_cycles` retains
-scheduler, interrupt and memory stalls. Cache counters still include both
-cores and interrupts. `encoder_pie` must be 15, confirming all four fast-stage
-bits. `encode_frame_work_cycles_*` includes the measured input copy and kernel,
-subtracting only helper bodies. `host/stream_profile.py` reports stage wall,
-helper and remaining cycles; old records without helper attribution stay unknown.
+Main's [SPI board log](../results/2026-10-17-spi-in/board.log), firmware
+`b9eb7d7`, reports QPSK GCS replay copy time of 57,972,998 cycles for 12,021
+encoded frames: `ceil(57972998 / 12021) = 4823 cycles/frame`. The check uses
+that measured mean as a planning floor alongside the actual timed payload.
+It is not a worst-case copy bound. The earlier estimated 10,000-cycle input
+allowance is removed.
 
-## What the model missed
+The helper runs at priority 4, below the priority-5 encoder. QPSK 9/10 lends
+core 0 between 256-byte BCH slices, LDPC rows, and QPSK map runs. Vector state
+is stored before blocking. The helper publishes completion before notifying
+the encoder. This avoids both priority-24 preemption and indefinite helper
+starvation during a whole encoder frame. Wi-Fi, interrupts, task switching
+and SRAM contention still need board measurements.
 
-The [round-three instruction model](../results/2026-10-17-moon-round3/README.md)
-estimated 38,948 core-1 cycles/bank and 13,379 helper-body cycles/bank. Silicon
-reached 49,075 and 24,660 respectively. Dispatch max 2,356 fits its 2,396-cycle
-allowance, but join wait reaches 11,394 cycles. Dispatch completion did not
-mean the helper could immediately run. The model also omitted coprocessor
-context switching, Wi-Fi task interference and SRAM arbitration; the old
-1,068-cycle tick allowance does not bound those delays.
+## Admission
 
-The QPSK stage means were payload 107.0, BB 12.0, BCH 85.6, LDPC 46.3, map
-42.4, PL 4.2 kcycles/frame. BCH/LDPC/map have only 5.10 / 2.97 / 4.99 flash
-misses/frame in shared observation windows. Those counters do not establish
-table eviction as the cause of doubled wall times. The same build's QPSK
-26m667 kernel mean is 96,735 cycles/frame, with BCH 44,549 cycles/frame.
-The split's post-payload mean is 192,276 and remaining work 142,256 cycles/frame.
-The new per-stage helper accounting distinguishes preemption on the next run.
+`host/check.sh --moonshot` first runs all retained main dumps, all eight main
+paces, and the existing heap probes. The four critical paces run for 30 s:
+`11 26m667`, `15 20m`, `13 10m`, `17 5m`. Fill maximum, encoder mean and live
+maximum must each be at most 102% of the fixed main measurements. No timing
+ceiling or existing heap floor is relaxed.
 
-The exact bank deadline remains
+A failed main gate invalidates QPSK admission even when its own pace passes.
+The separate `QPSK admission` result requires its dump/decode, Wi-Fi-up pace
+and heap probe. Other experimental 8PSK failures remain visible and make the
+whole script exit nonzero, but cannot hide a valid QPSK result.
+
+The exact bank deadline is
 `15740 samples / 80e6 samples/s * 240e6 cycles/s = 47220 cycles`.
-The 15% reserve ceiling is 40,137 cycles. QPSK's frame period is
+The 85% ceiling is **40,137 cycles/core/bank**. QPSK's frame period is
 `33282 symbols / (100e6/3 symbols/s) * 240e6 cycles/s = 239630.4 cycles`;
-its 85% encoder ceiling is 203,685 cycles/frame. Frame dimensions follow
-host/dvbs2.py and EN 302 307-1 V1.4.1 clauses 5.1/5.5. Payload generation
-alone used 106,956 cycles/frame in the failed split. Replacing it creates
-capacity to measure; it cannot certify the remaining work or worst-case jitter.
+its 85% ceiling is **203,685 cycles/frame**. Frame dimensions come from
+`host/dvbs2.py`. Encoder wall mean and live maximum, including copy and helper
+waits, must pass independently. Kernel time plus the measured SPI copy floor
+must also pass. Core-0 capacity is screened using helper bank maximum,
+4,792 scheduling cycles and frame work including at least that copy floor.
+The complete bank maximum includes join waits. These screens are not a
+worst-case latency proof. Wi-Fi-up and minimum free heap must be at least
+**20,000 B**. Existing legacy heap floors remain gates too.
 
-## Coordinator check
+Host checks retain all 57 waveform CRCs plus the encoder fixture and six
+fractional streams. QEMU checks 140 phase CRCs, 14 PIE comparisons, 896 packed
+frames and 512 quad frames. The quad tests clobber all vector registers and
+SAR/SAR_BYTE at 33,280 handoffs while preserving exact output. Host tests also
+cover repeated source frames, allocation failures, cleanup and notification
+handoffs. QEMU establishes instruction semantics, not timing.
 
-Build/flash the committed revision, with N0CALL stored and all other serial
-owners closed, then run:
+After building/flashing the committed revision, with N0CALL stored, the board
+power-cycled and all other serial owners closed:
 
 ```sh
 PYTHON=/Users/river/radioconda/bin/python3 \
 RX=/Users/river/Documents/stanford/SSI/esp-dvbs2/notes/leansdr/src/apps/leandvb \
-  host/check.sh --moonshot notes/moon-round4-board
+  host/check.sh --moonshot notes/moon-round5-board
 ```
 
-`--plan` opens no device. The check refuses busy native/reset-bridge aliases
-before reset/open, keeps session ownership, logs each command, continues on
-failures and exits nonzero for any failure. No flashing, NVS writes or TX.
-All legacy ceilings and heap floors stay unchanged. The core-0 screen now
-uses actual same-frame work including input:
-`helper_bank_max + 4792 scheduling + max(frame_work_mean, frame_work_live_max)
-* 47220 / frame_period <= 40137 cycles/bank`. It remains a capacity screen,
-not a latency proof. The full bank must independently pass <=40,137 cycles,
-zero lateness/underruns, positive slack and >=20,000 B Wi-Fi-up/minimum heap.
-The two new 8PSK gates remain expected failures; the legacy 5m heap floor is
-also still unresolved. No mode is admitted from the instruction model.
+`--plan` opens no device. The runner reserves the serial session, continues
+after failures and saves every result. It never flashes, writes NVS or transmits.

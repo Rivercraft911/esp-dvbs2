@@ -17,7 +17,7 @@ p.add_argument('out', nargs='?', type=pathlib.Path)
 p.add_argument('--plan', action='store_true', help='print every criterion without running anything')
 p.add_argument('--moonshot', action='store_true', help='33m333 and 8PSK 26m667 gates, plus slim regressions')
 p.add_argument('--all-crcs', action='store_true', help='also dump every golden waveform on the board (much slower)')
-p.add_argument('--encoder', action='store_true', help='encoder candidate: target 9/10, stage timings and estimated 10k-cycle input')
+p.add_argument('--encoder', action='store_true', help='encoder candidate: target 9/10, stage timings and measured SPI copy cost')
 p.add_argument('--port', default='/dev/cu.usbmodem101')
 a = p.parse_args()
 if a.moonshot and a.encoder: p.error("choose --moonshot or --encoder")
@@ -66,6 +66,18 @@ def baseline(topic, command):
     found = [r for r in rows if r.get('command') == command and r.get('status') == 'ESP_OK']
     assert len(found) == 1, (topic,command,len(found))
     return found[0]
+
+# Main bf28f7b publishes b9eb7d7's real ingress copy windows, including replay.
+# QPSK GCS: ceil(57,972,998 cycles / 12,021 frames) = 4,823 cycles/frame.
+# This measured mean is a planning floor, never a worst-case copy bound.
+spi_rows = []
+for line in pathlib.Path('results/2026-10-17-spi-in/board.log').read_text().splitlines():
+    try: spi_rows.append(json.loads(line))
+    except ValueError: pass
+spi_copy = [r for r in spi_rows if r.get('cmd') == 'dvbpace' and r.get('modcod') == 11
+            and r.get('input') == 'gcs' and r.get('input_replay')]
+assert len(spi_copy) == 1
+copy_cycles = (spi_copy[0]['input_copy_cycles']+spi_copy[0]['frames_encoded']-1)//spi_copy[0]['frames_encoded']
 
 main_limits = [{k:baseline(topic,cmd)[k]*102//100 for k in metrics} for _,_,_,topic,cmd in main_paces]
 limits = [{k:baseline(topic,cmd)[k]*102//100 for k in metrics} for _,_,_,topic,cmd in paces]
@@ -125,12 +137,13 @@ for (mc,token,seconds,topic,old),limit in zip(paces,limits):
     print(f'  {mc} {token or "1m"}, {seconds} s: ceilings {limit} cycles (encoder cycles/frame); '+(f'<=102% of {topic}: {old}' if topic else '85% of the exact deadline'))
 for mc,token,up,low in wifi: print(f'  wifimem {mc} {token}: up >= {up} B, minimum >= {low} B; no playback.')
 if a.moonshot:
-    print('Core 0 capacity: helper bank maximum + 4792 scheduling + measured frame work (input included) * 47220/frame <= 40137 cycles.')
+    print(f'Copy planning floor: {copy_cycles} cycles/frame from main SPI GCS replay; actual new-mode payload is timed too.')
+    print('Core 0 capacity: helper bank maximum + 4792 scheduling + frame work (at least the measured SPI copy) * 47220/frame <= 40137 cycles.')
     print('  Dispatch <=2396 cycles/job; join wait is included in the full-bank core 1 maximum. This is a capacity screen, not a latency proof.')
 if a.encoder:
-    print('Encoder planning gate: same-frame post-payload mean AND live maximum + estimated 10,000 cycles/input copy')
+    print(f'Encoder planning gate: same-frame post-payload mean AND live maximum + measured {copy_cycles:,} cycles/input copy')
     print('  <= 135,827 cycles/frame for internal 8PSK; <= 203,685 for QPSK 9/10 at 26m667.')
-    print('  These are floor(0.85 * 240e6 * frame_symbols / (100e6/3)); real SPI input must be measured later.')
+    print('  These are floor(0.85 * 240e6 * frame_symbols / (100e6/3)); DMA/parser/ISR costs need an integrated run.')
 print('Serial ownership: lock across worktrees, reject cu/tty and reset-bridge owners before reset/open.')
 print('Decode lookahead: append 4096 zero samples to new-mode receiver input only, outside the dump CRC.')
 print('Continue after failures, print every result and exit nonzero if any gate fails.', flush=True)
@@ -234,24 +247,30 @@ def pace(mc,token,seconds,limit):
     assert r['seconds'] == seconds and r['dac_rate'] == mode(mc,token)[1], r
     assert all(r[k] == 0 for k in ('late_fills','late_switches','fatal_late')), r
     assert r['min_fill_slack_cycles'] > 0 and all(r[k] <= v for k,v in limit.items()), r
-    assert r['payload_source'] == 'precomputed-ring' and r['input_frames'] == 8 and r['input_memory'] == 'psram', r
+    moon = token == '33m333' or (mc >= 12 and token == '26m667')
+    assert r['payload_source'] == ('internal-frame' if moon else 'xorshift32'), r
+    assert r['input_frames'] == int(moon) and r['input_memory'] == ('internal' if moon else 'none'), r
+    if moon: assert r['helper_priority'] < r['encoder_priority'], r
     assert r['encoder_pie'] == 15 and r['frames_encoded'] > r['prefill_frames'], r
     stages = r['profile']['encoder'].values()
     assert all(0 <= p['helper_cycles'] <= p['cycles'] for p in stages), r
     if a.encoder and (token == '20m' or mc == 11):
         ceiling = 203685 if mc < 12 else 135827
-        assert r['encode_kernel_cycles_mean'] + 10000 <= ceiling, r
-        assert r['encode_kernel_cycles_live_max'] + 10000 <= ceiling, r
+        assert r['encode_kernel_cycles_mean'] + copy_cycles <= ceiling, r
+        assert r['encode_kernel_cycles_live_max'] + copy_cycles <= ceiling, r
     if token == '33m333' or (mc >= 12 and token == '26m667'):
         assert r['paced_wifi_up'] and r['wifi_free_up'] >= 20000 and r['wifi_min_free'] >= 20000, r
         assert r['helper_jobs'] > 0 and r['helper_bank_max_cycles'] > 0, r
+        assert r['encode_kernel_cycles_mean']+copy_cycles <= limit['encode_cycles_mean'], r
+        assert r['encode_kernel_cycles_live_max']+copy_cycles <= limit['encode_cycles_live_max'], r
         # Capacity screen, not a WCET proof. Helper includes packing and kernel;
         # 2,396 cycles/job covers scheduling, based on the prior notification max.
         # Two physical pieces can dispatch twice. Never count helper time as encoder work.
         n,rate,_ = mode(mc,token)
         den = 5 if n == 12 else 1
         frame = (33282 if mc < 12 else 22194)*240000000*n/(rate*den)
-        encoder = max(r['encode_frame_work_cycles_mean'],r['encode_frame_work_cycles_live_max'])
+        encoder = max(r['encode_frame_work_cycles_mean'],r['encode_frame_work_cycles_live_max'],
+                      r['encode_work_cycles_mean']+copy_cycles,r['encode_work_cycles_live_max']+copy_cycles)
         assert r['helper_bank_max_cycles']+4792+encoder*47220/frame <= 40137, r
         assert r['dispatch_max_cycles'] <= 2396, r
     assert r['prefill_frames'] == r['ring_slots'] and r['frames_played'] > 0, r
@@ -293,17 +312,22 @@ def check_paces(runs, ceilings):
 def check_memory(probes):
     for args in probes: step(f'wifimem {args[0]} {args[1]}',lambda args=args:memory(*args))
 
-def require_passes():
-    failed = [label for label,verdict,_ in summary if verdict == 'FAIL']
+def require_passes(labels=None):
+    if labels is not None: assert labels <= {label for label,_,_ in summary}, labels
+    failed = [label for label,verdict,_ in summary if verdict == 'FAIL' and (labels is None or label in labels)]
     assert not failed, 'ineligible: '+', '.join(failed)
 
 check_dumps(main_selected)
 check_paces(main_paces,main_limits)
 check_memory(main_wifi)
 step('main regression gate',require_passes)
+main_labels = {label for label,_,_ in summary}
 check_dumps([key for key in selected if key not in main_selected])
 check_paces([p for p,_ in extra_paces],[l for _,l in extra_paces])
 check_memory(extra_wifi)
+if a.moonshot:
+    qpsk = main_labels | {'dump 11/12/80/16','decode 11/12/80/16','pace 11 33m333','wifimem 11 33m333'}
+    step('QPSK admission',lambda:require_passes(qpsk))
 if a.moonshot or a.encoder: step('candidate admission',require_passes)
 print('\nEvery result:')
 print((out/'summary.tsv').read_text(),end='')

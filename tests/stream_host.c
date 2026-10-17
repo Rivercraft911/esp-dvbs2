@@ -303,11 +303,12 @@ int main(int argc, char **argv)
         assert(live_allocations == 0);
         for (unsigned i = 0; i < 4; ++i) assert(native_ranges[i] == 0);
     }
-    if (!native_input && ((mc == 15 && sps == 4 && rate == 80000000) || (mc == 11 && moon))) {
-        // The paced input deliberately repeats after eight frames. Compare
-        // actual encoded/shaped words on both sides of that wrap to the oracle.
+    if (!native_input && (mc == 11 || mc == 15 || mc == 17)) {
+        // Legacy pace uses main's contiguous stream. New modes copy one repeated
+        // internal frame. Compare actual output through many source/frame wraps.
+        x = SEED;
         for (unsigned f = 0; f < frames+2; ++f) {
-            if (!(f%INPUT_FRAMES)) x = SEED;
+            if (moon) x = SEED;
             for (size_t i = 0; i < bytes; ++i) payload[i] = next_byte(&x);
             station_payload_header(payload,bytes,callsign);
             assert(!dvbs2_bb_gcs_ro(&ws,mode,payload,bytes*8,sps == DVB_SPS_12_5 ? 2 : 0));
@@ -317,21 +318,33 @@ int main(int argc, char **argv)
         allocation_count = 0;
         assert(start_encoder("dvbpace",mc,128,0,sps,rate));
         const int pace_allocations = allocation_count;
-        assert(enc.input);
-        x = SEED;
-        for (size_t i = 0; i < INPUT_FRAMES*bytes; ++i) assert(enc.input[i] == next_byte(&x));
-        for (unsigned i = 0; i < 64; ++i)
-            if (native_blocks[i].p == enc.input)
-                assert(native_blocks[i].caps == (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        const bool heap_input = enc.input && !enc.input_borrowed;
+        assert(pace_allocations == allocations+(int)heap_input);
+        assert((enc.input != NULL) == moon);
+        assert(HELPER_PRIORITY < ENCODER_PRIORITY);
+        if (moon) {
+            if (quads) {
+                assert(enc.input_borrowed && enc.input >= dvb.win+dvb.win_bytes);
+                assert(enc.input+bytes <= (uint8_t *)(shaper_store+SHAPER_STORE_WORDS));
+            } else {
+                assert(!enc.input_borrowed);
+                for (unsigned i = 0; i < 64; ++i)
+                    if (native_blocks[i].p == enc.input) assert(native_blocks[i].caps & MALLOC_CAP_INTERNAL);
+            }
+            x = SEED;
+            for (size_t i = 0; i < bytes; ++i) assert(enc.input[i] == next_byte(&x));
+        }
         radio_s3_dry_stats_t stats;
         assert(!radio_s3_dry_run_rate(fill,NULL,((uint64_t)frames*length*sps+dvb.den-1)/dvb.den,
                                       rate,discard,NULL,&stats));
         stop_encoder(); printf("}\n");
         assert(live_allocations == 0);
-        fail_after = pace_allocations-1; // input allocation is last
-        assert(!start_encoder("dvbpace",mc,128,0,sps,rate));
-        assert(live_allocations == 0);
-        fail_after = -1;
+        if (heap_input) {
+            fail_after = pace_allocations-1;
+            assert(!start_encoder("dvbpace",mc,128,0,sps,rate));
+            assert(live_allocations == 0);
+            fail_after = -1;
+        }
     }
     if (native_input) {
         input_empty = true;
