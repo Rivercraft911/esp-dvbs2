@@ -5,7 +5,7 @@
 //   info       chip, clocks, memory, firmware version and stored callsign
 //   callsign [CALL|clear]  read, store or erase the station callsign in NVS (station_commands.c)
 //   iddump [CALL] [40|80]  the CW ID's bank samples at 10 kS/s over USB at a 40 or 80 MS/s DAC, no radio
-//   membench   memory and bank-fill timing (membench.c)
+//   membench [moon]   memory and bank-fill timing (membench.c)
 //   filter <auto|narrow|wide|analog>  later runs only; default auto
 //   tx <integer MHz> <tone|two|tag|...> <1..60 seconds> [0..17 gain, default 0] [40|80 MS/s]
 //              (gap: a 128 tone with every bank's lead and tail silenced, the switch probe;
@@ -323,6 +323,8 @@ void app_main(void)
             cmd_info();
         } else if (strcmp(line, "membench") == 0) {
             membench_run();
+        } else if (strcmp(line, "membench moon") == 0) {
+            membench_moon();
         } else if (strcmp(line, "tx") == 0 || strncmp(line, "tx ", 3) == 0 ||
                    strncmp(line, "tx\t", 3) == 0) {
             cmd_tx(line + 2);
