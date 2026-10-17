@@ -10,12 +10,12 @@
 //   tx <integer MHz> <tone|two|tag|...> <1..60 seconds> [0..17 gain, default 0] [40|80 MS/s]
 //              (gap: a 128 tone with every bank's lead and tail silenced, the switch probe;
 //              at 80 MS/s every test signal runs at twice its frequency)
-//   dvb <MHz> <modcod> [5m|10m|10m80|20m for 8PSK] <1..60 seconds> [0..17 gain] [16..508 peak]  DVB-S2 on air (dvbtx.c)
-//   dvbdump <modcod> [5m|10m|10m80|20m for 8PSK] <frames> [peak] [decimation] [stall ms]  the same samples over USB, no radio
-//   dvbpace <modcod> [5m|10m|10m80|20m for 8PSK] <seconds> [peak] [stall ms]  the same encoder, fills and deadlines, no radio
-//              (80 MS/s bank schedule, radio-off commands only: 10m80 is the 5m samples at
+//   dvb <MHz> <modcod> [5m|10m|10m80|20m] <1..60 seconds> [0..17 gain] [16..508 peak]  DVB-S2 on air (dvbtx.c)
+//   dvbdump <modcod> [5m|10m|10m80|20m] <frames> [peak] [decimation] [stall ms]  the same samples over USB, no radio
+//   dvbpace <modcod> [5m|10m|10m80|20m] <seconds> [peak] [stall ms]  the same encoder, fills and deadlines, no radio
+//              (80 MS/s bank schedule: 10m80 is the 5m samples at
 //              10 Msym/s, 20m the 10m samples at 20 Msym/s)
-//   wifimem [<modcod> [5m|10m for 8PSK]]  Wi-Fi start-up heap next to that transmitter's memory;
+//   wifimem [<modcod> [5m|10m]]  Wi-Fi start-up heap next to that transmitter's memory;
 //              starts and stops Wi-Fi like dvb but never keys, retunes or plays (dvbtx.c)
 //   fecbench [plain|c|pie|legacy|nibble|sram]  normal-frame encoder correctness and stage timing (fecbench.c)
 //   usbrx N    receive N bytes over USB as fast as the host sends them; report the rate
@@ -72,7 +72,7 @@ static bool number(const char *text, unsigned lo, unsigned hi, uint32_t *out)
     return true;
 }
 
-// 8PSK always names its rate explicitly. Keep every old QPSK positional argument.
+// QPSK defaults to 1 Msym/s; 8PSK requires a rate. Keep QPSK positional arguments.
 // 10m80 and 20m are 8 and 4 sps at 80 MS/s (RADIO_S3_DAC_RATE_80M); the others are at 40 MS/s.
 static bool tx_mode(const char *code, char **count, char **save, uint32_t *modcod,
                      uint32_t *sps, uint32_t *rate)
@@ -82,11 +82,10 @@ static bool tx_mode(const char *code, char **count, char **save, uint32_t *modco
     if (!number(code, 4, 17, modcod)) {
         return false;
     }
-    if (*modcod >= 12) {
-        if (!*count || (strcmp(*count, "5m") && strcmp(*count, "10m") &&
-                        strcmp(*count, "10m80") && strcmp(*count, "20m"))) {
-            return false;
-        }
+    const bool named = *count && (!strcmp(*count, "5m") || !strcmp(*count, "10m") ||
+                                  !strcmp(*count, "10m80") || !strcmp(*count, "20m"));
+    if (*modcod >= 12 && !named) return false;
+    if (named) {
         *sps = !strcmp(*count, "5m") || !strcmp(*count, "10m80") ? 8 : 4;
         *rate = !strcmp(*count, "10m80") || !strcmp(*count, "20m") ? RADIO_S3_DAC_RATE_80M :
                 RADIO_S3_DAC_RATE;
@@ -113,7 +112,7 @@ static void cmd_dvb(char *args)
         !number(duration, 1, 60, &seconds) ||
         (level && !number(level, 0, RADIO_S3_GAIN_MAX, &gain)) ||
         (peak && !number(peak, 16, 508, &top)) || extra) {
-        printf("@{\"cmd\":\"dvb\",\"error\":\"usage: dvb <2390..2450 MHz> <modcod 4..11 | 12..17 5m|10m|10m80|20m> "
+        printf("@{\"cmd\":\"dvb\",\"error\":\"usage: dvb <2390..2450 MHz> <modcod 4..17> [5m|10m|10m80|20m] "
                "<1..60 seconds> [0..17 gain] [16..508 peak]\"}\n");
         return;
     }
@@ -134,7 +133,7 @@ static void cmd_dvbdump(char *args)
     if (!mode_ok || !number(count, 1, 256, &frames) ||
         (peak && !number(peak, 16, 508, &top)) || (step && !number(step, 1, 20, &decim)) ||
         (sps % decim || decim > sps / 2) || (pause && !number(pause, 0, 2000, &stall)) || extra) {
-        printf("@{\"cmd\":\"dvbdump\",\"error\":\"usage: dvbdump <modcod 4..11 | 12..17 5m|10m|10m80|20m> <1..256 frames> "
+        printf("@{\"cmd\":\"dvbdump\",\"error\":\"usage: dvbdump <modcod 4..17> [5m|10m|10m80|20m] <1..256 frames> "
                "[16..508 peak] [decimation dividing sps, at most sps/2] "
                "[0..2000 ms encoder stall]\"}\n");
         return;
@@ -155,7 +154,7 @@ static void cmd_dvbpace(char *args)
     if (!mode_ok || !number(duration, 1, 600, &seconds) ||
         (peak && !number(peak, 16, 508, &top)) || (pause && !number(pause, 0, 2000, &stall)) ||
         extra) {
-        printf("@{\"cmd\":\"dvbpace\",\"error\":\"usage: dvbpace <modcod 4..11 | 12..17 5m|10m|10m80|20m> <1..600 seconds> "
+        printf("@{\"cmd\":\"dvbpace\",\"error\":\"usage: dvbpace <modcod 4..17> [5m|10m|10m80|20m] <1..600 seconds> "
                "[16..508 peak] [0..2000 ms encoder stall]\"}\n");
         return;
     }
@@ -168,12 +167,11 @@ static void cmd_wifimem(char *args)
     char *rate = strtok_r(NULL, " \t", &save);
     uint32_t modcod = 0, sps = 0, dac_rate;
     if (code) {
-        char *after = rate;
         const bool ok = tx_mode(code, &rate, &save, &modcod, &sps, &dac_rate);
-        // QPSK takes no rate token; 8PSK takes exactly one. Nothing may follow.
-        if (!ok || (modcod < 12 && after) || rate || dac_rate != RADIO_S3_DAC_RATE) {
-            printf("@{\"cmd\":\"wifimem\",\"error\":\"usage: wifimem [<modcod 4..11 | 12..17 "
-                   "5m|10m>]\"}\n");
+        // QPSK may omit the rate. Nothing may follow; 80 MS/s is not probed here.
+        if (!ok || rate || dac_rate != RADIO_S3_DAC_RATE) {
+            printf("@{\"cmd\":\"wifimem\",\"error\":\"usage: wifimem [<modcod 4..17> ["
+                   "5m|10m]]\"}\n");
             return;
         }
     }

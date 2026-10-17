@@ -1,10 +1,6 @@
-// Continuous QPSK at 1 Msym/s (40 sps), or 8PSK at 5/10 Msym/s (8/4 sps).
-// 8PSK requires an explicit 5m or 10m before duration/frame count in all commands.
-// 10m80 and 20m run the 8 and 4 sps samples at 80 MS/s, on its bank schedule (radio_s3.h).
-// 8PSK keeps its frames in internal RAM, packed two phases per byte (dvbs2.h), so neither core
-// touches PSRAM per symbol: at 4 sps three frames, two in the table store's unused half and one
-// on the heap; at 8 sps two frames in one heap block (docs/stream-profile.md). QPSK keeps eight
-// raw frames in PSRAM.
+// QPSK defaults to 1 Msym/s; both modulations accept 5m/10m at 40 MS/s and
+// 10m80/20m at 80 MS/s. Fast rates use packed internal rings and cached samples.
+// QPSK n4/n8 tables leave enough of shaper_store for three/two frames and payload.
 // Payload: xorshift32 seed 2026, one contiguous byte stream across data frames.
 // On underrun the ring inserts a 3330-symbol dummy PLFRAME (EN 302 307-1 5.1.5,
 // 5.5.1), preserving each choice for overlapping bank reads. No payload is skipped.
@@ -37,8 +33,8 @@
 #include "shaper.h"
 #include "shaper_taps.h"
 
-#define RING_SLOTS 8                // QPSK frames the encoder may run ahead: 233 ms at 1 Msym/s
-#define PACKED_SLOTS 3              // 8PSK: three packed frames at 4 sps, two at 8, plus a cache
+#define RING_SLOTS 8                // legacy QPSK frames ahead: 233 ms at 1 Msym/s
+#define PACKED_SLOTS 3              // fast rates: three packed frames at 4 sps, two at 8, plus a cache
 #define PILOTS 1
 #define BANK_SYMBOLS 4096           // ceil(16380/4) + 1, worst offset at 4 sps
 #define TAPS (9 * 40)
@@ -78,9 +74,9 @@ static DRAM_ATTR dvb_t dvb;
 typedef struct {
     const dvbs2_mode *mode;
     dvbs2_fast *fast;               // fast encoder context for this mode, internal RAM
-    dvbs2_workspace *ws;            // internal at 4 sps, otherwise cached PSRAM
-    uint8_t *bch;                  // resident byte table at 4 sps, t = 10/12
-    bool packed;                    // 8PSK: packed internal ring
+    dvbs2_workspace *ws;            // internal for fast QPSK / 4-sps 8PSK, otherwise PSRAM
+    uint8_t *bch;                  // resident byte table with internal workspace, t = 10/12
+    bool packed;                    // all fast rates: packed internal ring
     uint8_t *payload;               // one frame of payload: next to a packed ring, or PSRAM
     uint8_t *slot[PACKED_SLOTS];    // packed frames, internal
     uint8_t *block;                 // packed ring's heap part: slot 2 (4 sps) or everything (8 sps)
@@ -152,7 +148,7 @@ static IRAM_ATTR esp_err_t fill(uint32_t *dst, uint64_t first, size_t count, voi
     const uint32_t freed = dvb.ring.freed;
     // Packed reads unpack whole vectors when every symbol lands at an address of its own
     // parity (ring.h); the history is even, so shift the window by the first symbol's parity.
-    // sps is 4 or 8 there, so that parity is bit log2(sps) of first. QPSK keeps the window.
+    // sps is 4 or 8 there, so that parity is bit log2(sps) of first. Legacy n40 keeps the window.
     uint8_t *const win = dvb.win + (enc.packed && (first & sps));
     if (count && ring_window(&dvb.ring, win, sizeof dvb.win - 1, first, count, sps,
                     SHAPER_HISTORY, RADIO_S3_BANK_WORDS) < 0) {
@@ -326,7 +322,7 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
                             unsigned sps, uint32_t dac_rate)
 {
     const dvbs2_mode *mode = dvbs2_find_mode(modcod);
-    if (!mode || (mode->bits_per_symbol == 2 ? sps != 40 : (sps != 8 && sps != 4)) ||
+    if (!mode || (sps != 8 && sps != 4 && !(mode->bits_per_symbol == 2 && sps == 40)) ||
             (dac_rate != RADIO_S3_DAC_RATE && (dac_rate != RADIO_S3_DAC_RATE_80M || sps == 40))) {
         printf("@{\"cmd\":\"%s\",\"error\":\"invalid MODCOD/sps\"}\n", cmd);
         return 0;
@@ -360,40 +356,46 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
     }
     const uint32_t internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     const size_t payload_bytes = (mode->kbch - 80) / 8;
-    enc.packed = mode->bits_per_symbol == 3;
+    enc.packed = sps != 40;
     // At 10 Msym/s the 5/6 encoder needs about 69% of a frame period; a two-frame model keeps
     // as little as 244 symbols of lead there, three frames keep 18,871 even at 95% (test_ring).
     const unsigned nslots = !enc.packed ? RING_SLOTS : sps == 4 ? 3 : 2;
     if (enc.packed) {
-        // Two packed frames, the packed dummy and the payload, 16-byte aligned (31,200 B at
-        // most, for MODCOD 17). The 4-sps table uses the store's first 32 KiB, so they go in the
-        // rest and the third frame on the heap. At 8 sps the table fills the store, so all of
-        // it is one heap block. Heap parts are made before the context.
         const size_t frame = packed_bytes(symbols), dummy = packed_bytes(DVBS2_DUMMY_SYMBOLS);
+        const size_t used = shaper_table_words(sps, mode->bits_per_symbol) * 4;
         const size_t need = 2 * frame + dummy + payload_bytes;
         uint8_t *base;
-        if (sps == 4) {
-            const size_t used = shaper_table_words(sps, mode->bits_per_symbol) * 4;
-            if (used + need > sizeof shaper_store) {
+        if (mode->bits_per_symbol == 2) {
+            // Compact QPSK tables (4/8 KiB) leave room for the entire ring, dummy
+            // and payload. No ring heap allocation. Include the third frame at n4.
+            const size_t total = nslots * frame + dummy + payload_bytes;
+            if (used + total > sizeof shaper_store) {
                 printf("@{\"cmd\":\"%s\",\"error\":\"internal ring does not fit\"}\n", cmd);
                 release();
                 return 0;
             }
             base = (uint8_t *)shaper_store + used;
-            enc.slot[2] = enc.block = heap_caps_aligned_alloc(16, frame, internal);
-        } else {
-            base = enc.block = heap_caps_aligned_alloc(16, need, internal);
-        }
-        if (enc.block) {
-            enc.slot[0] = base;
-            enc.slot[1] = base + frame;
-            enc.filler = base + 2 * frame;
+            for (unsigned i = 0; i < nslots; ++i) enc.slot[i] = base + i * frame;
+            enc.filler = base + nslots * frame;
             enc.payload = enc.filler + dummy;
+        } else {
+            // Preserve the 8PSK layout and allocation order.
+            if (sps == 4) {
+                base = (uint8_t *)shaper_store + used;
+                enc.slot[2] = enc.block = heap_caps_aligned_alloc(16, frame, internal);
+            } else {
+                base = enc.block = heap_caps_aligned_alloc(16, need, internal);
+            }
+            if (enc.block) {
+                enc.slot[0] = base;
+                enc.slot[1] = base + frame;
+                enc.filler = base + 2 * frame;
+                enc.payload = enc.filler + dummy;
+            }
         }
     }
-    // 4-sps 8PSK: keep the FEC workspace and byte BCH table off the shared data
-    // cache. The 8-sps table needs the whole store, so retain its old heap policy.
-    const bool resident = enc.packed && sps == 4;
+    // Both fast QPSK rates keep workspace and byte BCH off the shared cache.
+    const bool resident = enc.packed && (mode->bits_per_symbol == 2 || sps == 4);
     enc.fast = heap_caps_aligned_alloc(16, dvbs2_fast_mode_size(mode), internal);
     enc.ws = heap_caps_aligned_alloc(16, sizeof *enc.ws,
                                     resident ? internal : MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -437,7 +439,8 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
     if (enc.packed) {
         ring_init_slots(&dvb.ring, enc.slot, nslots, enc.filler, symbols);
         ring_cache(&dvb.ring, dvb.overlap, OVERLAP_SYMBOLS);
-        ring_packed_codes(&dvb.ring);
+        if (mode->bits_per_symbol == 2) ring_packed_qpsk(&dvb.ring);
+        else ring_packed_codes(&dvb.ring);
     } else {
         ring_init(&dvb.ring, enc.slots, RING_SLOTS, enc.filler, symbols);
     }
@@ -504,7 +507,7 @@ static void stop_encoder(void)
     printf(",\"workspace_memory\":\"%s\",\"workspace_bytes\":%u,\"fast_bytes\":%u,"
            "\"workspace_heap_bytes\":%u,\"fast_heap_bytes\":%u,\"bch_cache_heap_bytes\":%u,"
            "\"bch_cache_bytes\":%u,\"bch_variant\":\"%s\"",
-           enc.packed && dvb.table.n == 4 ? "internal" : "psram", (unsigned)sizeof *enc.ws,
+           enc.packed && (enc.mode->bits_per_symbol == 2 || dvb.table.n == 4) ? "internal" : "psram", (unsigned)sizeof *enc.ws,
            (unsigned)dvbs2_fast_mode_size(enc.mode),
            (unsigned)heap_caps_get_allocated_size(enc.ws),
            (unsigned)heap_caps_get_allocated_size(enc.fast),

@@ -15,6 +15,15 @@
     l8ui \reg, \base, \off
     .endm
 
+// Radix-four and radix-eight versions keep the same pipeline and row layout.
+    .macro history bits
+    .if \bits == 2
+    addx4           a6, a6, a8
+    .else
+    addx8           a6, a6, a8
+    .endif
+    .endm
+
     .section .iram1.shaper4, "ax"
     .global shaper_fill4_pie
     .type   shaper_fill4_pie, @function
@@ -29,13 +38,16 @@
 // Alignment: TRM v1.8 1.5.3, pp48-49. Fused add/load and add/store: 1.8.74-75, pp150-151.
 // Load defines at M (2), add/store uses at E (1): table 1.7-2, pp68-69, so an independent
 // instruction between the load and its consumer avoids the interlock (1.7.1, pp65-66).
-    .macro  symbol4 R, P, next, S, N, off, raw
+    .macro  symbol4 R, P, next, S, N, off, raw, bits=3
     phase           a8, a3, \off, \raw
     ee.vld.128.ip   q1, \P, 16
     .if \raw
+    .if \bits == 2
+    srli            a8, a8, 1
+    .endif
     slli            a8, a8, 4
     .endif
-    addx8           a6, a6, a8
+    history         \bits
     and             a9, a6, a7
     addx4           \R, a9, a5                  // 64 bytes/window, a9 = 16 * window
     ee.vadds.s32.ld.incp q2, \R, \S, \S, q1
@@ -44,12 +56,15 @@
     ee.xorq         q4, \S, q7
     .endm
 
-    .macro  window4 reg, off, part, raw
+    .macro  window4 reg, off, part, raw, bits=3
     phase           a8, a9, \off, \raw
     .if \raw
+    .if \bits == 2
+    srli            a8, a8, 1
+    .endif
     slli            a8, a8, 4
     .endif
-    addx8           a6, a6, a8
+    history         \bits
     and             a8, a6, a7
     addx4           \reg, a8, a5
     addi            \reg, \reg, \part
@@ -57,7 +72,7 @@
 
 // void shaper_fill4_pie(uint32_t *dst, const uint8_t *sym, int groups, const uint32_t *blocks)
 // a2 dst, a3 sym, a4 groups >= 0, a5 blocks. Makes 6 * groups + 1 symbols.
-    .macro kernel4 name, raw
+    .macro kernel4 name, raw, bits=3
     .global \name
     .type \name, @function
     .align 4
@@ -68,33 +83,42 @@
     ee.movi.32.q    q7, a8, 1
     ee.movi.32.q    q7, a8, 2
     ee.movi.32.q    q7, a8, 3
-    movi            a7, 0x1ff0
+    movi            a7, ((1 << (3 * \bits)) - 1) * 16
     movi            a6, 0
     addi            a9, a3, -8
     phase           a8, a9, 0, \raw
     .if \raw
+    .if \bits == 2
+    srli            a8, a8, 1
+    .endif
     slli            a8, a8, 4
     .endif
-    addx8           a6, a6, a8
+    history         \bits
     phase           a8, a9, 1, \raw
     .if \raw
+    .if \bits == 2
+    srli            a8, a8, 1
+    .endif
     slli            a8, a8, 4
     .endif
-    addx8           a6, a6, a8
-    window4         a15, 2, 32, \raw
-    window4         a10, 3, 32, \raw
-    window4         a11, 4, 32, \raw
-    window4         a12, 5, 16, \raw
-    window4         a13, 6, 16, \raw
-    window4         a14, 7, 16, \raw
+    history         \bits
+    window4         a15, 2, 32, \raw, \bits
+    window4         a10, 3, 32, \raw, \bits
+    window4         a11, 4, 32, \raw, \bits
+    window4         a12, 5, 16, \raw, \bits
+    window4         a13, 6, 16, \raw, \bits
+    window4         a14, 7, 16, \raw, \bits
     // Symbol 0, without a store. Preload symbol 1's part 2 (a table row, no symbol read).
     ee.vld.128.ip   q0, a15, 16
     phase           a8, a3, 0, \raw
     ee.vld.128.ip   q1, a12, 16
     .if \raw
+    .if \bits == 2
+    srli            a8, a8, 1
+    .endif
     slli            a8, a8, 4
     .endif
-    addx8           a6, a6, a8
+    history         \bits
     and             a9, a6, a7
     addx4           a15, a9, a5
     ee.vadds.s32.ld.incp q2, a15, q0, q0, q1
@@ -103,12 +127,12 @@
     ee.xorq         q4, q0, q7
     addi            a3, a3, 1
     loopnez         a4, .Lend4\@
-    symbol4         a10, a13, a11, q3, q0, 0, \raw
-    symbol4         a11, a14, a12, q0, q3, 1, \raw
-    symbol4         a12, a15, a13, q3, q0, 2, \raw
-    symbol4         a13, a10, a14, q0, q3, 3, \raw
-    symbol4         a14, a11, a15, q3, q0, 4, \raw
-    symbol4         a15, a12, a10, q0, q3, 5, \raw
+    symbol4         a10, a13, a11, q3, q0, 0, \raw, \bits
+    symbol4         a11, a14, a12, q0, q3, 1, \raw, \bits
+    symbol4         a12, a15, a13, q3, q0, 2, \raw, \bits
+    symbol4         a13, a10, a14, q0, q3, 3, \raw, \bits
+    symbol4         a14, a11, a15, q3, q0, 4, \raw, \bits
+    symbol4         a15, a12, a10, q0, q3, 5, \raw, \bits
     addi            a3, a3, 6
 .Lend4\@:
     ee.vst.128.ip   q4, a2, 16
@@ -117,6 +141,8 @@
     .endm
     kernel4 shaper_fill4_pie, 0
     kernel4 shaper_fill4_raw_pie, 1
+    kernel4 shaper_fill4_qpsk_pie, 0, 2
+    kernel4 shaper_fill4_qpsk_raw_pie, 1, 2
 
 
     .section .iram1.shaper8, "ax"
@@ -129,16 +155,19 @@
 // so a window register serves part 0, then part 1 three symbols later, then part 2.
 // Register use: a2 dst, a3 symbols, a5 table, a6 history (16 k per symbol, three bits apart),
 // a7 window mask, a8 a9 scratch; q0 q1 sums, q2 q3 rows, q4 q5 finished words, q7 XOR mask.
-    .macro  symbol8 R, P, off, raw
+    .macro  symbol8 R, P, off, raw, bits=3
     ee.vld.128.ip   q0, \R, 16                  // part 2 of window n-6, words 0-3
     phase           a8, a3, \off, \raw                // symbol n
     ee.vld.128.ip   q2, \P, 16                  // part 1 of window n-3, words 0-3
     ee.vld.128.ip   q1, \R, 16                  // part 2, words 4-7
     ee.vadds.s32.ld.incp q3, \P, q0, q0, q2     // part 1 words 4-7; q0 = part 2 + part 1
     .if \raw
+    .if \bits == 2
+    srli            a8, a8, 1
+    .endif
     slli            a8, a8, 4
     .endif
-    addx8           a6, a6, a8                  // history = 8 history + 16 k
+    history         \bits                  // history = 8 history + 16 k
     and             a9, a6, a7                  // 16 * window n
     addx8           \R, a9, a5                  // table + 128 * window n
     ee.vadds.s32.ld.incp q2, \R, q1, q1, q3     // part 0 words 0-3; q1 = part 2 + part 1
@@ -151,12 +180,15 @@
 
 // The prologue's window setup: shift symbol sym[-8 + off] into the history and point reg at
 // its window block plus part bytes.
-    .macro  window8 reg, off, part, raw
+    .macro  window8 reg, off, part, raw, bits=3
     phase           a8, a9, \off, \raw
     .if \raw
+    .if \bits == 2
+    srli            a8, a8, 1
+    .endif
     slli            a8, a8, 4
     .endif
-    addx8           a6, a6, a8
+    history         \bits
     and             a8, a6, a7
     addx8           \reg, a8, a5
     addi            \reg, \reg, \part
@@ -164,7 +196,7 @@
 
 // void shaper_fill8_pie(uint32_t *dst, const uint8_t *sym, int groups, const uint32_t *blocks)
 // a2 dst, a3 sym, a4 groups, a5 blocks. Makes 6 * groups + 1 symbols.
-    .macro kernel8 name, raw
+    .macro kernel8 name, raw, bits=3
     .global \name
     .type \name, @function
     .align 4
@@ -175,26 +207,32 @@
     ee.movi.32.q    q7, a8, 1
     ee.movi.32.q    q7, a8, 2
     ee.movi.32.q    q7, a8, 3
-    movi            a7, 0x1ff0
+    movi            a7, ((1 << (3 * \bits)) - 1) * 16
     movi            a6, 0
     addi            a9, a3, -8
     phase           a8, a9, 0, \raw
     .if \raw
+    .if \bits == 2
+    srli            a8, a8, 1
+    .endif
     slli            a8, a8, 4
     .endif
-    addx8           a6, a6, a8
+    history         \bits
     phase           a8, a9, 1, \raw
     .if \raw
+    .if \bits == 2
+    srli            a8, a8, 1
+    .endif
     slli            a8, a8, 4
     .endif
-    addx8           a6, a6, a8
+    history         \bits
     // Windows of symbols -6..-1: three at part 2 (symbols 0..2 read them), three at part 1.
-    window8         a15, 2, 64, \raw
-    window8         a10, 3, 64, \raw
-    window8         a11, 4, 64, \raw
-    window8         a12, 5, 32, \raw
-    window8         a13, 6, 32, \raw
-    window8         a14, 7, 32, \raw
+    window8         a15, 2, 64, \raw, \bits
+    window8         a10, 3, 64, \raw, \bits
+    window8         a11, 4, 64, \raw, \bits
+    window8         a12, 5, 32, \raw, \bits
+    window8         a13, 6, 32, \raw, \bits
+    window8         a14, 7, 32, \raw, \bits
     // Symbol 0 (registers of rotation step 5) without a store.
     ee.vld.128.ip   q0, a15, 16
     phase           a8, a3, 0, \raw
@@ -202,9 +240,12 @@
     ee.vld.128.ip   q1, a15, 16
     ee.vadds.s32.ld.incp q3, a12, q0, q0, q2
     .if \raw
+    .if \bits == 2
+    srli            a8, a8, 1
+    .endif
     slli            a8, a8, 4
     .endif
-    addx8           a6, a6, a8
+    history         \bits
     and             a9, a6, a7
     addx8           a15, a9, a5
     ee.vadds.s32.ld.incp q2, a15, q1, q1, q3
@@ -216,12 +257,12 @@
     addi            a3, a3, 1
     // Six symbols per pass: the six window registers rotate once.
     loopnez         a4, .Lend8\@
-    symbol8         a10, a13, 0, \raw
-    symbol8         a11, a14, 1, \raw
-    symbol8         a12, a15, 2, \raw
-    symbol8         a13, a10, 3, \raw
-    symbol8         a14, a11, 4, \raw
-    symbol8         a15, a12, 5, \raw
+    symbol8         a10, a13, 0, \raw, \bits
+    symbol8         a11, a14, 1, \raw, \bits
+    symbol8         a12, a15, 2, \raw, \bits
+    symbol8         a13, a10, 3, \raw, \bits
+    symbol8         a14, a11, 4, \raw, \bits
+    symbol8         a15, a12, 5, \raw, \bits
     addi            a3, a3, 6
 .Lend8\@:
     ee.vst.128.ip   q4, a2, 16
@@ -231,6 +272,8 @@
     .endm
     kernel8 shaper_fill8_pie, 0
     kernel8 shaper_fill8_raw_pie, 1
+    kernel8 shaper_fill8_qpsk_pie, 0, 2
+    kernel8 shaper_fill8_qpsk_raw_pie, 1, 2
 
 
     .section .iram1.shaper40, "ax"
@@ -494,7 +537,9 @@ shaper_fill5_pie:
     .align 4
 \name:
     entry           a1, 32
-    .if \codes
+    .if \codes == 2
+    movi            a8, 0x30303030
+    .elseif \codes
     movi            a8, 0xf0f0f0f0
     .else
     movi            a8, 0x0f0f0f0f
@@ -508,7 +553,12 @@ shaper_fill5_pie:
     ee.ld.128.usar.ip q0, a3, 16
     ee.vld.128.ip   q1, a3, 0
     ee.src.q        q0, q0, q1                  // 16 packed bytes
-    .if \codes
+    .if \codes == 2
+    ssai            3
+    ee.vsl.32       q1, q0
+    ssai            1
+    ee.vsr.32       q0, q0
+    .elseif \codes
     ee.vsl.32       q1, q0                      // even phases up; odd phases already in place
     .else
     ee.vsr.32       q1, q0                      // high nibbles down; the mask drops the rest
@@ -530,6 +580,7 @@ shaper_fill5_pie:
     .endm
     unpack shaper_unpack_pie, 0
     unpack shaper_unpack_codes_pie, 1
+    unpack shaper_unpack_qpsk_pie, 2
 
 // Disjoint aligned word buffers, eight words per pair. Independent loads separate each
 // load from its consumer (TRM v1.8 1.7.1, pp65-66; loads 1.8.88 p164, stores 1.8.192 p275).

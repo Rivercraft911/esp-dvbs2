@@ -176,7 +176,9 @@ def test_stream(output=None):
                                     (12, 8, "", 40), (13, 8, "N0CALL", 40), (15, 8, "N0CALL", 40),
                                     (17, 8, "", 40), (4, 40, "N0CALL", 40), (13, 4, "N0CALL", 80),
                                     (15, 4, "N0CALL", 80), (17, 4, "", 80), (12, 8, "", 80),
-                                    (13, 8, "N0CALL", 80)):
+                                    (13, 8, "N0CALL", 80),
+                                    *[(mc, n, "N0CALL", rate) for mc in (4, 5, 6, 7, 8, 9, 10, 11)
+                                      for n, rate in ((8, 40), (4, 40), (8, 80), (4, 80))]):
             name = f'{mc}-n{sps}.iq' if rate == 40 else f'{mc}-n{sps}-80m.iq'
             iq = output / name if output else folder / "dump.iq"
             out = subprocess.run([str(exe), str(mc), str(sps), str(iq), call, str(rate * 1000000)],
@@ -202,11 +204,11 @@ def test_stream(output=None):
                 assert 0 <= r["encode_cycles_live_max"] <= r["encode_cycles_max"]
                 assert r["ring_memory"] == ("internal" if packed else "psram")
                 assert r["ring_format"] == ("packed" if packed else "raw")
-                assert r["workspace_memory"] == ("internal" if sps == 4 else "psram")
+                assert r["workspace_memory"] == ("internal" if packed and (mc < 12 or sps == 4) else "psram")
                 assert r["workspace_bytes"] == 12420
                 assert r["workspace_heap_bytes"] == r["workspace_bytes"]
                 assert r["fast_heap_bytes"] == r["fast_bytes"]
-                cached = sps == 4 and mc != 17
+                cached = packed and (mc < 12 or sps == 4) and mc not in (10, 11, 16, 17)
                 assert r["bch_cache_bytes"] == (8192 if cached else 0)
                 assert r["bch_cache_heap_bytes"] == r["bch_cache_bytes"]
                 assert r["bch_variant"] == ("resident-byte" if cached else "nibble")
@@ -218,13 +220,18 @@ def test_stream(output=None):
                 if packed:
                     # Two packed frames, the packed dummy, then the payload, each with the
                     # 16 bytes the vector unpack may read past its end.
-                    frame = (22194 // 2 + 31) // 16 * 16
+                    frame = ((33282 if mc < 12 else 22194) // 2 + 31) // 16 * 16
                     assert slots[:2] == [slots[0], slots[0] + frame]
                     assert all(a % 16 == 0 for a in slots)
-                    assert filler == slots[0] + 2 * frame
+                    assert filler == slots[0] + (r["ring_slots"] if mc < 12 else 2) * frame
                     assert payload == filler + (3330 // 2 + 31) // 16 * 16
                     need = payload - slots[0] + r["payload_bytes_per_frame"]
-                    if sps == 4:
+                    if mc < 12:
+                        used = 4096 if sps == 4 else 8192
+                        assert slots[0] == int(r["layout"]["table"], 16) + used
+                        assert slots == [slots[0] + i * frame for i in range(r["ring_slots"])]
+                        assert used + need <= 65536 and r["ring_heap_bytes"] == 0
+                    elif sps == 4:
                         # Two frames, dummy and payload in the store; the third on the heap.
                         assert slots[0] == int(r["layout"]["table"], 16) + 32768
                         assert need <= 32768 and r["ring_heap_bytes"] == frame
