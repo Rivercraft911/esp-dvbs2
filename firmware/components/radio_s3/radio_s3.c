@@ -227,10 +227,13 @@ static inline __attribute__((always_inline)) esp_err_t schedule(run_t *run, uint
         }
 
         /* Half the lead is deliberate timing margin: aim 32 samples early;
-         * both banks contain the same samples for all 64 lead samples. Mask
-         * interrupts only for the final wait and register write (about 0.8 us).
+         * both banks contain the same samples for all 64 lead samples.
+         * Mask levels 1-3 from the end of the fill to the switch, so that core 1
+         * serves interrupts only while it fills. A switch then lands late only if
+         * its fill overran. With the mask over just the last 320 cycles, the 1 kHz
+         * tick made 0.3% of switches up to ~750 cycles late (results/2026-10-16-
+         * radio); the interrupts move to the next fill, at most one tick per bank.
          */
-        wait_until(target - EARLY_SWITCH_CYCLES - 128);
         irq = portSET_INTERRUPT_MASK_FROM_ISR();
         wait_until(target - EARLY_SWITCH_CYCLES);
         now = cycles();
