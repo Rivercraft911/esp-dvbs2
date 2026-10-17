@@ -57,11 +57,14 @@ def model(costs, sps, bank):
         # 160 cycles per fresh callback allow scalar alignment heads/tails and vector setup.
         unpack += math.ceil((skip + count) / sps / 32) * 11 + 160
     copy = (g['reused'] + g['saved']) * 0.5  # four instructions per eight aligned words
-    control, wake = 1000, 2348  # assumed glue; measured old notification maximum
+    control = 1000  # assumed glue
+    # The initial bank cannot release a 22194-symbol frame, so it never notifies.
+    wake = 2348 if bank else 0  # measured old notification maximum, not a bound
     total = shape + unpack + copy + control
     return dict(bank=bank, sps=sps, shaped_words=sum(n for _, n in g['fresh']),
                 reused_words=g['reused'], saved_words=g['saved'], kernel_cycles=shape,
                 unpack_cycles=unpack, copy_cycles=copy, assumed_control_cycles=control,
+                notification_allowance_cycles=wake,
                 cycles=total, with_notification_cycles=total + wake,
                 stress_25pct_cycles=total * 1.25 + wake)
 

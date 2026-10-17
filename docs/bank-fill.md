@@ -78,16 +78,17 @@ SRAM bandwidth. Kernel fused operations are 1.8.74-75 pp. 150-151.
 | Case | Kernel | Unpack | Cache copies | Assumed glue | Total | With 2,348-cycle wake |
 |---|---:|---:|---:|---:|---:|---:|
 | 4 sps, worst steady | 33,223 | 1,563 | 3,232 | 1,000 | 39,018 | 41,366 |
-| 4 sps, initial bank | 37,712 | 1,568 | 1,088 | 1,000 | 41,368 | 43,716 |
+| 4 sps, initial bank | 37,712 | 1,568 | 1,088 | 1,000 | 41,368 | 41,368 |
 | 8 sps, worst steady | 26,577 | 947 | 3,232 | 1,000 | 31,756 | 34,104 |
-| 8 sps, initial bank | 29,179 | 864 | 1,088 | 1,000 | 32,131 | 34,479 |
+| 8 sps, initial bank | 29,179 | 864 | 1,088 | 1,000 | 32,131 | 32,131 |
 
 All entries are **estimated cycles**. A 160-cycle unpack-edge allowance per fresh callback,
 100 cycles per C tail symbol at 8 sps, and 32 cycles per partial-symbol copy are assumptions.
 The 2,348-cycle wake is the old board maximum from
 [buildout](../results/2026-10-16-buildout/README.md), not a bound. The initial bank has no
 reusable samples and is primed before playback, but remains included in the scheduler's
-maximum. A 25% stress factor before adding the wake gives 51,121 cycles for steady 4 sps
+maximum. It cannot release a 22,194-symbol frame and therefore has no notification cost.
+A 25% stress factor before adding the wake gives 51,121 cycles for steady 4 sps
 and 42,043 at 8 sps. Historical model error motivates this sensitivity check; it is not a bound.
 The current 4-sps estimate fails the requested margin even before this stress factor.
 
