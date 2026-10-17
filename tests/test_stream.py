@@ -192,8 +192,19 @@ def test_stream(output=None):
                 assert profile["shaped_words"] + profile["reused_words"] == profile["fill_words"]
                 assert profile["reused_words"] > 0 if packed else profile["reused_words"] == 0
                 assert r["ring_slots"] == (3 if sps == 4 else 2 if packed else 8)
+                assert r["prefill_frames"] == r["ring_slots"]
+                assert 0 <= r["encode_cycles_live_max"] <= r["encode_cycles_max"]
                 assert r["ring_memory"] == ("internal" if packed else "psram")
                 assert r["ring_format"] == ("packed" if packed else "raw")
+                assert r["workspace_memory"] == ("internal" if sps == 4 else "psram")
+                assert r["workspace_bytes"] == 12420
+                assert r["workspace_heap_bytes"] == r["workspace_bytes"]
+                assert r["fast_heap_bytes"] == r["fast_bytes"]
+                cached = sps == 4 and mc != 17
+                assert r["bch_cache_bytes"] == (8192 if cached else 0)
+                assert r["bch_cache_heap_bytes"] == r["bch_cache_bytes"]
+                assert r["bch_variant"] == ("resident-byte" if cached else "nibble")
+                assert bool(int(r["layout"]["bch"], 16)) == cached
                 slots = [int(a, 16) for a in r["layout"]["slots"]]
                 assert len(set(slots)) == r["ring_slots"]
                 payload = int(r["layout"]["payload"], 16)
