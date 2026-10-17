@@ -93,4 +93,4 @@ if __name__ == "__main__":
     test_sparse_pairs()
     test_packed_four()
     test_qpsk_packed()
-    print("encoder tables: all byte remainders, full BCH tails and 4096 sparse map indices match")
+    print("encoder tables: all byte remainders, full BCH tails and 4096 8PSK indices and all 65536 QPSK data/Gold byte pairs match")

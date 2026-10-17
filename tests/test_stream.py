@@ -3,6 +3,7 @@
 The plain encoder checks every DAC word. Test two-slot wraps, notifications, repeated
 commands, allocation failure cleanup and dump CRCs. All clocks/heap sizes are synthetic.
 """
+import argparse
 import json
 import pathlib
 import subprocess
@@ -145,7 +146,7 @@ int usb_serial_jtag_write_bytes(const void *, size_t, unsigned);
 '''
 
 
-def test_stream(output=None):
+def test_stream(output=None, receiver=None):
     if output:
         output.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
@@ -240,6 +241,19 @@ def test_stream(output=None):
                         assert r["ring_heap_bytes"] == need
                 assert all(p["calls"] == r["frames_encoded"] for p in r["profile"]["encoder"].values())
                 assert r["symbol_rate"] == rate * 1000000 // sps
+            if receiver and mc < 12 and sps != 40:
+                cmd = [sys.executable, str(ROOT / "host/onair.py"), str(iq),
+                       "--rate", str(rate * 1000000), "--symbol-rate", str(rate * 1000000 // sps),
+                       "--scale", "512", "--modcod", str(mc), "--stream", "40",
+                       "--callsign", call, "--receiver", str(receiver)]
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+                assert result.returncode == 0, (cmd, result.stdout, result.stderr)
+                decoded = json.loads(result.stdout)
+                assert decoded["payload_match"] and decoded["payload_frames"] >= 30, decoded
+                assert all(decoded[k] == 0 for k in ("bch_failed_frames", "bch_corrected_bits",
+                           "ldpc_checks_before", "ldpc_bit_flips", "payload_bit_errors")), decoded
+                print(f"LeanDVB: MODCOD {mc}, {sps} sps at {rate} MS/s, "
+                      f"{decoded['payload_frames']} contiguous bit-exact frames")
             crcs[mc, sps, call, rate] = dumps[0]["crc32"]
             if rate == 80:
                 assert crcs[mc, sps, call, 80] == crcs[mc, sps, call, 40]
@@ -250,4 +264,8 @@ def test_stream(output=None):
 
 
 if __name__ == "__main__":
-    test_stream(pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else None)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("output", nargs="?", type=pathlib.Path)
+    parser.add_argument("--receiver", type=pathlib.Path, help="also decode new QPSK modes in LeanDVB")
+    args = parser.parse_args()
+    test_stream(args.output, args.receiver)
