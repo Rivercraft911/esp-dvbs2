@@ -25,6 +25,7 @@ import time
 import uuid
 
 import sdr
+import morse
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
@@ -39,7 +40,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--authorize-tx", action="store_true", help="authorize this timed licensed transmission")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--mhz", type=int, default=2420)
-    p.add_argument("--seconds", type=int, default=10)
+    p.add_argument("--seconds", type=int, default=30)
     p.add_argument("--gain", type=int, default=0, help="board vendor gain index, not dBm")
     p.add_argument("--peak", type=int, default=128, help="DVB DAC peak level")
     p.add_argument("--signal", choices=("tone", "tone128", "two"), default="tone128")
@@ -75,7 +76,7 @@ def rf_path(args) -> dict:
 
 def board_command(command: str, args) -> list[str]:
     return [sys.executable, str(ROOT / "host/board.py"), command,
-            "--port", args.board_port, "--timeout", str(args.seconds + 20)]
+            "--port", args.board_port, "--timeout", str(args.seconds + 90)]
 
 
 def make_plan(args, radio: sdr.SDR, path: dict) -> dict:
@@ -96,9 +97,9 @@ def make_plan(args, radio: sdr.SDR, path: dict) -> dict:
         raise ValueError("DVB needs >=2 MS/s and >=0.6 s to compare a complete eight-frame loop")
     if args.mode == "tx" and args.rate < (8000000 if args.signal == "two" else 4000000):
         raise ValueError("tone capture needs >=4 MS/s; two tones need >=8 MS/s")
-    # MHz: 1 Msym/s * (1 + 0.35) / 2 + 0.125 MHz carrier-search margin.
-    # Firmware rate/rolloff: dvbtx.c:9. Tones use capture.py's +/-100 kHz search.
-    edge = .8 if args.mode == "dvb" else (3.1 if args.signal == "two" else 1.1)
+    # Include the +1 MHz CW ID even for DVB. Use capture.py's assumed
+    # +/-100 kHz acquisition margin; RF frequency accuracy remains unmeasured.
+    edge = 3.1 if args.mode == "tx" and args.signal == "two" else 1.1
     if args.mhz - edge < 2390 or args.mhz + edge > 2450:
         raise ValueError("signal plus carrier-offset margin must fit inside 2390..2450 MHz")
     command = (f"dvb {args.mhz} {args.modcod} {args.seconds} {args.gain} {args.peak}" if args.mode == "dvb"
@@ -133,10 +134,15 @@ def analysis_command(args, capture: pathlib.Path, log: pathlib.Path) -> list[str
     else:
         # dvb sends a non-repeating stream: QPSK frames of 33,282 symbols at 1 Msym/s, from
         # frame 0 at keying. Check the decode against every frame the run can have sent.
-        frames = -(-args.seconds * 1_000_000 // 33282) + 2
+        payload_seconds = args.seconds
+        if getattr(args, "callsign", None):
+            payload_seconds -= 2 * morse.duration(args.callsign)
+        frames = math.ceil(payload_seconds * 1_000_000 / 33282) + 2
         cmd = [sys.executable, str(ROOT / "host/onair.py"), str(capture), "--rate", str(args.rate),
                "--scale", "2048", "--modcod", str(args.modcod), "--stream", str(frames),
                "--auto-shift", "--mer", "--log", str(log)]
+        if getattr(args, "callsign", None):
+            cmd += ["--callsign", args.callsign]
         if args.receiver:
             cmd += ["--receiver", str(args.receiver)]
     return cmd
@@ -173,7 +179,7 @@ def execute(args, radio: sdr.SDR, plan: dict, directory: pathlib.Path) -> dict:
                            capture_output=True, check=True).stdout.strip()
     hashes = {name: hashlib.sha256((ROOT / "host" / name).read_bytes()).hexdigest()
               for name in ("bench.py", "sdr.py", "onair.py", "capture.py", "board.py",
-                           "decode.py", "iq.py", "dvbs2.py", "dvbs2_tables.py")}
+                           "decode.py", "iq.py", "morse.py", "dvbs2.py", "dvbs2_tables.py")}
     append(runs, {**base, "event": "start", "plan": plan, "host_revision": revision,
                   "host_dirty": bool(dirty), "host_tools_sha256": hashes})
     outcome = {**base, "event": "finish", "status": "failed", "capture": str(cap)}
@@ -195,19 +201,34 @@ def execute(args, radio: sdr.SDR, plan: dict, directory: pathlib.Path) -> dict:
         if (info.returncode or not any(r.get("cmd") == "info" and r.get("firmware") for r in records)
                 or any("error" in r for r in records)):
             raise RuntimeError(f"board info failed: {info.stderr}")
+        station = next(r for r in records if r.get("cmd") == "info")
+        # Legacy recordings/fakes have no callsign field. New firmware must be
+        # configured before starting a keyed command. Never set it for the user.
+        args.callsign = None
+        id_seconds = 0.0
+        if "callsign" in station:
+            if not station["callsign"]:
+                raise RuntimeError("no callsign set; configure the assigned callsign before RF")
+            args.callsign = morse.callsign(station["callsign"])
+            id_seconds = morse.duration(args.callsign)
+            if 2 * id_seconds + args.settle + args.samples / args.rate + 2 >= args.seconds:
+                raise RuntimeError("duration too short for both CW IDs, settle and capture; increase --seconds")
+        append(runs, {**base, "event": "id_timing", "callsign": args.callsign,
+                      "id_seconds": id_seconds, "capture_wait_seconds": args.settle + id_seconds,
+                      "source": "firmware callsign; sample-timing model, no RF-start acknowledgement"})
         # Separate process group: Ctrl-C must not discard the finite TX's records.
         process = subprocess.Popen(plan["board"], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                    text=True, start_new_session=True)
         started = time.monotonic()
         outcome["board_started_at"] = sdr.now()
-        time.sleep(args.settle)
+        time.sleep(args.settle + id_seconds)
         if process.poll() is not None:
             raise RuntimeError("board command ended before capture")
 
         def ready():
             if process.poll() is not None:
                 raise RuntimeError("board command ended during SDR verification")
-            if time.monotonic() - started + args.samples / args.rate + 1 >= args.seconds:
+            if time.monotonic() - started + args.samples / args.rate + 1 >= args.seconds - id_seconds:
                 raise RuntimeError("not enough timed TX remaining after SDR verification")
 
         metadata = radio.capture(cap, args.samples, before_capture=ready)
@@ -226,7 +247,7 @@ def execute(args, radio: sdr.SDR, plan: dict, directory: pathlib.Path) -> dict:
     finally:
         if process is not None:
             try:
-                stdout, stderr = process.communicate(timeout=args.seconds + 30)
+                stdout, stderr = process.communicate(timeout=args.seconds + 100)
                 # Keep the raw stream too, including partial/error output.
                 (directory / (run_id + "-board.log")).write_text(stdout + "\nSTDERR:\n" + stderr)
                 records = board_records(stdout)

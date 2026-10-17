@@ -7,6 +7,11 @@
     python3 host/onair.py capture.iq --rate 4000000 --scale 2048 --stream 330 --auto-shift --mer
     python3 host/onair.py old-dump.iq --rate 4000000 --scale 512   # firmware 35739b5, 8-frame loop
 
+With a configured station ID, pass --callsign CALL to verify the 40-byte ASCII
+header at the start of every payload frame. Without it, legacy radio-off dumps
+retain their existing checks. Crop RF captures to the data interval for this
+tool; host/morse.py handles the surrounding CW intervals.
+
 The GCS payload is one stream of xorshift32 bytes seeded with 2026: frame f carries bytes
 [f * B, (f + 1) * B), B = (Kbch - 80) / 8. The firmware (firmware/main/dvbtx.c) encodes it
 continuously; with --stream N (at least the number of frames the board sent) the decoded payload
@@ -44,6 +49,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import decode  # noqa: E402
 import dvbs2  # noqa: E402
 import iq  # noqa: E402
+import morse  # noqa: E402
 
 LOOP_FRAMES = 8
 SEED = 2026
@@ -61,7 +67,7 @@ def frame_symbols(modcod: int) -> int:
     return dvbs2.plframe_length(False, True, mode(modcod)[1])
 
 
-def payload(modcod: int, frames: int = LOOP_FRAMES) -> bytes:
+def payload(modcod: int, frames: int = LOOP_FRAMES, callsign: str | None = None) -> bytes:
     """GCS payload of data frames, as dvbtx.c fills them (dummies carry no bytes)."""
     if not 4 <= modcod <= 17:
         raise ValueError("PSK modcods 4..17 only")
@@ -74,14 +80,19 @@ def payload(modcod: int, frames: int = LOOP_FRAMES) -> bytes:
         x ^= x >> 17
         x ^= (x << 5) & 0xFFFFFFFF
         out[i] = x & 0xFF
+    if callsign:
+        header = ("ESP-DVBS2 ID=" + morse.callsign(callsign)).ljust(39).encode("ascii") + b"\n"
+        for first in range(0, len(out), per_frame):
+            out[first:first + 40] = header
     return bytes(out)
 
 
 @functools.lru_cache(maxsize=8)
-def symbols(modcod: int, frames: int = LOOP_FRAMES, dummy_before: tuple[int, ...] = ()) -> np.ndarray:
+def symbols(modcod: int, frames: int = LOOP_FRAMES, dummy_before: tuple[int, ...] = (),
+            callsign: str | None = None) -> np.ndarray:
     """The first `frames` PL frames as complex symbols, from the independent Python encoder."""
     rate, modulation = mode(modcod)
-    data = np.frombuffer(payload(modcod, frames), np.uint8)
+    data = np.frombuffer(payload(modcod, frames, callsign), np.uint8)
     per_frame = len(data) // frames
     if any(f < 0 or f > frames for f in dummy_before):
         raise ValueError("dummy positions must be in 0..frames")
@@ -159,7 +170,7 @@ def _sample(y: np.ndarray, times: np.ndarray, precise=False) -> np.ndarray:
 
 def recover_mer(z: np.ndarray, rate: float, symbol_rate: float = 1e6,
                 modcod: int = 4, shift: float | None = None, frames: int | None = None,
-                dummy_before: tuple[int, ...] = ()) -> dict:
+                dummy_before: tuple[int, ...] = (), callsign: str | None = None) -> dict:
     """Data-aided PSK MER for an arbitrary interior of the transmitted symbols: the first
     `frames` stream frames, or the 8-frame loop when frames is None.
 
@@ -180,7 +191,8 @@ def recover_mer(z: np.ndarray, rate: float, symbol_rate: float = 1e6,
     sps = rate / symbol_rate
     if len(z) < 8192 * sps:
         raise ValueError("MER needs at least 8192 symbols")
-    loop = symbols(modcod) if frames is None else symbols(modcod, frames, dummy_before)
+    loop = (symbols(modcod, callsign=callsign) if frames is None
+            else symbols(modcod, frames, dummy_before, callsign))
     z = z * np.exp(-2j * np.pi * coarse / rate * np.arange(len(z)))
     taps = iq.rrc(np.arange(-int(16 * sps), int(16 * sps) + 1) / sps, .35)
     y = fftconvolve(z, taps / np.sqrt(np.sum(taps**2)), mode="same")
@@ -262,12 +274,14 @@ def recover_mer(z: np.ndarray, rate: float, symbol_rate: float = 1e6,
 
 def capture_mer(path: pathlib.Path, rate: float, symbol_rate: float = 1e6,
                 scale: float = 2048, modcod: int = 4, shift: float | None = None,
-                frames: int | None = None, dummy_before: tuple[int, ...] = ()) -> dict:
-    return recover_mer(read_i16(path, scale), rate, symbol_rate, modcod, shift, frames, dummy_before)
+                frames: int | None = None, dummy_before: tuple[int, ...] = (),
+                callsign: str | None = None) -> dict:
+    return recover_mer(read_i16(path, scale), rate, symbol_rate, modcod, shift, frames, dummy_before,
+                       callsign)
 
 
 def dump_mer(path: pathlib.Path, rate: float, symbol_rate: float, scale: float, modcod: int,
-             stream: bool = False) -> dict:
+             stream: bool = False, callsign: str | None = None) -> dict:
     sps = rate / symbol_rate
     if sps != int(sps):
         raise ValueError("--mer needs a whole number of samples per symbol")
@@ -277,9 +291,9 @@ def dump_mer(path: pathlib.Path, rate: float, symbol_rate: float, scale: float, 
     count = len(z) // sps
     if stream:
         frame = frame_symbols(modcod)
-        ideal = symbols(modcod, -(-count // frame))[:count]
+        ideal = symbols(modcod, -(-count // frame), callsign=callsign)[:count]
     else:
-        loop = symbols(modcod)
+        loop = symbols(modcod, callsign=callsign)
         ideal = np.tile(loop, count // len(loop) + 1)[:count]
     best = None
     for frac in np.arange(8) / 8:               # the table pulse is centred between samples
@@ -313,6 +327,7 @@ def main() -> int:
     shift_group = parser.add_mutually_exclusive_group()
     shift_group.add_argument("--shift", type=float, help="carrier offset to remove, Hz")
     shift_group.add_argument("--auto-shift", action="store_true", help="estimate the PSK carrier offset")
+    parser.add_argument("--callsign", help="configured callsign: verify the 40-byte header in every frame")
     parser.add_argument("--modcod", type=int, default=4)
     parser.add_argument("--symbol-rate", type=float, default=1e6)
     parser.add_argument("--receiver", type=pathlib.Path, help="local patched leandvb executable")
@@ -333,14 +348,14 @@ def main() -> int:
         mer = None
         if args.mer or args.mer_only:
             mer = capture_mer(args.capture, args.rate, args.symbol_rate, args.scale, args.modcod,
-                              args.shift, args.stream, tuple(args.dummy_before))
+                              args.shift, args.stream, tuple(args.dummy_before), args.callsign)
             shift = mer["carrier_offset_hz"]
         else:
             shift = (carrier_offset(read_i16(args.capture, args.scale), args.rate,
                                     args.symbol_rate, args.modcod)
                      if args.auto_shift else (args.shift or 0.0))
         report = {}
-        expected = payload(args.modcod, args.stream or LOOP_FRAMES)
+        expected = payload(args.modcod, args.stream or LOOP_FRAMES, args.callsign)
         if not args.mer_only:
             with tempfile.TemporaryDirectory() as tmp:
                 cf32 = pathlib.Path(tmp) / "capture.cfile"
@@ -358,7 +373,8 @@ def main() -> int:
                                "payload_frames": len(got) // per_frame,
                                "compared_bits": 0 if at is None else len(got) * 8,
                                "payload_bit_errors": None if at is None else 0})
-        report.update({"capture": str(args.capture), "shift_hz": shift, "scale": args.scale})
+        report.update({"capture": str(args.capture), "shift_hz": shift, "scale": args.scale,
+                       "callsign": morse.callsign(args.callsign) if args.callsign else None})
         if not args.stream:
             report["loop_frames"] = LOOP_FRAMES
         report.pop("command", None)

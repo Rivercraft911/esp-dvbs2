@@ -72,6 +72,9 @@ prelude = r'''
 #include "radio_s3.h"
 #define signal test_signal
 static int signal;
+static bool configured = true;
+static const char *station_store_get(void) { return configured ? "N0CALL" : ""; }
+
 static unsigned calls, got_freq, got_seconds, got_gain;
 static bool radio_signal_init(void *ctx, const char *name)
 {
@@ -122,7 +125,7 @@ static void dvbtx_pace(unsigned modcod, uint32_t seconds, unsigned level, unsign
 
 with tempfile.TemporaryDirectory() as directory:
     tmp = pathlib.Path(directory)
-    (tmp / "esp_err.h").write_text("typedef int esp_err_t;\n#define ESP_OK 0\n")
+    (tmp / "esp_err.h").write_text("typedef int esp_err_t;\n#define ESP_OK 0\n#define ESP_ERR_INVALID_ARG 1\n")
     checks = ["int main(void) {"]
     for command in invalid:
         checks.append("{ char args[] = " + json.dumps(command) +
@@ -144,7 +147,20 @@ with tempfile.TemporaryDirectory() as directory:
         checks.append(f"{counters[name]} = 0;")
     checks.append("assert(RF_CALLS == " + str(len(valid)) + "); return 0; }")
     harness = tmp / "parser.c"
-    harness.write_text(prelude + parser + "\n".join(checks))
+    # Missing ID rejects both keyed parsers before waveform init or encoder/radio
+    # entry. The radio-off parser requests still reach their counted stubs.
+    # 8PSK syntax too: the rate token must not move the refusal behind parsing.
+    refused = ['{ char a[] = "2400 tone 1"; cmd_tx(a); assert(RF_CALLS == 0); }']
+    refused += ['{ char a[] = "%s"; cmd_dvb(a); assert(RF_CALLS == 0); }' % a
+                for a in ("2400 4 1", "2400 13 5m 1", "2400 15 10m 1")]
+    allowed = ['{ char a[] = "%s"; %s(a); assert(%s == 1 && RF_CALLS == 0); %s = 0; }' % (a, f, c, c)
+               for a, f, c in (("4 1", "cmd_dvbdump", "dump_calls"), ("4 1", "cmd_dvbpace", "pace_calls"),
+                               ("13 5m 1", "cmd_dvbdump", "dump_calls"),
+                               ("15 10m 1", "cmd_dvbpace", "pace_calls"))]
+    checks[1:1] = ['configured = false;'] + refused + allowed + ['configured = true;']
+    require_source = (ROOT / "firmware/main/station_commands.c").read_text()
+    require_source = require_source[require_source.index("bool station_require("):require_source.index("void station_command(")]
+    harness.write_text(prelude + require_source + parser + "\n".join(checks))
     executable = tmp / "parser"
     subprocess.run(["cc", "-std=c11", "-D_POSIX_C_SOURCE=200809L", "-Wall", "-Wextra",
                     "-Werror", "-I", str(tmp), "-I",
@@ -152,6 +168,9 @@ with tempfile.TemporaryDirectory() as directory:
                     "-o", str(executable)], check=True)
     result = subprocess.run([str(executable)], check=True, capture_output=True, text=True)
     records = [json.loads(line[1:]) for line in result.stdout.splitlines()]
+    assert all("no callsign set" in r.get("error", "") for r in records[:len(refused)])
+    assert all(r.get("status") == "ESP_OK" for r in records[len(refused):len(refused) + len(allowed)])
+    records = records[len(refused) + len(allowed):]
     counts = [len(invalid), len(valid)]
     for bad, good in dvbtx.values():
         counts += [len(bad), len(good)]
@@ -166,3 +185,56 @@ bad = len(invalid) + sum(len(b) for b, _ in dvbtx.values())
 print(f"commands: {bad} invalid tx/dvb/dvbdump/dvbpace requests stop in the parser; valid ones "
       "reach only their own function with the parsed values; dvbdump and dvbpace never reach "
       "radio_s3_run or dvbtx_run")
+
+# The lower-level public RF entry must fail closed too, before on_core1 can
+# create the radio worker. Compile that entry verbatim against a counted worker.
+radio = (ROOT / "firmware/components/radio_s3/radio_s3.c").read_text()
+entry = radio[radio.index("esp_err_t radio_s3_run("):]
+with tempfile.TemporaryDirectory() as directory:
+    tmp = pathlib.Path(directory)
+    (tmp / "esp_err.h").write_text("typedef int esp_err_t;\n#define ESP_OK 0\n"
+                                   "#define ESP_ERR_INVALID_ARG 1\n#define ESP_ERR_INVALID_STATE 2\n")
+    harness = tmp / "entry.c"
+    harness.write_text(r'''
+#include <assert.h>
+#include <stdbool.h>
+#include <string.h>
+#include "radio_s3.h"
+typedef struct {
+    uint64_t samples;
+    bool identify, limit_duration;
+    unsigned freq_mhz, gain, seconds;
+    radio_s3_fill_fn fill;
+    void *ctx;
+    radio_s3_stats_t *stats;
+    radio_s3_chain_t chain;
+} run_t;
+static radio_s3_chain_t chain;
+static bool configured;
+static unsigned workers;
+static const char *station_store_get(void) { return configured ? "N0CALL" : ""; }
+static void worker(void *arg) { (void)arg; }
+static int on_core1(void (*fn)(void *), run_t *run)
+{
+    assert(fn == worker && run->identify && run->limit_duration && run->samples == 40000000);
+    workers++;
+    return ESP_OK;
+}
+static int fill(uint32_t *dst, uint64_t first, size_t n, void *ctx)
+{ (void)dst; (void)first; (void)n; (void)ctx; return 0; }
+''' + entry + r'''
+int main(void)
+{
+    radio_s3_stats_t s = {0};
+    assert(radio_s3_run(2420, 0, 1, fill, NULL, &s) == ESP_ERR_INVALID_STATE);
+    assert(workers == 0);
+    configured = true;
+    assert(radio_s3_run(2420, 0, 1, fill, NULL, &s) == ESP_OK && workers == 1);
+}
+''')
+    exe = tmp / "entry"
+    subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-I", str(tmp),
+                    "-I", str(ROOT / "firmware/components/radio_s3/include"), str(harness),
+                    "-o", str(exe)], check=True)
+    subprocess.run([str(exe)], check=True)
+print("RF entry: missing callsign prevents worker creation; configured entry requires the ID wrapper")

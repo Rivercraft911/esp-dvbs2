@@ -2,7 +2,9 @@
 // object on a line starting with '@', so host/board.py can separate results from log output.
 // Each command ends with {"cmd":...,"done":true}.
 //
-//   info       chip, clocks, memory and firmware version
+//   info       chip, clocks, memory, firmware version and stored callsign
+//   callsign [CALL|clear]  read, store or erase the station callsign in NVS (station_commands.c)
+//   iddump [CALL]  the CW ID's bank samples at 10 kS/s over USB, no radio
 //   membench   memory and bank-fill timing (membench.c)
 //   chain <forced|cw|cw40|cwgain>  how tx turns the transmit chain on (default cwgain)
 //   tx <integer MHz> <tone|two|tag|...> <1..60 seconds> [0..17 gain, default 0]
@@ -34,6 +36,8 @@
 #include "membench.h"
 #include "radio_s3.h"
 #include "radio_signals.h"
+#include "station_commands.h"
+#include "station_store.h"
 
 static DRAM_ATTR radio_signal_t signal;
 
@@ -78,6 +82,9 @@ static bool tx_mode(const char *code, char **count, char **save, uint32_t *modco
 
 static void cmd_dvb(char *args)
 {
+    if (!station_require("dvb")) {
+        return;
+    }
     char *save, *mhz = strtok_r(args, " \t", &save);
     char *code = strtok_r(NULL, " \t", &save);
     char *duration = strtok_r(NULL, " \t", &save);
@@ -142,6 +149,9 @@ static void cmd_dvbpace(char *args)
 
 static void cmd_tx(char *args)
 {
+    if (!station_require("tx")) {
+        return;
+    }
     char *save, *mhz = strtok_r(args, " \t", &save);
     char *name = strtok_r(NULL, " \t", &save);
     char *duration = strtok_r(NULL, " \t", &save);
@@ -174,9 +184,12 @@ static void cmd_tx(char *args)
            (unsigned long)s.fatal_late, (unsigned long)s.fe_base_index,
            (unsigned long)s.fe_gain_index, (const char *[]){"forced", "cw", "cw40", "cwgain"}[s.chain & 3], esp_err_to_name(err));
     if (err != ESP_OK) {
-        printf(",\"error\":\"radio run failed\"");
+        printf(",\"error\":\"%s\"", err == ESP_ERR_INVALID_ARG ?
+               "duration too short for start/end ID" : "radio run failed");
     }
-    printf("}\n");
+    printf(",\"callsign\":\"%s\",\"id_count\":%lu,\"id_samples\":%lu,"
+           "\"planned_samples\":%llu}\n", station_store_get(), (unsigned long)s.id_count,
+           (unsigned long)s.id_samples, (unsigned long long)s.planned_samples);
 }
 
 static void cmd_info(void)
@@ -184,10 +197,10 @@ static void cmd_info(void)
     esp_chip_info_t chip;
     esp_chip_info(&chip);
     const esp_app_desc_t *app = esp_app_get_description();
-    printf("@{\"cmd\":\"info\",\"firmware\":\"%s\",\"idf\":\"%s\",\"cores\":%d,"
+    printf("@{\"callsign\":\"%s\",\"cmd\":\"info\",\"firmware\":\"%s\",\"idf\":\"%s\",\"cores\":%d,"
            "\"revision\":%d,\"cpu_mhz\":%d,\"psram_bytes\":%u,\"free_internal\":%u,"
            "\"largest_internal\":%u,\"free_psram\":%u,\"uptime_ms\":%lld}\n",
-           app->version, app->idf_ver, chip.cores, chip.revision,
+           station_store_get(), app->version, app->idf_ver, chip.cores, chip.revision,
            CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ, (unsigned)esp_psram_get_size(),
            (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
            (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
@@ -236,6 +249,11 @@ void app_main(void)
     usb_serial_jtag_vfs_use_driver();
     setvbuf(stdin, NULL, _IONBF, 0);
 
+    const esp_err_t storage = station_store_init();
+    if (storage != ESP_OK) {
+        printf("@{\"cmd\":\"callsign\",\"error\":\"NVS unavailable or invalid callsign\","
+               "\"status\":\"%s\"}\n", esp_err_to_name(storage));
+    }
     char line[128];
     for (;;) {
         if (!fgets(line, sizeof line, stdin)) {
@@ -254,7 +272,14 @@ void app_main(void)
         if (line[0] == '\0') {
             continue;
         }
-        if (strcmp(line, "info") == 0) {
+        if (strcmp(line, "callsign") == 0 || strncmp(line, "callsign ", 9) == 0 ||
+            strncmp(line, "callsign\t", 9) == 0) {
+            station_command(line + 8);
+            strcpy(line, "callsign");
+        } else if (strcmp(line, "iddump") == 0 || strncmp(line, "iddump ", 7) == 0) {
+            station_dump(line + 6);
+            strcpy(line, "iddump");
+        } else if (strcmp(line, "info") == 0) {
             cmd_info();
         } else if (strcmp(line, "membench") == 0) {
             membench_run();

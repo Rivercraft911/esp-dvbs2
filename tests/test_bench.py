@@ -26,7 +26,10 @@ with (root / "board-calls.jsonl").open("a") as f:
     f.write(json.dumps(command) + "\n")
 assert json.loads((root / "state.json").read_text())["o/altvoltage1/powerdown"] == "1"
 if command == "info":
-    print(json.dumps({"cmd": "info", "firmware": "fake-version", "idf": "fake-idf"}))
+    r = {"cmd": "info", "firmware": "fake-version", "idf": "fake-idf"}
+    if (root / "callsign").exists():
+        r["callsign"] = (root / "callsign").read_text()
+    print(json.dumps(r))
 elif (root / "board_early").exists():
     print(json.dumps({"cmd": command.split()[0], "error": "fake refused"}))
     sys.exit(1)
@@ -42,7 +45,7 @@ else:
 def arguments(prefix, mode="tx"):
     return bench.parser().parse_args([mode, "--topic", "fake-bench", "--attenuation", "20", "10",
                                      "--cable", "U.FL-SMA + test coax + RX1", "--radiates", "no",
-                                     "--authorize-tx", "--libiio", str(prefix), "--settle", ".01",
+                                     "--authorize-tx", "--libiio", str(prefix), "--seconds", "10", "--settle", ".01",
                                      "--samples", "32768"])
 
 
@@ -95,6 +98,27 @@ def test_run():
             result = bench.execute(args, radio, plan, out)
             assert result["status"] == "failed" and "ended before capture" in result["error"], result
             (root / "board_early").unlink()
+            # New firmware refuses an empty callsign before the keyed subprocess.
+            (root / "callsign").write_text("")
+            before = records(root / "board-calls.jsonl")
+            result = bench.execute(args, radio, plan, out)
+            assert result["status"] == "failed" and "no callsign" in result["error"]
+            assert records(root / "board-calls.jsonl")[len(before):] == ["info"]
+            (root / "callsign").write_text("N0CALL")
+            args.seconds = 20
+            # Verify the computed wait and timeout without waiting for CW in this
+            # executable fake. The board fake's own 2 s run still completes.
+            real_sleep = bench.time.sleep
+            waits = []
+            with patch.object(bench.time, "sleep", lambda seconds: (waits.append(seconds), real_sleep(.1))[-1]):
+                result = bench.execute(args, radio, plan, out)
+            assert result["status"] == "ok", result
+            assert abs(waits[0] - (args.settle + bench.morse.duration("N0CALL"))) < 1e-9
+            args.mode = "dvb"
+            assert bench.analysis_command(args, pathlib.Path("x"), pathlib.Path("y"))[-2:] == ["--callsign", "N0CALL"]
+            args.mode = "tx"
+            (root / "callsign").unlink()
+            args.seconds = 10
             # Configuration read-back mismatch prevents even the info command.
             before = (root / "board-calls.jsonl").read_bytes()
             (root / "override.json").write_text(json.dumps({"i/voltage0/sampling_frequency": "1"}))
@@ -128,7 +152,7 @@ def test_validation_and_dry_run():
             patch.object(bench.subprocess, "Popen", side_effect=AssertionError("dry run started a process")), \
             contextlib.redirect_stdout(io.StringIO()) as output:
         assert bench.main() == 0
-        assert '"dry_run": true' in output.getvalue() and "dvb 2420 4 10 0 128" in output.getvalue()
+        assert '"dry_run": true' in output.getvalue() and "dvb 2420 4 30 0 128" in output.getvalue()
     args.mode = "dvb"
     args.samples = 4000000
     with patch.object(bench.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, '{"payload_match":true}', "")) as run:
@@ -166,25 +190,27 @@ for _ in range(8):
     print("S2FEC modcod=4 short=0 pilots=1 ldpc_flips=0 ldpc_checks_before=0 ldpc_checks_after=0 bch_errors=0", file=sys.stderr)
 ''')
         receiver.chmod(0o755)
-        data = onair.payload(4)
+        (root / "callsign").write_text("N0CALL")
+        data = onair.payload(4, callsign="N0CALL")
         per = len(data) // 8
         header = np.packbits(dvbs2.bbheader(dvbs2.matype1(dvbs2.GCS, .35), per * 8)).tobytes()
         (root / "bbframes.bin").write_bytes(b"".join(header + data[i:i + per] for i in range(0, len(data), per)))
         args = arguments(prefix, "dvb")
-        args.samples, args.receiver = 2400000, receiver
+        args.samples, args.receiver, args.seconds = 2400000, receiver, 14
         # The firmware's continuous stream: frames 0..23, no repetition.
-        phases = (np.rint(np.angle(onair.symbols(4, 24)) * 4 / np.pi).astype(int) % 8).astype(np.uint8)
+        phases = (np.rint(np.angle(onair.symbols(4, 24, callsign="N0CALL")) * 4 / np.pi).astype(int) % 8).astype(np.uint8)
         z = iq.shape(phases, 1e6, 4e6, frequency_offset=55000,
                      sample_rate_offset_ppm=70, snr_db=20 - 10 * np.log10(4), seed=9)[123:123 + args.samples]
         np.rint(np.column_stack([z.real, z.imag]) * 200).astype("<i2").tofile(root / "samples.iq")
-        with patch.object(bench, "board_command", lambda command, args: [sys.executable, str(board), command]):
+        with patch.object(bench, "board_command", lambda command, args: [sys.executable, str(board), command]), \
+                patch.object(bench.time, "sleep", lambda seconds: None):
             radio = sdr.from_args(args)
             plan = bench.make_plan(args, radio, bench.rf_path(args))
             out = root / "results"
             result = bench.execute(args, radio, plan, out)
             assert result["status"] == "ok" and result["board_completed"], result
             report = next(r["analysis"] for r in records(out / "captures.jsonl") if r["event"] == "analysis")
-            assert report["payload_match"] and report["frame_lock"], report
+            assert report["payload_match"] and report["frame_lock"] and report["callsign"] == "N0CALL", report
             assert abs(report["mer"]["mer_db"] - 20) < .3, report
             assert abs(report["shift_hz"] - 55000 / 1.000070) < 1, report
             assert result["receiver_sha256"]

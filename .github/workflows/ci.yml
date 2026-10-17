@@ -25,6 +25,8 @@ jobs:
       - run: python tests/test_tx_command.py
       - run: python tests/test_tx_samples.py
       - run: python tests/test_tx_8psk.py
+      - run: python tests/test_station_id.py
+      - run: python tests/test_station_store.py
       - run: python tests/test_capture.py
       - run: python tests/test_onair.py
       - run: python tests/test_sdr.py

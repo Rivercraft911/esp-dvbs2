@@ -41,6 +41,9 @@ typedef struct {
     uint32_t fe_base_index;   /* Front-end gain base index found before keying. */
     uint32_t fe_gain_index;   /* Gain slot selected after keying; must be 0 when forced. */
     uint32_t chain;           /* radio_s3_chain_t used for this run. */
+    uint32_t id_samples;      /* one CW segment at the nominal DAC rate */
+    uint32_t id_count;        /* planned start, periodic and end segments */
+    uint64_t planned_samples; /* payload + all IDs */
 } radio_s3_stats_t;
 
 /* Synchronous, exclusive run on core 1, 240 MHz. Valid requests are integer MHz
@@ -48,7 +51,11 @@ typedef struct {
  * uncalibrated, not dBm. The component owns Wi-Fi for the session; it must not
  * coexist with another Wi-Fi/BT user. Every return after startup stops the DAC,
  * returns both banks to the CPU, unkeys TX, and stops/deinitializes Wi-Fi.
- * No RF operation happens until this function is called.
+ * No RF operation happens until this function is called. A persisted callsign is
+ * required before any radio access. Start/end and nine-minute CW segments are
+ * inserted by a sample-index wrapper INSIDE the requested seconds. Too-short
+ * runs fail before worker creation. On a fatal fill/deadline fault, abort immediately: a final ID
+ * cannot be guaranteed. No flash write is permitted during a run.
  */
 /* How later runs turn the transmit chain on (results/2026-10-16-radio).
  * CW_GAIN (default): start and stop the vendor CW tone, which brings up both DAC
@@ -86,7 +93,9 @@ esp_err_t radio_s3_dry_run(radio_s3_fill_fn fill, void *ctx, uint64_t samples,
 /* Radio off: radio_s3_run's bank schedule on core 1 for 1..600 seconds, the same fills into
  * the same bank memory against the same cycle-counter deadlines, with no Wi-Fi, PHY, DAC or
  * bank-ownership register access. Nothing is transmitted, so the DAC's own reads of the bank
- * memory are absent. Stats as for radio_s3_run; the fe_* fields and chain stay 0. */
+ * memory are absent. Stats as for radio_s3_run; the fe_* fields and chain stay 0.
+ * With a configured callsign, inserts the same start/periodic/end IDs as RF;
+ * otherwise keeps the original unwrapped run. seconds counts payload time. */
 esp_err_t radio_s3_paced_run(uint32_t seconds, radio_s3_fill_fn fill, void *ctx,
                              radio_s3_stats_t *stats);
 
