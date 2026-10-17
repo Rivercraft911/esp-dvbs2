@@ -101,6 +101,47 @@ def fig_fecbench():
     save_figure(fig, IMG / "fecbench")
 
 
+def fig_encoder():
+    """8PSK 2/3 cycles per frame by stage: plain C, portable fast C and PIE, against symbol rates."""
+    runs = {}
+    for line in (ROOT / "results" / "2026-10-16-fec-limit" / "runs.jsonl").read_text().splitlines():
+        r = json.loads(line)
+        if r.get("event") == "frame" and r["modcod"] == 13 and r["input"] == "gcs":
+            runs.setdefault(r["impl"], []).append(r["cycles"])
+    picks = [("plain", "plain C"), ("c", "fast, portable C"), ("pie", "fast, PIE")]
+    stages = [(("bb", "bb_scramble"), "BB framing", "white", None), (("bch",), "BCH", "#d9d9d9", None),
+              (("ldpc",), "LDPC", "#9a9a9a", None), (("interleave_map",), "interleave + map", "white", "////"),
+              (("pl",), "PL framing", "white", "...")]
+    median = lambda values: sorted(values)[len(values) // 2]
+    # One core's cycles per 22,194-symbol 8PSK frame at each symbol rate, thousands.
+    budgets = {rate: 240e6 * 22194 / (rate * 1e6) / 1e3 for rate in (5, 10, 20)}
+    fig, ax = plt.subplots(figsize=(WIDTH, 2.3))
+    for y, (impl, _) in enumerate(reversed(picks)):
+        frames = runs[impl]
+        left = 0.0
+        for keys, label, color, hatch in stages:
+            k = median([sum(f[key] for key in keys) for f in frames]) / 1e3
+            ax.barh(y, k, 0.5, left=left, color=color, hatch=hatch, edgecolor=INK, lw=0.5,
+                    label=label if y == 0 else None)
+            left += k
+        total = median([f["total"] for f in frames]) / 1e3
+        x = left + 25
+        for line in budgets.values():
+            if x - 10 < line < x + 90:
+                x = line + 15
+        ax.text(x, y, f"{total:.0f}k", va="center", fontsize=7.5, color=INK)
+    for rate, x in budgets.items():
+        ax.axvline(x, color=RED, ls="--", lw=0.8)
+        ax.text(x + 18, 2.42, f"{rate} Msym/s", fontsize=7.5, color=RED)
+    ax.set_yticks(range(len(picks)), [p[1] for p in reversed(picks)])
+    ax.tick_params(axis="y", right=False)
+    ax.set_xlim(0, 2800)
+    ax.set_ylim(-0.55, 2.7)
+    ax.set_xlabel("cycles per 8PSK 2/3 normal frame, median of 5, thousands (one core's budget dashed)")
+    ax.legend(loc="lower center", bbox_to_anchor=(0.5, 1.0), ncol=5, fontsize=7, handlelength=1.6)
+    save_figure(fig, IMG / "encoder")
+
+
 def fig_shaper():
     """Real DVB-S2 pulse shaping into one DAC bank: plain C against the PIE vector kernels."""
     t = latest(ROOT / "results" / "2026-10-16-shaper" / "runs.jsonl")
@@ -129,4 +170,5 @@ if __name__ == "__main__":
     fig_membench()
     fig_shaper()
     fig_fecbench()
+    fig_encoder()
     print("wrote", IMG.relative_to(ROOT))

@@ -10,7 +10,22 @@ Framing, error correction, modulation and pulse shaping all happen on the chip, 
 leaves through the S3's own Wi-Fi radio.
 
 **The goal is live video:** 8PSK rate 2/3 at 5 Msym/s carries 9.68 Mb/s in about 6 MHz of the
-13 cm amateur band. The first milestone is QPSK at 1 Msym/s decoded by a real receiver.
+13 cm amateur band. [How it got this far](docs/story.md), step by step.
+
+## Where it stands
+
+| | Best so far | Run |
+|---|---|---|
+| Continuous transmit | 8PSK 2/3 at 5 Msym/s (9.68 Mb/s), keyed for 30 s in a shielded box, every bank deadline met, 7% slack | [keyed](results/2026-10-16-keyed-box/README.md) |
+| Bit-exact from the chip | QPSK 1/2 to 9/10 at 1 Msym/s, 8PSK 2/3 and 5/6 at 5 and 10 Msym/s: the DAC samples decoded by LeanDVB, radio off | [QPSK](results/2026-10-16-dryrun/README.md), [8PSK](results/2026-10-16-8psk-board/README.md) |
+| MER of those samples | 47.0 dB QPSK at 1 Msym/s; 8PSK 43.3 dB at 5 and 41.6 dB at 10 Msym/s after a modelled DAC hold | [QPSK](results/2026-10-16-dryrun/README.md), [8PSK](results/2026-10-16-integrate/README.md) |
+| Encoder | 213k cycles per 8PSK 2/3 frame, 20% of one core at 5 Msym/s | [fast encoder](results/2026-10-16-fec-limit/README.md) |
+| Pulse shaping | 1.78 cycles per sample, 34% of one core at 40 MS/s | [shaper](results/2026-10-16-shaper/README.md) |
+| RF, test tone | image -35 dBc, carrier leak about -45 dBc | [first RF](results/2026-10-16-radio/README.md) |
+| Payload in | 4.6 Mb/s over USB | [usb](results/2026-10-16-usb/README.md) |
+
+Not yet: a receiver decoding the signal over RF, 10 Msym/s holding its deadlines (the fill and
+the stream's encoder are both too slow so far), and payload arriving over SPI.
 
 ## How it works
 
@@ -29,31 +44,16 @@ every possible output of the shaping filter is computed once into a table, so pr
 samples is copying table rows instead of doing filter math. At 5 Msym/s one symbol is one row of
 8 samples. There are a bunch of ways you can play with this idea as you try more complex waveforms.
 
-## First numbers off the board
+## Encoding a frame in 213k cycles
 
-![Time to fill one DAC bank and memory bandwidth on the ESP32-S3](docs/img/membench.png)
+![8PSK 2/3 encoder cycles per frame: plain C, portable fast C and PIE](docs/img/encoder.png)
 
-Copying 8-sample table rows fills a bank in 179 µs, half the 357 µs deadline on one 240 MHz
-core. Combining separate I and Q tables in plain C takes 401 µs and misses it, so that step
-moves to the S3's 128-bit vector instructions next. PSRAM reads at 59 MB/s, far below the DAC's
-160 MB/s, so samples are made in internal RAM and PSRAM only holds payload.
-[Run details](results/2026-10-16-memory/README.md).
-
-## The encoder on the board
-
-![Encoder cycles per frame by stage on the ESP32-S3](docs/img/fecbench.png)
-
-The first C encoder matches the Python reference on every frame the board produced. It is
-written as plain bit-level loops, and that is already enough for QPSK at 1 Msym/s (27% of one
-core). 8PSK at 5 Msym/s needs it 2.3 times faster. Interleaving and mapping are the biggest slice.
-On the RP2350 the same kind of bit-level code, BCH and LDPC, ran 11 times faster once rewritten
-with tables and whole-word operations (4.1 M to 0.38 M cycles per frame).
-[Run details](results/2026-10-16-encoder/README.md).
-
-The transmitter now uses the fast complete-frame API. Its 8PSK 2/3 context takes 14,736 bytes
-of internal RAM; shared tables stay in flash and the workspace uses cached PSRAM. Host tests
-and QEMU agree bit for bit. The instruction pipeline model predicts 179k cycles per GCS frame
-and 205k with TS input after warmup. Board timing and shared-cache contention are still unverified.
+Tables, whole-word operations and PIE vector kernels encode an 8PSK 2/3 normal frame in 213k
+cycles, 12 times fewer than the plain C encoder in the same build: 20% of one core at 5 Msym/s,
+enough on its own for about 25 Msym/s. Every output matches the Python reference. In the live
+stream a frame still costs about 700k cycles, because the stream also makes the payload and
+writes each frame to PSRAM. A frame lasts 533k cycles at 10 Msym/s, so that is the next cut.
+[Run details](results/2026-10-16-fec-limit/README.md).
 
 ## Pulse shaping at 1.78 cycles per sample
 
@@ -69,30 +69,12 @@ the S3's DAC engine only runs at 40 or 80 MS/s. Samples per symbol therefore fol
 symbol rate: 40 at 1 Msym/s, 8 at 5, 4 at 10, 3 at 13.33. The shaping work per second depends
 only on the DAC rate, so a higher symbol rate costs no extra shaping, only encoder time.
 
-## Status
+## Next
 
-| Step | State |
-|---|---|
-| Reference encoder in Python, matching gr-dtv and leansdr stage by stage | done, including [normal 16APSK/32APSK](results/2026-10-16-apsk-decode/README.md) |
-| Firmware scaffold and memory benchmarks on the ESP32-S3 | done |
-| DVB-S2 encoder in C on the S3, bit-exact with the reference | done |
-| Offline IQ decoded by an independent DVB-S2 receiver | done, [40 PSK cases](results/2026-10-16-decode/README.md) and [56 APSK cases](results/2026-10-16-apsk-decode/README.md), whole payloads match |
-| Encoder fast enough for 8PSK at 5 Msym/s (tables, whole words, PIE) | done, [214k cycles per 8PSK 2/3 frame](results/2026-10-16-fec-limit/README.md), 20% of a core |
-| Pulse shaping fast enough for 8PSK at 5 Msym/s (PIE, 1.78 cycles/sample) | done |
-| DAC bank streaming received on an SDR | done, [first RF](results/2026-10-16-radio/README.md) |
-| Whole chain on the chip, bank samples decoded by LeanDVB (radio off) | done, [dry run](results/2026-10-16-dryrun/README.md), 47 dB MER |
-| Continuous encoding on one core while the other fills banks (radio off) | done, [stream](results/2026-10-16-stream/README.md), every deadline met |
-| 8PSK in the transmitter, radio off | 5 Msym/s bit-exact with 7% fill slack; 10 Msym/s bit-exact but misses the fill deadline ([run](results/2026-10-16-8psk-board/README.md)) |
-| 8PSK 2/3 at 5 Msym/s keyed through the radio (shielded box, no receiver) | done, [30 s, every deadline met](results/2026-10-16-keyed-box/README.md) |
-| QPSK at 1 Msym/s decoded by a DVB-S2 receiver | |
-| 8PSK 2/3 at 5 Msym/s with the payload arriving over SPI | |
-
-8PSK MODCOD 12..17 is now wired into the continuous transmitter at 5 and 10 Msym/s.
-Use an explicit rate token: `dvbdump 13 5m 40` or `dvbpace 15 10m 60`.
-QPSK commands keep their syntax. The pulse and BBHEADER both use roll-off 0.35.
-Underruns insert standard 3,330-symbol dummy PLFRAMEs. On the board, radio off, all four
-8PSK cases decode bit-exact; 5 Msym/s holds its deadlines with thin margin, and 10 Msym/s
-does not fit yet ([board run](results/2026-10-16-8psk-board/README.md)). RF is still to come.
+- 10 Msym/s within the fill deadline, then 20 and 26.67 Msym/s at 80 MS/s with a wider transmit filter.
+- A 6-symbol pulse: two table lookups per sample instead of three.
+- A receiver decoding the signal over RF, starting with a cabled path.
+- Payload over SPI from a second board, APSK in firmware.
 
 ## Build and run
 
@@ -116,7 +98,10 @@ python3 host/board.py "fecbench pie" --timeout 120 --out results/<date>-encoder/
 python3 tests/test_fecbench.py results/<date>-encoder/runs.jsonl
 python3 host/board.py "dvbdump 4 40" --save dump.iq   # the transmit samples over USB, radio off
 python3 host/onair.py dump.iq --rate 4000000 --scale 512 --stream 40   # LeanDVB decode, payload check
+python3 host/board.py "dvbdump 13 5m 40 128 1" --save dump8.iq   # 8PSK 2/3, 5 Msym/s, every sample
+python3 host/onair.py dump8.iq --rate 40000000 --stream 40 --mer --shift 0
 python3 host/board.py "dvbpace 4 60" --timeout 120  # encoder and timed bank fills, radio off
+python3 host/board.py "dvbpace 13 5m 60" --timeout 120  # the same for 8PSK 2/3 at 5 Msym/s
 python3 host/plots.py                           # redraw the figures from results/
 ```
 
@@ -128,7 +113,7 @@ python3 host/plots.py                           # redraw the figures from result
 | `host/` | Python reference encoder, board tool, figures |
 | `tests/` | Bit-exact checks of the reference |
 | `results/` | One folder per measurement run, with its raw records |
-| `docs/` | [Prior art](docs/prior-art.md), [bench setup](docs/hardware.md), figures |
+| `docs/` | [The story so far](docs/story.md), [prior art](docs/prior-art.md), [bench setup](docs/hardware.md), [files over the link](docs/file-link.md), [APSK shaping](docs/apsk-shaping.md), figures |
 
 ## Transmitting
 
@@ -138,11 +123,13 @@ of attenuation into a receiver. Set `callsign <assigned CALL>` over `host/board.
 `callsign` reads it, `callsign clear` removes it, and `info` reports it. The setting survives
 reset. Without it, `tx` and `dvb` refuse before radio startup; radio-off commands still work.
 
+The transmit command is `dvb <MHz> <MODCOD> [5m|10m for 8PSK] <seconds> [gain] [peak]`.
+
 Each keyed run includes 20 WPM Morse at +1 MHz before and after its payload, with periodic
 ID every nine minutes. Requested seconds include both IDs and remain limited to 60 s; too-short runs refuse before RF.
 DVB payload frames also carry the callsign; add `--callsign CALL` to `host/onair.py` when checking
 them. `iddump CALL` and `host/morse.py` verify the CW samples without radio access.
-These mechanisms are host-tested; RF identification and bank timing still need board checks.
+A keyed 30 s run held every bank deadline with both IDs; the radiated Morse has not been received yet.
 See [docs/hardware.md](docs/hardware.md#station-identification) for the rule, limitations and
 radio-off coordinator commands.
 
@@ -151,4 +138,4 @@ radio-off coordinator commands.
 Apache-2.0. Everything here is written from scratch; the projects that showed the way are
 credited in [docs/prior-art.md](docs/prior-art.md).
 
-The first test tones have left the board. DVB-S2 over the air is next. Coming soon to a repo near you!
+DVB-S2 has left the chip, so far into a shielded box. A receiver decoding it is next. Coming soon to a repo near you!
