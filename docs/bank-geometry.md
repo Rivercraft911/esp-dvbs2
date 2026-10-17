@@ -24,13 +24,16 @@ the CPU switches banks (esp-sdr-zephyr 3214c16, `doc/undocumented-registers-esp3
 and every fill rewrites a whole bank while the other one plays. A fill is due every STEP
 samples. The switch for handoff h = k·STEP is aimed LEAD/2 samples early. Let d be the DAC's
 read position lag behind the CPU's cycle-counter model (engine start latency minus any
-read-ahead), in samples, and λ the switch lateness in cycles. The DAC plays the right samples if
+read-ahead), in samples, and λ the delay of the switch past its aim, in cycles. The DAC plays
+the right samples if
 
     early side:  LEAD/2 + d <= LEAD,  so  d <= LEAD/2
     late side:   λ/CPS - LEAD/2 - d < TAIL
 
 with CPS = 240 MHz / DAC rate = 6 at 40 MS/s and 3 at 80 MS/s. The code's fatal limit keeps LEAD
-of the tail back for an unknown read-ahead: it stops the run when λ >= (TAIL - LEAD)·CPS.
+of the tail back for an unknown read-ahead: it stops the run once a switch is (TAIL - LEAD)·CPS
+cycles past the nominal handoff. Its `late_switches` and `max_switch_late_cycles` count from the
+handoff too, not from the aim.
 
 **Why lead 64 and tail 2048.** Both come from esp-sdr-zephyr's transmitter
 (`lib/esp_sdr/src/esp_sdr_tx_dac.c` lines 296-297), whose leader sleeps on a 10 kHz kernel tick
@@ -121,8 +124,9 @@ The chosen 80 MS/s geometry is **lead 128, tail 512** (`radio_s3.h`):
 Late tolerance is (TAIL + LEAD/2) samples at d = 0, early tolerance LEAD/2. Lead 128 keeps the
 0.8 µs early margin that 40 MS/s has shown on air, because d is unmeasured and may be a fixed
 time rather than a fixed number of samples. Tail 512 gives 7.2 µs, above the latest switch ever
-recorded (1,435 cycles, 6.0 µs, at 80 MS/s with the old mask) even if the new mask somehow
-failed. Each further 256 tail words is 768 cycles per bank. Step 15,740 is a multiple of 4, so
+recorded: with lead 128 the old mask window is 192 + 128 = 320 cycles again, so that interrupt
+would land a switch 1,339 cycles (446 samples, 6.4 µs from the aim) late, inside the tail even if
+the new mask somehow failed. The run's fatal limit (1,152 cycles) would stop it first. Each further 256 tail words is 768 cycles per bank. Step 15,740 is a multiple of 4, so
 whole-symbol bank starts stay 16-byte aligned; 15,740 mod 8 = 4 cuts 8-sps symbols at bank
 edges exactly as 14,268 does, which the overlap cache's two spare symbols cover (the ring model
 fails without them, `tests/test_ring.py`).

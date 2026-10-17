@@ -16,9 +16,9 @@
  * of 4, which keeps whole-symbol bank starts 16-byte aligned.
  * 40 MS/s, keyed on air: esp-sdr-zephyr's 64 and 2048; a bank is due every 85,608 cycles.
  * 80 MS/s: LEAD 128 keeps the 40 MS/s lead in time (0.8 us each side of the aim; the DAC's
- * start latency is unmeasured). TAIL 512 is 7.2 us of late tolerance, above the latest
- * switch ever recorded (1,339 cycles, plus 96 for the shorter aim at 80 MS/s) with the
- * switch wait masked or not. STEP 15,740: 47,220 cycles per bank instead of 42,804. */
+ * start latency is unmeasured). TAIL 512 holds a switch up to 7.2 us past its aim, above the
+ * latest ever recorded (1,339 cycles past the handoff, 6.4 us past the aim) even without the
+ * switch-wait mask. STEP 15,740: 47,220 cycles per bank instead of 42,804. */
 #define RADIO_S3_LEAD_WORDS 64U
 #define RADIO_S3_TAIL_WORDS 2048U
 #define RADIO_S3_STEP_WORDS (RADIO_S3_BANK_WORDS - RADIO_S3_LEAD_WORDS - RADIO_S3_TAIL_WORDS)
