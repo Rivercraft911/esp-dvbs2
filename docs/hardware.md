@@ -100,3 +100,9 @@ ratio (MER) fits carrier/clock offsets and compares symbol power with residual
 error. It is qualified against synthetic signals and saved dumps, not an RF
 channel measurement. A complete buffer does not establish sample continuity.
 [Radio model and measurements](bank-geometry.md).
+
+## Quad SPI payload input
+
+The SPI2 input, configurable XIAO/DevKit pins, second-S3 sender and zero-jumper
+loopback are described in [spi-input.md](spi-input.md). Host bit-exact checks pass;
+SPI timing and throughput still require the coordinator's radio-off board run.

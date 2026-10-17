@@ -41,6 +41,11 @@ jobs:
       - run: python tests/test_check.py
       - run: python tests/test_encoder_memory.py
       - run: python tests/test_rational.py
+      - run: python tests/test_ingress.py
+      - run: python tests/test_cm5_spi.py
+      - run: python tests/test_spi_input.py
+      - run: python tests/test_spi_in_board.py
+      - run: python tests/test_spi_sender.py
       - run: python tests/test_stream.py
 
   firmware:

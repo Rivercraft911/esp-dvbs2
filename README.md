@@ -33,6 +33,10 @@ kernels bit for bit; this branch still needs the coordinator's board checks.
 The six-symbol 8PSK waveform has radio-off evidence, not keyed qualification.
 [Waveforms, CRCs and memory](docs/bank-fill.md).
 
+Quad SPI input verified 46.768 Mb/s in standalone loopback. Paced input and Wi-Fi
+reserve fixes await another board run; external senders remain unqualified.
+[Wire format, XIAO/DevKit pins, sender, budget and radio-off gates](docs/spi-input.md).
+
 ## How it works
 
 ```
@@ -49,8 +53,8 @@ overlap samples are reused.
 [Fill](docs/bank-fill.md), [encoder](docs/encoder.md),
 [radio and bank geometry](docs/bank-geometry.md).
 
-Measured limits remain: USB payload input reached 4.6 Mb/s; SPI input is not
-implemented. The test-tone image was -35 dBc and carrier leakage about -45 dBc.
+USB payload input reached 4.6 Mb/s. The test-tone image was -35 dBc and carrier
+leakage about -45 dBc.
 The RF passband, DAC continuity and receiver decode still need cabled
 measurements. Host models, instruction models and QEMU are correctness or
 planning tools, not silicon timing measurements.

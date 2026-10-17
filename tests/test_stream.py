@@ -43,6 +43,7 @@ static inline TickType_t xTaskGetTickCount(void) {
     return (uint32_t)((uint64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000);
 }
 static inline uint32_t esp_cpu_get_cycle_count(void) { return 17; }
+static inline unsigned uxTaskGetStackHighWaterMark(void *task) { (void)task; return 1024; }
 static int fail_after = -1, live_allocations, allocation_count;
 static struct { void *p; size_t n; unsigned caps; } native_blocks[64];
 static inline void *heap_caps_aligned_alloc(size_t a, size_t n, unsigned caps) {
@@ -163,10 +164,13 @@ def compile_stream(folder):
     subprocess.run(["cc", "-O2", "-std=c11", "-D_POSIX_C_SOURCE=200809L",
                     "-Wall", "-Wextra", "-Werror", "-pthread",
                     "-I" + tmp, "-I" + str(ROOT / "firmware/main"),
+                    "-I" + str(ROOT / "firmware/components/ingress/include"),
                     "-I" + str(ROOT / "firmware/components/dvbs2/include"),
                     "-I" + str(ROOT / "firmware/components/radio_s3/include"),
                     "-I" + str(ROOT / "firmware/components/station_id/include"),
-                    str(ROOT / "tests/stream_host.c"), str(ROOT / "firmware/main/ring.c"),
+                    str(ROOT / "tests/stream_host.c"), str(ROOT / "tests/ingress_sim.c"),
+                    str(ROOT / "firmware/components/ingress/ingress.c"),
+                    str(ROOT / "firmware/components/ingress/ingress_pattern.c"), str(ROOT / "firmware/main/ring.c"),
                     str(ROOT / "firmware/main/shaper.c"),
                     str(ROOT / "firmware/main/shaper_short.c"),
                     str(ROOT / "firmware/main/shaper_moon.c"),
@@ -178,7 +182,7 @@ def compile_stream(folder):
     return exe
 
 
-def test_stream(output=None, receiver=None):
+def test_stream(output=None, receiver=None, input_only=False):
     golden = json.loads((ROOT / "tests/data/waveform_crcs.json").read_text())
     seen = set()
     if output:
@@ -186,6 +190,27 @@ def test_stream(output=None, receiver=None):
     with tempfile.TemporaryDirectory() as tmp:
         folder = pathlib.Path(tmp)
         exe = compile_stream(folder)
+        # External TS/GCS: actual ingress checks, split copies, both mapper layouts,
+        # repeated starts, every allocation failure, empty startup and resumed input.
+        input_cases = [(mc,n,rate) for mc in range(4,18) for n,rate in ((8,40),(4,40),(4,80))]
+        input_cases += [(mc,n,rate) for mc in range(4,12) for n,rate in ((40,40),(3,80))]
+        for kind in (1, 2, 3, 4):
+            for mc, sps, input_rate in input_cases:
+                iq = (output or folder)/f"input-{kind}-{mc}-n{sps}-{input_rate}m.iq"
+                input_rate *= 1000000
+                input_frames = 40 if mc == 13 else 16
+                subprocess.run([str(exe), str(mc), str(sps), str(iq),
+                                "N0CALL", str(input_rate), str(input_frames), str(kind)],
+                               capture_output=True, text=True, timeout=60, check=True)
+                if receiver and (mc, sps, input_rate) in ((11,3,80000000),(13,4,40000000)):
+                    sys.path.insert(0, str(ROOT / "host"))
+                    from spi_input import decode_dump
+                    decode_dump(iq, (kind-1)%2+1, mc, sps, input_rate, input_frames, receiver, replay=kind>2)
+                if not output:
+                    iq.unlink()
+        print("input stream: TS/GCS, split reads, startup/starvation/recovery, allocation cleanup, every DAC word: ok")
+        if input_only:
+            return
         cases = [(4, 40, "N0CALL", 40)]
         cases += [(mc,n,"N0CALL",40) for mc in range(4,18) for n in (8,4)]
         cases += [(mc,4,"N0CALL",80) for mc in range(4,18)]
@@ -311,5 +336,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", nargs="?", type=pathlib.Path)
     parser.add_argument("--receiver", type=pathlib.Path, help="also decode QPSK and 8PSK 2/3, 5/6 waveforms in LeanDVB")
+    parser.add_argument("--input-only", action="store_true")
     args = parser.parse_args()
-    test_stream(args.output, args.receiver)
+    test_stream(args.output, args.receiver, args.input_only)

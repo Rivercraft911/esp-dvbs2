@@ -16,6 +16,7 @@ static int checked_window(ring_t *r, uint8_t *dst, size_t room, uint64_t first,
         assert(!(((uintptr_t)dst ^ (first/sps-history)) & 1));
     return ring_window(r,dst,room,first,count,sps,history,bank);
 }
+#include "ingress_pattern.h"
 
 static uint32_t banks[2][RADIO_S3_BANK_WORDS] __attribute__((aligned(16)));
 static uint32_t reference[16440] __attribute__((aligned(16)));
@@ -23,6 +24,69 @@ static uint8_t *phases;
 static size_t phase_count;
 static FILE *capture;
 static const char *callsign = "";
+
+// Real portable ingress ring, with the peripheral replaced by the GDMA host model.
+extern void *sim_new(void);
+extern void sim_free(void *);
+extern ingress_ring *sim_ring(void *);
+extern uint32_t sim_transfer(void *, const uint8_t *, uint32_t);
+static void *input_sim;
+static unsigned native_input, input_seq, input_reads, input_zero_reads;
+static volatile bool input_empty;
+static bool native_replay;
+static uint8_t *native_buffers[INGRESS_SLOTS];
+extern void sim_set_buffer(void *, unsigned, uint8_t *);
+extern void sim_replay(void *, unsigned);
+void spi_input_buffers(uint8_t *tail, size_t n, uint8_t *ws, size_t m) {
+    // Borrowed DMA slots must fit and stay disjoint from every live encoder region.
+    memset(native_buffers, 0, sizeof native_buffers);
+    if (!native_input) return;
+    assert(!((uintptr_t)tail & 3) && !((uintptr_t)ws & 3));
+    if (tail) assert(tail >= (uint8_t *)shaper_store && tail+n <= (uint8_t *)(shaper_store+SHAPER_STORE_WORDS));
+    unsigned count = 0;
+    for (size_t at = 0; tail && at+INGRESS_SLOT_BYTES <= n && count < INGRESS_SLOTS; at += INGRESS_SLOT_BYTES)
+        native_buffers[count++] = tail+at;
+    for (size_t at = 0; ws && at+INGRESS_SLOT_BYTES <= m && count < INGRESS_SLOTS; at += INGRESS_SLOT_BYTES)
+        native_buffers[count++] = ws+at;
+    if (count < INGRESS_SLOTS) memset(native_buffers, 0, sizeof native_buffers);
+    if (ws) assert(ws >= (uint8_t *)enc.ws+DVBS2_FAST_WORKSPACE_USED+dvb.win_bytes && ws+m <= (uint8_t *)(enc.ws+1));
+}
+unsigned spi_input_type(void) { return native_input; }
+esp_err_t spi_input_start(void) {
+    if (native_input) {
+        input_sim = sim_new(); sim_ring(input_sim)->type = native_input;
+        if (native_buffers[0])
+            for (unsigned i = 0; i < INGRESS_SLOTS; ++i) sim_set_buffer(input_sim, i, native_buffers[i]);
+        if (native_replay) sim_replay(input_sim, native_input);
+        input_seq = input_reads = input_zero_reads = 0;
+    }
+    return ESP_OK;
+}
+size_t spi_input_read(uint8_t *dst, size_t n) {
+    if (input_empty || (++input_reads % 7) == 0) {
+        ++input_zero_reads;
+        return 0; // starvation between partial reads
+    }
+    ingress_ring *r = sim_ring(input_sim);
+    uint8_t msg[PV_MSG_BYTES];
+    while (!native_replay && r->ready) {
+        ingress_pattern(msg + PV_HEADER_BYTES, input_seq, native_input);
+        pv_seal(msg, native_input, input_seq++, PV_PAYLOAD_MAX);
+        assert(sim_transfer(input_sim, msg, sizeof msg) == sizeof msg);
+    }
+    if (n > 997) n = 997; // cut TS packets and SPI messages across calls and frames
+    return ingress_read(r, dst, n);
+}
+void spi_input_stop(void) {
+    if (input_sim) {
+        // Partial reads must drain immediately. Only an empty read may sleep.
+        assert(enc.input_waits == input_zero_reads);
+        sim_free(input_sim); input_sim = NULL;
+    }
+}
+void spi_input_print(void) {
+    printf(",\"input\":\"%s\"", native_input == PV_TS ? "ts" : native_input ? "gcs" : "synthetic");
+}
 
 // Station store and command gate: the stored callsign without NVS.
 const char *station_store_get(void) { return callsign; }
@@ -137,12 +201,21 @@ esp_err_t radio_s3_wifi_probe(radio_s3_stats_t *stats)
 
 int main(int argc, char **argv)
 {
-    assert(argc == 7);
-    if (argc >= 5) callsign = argv[4];
-    const uint32_t rate = argc >= 6 ? (uint32_t)atol(argv[5]) : RADIO_S3_DAC_RATE;
+    for (size_t n = 0; n < 18; ++n) {
+        uint8_t got[20]; memset(got, 0xa5, sizeof got);
+        uint32_t x = SEED, expected = SEED;
+        payload_fill(got+1, n, &x);
+        for (size_t i = 0; i < n; ++i) assert(got[i+1] == next_byte(&expected));
+        assert(x == expected && got[0] == 0xa5 && got[n+1] == 0xa5);
+    }
+    assert(argc == 7 || argc == 8);
+    callsign = argv[4];
+    const uint32_t rate = (uint32_t)atol(argv[5]);
     const unsigned mc = (unsigned)atoi(argv[1]), sps = (unsigned)atoi(argv[2]), frames = (unsigned)atoi(argv[6]);
     const bool moon = sps == DVB_SPS_12_5 || (mc >= 12 && sps == 3);
     const bool quads = mc < 12 && rate == 80000000, short_pulse = !moon && mc >= 12 && rate == 80000000;
+    if (argc == 8) native_input = atoi(argv[7]);
+    if (native_input > 2) { native_replay = true; native_input -= 2; }
     const dvbs2_mode *mode = dvbs2_find_mode(mc);
     const size_t length = dvbs2_frame_symbols(mode, 1), bytes = (mode->kbch - 80) / 8;
     phase_count = (frames + 2) * length;
@@ -150,10 +223,19 @@ int main(int argc, char **argv)
     dvbs2_workspace ws;
     uint8_t payload[8100];
     uint32_t x = SEED;
+    dvbs2_ts_state ts = {0};
+    uint8_t *source = malloc((frames+4)*bytes + PV_PAYLOAD_MAX);
+    if (native_input)
+        for (unsigned j = 0; j < (frames+4)*bytes; j += PV_PAYLOAD_MAX)
+            ingress_pattern(source+j, native_replay ? (j/PV_PAYLOAD_MAX)%INGRESS_SLOTS : j/PV_PAYLOAD_MAX, native_input);
     for (unsigned f = 0; f < frames + 2; ++f) {
-        for (size_t i = 0; i < bytes; ++i) payload[i] = next_byte(&x);
-        station_payload_header(payload, bytes, callsign);
-        assert(!dvbs2_bb_gcs_ro(&ws, mode, payload, bytes * 8, sps == DVB_SPS_12_5 ? 2 : 0));
+        if (native_input) memcpy(payload, source+f*bytes, bytes);
+        else {
+            for (size_t i = 0; i < bytes; ++i) payload[i] = next_byte(&x);
+            station_payload_header(payload, bytes, callsign);
+        }
+        assert(!(native_input == PV_TS ? dvbs2_bb_ts(&ws, mode, &ts, payload, bytes) :
+                                        dvbs2_bb_gcs_ro(&ws, mode, payload, bytes * 8, sps == DVB_SPS_12_5 ? 2 : 0)));
         dvbs2_bb_scramble(&ws, mode); dvbs2_bch(&ws, mode); dvbs2_ldpc(&ws, mode);
         uint8_t *out = phases + f * length;
         dvbs2_map(&ws, mode, out + 90); dvbs2_plframe(mode, 1, out);
@@ -164,13 +246,37 @@ int main(int argc, char **argv)
     assert(start_encoder("dvbdump", mc, 128, 0, sps, rate));
     const int allocations = allocation_count;
     const bool resident = sps != 40 && (moon || mc < 12 || sps == 4);
-    if (!moon) assert(allocations == ( sps == 40 ? 7 : 3 + (mc >= 12 && !short_pulse) +
-                          (resident && mode->t > 8) + !resident));
+    const bool borrowed_bch = native_input && mc >= 12 && sps == 4 &&
+                              (short_pulse || mc == 13) && mode->t > 8;
+    assert(enc.bch_borrowed == borrowed_bch);
+    if (borrowed_bch) {
+        assert(enc.bch >= enc.filler+packed_bytes(DVBS2_DUMMY_SYMBOLS));
+        assert(enc.bch+DVBS2_BCH_CACHE_BYTES <= (uint8_t *)(shaper_store+SHAPER_STORE_WORDS));
+        for (unsigned i=0; i<INGRESS_SLOTS && native_buffers[i]; ++i)
+            assert(native_buffers[i]+INGRESS_SLOT_BYTES <= enc.bch ||
+                   native_buffers[i] >= enc.bch+DVBS2_BCH_CACHE_BYTES);
+    }
+    if (!moon) assert(allocations == (sps == 40 ? 7 : 3 + (mc >= 12 && !short_pulse) +
+                          (resident && mode->t > 8 && !native_input) + !resident));
     for (unsigned i = 0; i < 64; ++i) {
         if (native_blocks[i].p == enc.ws)
             assert(native_blocks[i].caps == ((resident ? MALLOC_CAP_INTERNAL : MALLOC_CAP_SPIRAM) | MALLOC_CAP_8BIT));
         if (enc.bch && native_blocks[i].p == enc.bch)
             assert(native_blocks[i].n == DVBS2_BCH_CACHE_BYTES && (native_blocks[i].caps & MALLOC_CAP_INTERNAL));
+    }
+    if (native_input) {
+        // Match the input guide's requested SRAM for every supported mode.
+        // DMA/driver/task overhead is outside this host allocator, not measured here.
+        size_t internal = 0;
+        for (unsigned i = 0; i < 64; ++i)
+            if (native_blocks[i].p && (native_blocks[i].caps & MALLOC_CAP_INTERNAL))
+                internal += native_blocks[i].n;
+        const size_t fast = dvbs2_fast_mode_size(mode);
+        const size_t expected = mc >= 12 && sps == 8 ? 23936+2058 :
+            sps == 40 ? fast+420 : quads && !moon && sps == 4 ? fast+25056 :
+            fast+12420+(mc >= 12 && !short_pulse ? 11120 : 0);
+        assert(internal == expected);
+        assert((native_buffers[0] != NULL) == !(mc >= 12 && (sps == 8 || (mc == 13 && !short_pulse))));
     }
     if (quads && !moon && sps == 4) assert((uint32_t *)enc.ws == shaper_store+QPSK_TABLE_WORDS(4));
     assert(!((uintptr_t)enc.fast & 15) && !((uintptr_t)enc.ws & 15));
@@ -197,7 +303,7 @@ int main(int argc, char **argv)
         assert(live_allocations == 0);
         for (unsigned i = 0; i < 4; ++i) assert(native_ranges[i] == 0);
     }
-    if ((mc == 15 && sps == 4 && rate == 80000000) || (mc == 11 && moon)) {
+    if (!native_input && ((mc == 15 && sps == 4 && rate == 80000000) || (mc == 11 && moon))) {
         // The paced input deliberately repeats after eight frames. Compare
         // actual encoded/shaped words on both sides of that wrap to the oracle.
         for (unsigned f = 0; f < frames+2; ++f) {
@@ -227,5 +333,19 @@ int main(int argc, char **argv)
         assert(live_allocations == 0);
         fail_after = -1;
     }
-    free(phases);
+    if (native_input) {
+        input_empty = true;
+        assert(start_encoder("dvbdump", mc, 128, 0, sps, rate));
+        assert(enc.frames == 0 && !enc.failed);
+        uint8_t window[64];
+        assert(ring_window(&dvb.ring, window, sizeof window, 0, 12, sps, 0, RADIO_S3_BANK_WORDS) >= 0);
+        assert(dvb.ring.underruns > 0);
+        input_empty = false;
+        unsigned tries=0;
+        while (!enc.frames) { assert(++tries < 5000); vTaskDelay(1); }
+        assert(!enc.failed && enc.input_partial > 0);
+        stop_encoder(); printf("}\n");
+        assert(live_allocations == 0);
+    }
+    free(source); free(phases);
 }

@@ -1,0 +1,4 @@
+# Apply after sdkconfig.defaults in a fresh build. XIAO ESP32-S3 has 8 MB flash.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=n
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_SPI_INPUT_XIAO=y

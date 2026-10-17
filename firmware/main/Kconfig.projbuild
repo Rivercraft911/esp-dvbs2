@@ -1,0 +1,9 @@
+menu "Payload input"
+config SPI_INPUT_XIAO
+    bool "Default to XIAO ESP32-S3 pins"
+    default n
+    help
+        CLK=7 CS=1 D0/1/2/3=2/4/5/6 READY=8.
+        Otherwise use DevKit pins 12/10/11/13/14/9/8.
+        spipins can override either preset at runtime.
+endmenu

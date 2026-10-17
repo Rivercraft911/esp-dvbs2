@@ -4,3 +4,4 @@
 archive: libfreertos.a
 entries:
     tasks:xTaskGenericNotify (noflash_text)
+    tasks:vTaskGenericNotifyGiveFromISR (noflash_text)

@@ -37,6 +37,7 @@
 #include "sdkconfig.h"
 
 #include "dvbtx.h"
+#include "spi_input.h"
 #include "fecbench.h"
 #include "membench.h"
 #include "radio_s3.h"
@@ -330,6 +331,10 @@ void app_main(void)
             cmd_tx(line + 2);
             // cmd_tx tokenizes its arguments in place. Keep the completion record stable.
             strcpy(line, "tx");
+        } else if (strncmp(line, "spiinput ", 9) == 0 || strncmp(line, "spipins ", 8) == 0 ||
+                   strncmp(line, "spisend ", 8) == 0 || strncmp(line, "spirx ", 6) == 0) {
+            char *args = strchr(line, ' '); *args++ = 0;
+            spi_input_command(line, args);
         } else if (strncmp(line, "dvbdump ", 8) == 0) {
             cmd_dvbdump(line + 8);
             strcpy(line, "dvbdump");
