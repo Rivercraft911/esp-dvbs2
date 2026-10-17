@@ -43,6 +43,8 @@ static uint32_t length, nslots, dummy, recorded;
 static struct position { uint64_t start, end; uint32_t choice; } *events;
 static uint16_t *seen;
 static uint64_t seen_symbols;
+static uint8_t *separate[RING_MAX_SLOTS];
+static uint8_t overlap[HISTORY + (BANK - STEP + LEAD + 3) / 4];
 
 static uint8_t frame_byte(uint32_t e, uint32_t i)
 {
@@ -123,6 +125,13 @@ static void write_frame(uint8_t *slot, uint32_t e)
 // Walk the chosen positions: frames in order, fillers exactly where underruns were counted.
 static void check(void)
 {
+    for (uint32_t s = 0; s < nslots; ++s) {
+        if (!separate[s]) continue;
+        for (unsigned i = 0; i < 16; ++i) {
+            if (separate[s][i] != POISON || separate[s][16 + length + i] != POISON)
+                fail("separate slot guard", s, i);
+        }
+    }
     uint32_t e = 0, fillers = 0;
     for (uint32_t q = 0; q < ring.next_position; ++q) {
         const struct position *p = events + q;
@@ -157,6 +166,16 @@ static void setup(uint32_t l, uint32_t s, uint32_t positions)
     memset(slots, POISON, (size_t)s * l);
     memset(filler, FILLER, dummy);
     ring_init(&ring, slots, s, filler, l);
+    if (getenv("RING_SPLIT")) {
+        uint8_t *p[RING_MAX_SLOTS];
+        for (uint32_t i = 0; i < s; ++i) {
+            separate[i] = malloc(l + 32);
+            memset(separate[i], POISON, l + 32);
+            p[i] = separate[i] + 16;
+        }
+        ring_init_slots(&ring, p, s, filler, l);
+        if (getenv("RING_CACHE")) ring_cache(&ring, overlap, sizeof overlap);
+    }
     ring_filler_length(&ring, dummy);
     seen_symbols = (uint64_t)(positions + 2) * l;
     events = calloc(seen_symbols / (dummy < l ? dummy : l) + 8, sizeof *events);

@@ -49,7 +49,11 @@ int tx_samples_check(void)
                 shaper_fill_c(ref, shifted + SHAPER_HISTORY, symbols, &t);
                 memset(guarded, 0xa5, sizeof guarded);
                 uint32_t *dst = guarded + 4 + offset;
-                shaper_samples(dst, sym, skip, count, &t);
+                stream_profile_t whole = {0}, partial = {0};
+                shaper_samples_profile(dst, sym, skip, count, &t, &whole, &partial);
+                const unsigned head = skip && count ? (n - skip < count ? n - skip : count) : 0;
+                mismatch += whole.calls != ((count - head) / n != 0);
+                mismatch += partial.calls != (unsigned)(head != 0) + ((count - head) % n != 0);
                 for (unsigned i = 0; i < count; ++i) mismatch += dst[i] != ref[skip + i];
                 for (unsigned i = 0; i < 4 + offset; ++i) guards &= guarded[i] == 0xa5a5a5a5u;
                 for (unsigned i = 0; i < 4; ++i) guards &= dst[count + i] == 0xa5a5a5a5u;

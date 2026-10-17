@@ -33,6 +33,8 @@ jobs:
       - run: python tests/test_bench.py
       - run: python tests/test_mer.py
       - run: python tests/test_ring.py
+      - run: python tests/test_stream_profile.py
+      - run: python tests/test_stream.py
 
   firmware:
     runs-on: ubuntu-latest
