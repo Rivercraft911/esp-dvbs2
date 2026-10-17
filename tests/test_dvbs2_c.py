@@ -65,6 +65,12 @@ class NativeEncoder:
             "dvbs2_fast_ldpc": (None, [ct.c_void_p, ct.c_void_p]),
             "dvbs2_fast_map": (None, [ct.c_void_p, ct.c_void_p, U8P]),
             "dvbs2_fast_pl": (None, [ct.c_void_p, U8P]),
+            "dvbs2_fast_map_packed": (ct.c_int, [ct.c_void_p, ct.c_void_p, U8P]),
+            "dvbs2_fast_pl_packed": (None, [ct.c_void_p, U8P]),
+            "dvbs2_encode_frame_packed": (ct.c_int, [ct.c_void_p, ct.c_void_p, ct.c_void_p,
+                                                     U8P, ct.c_size_t, U8P]),
+            "dvbs2_pack": (None, [U8P, U8P, ct.c_size_t]),
+            "dvbs2_dummy": (None, [U8P]),
         }
         for name, (result, arguments) in api.items():
             fn = getattr(self.lib, name)
@@ -360,8 +366,81 @@ def test_complete_frame(native):
     assert lib.dvbs2_fast_mode_size(None) == 0
     print("complete fast API: all modes, both pilots, GCS/TS continuation, exact-sized contexts and invalid-input guards")
 
+def pack(phases):
+    phases = np.asarray(phases, np.uint8)
+    return (phases[0::2] | phases[1::2] << 4).astype(np.uint8)
+
+
+def test_packed(native):
+    """Packed 8PSK frames (two phases per byte) equal the model's phases, packed."""
+    lib = native.lib
+    frames = 0
+    for modcod, modulation, rate in MODES:
+        mode = lib.dvbs2_find_mode(modcod)
+        size = lib.dvbs2_fast_mode_size(mode)
+        n = (d.code(rate).kbch - 80) // 8
+        raw = np.full(size + 64, 0xA5, np.uint8)
+        at = 16 + (-raw.ctypes.data % 16)
+        f = raw.ctypes.data + at
+        out = np.zeros(DVBS2_MAX := 33282, np.uint8)
+        if modulation == "qpsk":
+            assert lib.dvbs2_fast_prepare(f, mode, 1, 15) == 0
+            assert lib.dvbs2_fast_map_packed(f, native.ws, out.ctypes.data_as(U8P)) == -1
+            assert lib.dvbs2_encode_frame_packed(f, native.ws, None,
+                                                 out.ctypes.data_as(U8P), 8 * n,
+                                                 out.ctypes.data_as(U8P)) == -1
+            continue
+        rng = np.random.default_rng(100 + modcod)
+        for pilots in (0, 1):
+            assert lib.dvbs2_fast_prepare(f, mode, pilots, 15) == 0
+            count = lib.dvbs2_frame_symbols(mode, pilots)
+            assert count % 2 == 0
+            state = ct.create_string_buffer(lib.state_size())
+            for frame, offset in enumerate((0, 1, 2, 3, 7)):
+                payload = rng.integers(0, 256, n, dtype=np.uint8)
+                bits = np.unpackbits(payload)[:8 * n - 5 * (frame == 0)]
+                output = np.full(count // 2 + 32, 0x5A, np.uint8)
+                dst = output[16 + offset:].ctypes.data_as(U8P)
+                ts = frame >= 3
+                if ts:
+                    payload[np.arange(n)[(np.arange(n) + (frame - 3) * n) % 188 == 0]] = 0x47
+                    ref = ct.create_string_buffer(lib.state_size())
+                    ref.raw = state.raw
+                    assert lib.dvbs2_bb_ts(native.ws, mode, ref, payload.ctypes.data_as(U8P), n) == 0
+                    bbf = native.bits(d.code(rate).kbch).copy()
+                    assert lib.dvbs2_encode_frame_packed(f, native.ws, state,
+                                                         payload.ctypes.data_as(U8P), 8 * n, dst) == 0
+                    assert state.raw == ref.raw
+                else:
+                    bbf = d.bbframe(bits, rate)
+                    assert lib.dvbs2_encode_frame_packed(f, native.ws, None,
+                                                         payload.ctypes.data_as(U8P), len(bits), dst) == 0
+                expected = d.plframe_phases(d.fecframe(bbf, rate), rate, pilots=pilots,
+                                            modulation=modulation)
+                body = output[16 + offset:16 + offset + count // 2]
+                np.testing.assert_array_equal(body, pack(expected))
+                assert np.all(output[:16 + offset] == 0x5A)
+                assert np.all(output[16 + offset + count // 2:] == 0x5A)
+                assert np.all(raw[:at] == 0xA5) and np.all(raw[at + size:] == 0xA5)
+                frames += 1
+            # The stages alone match the complete call.
+            again = np.zeros(count // 2, np.uint8)
+            assert lib.dvbs2_fast_map_packed(f, native.ws, again.ctypes.data_as(U8P)) == 0
+            lib.dvbs2_fast_pl_packed(f, again.ctypes.data_as(U8P))
+            np.testing.assert_array_equal(again, body)
+    dummy = np.zeros(3330, np.uint8)
+    lib.dvbs2_dummy(dummy.ctypes.data_as(U8P))
+    packed = np.zeros(1665, np.uint8)
+    lib.dvbs2_pack(dummy.ctypes.data_as(U8P), packed.ctypes.data_as(U8P), 3330)
+    np.testing.assert_array_equal(packed, pack(dummy))
+    assert lib.dvbs2_encode_frame_packed(None, native.ws, None, packed.ctypes.data_as(U8P), 8,
+                                         packed.ctypes.data_as(U8P)) == -1
+    print(f"packed 8PSK frames: {frames} GCS/TS frames, six MODCODs, pilots on/off, five output "
+          "alignments; equal to the model's phases packed two per byte; QPSK refused")
+
+
 if __name__ == "__main__":
     with NativeEncoder() as native:
         for test in (test_modes, test_gcs, test_ts, test_ldpc_boundaries, test_invalid_inputs,
-                     test_fast, test_complete_frame):
+                     test_fast, test_complete_frame, test_packed):
             test(native)

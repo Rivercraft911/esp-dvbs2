@@ -145,23 +145,38 @@ IRAM_ATTR void shaper_fill_raw(uint32_t *dst, const uint8_t *sym, int nsym,
 IRAM_ATTR void shaper_samples(uint32_t *dst, const uint8_t *sym, unsigned skip, size_t count,
                              const shaper_table_t *t)
 {
+    shaper_samples_profile(dst, sym, skip, count, t, NULL, NULL);
+}
+
+IRAM_ATTR void shaper_samples_profile(uint32_t *dst, const uint8_t *sym, unsigned skip,
+                                     size_t count, const shaper_table_t *t,
+                                     stream_profile_t *whole, stream_profile_t *partial)
+{
     if (!count) {
         return;
     }
     uint32_t part[MAX_N] __attribute__((aligned(16)));
     const unsigned n = t->n;
     if (skip) {
+        const stream_mark_t before = partial ? stream_mark_for(partial) : (stream_mark_t){0};
         shaper_fill_raw(part, sym++, 1, t);
         const size_t take = n - skip < count ? n - skip : count;
         memcpy(dst, part + skip, take * 4);
         dst += take, count -= take;
+        if (partial) stream_record(partial, before, stream_mark_for(partial));
     }
-    const size_t whole = count / n;
-    shaper_fill_raw(dst, sym, (int)whole, t);
-    dst += whole * n, count -= whole * n, sym += whole;
+    const size_t symbols = count / n;
+    if (symbols) {
+        const stream_mark_t before = whole ? stream_mark_for(whole) : (stream_mark_t){0};
+        shaper_fill_raw(dst, sym, (int)symbols, t);
+        if (whole) stream_record(whole, before, stream_mark_for(whole));
+    }
+    dst += symbols * n, count -= symbols * n, sym += symbols;
     if (count) {
+        const stream_mark_t before = partial ? stream_mark_for(partial) : (stream_mark_t){0};
         shaper_fill_raw(part, sym, 1, t);
         memcpy(dst, part, count * 4);
+        if (partial) stream_record(partial, before, stream_mark_for(partial));
     }
 }
 

@@ -1,0 +1,6 @@
+# The fill wakes the encoder from task context. Keep the notification's normal
+# path in IRAM; its critical-section and cross-core-yield callees are already there.
+[mapping:stream_notify]
+archive: libfreertos.a
+entries:
+    tasks:xTaskGenericNotify (noflash_text)

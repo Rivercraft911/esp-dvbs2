@@ -61,6 +61,12 @@ for name, (_, good) in dvbtx.items():
                 dvbtx[name][0].append(f"{mc} {rate} 601")
     dvbtx[name][0].extend(["4 5m 1", "18 5m 1", "13 5m", "13 10m 1 128 0 extra"])
 
+# wifimem: optional MODCOD (and rate for 8PSK); it reaches dvbtx_wifi(modcod, sps) only.
+dvbtx["wifimem"] = (["x", "3", "18", "12", "12 1m", "4 5m", "13 5m extra", "4 extra", "0x4",
+                     "13 10m 1", "13 5m 10m"],
+                    [("", (0, 0)), ("4", (4, 40)), ("11", (11, 40)), ("13 5m", (13, 8)),
+                     ("15 10m", (15, 4)), (" 17\t10m", (17, 4))])
+
 prelude = r'''
 #include <assert.h>
 #include <errno.h>
@@ -70,8 +76,8 @@ prelude = r'''
 #include <stdlib.h>
 #include <string.h>
 #include "radio_s3.h"
-#define signal test_signal
-static int signal;
+static int signal_storage;
+#define tx_signal ((void *)&signal_storage)
 static bool configured = true;
 static const char *station_store_get(void) { return configured ? "N0CALL" : ""; }
 
@@ -89,7 +95,7 @@ static esp_err_t fill_signal(uint32_t *dst, uint64_t first, size_t count, void *
 esp_err_t radio_s3_run(uint32_t freq, uint8_t gain, uint32_t seconds,
                        radio_s3_fill_fn fill, void *ctx, radio_s3_stats_t *stats)
 {
-    assert(fill == fill_signal && ctx == &signal);
+    assert(fill == fill_signal && ctx == tx_signal);
     calls++; got_freq = freq; got_seconds = seconds; got_gain = gain;
     memset(stats, 0, sizeof *stats);
     return ESP_OK;
@@ -99,7 +105,7 @@ static const char *esp_err_to_name(esp_err_t error)
     (void)error;
     return "ESP_OK";
 }
-static unsigned dvb_calls, dump_calls, pace_calls, got[6];
+static unsigned dvb_calls, dump_calls, pace_calls, wifi_calls, got[6];
 static void stub(unsigned *count, unsigned a, unsigned b, unsigned c, unsigned d, unsigned e, unsigned f)
 {
     ++*count;
@@ -120,6 +126,10 @@ static void dvbtx_pace(unsigned modcod, uint32_t seconds, unsigned level, unsign
 {
     stub(&pace_calls, modcod, seconds, level, stall, 0, sps);
 }
+static void dvbtx_wifi(unsigned modcod, unsigned sps)
+{
+    stub(&wifi_calls, modcod, sps, 0, 0, 0, 0);
+}
 #define RF_CALLS (calls + dvb_calls)
 '''
 
@@ -134,12 +144,13 @@ with tempfile.TemporaryDirectory() as directory:
         checks.append("{ char args[] = " + json.dumps(command) + "; cmd_tx(args); " +
                       f"assert(calls == {index} && got_freq == {freq} && " +
                       f"got_seconds == {seconds} && got_gain == {gain}); }}")
-    counters = {"dvb": "dvb_calls", "dvbdump": "dump_calls", "dvbpace": "pace_calls"}
+    counters = {"dvb": "dvb_calls", "dvbdump": "dump_calls", "dvbpace": "pace_calls",
+                "wifimem": "wifi_calls"}
     for name, (bad, good) in dvbtx.items():
         others = " && ".join(f"{v} == 0" for k, v in counters.items() if k != name)
         for command in bad:
             checks.append("{ char args[] = " + json.dumps(command) + f"; cmd_{name}(args); " +
-                          "assert(dvb_calls + dump_calls + pace_calls == 0); }")
+                          "assert(dvb_calls + dump_calls + pace_calls + wifi_calls == 0); }")
         for index, (command, values) in enumerate(good, 1):
             expect = " && ".join(f"got[{i}] == {v}" for i, v in enumerate(values))
             checks.append("{ char args[] = " + json.dumps(command) + f"; cmd_{name}(args); " +
@@ -182,9 +193,9 @@ with tempfile.TemporaryDirectory() as directory:
         start += count
 
 bad = len(invalid) + sum(len(b) for b, _ in dvbtx.values())
-print(f"commands: {bad} invalid tx/dvb/dvbdump/dvbpace requests stop in the parser; valid ones "
-      "reach only their own function with the parsed values; dvbdump and dvbpace never reach "
-      "radio_s3_run or dvbtx_run")
+print(f"commands: {bad} invalid tx/dvb/dvbdump/dvbpace/wifimem requests stop in the parser; valid "
+      "ones reach only their own function with the parsed values; dvbdump, dvbpace and wifimem "
+      "never reach radio_s3_run or dvbtx_run")
 
 # The lower-level public RF entry must fail closed too, before on_core1 can
 # create the radio worker. Compile that entry verbatim against a counted worker.

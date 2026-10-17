@@ -27,6 +27,16 @@
 typedef esp_err_t (*radio_s3_fill_fn)(uint32_t *dst, uint64_t first_sample,
                                     size_t count, void *ctx);
 
+/* Internal heap around Wi-Fi start-up, bytes: free MALLOC_CAP_INTERNAL and the largest free
+ * 8-bit internal block. min_free is the heap's low-water mark (since the command started its
+ * local monitor, otherwise since boot), read once Wi-Fi is up. */
+typedef struct {
+    uint32_t free_before, largest_before;   /* before esp_wifi_init */
+    uint32_t free_init, largest_init;       /* after esp_wifi_init */
+    uint32_t free_up, largest_up;           /* after start, power save off, promiscuous, channel */
+    uint32_t min_free;
+} radio_s3_wifi_heap_t;
+
 typedef struct {
     uint64_t elapsed_samples; /* Nominal 40 MS/s timeline, not an RF measurement. */
     uint64_t elapsed_cycles;
@@ -35,6 +45,7 @@ typedef struct {
     uint32_t late_fills;      /* Fill completed after its nominal switch time. */
     uint32_t late_switches;   /* Bank write completed after nominal switch time. */
     uint32_t max_fill_cycles;
+    uint64_t max_fill_sample;  /* First timeline sample of that slowest bank. */
     uint32_t max_switch_late_cycles;
     uint32_t min_fill_slack_cycles;
     uint32_t fatal_late;      /* Stopped after observing a missed safe-tail deadline. */
@@ -44,6 +55,7 @@ typedef struct {
     uint32_t id_samples;      /* one CW segment at the nominal DAC rate */
     uint32_t id_count;        /* planned start, periodic and end segments */
     uint64_t planned_samples; /* payload + all IDs */
+    radio_s3_wifi_heap_t wifi; /* radio_s3_run and radio_s3_wifi_probe only */
 } radio_s3_stats_t;
 
 /* Synchronous, exclusive run on core 1, 240 MHz. Valid requests are integer MHz
@@ -105,3 +117,10 @@ uint32_t *radio_s3_bank(unsigned n);
 
 esp_err_t radio_s3_run(uint32_t freq_mhz, uint8_t gain, uint32_t seconds,
                        radio_s3_fill_fn fill, void *ctx, radio_s3_stats_t *stats);
+
+/* Wi-Fi memory probe: radio_s3_run's set-up on core 1 (the 30 s run's station ID, the worker
+ * task and stack) and its Wi-Fi start-up (init, NULL mode, start with the PHY's calibration,
+ * power save off, promiscuous receive, channel 1), then the same stop and deinit. It stops
+ * before radio_s3_run's first register access: no retune, keying, gain, tone, bank grant or
+ * DAC. NULL mode sends no frames. Fills stats->wifi; needs a stored callsign. */
+esp_err_t radio_s3_wifi_probe(radio_s3_stats_t *stats);

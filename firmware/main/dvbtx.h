@@ -15,3 +15,8 @@ void dvbtx_dump(unsigned modcod, unsigned frames, unsigned level, unsigned decim
 // the cycle counter with the radio off (radio_s3_paced_run).
 void dvbtx_pace(unsigned modcod, uint32_t seconds, unsigned level, unsigned stall_ms,
                  unsigned sps);
+
+// wifimem command: radio_s3_wifi_probe (Wi-Fi start-up and shutdown, no keying), with the
+// transmitter's memory for modcod/sps allocated as before a dvb run, or nothing for modcod 0.
+// Reports internal heap before and after each step and the low-water mark.
+void dvbtx_wifi(unsigned modcod, unsigned sps);

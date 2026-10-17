@@ -137,6 +137,7 @@ typedef struct {
     uint64_t samples;               /* exact sample count, including IDs */
     bool identify;
     bool limit_duration;
+    bool probe;                     /* Wi-Fi start-up and shutdown only, no register access */
     radio_s3_sink_fn sink;
     void *sink_ctx;
     radio_s3_dry_stats_t *dry;
@@ -180,6 +181,7 @@ static esp_err_t IRAM_ATTR fill_bank(run_t *run, unsigned bank, uint64_t start)
     run->stats->fills++;
     if (elapsed > run->stats->max_fill_cycles) {
         run->stats->max_fill_cycles = elapsed;
+        run->stats->max_fill_sample = start;
     }
     return error;
 }
@@ -365,6 +367,12 @@ static esp_err_t IRAM_ATTR __attribute__((noinline)) paced(run_t *run)
     return schedule(run, epoch, 0, false);
 }
 
+static void heap_now(uint32_t *free_bytes, uint32_t *largest)
+{
+    *free_bytes = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    *largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+}
+
 /* Streaming occupies core 1 without an idle tick. Transfer that core's watchdog
  * subscription to the running task; watch_end restores it on every exit. A stuck
  * fill or switch still trips the task watchdog.
@@ -438,9 +446,12 @@ static void worker(void *arg)
         error = ESP_ERR_INVALID_STATE;
         goto cleanup;
     }
+    radio_s3_wifi_heap_t *heap = &run->stats->wifi;
+    heap_now(&heap->free_before, &heap->largest_before);
     wifi_init_config_t config = WIFI_INIT_CONFIG_DEFAULT();
     config.nvs_enable = 0; /* Wi-Fi configuration stays in RAM. */
     error = esp_wifi_init(&config);
+    heap_now(&heap->free_init, &heap->largest_init);
     if (error != ESP_OK) {
         goto cleanup;
     }
@@ -463,7 +474,9 @@ static void worker(void *arg)
     if (error == ESP_OK) {
         error = esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
     }
-    if (error != ESP_OK) {
+    heap_now(&heap->free_up, &heap->largest_up);
+    heap->min_free = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+    if (error != ESP_OK || run->probe) {
         goto cleanup;
     }
     REG_WRITE(DAC_CTRL, 0);
@@ -488,7 +501,7 @@ static void worker(void *arg)
     error = stream(run);
 
 cleanup:
-    if (started) {
+    if (started && !run->probe) {
         REG_WRITE(DAC_CTRL, 0);
         REG_WRITE(ADC_CTRL, 0);
         if (run->chain != RADIO_S3_CHAIN_FORCED) {
@@ -500,6 +513,8 @@ cleanup:
         rom_pbus_xpd_tx_off();
         rom_pbus_xpd_rx_on(0);
         REG_WRITE(BANK_USAGE, REG_READ(BANK_USAGE) & ~0xfU);
+    }
+    if (started) {
         (void)esp_wifi_set_promiscuous(false);
     }
     if (initialized) {
@@ -677,6 +692,28 @@ esp_err_t radio_s3_paced_run(uint32_t seconds, radio_s3_fill_fn fill, void *ctx,
         stats->min_fill_slack_cycles = 0;
     }
     return error;
+}
+
+static esp_err_t no_fill(uint32_t *dst, uint64_t first, size_t count, void *ctx)
+{
+    (void)dst, (void)first, (void)count, (void)ctx;
+    return ESP_FAIL;
+}
+
+esp_err_t radio_s3_wifi_probe(radio_s3_stats_t *stats)
+{
+    if (!stats) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!station_store_get()[0]) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    memset(stats, 0, sizeof *stats);
+    run_t run = {
+        .samples = 30ULL * RADIO_S3_DAC_RATE, .identify = true, .limit_duration = true,
+        .probe = true, .seconds = 30, .fill = no_fill, .stats = stats, .chain = chain,
+    };
+    return on_core1(worker, &run);
 }
 
 esp_err_t radio_s3_run(uint32_t freq_mhz, uint8_t gain, uint32_t seconds,

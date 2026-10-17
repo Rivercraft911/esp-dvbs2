@@ -11,8 +11,19 @@ void ring_init(ring_t *r, uint8_t *slots, uint32_t nslots, const uint8_t *filler
                uint32_t frame_symbols)
 {
     memset(r, 0, sizeof *r);
-    r->slots = slots;
     r->nslots = nslots;
+    for (uint32_t i = 0; i < nslots; ++i) r->slots[i] = slots + (size_t)i * frame_symbols;
+    r->filler = filler;
+    r->frame_symbols = r->filler_symbols = frame_symbols;
+    r->min_lead = INT64_MAX;
+}
+
+void ring_init_slots(ring_t *r, uint8_t *const *slots, uint32_t nslots,
+                     const uint8_t *filler, uint32_t frame_symbols)
+{
+    memset(r, 0, sizeof *r);
+    r->nslots = nslots;
+    for (uint32_t i = 0; i < nslots; ++i) r->slots[i] = slots[i];
     r->filler = filler;
     r->frame_symbols = r->filler_symbols = frame_symbols;
     r->min_lead = INT64_MAX;
@@ -24,7 +35,7 @@ uint8_t *ring_slot(ring_t *r, uint32_t e)
     if (e - __atomic_load_n(&r->freed, __ATOMIC_ACQUIRE) >= r->nslots) {
         return NULL;
     }
-    return r->slots + (size_t)(e % r->nslots) * r->frame_symbols;
+    return r->slots[e % r->nslots];
 }
 
 void ring_publish(ring_t *r, uint32_t e)
@@ -35,6 +46,56 @@ void ring_publish(ring_t *r, uint32_t e)
 void ring_filler_length(ring_t *r, uint32_t symbols)
 {
     r->filler_symbols = symbols;
+}
+
+void ring_cache(ring_t *r, uint8_t *storage, size_t symbols)
+{
+    r->cache = storage;
+    r->cache_symbols = symbols;
+}
+
+void ring_packed(ring_t *r)
+{
+    r->packed = 1;
+}
+
+#ifdef __XTENSA__
+// shaper_pie.S: 16 packed bytes (any alignment) to 32 phases at a 16-byte aligned dst.
+void shaper_unpack_pie(uint8_t *dst, const uint8_t *src, unsigned blocks);
+#endif
+
+IRAM_ATTR void ring_unpack(uint8_t *dst, const uint8_t *packed, size_t at, size_t n)
+{
+    const uint8_t *p = packed + at / 2;
+    if (n && (at & 1)) {
+        *dst++ = *p++ >> 4;
+        --n;
+    }
+#ifdef __XTENSA__
+    // Two phases per byte up to an aligned dst, then whole vectors. An odd distance would
+    // split a byte across the boundary, so that case stays on the scalar loop.
+    size_t head = -(uintptr_t)dst & 15;
+    if (!(head & 1) && n >= head + 32) {
+        for (n -= head; head; head -= 2) {
+            const uint8_t b = *p++;
+            dst[0] = b & 15;
+            dst[1] = b >> 4;
+            dst += 2;
+        }
+        const size_t blocks = n / 32;
+        shaper_unpack_pie(dst, p, (unsigned)blocks);
+        dst += 32 * blocks, p += 16 * blocks, n -= 32 * blocks;
+    }
+#endif
+    for (; n >= 2; n -= 2) {
+        const uint8_t b = *p++;
+        dst[0] = b & 15;
+        dst[1] = b >> 4;
+        dst += 2;
+    }
+    if (n) {
+        *dst = *p & 15;
+    }
 }
 
 // Copy absolute symbols, retaining choices until no future overlap can read them.
@@ -83,11 +144,15 @@ static IRAM_ATTR int ring_read(ring_t *r, uint8_t *dst, int64_t first, size_t co
         const unsigned i = p++ % RING_CHOICES;
         const uint32_t c = r->choice[i];
         const uint8_t *src = c == RING_FILLER ? r->filler :
-                            r->slots + (size_t)(c % r->nslots) * r->frame_symbols;
+                            r->slots[c % r->nslots];
         const size_t at = (uint64_t)first - r->start[i];
         const size_t avail = r->end[i] - (uint64_t)first;
         const size_t part = avail < count ? avail : count;
-        memcpy(dst, src + at, part);
+        if (r->packed) {
+            ring_unpack(dst, src, at, part);
+        } else {
+            memcpy(dst, src + at, part);
+        }
         dst += part, count -= part, first += part;
     }
     return 0;
@@ -113,8 +178,35 @@ IRAM_ATTR int ring_window(ring_t *r, uint8_t *dst, size_t room, uint64_t first, 
 {
     const uint64_t s0 = first / sps;
     const size_t nsym = (size_t)((first + count + sps - 1) / sps - s0);
-    if (history + nsym > room || ring_read(r, dst, (int64_t)s0 - history, history + nsym)) {
+    const int64_t begin = (int64_t)s0 - history, end = (int64_t)s0 + nsym;
+    if (history + nsym > room) {
         return -1;
+    }
+    size_t cached = 0;
+    if (r->cache && r->cache_first != r->cache_end && begin < r->cache_end) {
+        if (begin < r->cache_first) return -1;
+        cached = (size_t)((end < r->cache_end ? end : r->cache_end) - begin);
+        memcpy(dst, r->cache + (begin - r->cache_first), cached);
+    }
+    if (ring_read(r, dst + cached, begin + cached, history + nsym - cached)) return -1;
+    if (r->cache) {
+        if (end > r->cache_end) {
+            int64_t keep = end - (int64_t)r->cache_symbols;
+            if (keep < begin) {
+                // A short second piece at the physical bank wrap must retain the
+                // preceding piece's overlap too. Do not replace it with only this piece.
+                if (keep < r->cache_first || begin > r->cache_end) keep = begin;
+                const size_t prefix = begin - keep;
+                if (prefix) memmove(r->cache, r->cache + (keep - r->cache_first), prefix);
+                memcpy(r->cache + prefix, dst, end - begin);
+            } else {
+                memcpy(r->cache, dst + (keep - begin), end - keep);
+            }
+            r->cache_first = keep;
+            r->cache_end = end;
+        }
+        if (r->cache_first > 0) ring_release(r, r->cache_first);
+        return (int)nsym;
     }
     const uint64_t earliest = first + count > bank_words ? first + count - bank_words : 0;
     const int64_t oldest = (int64_t)(earliest / sps) - history;

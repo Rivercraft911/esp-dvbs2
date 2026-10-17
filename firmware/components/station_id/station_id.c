@@ -209,11 +209,12 @@ int IRAM_ATTR station_id_fill(uint32_t *dst, uint64_t first, size_t count, void 
                 end = final;
             }
         }
-        // Banks may look ahead beyond the last played sample. Pad with silence.
+        // Banks may look ahead beyond the last played sample. Pad with silence, through the
+        // CW path's word copies: the one-word volatile loop took 5 cycles per sample, 79.7k
+        // cycles for a nearly empty final bank (results/2026-10-16-buildout).
         if (first >= id->total_samples) {
-            for (size_t i = 0; i < count; ++i) {
-                ((volatile uint32_t *)dst)[i] = 0;
-            }
+            static uint32_t silence[40] __attribute__((aligned(16)));
+            repeat(dst, silence, 0, count);
             return 0;
         }
         size_t take = count;

@@ -84,22 +84,32 @@ void station_dump(char *args)
         return;
     }
     station_id_init(id, normalized, 0, NULL, NULL);
-    static dump_t d;
-    memset(&d, 0, sizeof d);
+    // USB staging buffer in PSRAM: the sink runs between fills, never inside one.
+    dump_t *d = heap_caps_calloc(1, sizeof *d, MALLOC_CAP_SPIRAM);
+    if (!d) {
+        heap_caps_free(id);
+        printf("@{\"cmd\":\"iddump\",\"error\":\"allocation failed\"}\n");
+        return;
+    }
     printf("@{\"cmd\":\"iddump\",\"binary_bytes\":%lu,\"format\":\"int16 I/Q LE\","
            "\"sample_rate\":10000,\"tone_alias_hz\":0,\"callsign\":\"%s\"}\n",
            (unsigned long)((id->length + 3999) / 4000 * 4), normalized);
     fflush(stdout);
     radio_s3_dry_stats_t s;
-    esp_err_t err = radio_s3_dry_run(station_cw_fill, id, id->length, sink, &d, &s);
-    if (d.used) {
-        flush(&d);
+    esp_err_t err = radio_s3_dry_run(station_cw_fill, id, id->length, sink, d, &s);
+    if (d->used) {
+        flush(d);
     }
     printf("@{\"cmd\":\"iddump\",\"callsign\":\"%s\",\"wpm\":20,\"tone_hz\":1000000,"
            "\"edge_us\":5000,\"dac_samples\":%lu,\"crc32\":%" PRIu32 ",\"fills\":%" PRIu32 ","
            "\"max_fill_cycles\":%" PRIu32 ",\"overlap_words\":%" PRIu32 ","
-           "\"overlap_mismatches\":%" PRIu32 ",\"status\":\"%s\"}\n",
-           normalized, (unsigned long)id->length, d.crc, s.fills, s.max_fill_cycles,
-           s.overlap_words, s.overlap_mismatches, esp_err_to_name(err));
+           "\"overlap_mismatches\":%" PRIu32 ",\"free_internal\":%u,\"largest_internal\":%u,"
+           "\"status\":\"%s\"}\n",
+           normalized, (unsigned long)id->length, d->crc, s.fills, s.max_fill_cycles,
+           s.overlap_words, s.overlap_mismatches,
+           (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+           (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+           esp_err_to_name(err));
+    heap_caps_free(d);
     heap_caps_free(id);
 }
