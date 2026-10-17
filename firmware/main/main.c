@@ -15,7 +15,7 @@
 //   dvbpace <modcod> [5m|10m|10m80|20m|20ms6 for 8PSK] <seconds> [peak] [stall ms]  the same encoder, fills and deadlines, no radio
 //              (80 MS/s bank schedule, radio-off commands only: 10m80 is the 5m samples at
 //              10 Msym/s, 20m the 10m samples at 20 Msym/s)
-//   wifimem [<modcod> [5m|10m for 8PSK]]  Wi-Fi start-up heap next to that transmitter's memory;
+//   wifimem [<modcod> [5m|10m|20ms6 for 8PSK]]  Wi-Fi start-up heap next to that transmitter's memory;
 //              starts and stops Wi-Fi like dvb but never keys, retunes or plays (dvbtx.c)
 //   fecbench [plain|c|pie|legacy|nibble|sram]  normal-frame encoder correctness and stage timing (fecbench.c)
 //   usbrx N    receive N bytes over USB as fast as the host sends them; report the rate
@@ -73,7 +73,7 @@ static bool number(const char *text, unsigned lo, unsigned hi, uint32_t *out)
 }
 
 // 8PSK always names its rate explicitly. Keep every old QPSK positional argument.
-// 10m80 and 20m are 8 and 4 sps at 80 MS/s (RADIO_S3_DAC_RATE_80M); the others are at 40 MS/s.
+// 10m80, 20m and 20ms6 use 80 MS/s (RADIO_S3_DAC_RATE_80M); the others use 40 MS/s.
 static bool tx_mode(const char *code, char **count, char **save, uint32_t *modcod,
                      uint32_t *sps, uint32_t *rate, bool *short_pulse)
 {
@@ -90,7 +90,7 @@ static bool tx_mode(const char *code, char **count, char **save, uint32_t *modco
         }
         *short_pulse = !strcmp(*count, "20ms6");
         *sps = !strcmp(*count, "5m") || !strcmp(*count, "10m80") ? 8 : 4;
-        *rate = !strcmp(*count, "10m80") || (!strcmp(*count, "20m") || *short_pulse) ? RADIO_S3_DAC_RATE_80M :
+        *rate = !strcmp(*count, "10m80") || !strcmp(*count, "20m") || *short_pulse ? RADIO_S3_DAC_RATE_80M :
                 RADIO_S3_DAC_RATE;
         *count = strtok_r(NULL, " \t", save);
     }
@@ -172,19 +172,20 @@ static void cmd_wifimem(char *args)
 {
     char *save, *code = strtok_r(args, " \t", &save);
     char *rate = strtok_r(NULL, " \t", &save);
-    uint32_t modcod = 0, sps = 0, dac_rate;
-    bool short_pulse;
+    uint32_t modcod = 0, sps = 0, dac_rate = RADIO_S3_DAC_RATE;
+    bool short_pulse = false;
     if (code) {
         char *after = rate;
         const bool ok = tx_mode(code, &rate, &save, &modcod, &sps, &dac_rate, &short_pulse);
         // QPSK takes no rate token; 8PSK takes exactly one. Nothing may follow.
-        if (!ok || (modcod < 12 && after) || rate || dac_rate != RADIO_S3_DAC_RATE) {
+        if (!ok || (modcod < 12 && after) || rate ||
+                (dac_rate != RADIO_S3_DAC_RATE && !short_pulse)) {
             printf("@{\"cmd\":\"wifimem\",\"error\":\"usage: wifimem [<modcod 4..11 | 12..17 "
-                   "5m|10m>]\"}\n");
+                   "5m|10m|20ms6>]\"}\n");
             return;
         }
     }
-    dvbtx_wifi(modcod, sps);
+    dvbtx_wifi(modcod, sps, dac_rate, short_pulse);
 }
 
 static void cmd_tx(char *args)

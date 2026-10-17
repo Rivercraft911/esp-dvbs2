@@ -341,7 +341,8 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
 {
     const dvbs2_mode *mode = dvbs2_find_mode(modcod);
     if ((short_pulse && (sps != 4 || dac_rate != RADIO_S3_DAC_RATE_80M ||
-                        (strcmp(cmd, "dvbdump") && strcmp(cmd, "dvbpace")))) ||
+                        (strcmp(cmd, "dvbdump") && strcmp(cmd, "dvbpace") &&
+                         strcmp(cmd, "wifimem")))) ||
         !mode || (mode->bits_per_symbol == 2 ? sps != 40 : (sps != 8 && sps != 4)) ||
             (dac_rate != RADIO_S3_DAC_RATE && (dac_rate != RADIO_S3_DAC_RATE_80M || sps == 40))) {
         printf("@{\"cmd\":\"%s\",\"error\":\"invalid MODCOD/sps\"}\n", cmd);
@@ -726,14 +727,14 @@ void dvbtx_dump(unsigned modcod, unsigned frames, unsigned level, unsigned decim
     printf(",\"status\":\"%s\"}\n", esp_err_to_name(err));
 }
 
-void dvbtx_wifi(unsigned modcod, unsigned sps)
+void dvbtx_wifi(unsigned modcod, unsigned sps, uint32_t dac_rate, bool short_pulse)
 {
     if (!station_require("wifimem")) {
         return;
     }
     size_t symbols = 0;
     if (modcod) {
-        symbols = start_encoder("wifimem", modcod, 128, 0, sps, RADIO_S3_DAC_RATE, false);
+        symbols = start_encoder("wifimem", modcod, 128, 0, sps, dac_rate, short_pulse);
         if (!symbols) {
             return;
         }
@@ -744,6 +745,8 @@ void dvbtx_wifi(unsigned modcod, unsigned sps)
     const esp_err_t err = radio_s3_wifi_probe(&s);
     if (modcod) {
         print_mode("wifimem", modcod, symbols, 128);
+        printf(",\"dac_rate\":%" PRIu32 ",\"pulse_symbols\":%u", dac_rate,
+               dvb.table.parts == 2 ? 6 : 9);
     } else {
         printf("@{\"cmd\":\"wifimem\",\"modcod\":0");
     }

@@ -85,15 +85,18 @@ for name, (_, good) in dvbtx.items():
         dvbtx[name][0].extend(["2400 13 20 1", "2400 13 40m 1", "2400 13 10m8 1"])
     dvbtx[name][0].extend(["4 5m 1", "18 5m 1", "13 5m", "13 10m 1 128 0 extra"])
 
-# wifimem: optional MODCOD (and rate for 8PSK); it reaches dvbtx_wifi(modcod, sps) only.
+# wifimem: optional MODCOD and rate; it reaches only the allocation/Wi-Fi probe.
 dvbtx["wifimem"] = (["x", "3", "18", "12", "12 1m", "4 5m", "13 5m extra", "4 extra", "0x4",
                      "13 10m 1", "13 5m 10m"],
-                    [("", (0, 0)), ("4", (4, 40)), ("11", (11, 40)), ("13 5m", (13, 8)),
-                     ("15 10m", (15, 4)), (" 17\t10m", (17, 4))])
+                    [("", (0, 0, 40000000)), ("4", (4, 40, 40000000)), ("11", (11, 40, 40000000)),
+                     ("13 5m", (13, 8, 40000000)), ("17 5m", (17, 8, 40000000)),
+                     ("15 10m", (15, 4, 40000000)), (" 17\t10m", (17, 4, 40000000))])
 dvbtx["wifimem"][0].extend(["13 20m", "17 20m", "13 10m80"])
 
 dvbtx["dvb"][0].append("2400 13 20ms6 1")
-dvbtx["wifimem"][0].append("13 20ms6")
+for mc in range(12, 18):
+    dvbtx["wifimem"][1].append((f"{mc} 20ms6", (mc, 4, 80000000, 1)))
+dvbtx["wifimem"][0].extend(["13 20ms6 extra", "4 20ms6", "13 20ms6 30"])
 dvbtx["dvbdump"][1].append(("13 20ms6 40", (13,40,128,1,0,4,80000000,1)))
 dvbtx["dvbpace"][1].append(("15 20ms6 30", (15,30,128,0,80000000,4,0,1)))
 
@@ -164,9 +167,9 @@ static void dvbtx_pace(unsigned modcod, uint32_t seconds, unsigned level, unsign
     stub(&pace_calls, modcod, seconds, level, stall, rate, sps, 0);
     got[7] = short_pulse;
 }
-static void dvbtx_wifi(unsigned modcod, unsigned sps)
+static void dvbtx_wifi(unsigned modcod, unsigned sps, uint32_t rate, bool short_pulse)
 {
-    stub(&wifi_calls, modcod, sps, 0, 0, 0, 0, 0);
+    stub(&wifi_calls, modcod, sps, rate, short_pulse, 0, 0, 0);
 }
 #define RF_CALLS (calls + dvb_calls)
 '''

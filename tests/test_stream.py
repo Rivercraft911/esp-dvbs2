@@ -191,6 +191,8 @@ def test_stream(output=None):
                 assert r["crc32"] == zlib.crc32(iq.read_bytes())
                 if not short and (mc, sps) in expected:
                     assert r["crc32"] == expected[mc, sps]
+                if short and mc in (13, 15):
+                    assert r["crc32"] == {13: 3178964763, 15: 4256019779}[mc]
                 assert r["status"] == "ESP_OK" and not r["encoder_failed"]
                 assert r["callsign"] == call
                 packed = sps != 40

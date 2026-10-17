@@ -23,4 +23,5 @@ void dvbtx_pace(unsigned modcod, uint32_t seconds, unsigned level, unsigned stal
 // wifimem command: radio_s3_wifi_probe (Wi-Fi start-up and shutdown, no keying), with the
 // transmitter's memory for modcod/sps allocated as before a dvb run, or nothing for modcod 0.
 // Reports internal heap before and after each step and the low-water mark.
-void dvbtx_wifi(unsigned modcod, unsigned sps);
+// short_pulse allocates the 20ms6 layout; the probe never plays samples.
+void dvbtx_wifi(unsigned modcod, unsigned sps, uint32_t dac_rate, bool short_pulse);

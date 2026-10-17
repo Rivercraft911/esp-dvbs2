@@ -85,7 +85,14 @@ esp_err_t radio_s3_paced_run_rate(uint32_t sec, uint32_t rate, radio_s3_fill_fn 
 esp_err_t radio_s3_run_rate(uint32_t freq, uint8_t gain, uint32_t sec, uint32_t rate,
                             radio_s3_fill_fn fn, void *ctx, radio_s3_stats_t *stats)
 { (void)freq; (void)gain; (void)sec; (void)rate; (void)fn; (void)ctx; (void)stats; abort(); }
-esp_err_t radio_s3_wifi_probe(radio_s3_stats_t *stats) { (void)stats; abort(); }
+static unsigned wifi_probes;
+esp_err_t radio_s3_wifi_probe(radio_s3_stats_t *stats)
+{
+    assert(enc.fast && enc.ws && enc.payload && dvb.win);
+    memset(stats, 0, sizeof *stats);
+    ++wifi_probes;
+    return ESP_OK;
+}
 
 int main(int argc, char **argv)
 {
@@ -132,6 +139,11 @@ int main(int argc, char **argv)
         assert(live_allocations == 0);
     }
     fail_after = -1;
+    if (*callsign && (rate == RADIO_S3_DAC_RATE || short_pulse)) {
+        dvbtx_wifi(mc, sps, rate, short_pulse);
+        assert(wifi_probes == 1 && live_allocations == 0);
+        assert((dvb.table.parts == 2) == short_pulse);
+    }
     for (unsigned repeat = 0; repeat < 2; ++repeat) {
         capture = fopen(argv[3], "wb"); assert(capture);
         dvbtx_dump(mc, frames, 128, sps == 40 ? 10 : 1, 0, sps, rate, short_pulse);
