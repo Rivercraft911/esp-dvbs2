@@ -17,11 +17,17 @@ L = 33282        # QPSK normal frame with pilots, symbols
 SLOTS = 8        # RING_SLOTS in dvbtx.c
 
 
-def run(exe, *args, sps=40, dummy=None, split=False, cache=False):
+def run(exe, *args, sps=40, dummy=None, split=False, cache=False, packed=False, margin=None,
+        fails=False):
     out = subprocess.run([str(exe), *map(str, args)], capture_output=True, text=True, env=dict(os.environ, RING_SPS=str(sps),
                          **({"RING_DUMMY": str(dummy)} if dummy else {}),
                          **({"RING_SPLIT": "1"} if split else {}),
-                         **({"RING_CACHE": "1"} if cache else {})))
+                         **({"RING_CACHE": "1"} if cache else {}),
+                         **({"RING_PACKED": "1"} if packed else {}),
+                         **({"RING_CACHE_MARGIN": str(margin)} if margin is not None else {})))
+    if fails:
+        assert out.stdout.startswith("FAIL ring_window"), (args, out.stdout, out.stderr)
+        return None
     assert out.returncode == 0 and out.stdout.startswith("ok"), (args, out.stdout, out.stderr)
     words = out.stdout.split()
     return {k: int(v) for k, v in zip(words[1::2], words[2::2])}
@@ -74,6 +80,25 @@ def test_ring():
                 split=True, cache=True)
         assert r["underruns"] > 0
         run(exe, "threads", 22194, 2, 120, 31, sps=4, dummy=3330, split=True, cache=True)
+        # Packed internal slots (two phases per byte) at 4 and 8 sps: the 8PSK paths.
+        for sps in (4, 8):
+            for load in (400, 800):
+                r = run(exe, "sim", 22194, 2, 300, load, 0, 0, 1, sps=sps, dummy=3330,
+                        split=True, cache=True, packed=True)
+                assert r["underruns"] == 0, r
+            r = run(exe, "sim", 22194, 2, 200, 600, 10, 3000, 1, sps=sps, dummy=3330,
+                    split=True, cache=True, packed=True)
+            assert r["underruns"] > 0, r
+            r = run(exe, "sim", 22194, 2, 40, 1250, 0, 0, 0, sps=sps, dummy=3330,
+                    split=True, cache=True, packed=True)
+            assert r["underruns"] > 0, r
+            run(exe, "threads", 22194, 2, 80, 41 + sps, sps=sps, dummy=3330, split=True,
+                cache=True, packed=True)
+        # The cache's two end symbols are needed at 8 sps (bank edges cut symbols), not at 4.
+        run(exe, "sim", 22194, 2, 20, 400, 0, 0, 1, sps=8, dummy=3330, split=True, cache=True,
+            packed=True, margin=0, fails=True)
+        run(exe, "sim", 22194, 2, 20, 400, 0, 0, 1, sps=4, dummy=3330, split=True, cache=True,
+            packed=True, margin=0)
         threads = [run(exe, "threads", 3330, 4, 400, seed) for seed in (1, 2, 3)]
         threads.append(run(exe, "threads", L, SLOTS, 60, 7))
         assert sum(t["underruns"] for t in threads) > 0 and sum(t["frames"] for t in threads) > 0

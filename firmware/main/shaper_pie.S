@@ -475,3 +475,37 @@ shaper_fill5_pie:
 .Ldone5:
     retw
     .size shaper_fill5_pie, . - shaper_fill5_pie
+
+
+    .section .iram1.unpack, "ax"
+    .global shaper_unpack_pie
+    .type   shaper_unpack_pie, @function
+    .align  4
+
+// Packed ring frames (dvbs2_pack: two phases per byte, low nibble first) back to one phase per
+// byte. Each pass reads 16 bytes at any alignment, as dvbs2_pie_index8 does: EE.LD.128.USAR.IP
+// and the next aligned vector, joined by EE.SRC.Q (TRM v1.8 1.8.17, 1.8.49), so up to 16 bytes
+// after the last block are read. The low nibbles are the even phases, the high nibbles (shifted
+// down, then masked) the odd ones, and EE.VZIP.8 (1.8.212) interleaves them into 32 phases.
+// void shaper_unpack_pie(uint8_t *dst, const uint8_t *src, unsigned blocks), dst 16-byte aligned.
+shaper_unpack_pie:
+    entry           a1, 32
+    movi            a8, 0x0f0f0f0f
+    ee.movi.32.q    q7, a8, 0
+    ee.movi.32.q    q7, a8, 1
+    ee.movi.32.q    q7, a8, 2
+    ee.movi.32.q    q7, a8, 3
+    ssai            4
+    loopnez         a4, .Lunpack_end
+    ee.ld.128.usar.ip q0, a3, 16
+    ee.vld.128.ip   q1, a3, 0
+    ee.src.q        q0, q0, q1                  // 16 packed bytes
+    ee.vsr.32       q1, q0                      // high nibbles down; the mask drops the rest
+    ee.andq         q0, q0, q7                  // phases 0, 2, ..., 30
+    ee.andq         q1, q1, q7                  // phases 1, 3, ..., 31
+    ee.vzip.8       q0, q1                      // phases 0..15 and 16..31
+    ee.vst.128.ip   q0, a2, 16
+    ee.vst.128.ip   q1, a2, 16
+.Lunpack_end:
+    retw
+    .size   shaper_unpack_pie, . - shaper_unpack_pie

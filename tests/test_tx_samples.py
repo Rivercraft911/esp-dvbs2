@@ -16,6 +16,7 @@ with tempfile.TemporaryDirectory() as tmp:
     subprocess.run(['cc', '-O2', '-std=c11', '-Wall', '-Wextra', '-Werror', '-DTX_HOST',
                     '-I' + tmp, '-I' + str(ROOT / 'firmware/main'),
                     str(ROOT / 'tests/tx_samples.c'), str(ROOT / 'firmware/main/shaper.c'),
+                    str(ROOT / 'firmware/main/ring.c'),
                     '-o', str(exe)], check=True)
     out = subprocess.run([str(exe)], capture_output=True, text=True, check=True).stdout
     records = [json.loads(line[1:]) for line in out.splitlines()]

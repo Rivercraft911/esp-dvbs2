@@ -54,6 +54,50 @@ void ring_cache(ring_t *r, uint8_t *storage, size_t symbols)
     r->cache_symbols = symbols;
 }
 
+void ring_packed(ring_t *r)
+{
+    r->packed = 1;
+}
+
+#ifdef __XTENSA__
+// shaper_pie.S: 16 packed bytes (any alignment) to 32 phases at a 16-byte aligned dst.
+void shaper_unpack_pie(uint8_t *dst, const uint8_t *src, unsigned blocks);
+#endif
+
+IRAM_ATTR void ring_unpack(uint8_t *dst, const uint8_t *packed, size_t at, size_t n)
+{
+    const uint8_t *p = packed + at / 2;
+    if (n && (at & 1)) {
+        *dst++ = *p++ >> 4;
+        --n;
+    }
+#ifdef __XTENSA__
+    // Two phases per byte up to an aligned dst, then whole vectors. An odd distance would
+    // split a byte across the boundary, so that case stays on the scalar loop.
+    size_t head = -(uintptr_t)dst & 15;
+    if (!(head & 1) && n >= head + 32) {
+        for (n -= head; head; head -= 2) {
+            const uint8_t b = *p++;
+            dst[0] = b & 15;
+            dst[1] = b >> 4;
+            dst += 2;
+        }
+        const size_t blocks = n / 32;
+        shaper_unpack_pie(dst, p, (unsigned)blocks);
+        dst += 32 * blocks, p += 16 * blocks, n -= 32 * blocks;
+    }
+#endif
+    for (; n >= 2; n -= 2) {
+        const uint8_t b = *p++;
+        dst[0] = b & 15;
+        dst[1] = b >> 4;
+        dst += 2;
+    }
+    if (n) {
+        *dst = *p & 15;
+    }
+}
+
 // Copy absolute symbols, retaining choices until no future overlap can read them.
 static IRAM_ATTR int ring_read(ring_t *r, uint8_t *dst, int64_t first, size_t count)
 {
@@ -104,7 +148,11 @@ static IRAM_ATTR int ring_read(ring_t *r, uint8_t *dst, int64_t first, size_t co
         const size_t at = (uint64_t)first - r->start[i];
         const size_t avail = r->end[i] - (uint64_t)first;
         const size_t part = avail < count ? avail : count;
-        memcpy(dst, src + at, part);
+        if (r->packed) {
+            ring_unpack(dst, src, at, part);
+        } else {
+            memcpy(dst, src + at, part);
+        }
         dst += part, count -= part, first += part;
     }
     return 0;

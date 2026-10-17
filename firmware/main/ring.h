@@ -42,6 +42,7 @@ typedef struct {
     uint8_t *cache;               // optional copied overlap, owned by fill side
     size_t cache_symbols;
     int64_t cache_first, cache_end;
+    uint8_t packed;               // slots and filler hold two phases per byte
 } ring_t;
 
 void ring_init(ring_t *r, uint8_t *slots, uint32_t nslots, const uint8_t *filler,
@@ -55,6 +56,12 @@ void ring_filler_length(ring_t *r, uint32_t symbols);
 // This lets slots be freed as soon as every later read of them is covered by cache.
 // Include the first bank's extra lead in maximum overlap. Set before the first fill.
 void ring_cache(ring_t *r, uint8_t *storage, size_t symbols);
+// Slots and filler hold frames packed by dvbs2_pack (two phases per byte, low nibble first);
+// reads unpack them. Each slot and the filler need 16 readable bytes after their last byte, and
+// reads are fastest when dst + symbol index is even (see ring_window). Set before the first fill.
+void ring_packed(ring_t *r);
+// Symbols [at, at + n) of a packed frame, one per byte. Vector loop when dst + at is even.
+void ring_unpack(uint8_t *dst, const uint8_t *packed, size_t at, size_t n);
 
 // Encoder: where frame e goes, or NULL while a later read may still need that slot.
 uint8_t *ring_slot(ring_t *r, uint32_t e);
@@ -63,7 +70,8 @@ void ring_publish(ring_t *r, uint32_t e);
 
 // Fill: the symbols a shaper needs for samples [first, first + count) at sps samples per symbol,
 // starting `history` symbols before the first one, into dst (room bytes). Symbols before 0 read
-// as 0. Returns the number of symbols after the history, or -1 if they do not fit or the read
+// as 0. With a packed ring, pass dst with the parity of first / sps - history (an even history:
+// of first / sps) so that every symbol lands at an address of its own parity. Returns the number of symbols after the history, or -1 if they do not fit or the read
 // reaches a released position (a bug: stop the run). Then releases what no later fill can need:
 // the fills follow the bank schedule (radio_s3.h), so no later fill starts before the start of
 // the bank being filled, and that is at least first + count - bank_words.

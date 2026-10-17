@@ -14,6 +14,9 @@
 //     frame burst permille; the encoder looks for a free slot at every fill.
 //   ring_host threads <L> <slots> <positions> <seed>
 //     encoder and fill on two threads with random pauses (weak memory order on arm64).
+// Environment: RING_SPS, RING_DUMMY (filler length), RING_SPLIT (separate slots), RING_CACHE
+// (overlap cache) and RING_PACKED (frames two phases per byte; frame values, POISON and FILLER
+// become nibbles 1..12, 14 and 15).
 
 #define _POSIX_C_SOURCE 200809L   // rand_r, nanosleep under -std=c11 on glibc
 
@@ -44,14 +47,19 @@ static struct position { uint64_t start, end; uint32_t choice; } *events;
 static uint16_t *seen;
 static uint64_t seen_symbols;
 static uint8_t *separate[RING_MAX_SLOTS];
-static uint8_t overlap[HISTORY + (BANK - STEP + LEAD + 3) / 4];
+static uint8_t overlap[HISTORY + 2 + (BANK - STEP + LEAD + 3) / 4];
+static int packed;
 
 static uint8_t frame_byte(uint32_t e, uint32_t i)
 {
     uint32_t h = e * 2654435761u ^ (i * 40503u + 0x9e3779b9u);
     h ^= h >> 15, h *= 0x2c1b3c6du, h ^= h >> 12;
-    return (uint8_t)(1 + h % 200);   // never POISON, FILLER or 0
+    return (uint8_t)(1 + h % (packed ? 12 : 200));   // never POISON, FILLER or 0
 }
+
+static uint8_t poison(void) { return packed ? 0xE : POISON; }
+static uint8_t filler_value(void) { return packed ? 0xF : FILLER; }
+static size_t bytes(uint32_t symbols) { return packed ? symbols / 2 : symbols; }
 
 static void fail(const char *what, long long a, long long b)
 {
@@ -62,8 +70,9 @@ static void fail(const char *what, long long a, long long b)
 // One fill call, as dvbtx.c makes it, then the overlap and content checks.
 static void fill(uint64_t first, size_t count)
 {
-    uint8_t win[WINDOW];
-    const int nsym = ring_window(&ring, win, sizeof win, first, count, SPS, HISTORY, BANK);
+    uint8_t buffer[WINDOW + 1];
+    uint8_t *win = buffer + (first / SPS & 1);    // dvbtx.c's parity rule for packed reads
+    const int nsym = ring_window(&ring, win, WINDOW, first, count, SPS, HISTORY, BANK);
     if (nsym < 0) {
         fail("ring_window", (long long)first, (long long)count);
     }
@@ -80,7 +89,7 @@ static void fill(uint64_t first, size_t count)
             }
             continue;
         }
-        if (win[j] == POISON) {
+        if (win[j] == poison()) {
             fail("read a slot being written", i, ring.next_position);
         }
         if ((uint64_t)i >= seen_symbols) {
@@ -118,7 +127,11 @@ static uint64_t banks_for(uint32_t positions)
 static void write_frame(uint8_t *slot, uint32_t e)
 {
     for (uint32_t i = 0; i < length; ++i) {
-        slot[i] = frame_byte(e, i);
+        if (!packed) {
+            slot[i] = frame_byte(e, i);
+        } else if (i & 1) {
+            slot[i / 2] = (uint8_t)(frame_byte(e, i - 1) | frame_byte(e, i) << 4);
+        }
     }
 }
 
@@ -128,7 +141,7 @@ static void check(void)
     for (uint32_t s = 0; s < nslots; ++s) {
         if (!separate[s]) continue;
         for (unsigned i = 0; i < 16; ++i) {
-            if (separate[s][i] != POISON || separate[s][16 + length + i] != POISON)
+            if (separate[s][i] != POISON || separate[s][16 + bytes(length) + 16 + i] != POISON)
                 fail("separate slot guard", s, i);
         }
     }
@@ -141,7 +154,7 @@ static void check(void)
         }
         for (uint64_t i = p->start; i < p->end && i < seen_symbols; ++i) {
             const uint16_t v = seen[i];
-            if (v != UNSEEN && v != (kind ? FILLER : frame_byte(e, (uint32_t)(i - p->start)))) {
+            if (v != UNSEEN && v != (kind ? filler_value() : frame_byte(e, (uint32_t)(i - p->start)))) {
                 fail(kind ? "filler content" : "frame out of order", q, (long long)i);
             }
         }
@@ -162,19 +175,27 @@ static void setup(uint32_t l, uint32_t s, uint32_t positions)
     length = l, nslots = s;
     dummy = getenv("RING_DUMMY") ? (unsigned)atoi(getenv("RING_DUMMY")) : l;
     sps = getenv("RING_SPS") ? (unsigned)atoi(getenv("RING_SPS")) : 40;
-    uint8_t *slots = malloc((size_t)s * l), *filler = malloc(dummy);
+    packed = getenv("RING_PACKED") != NULL;
+    uint8_t *slots = malloc((size_t)s * l), *filler = malloc(dummy + 16);
     memset(slots, POISON, (size_t)s * l);
-    memset(filler, FILLER, dummy);
+    memset(filler, packed ? 0xFF : FILLER, dummy + 16);
     ring_init(&ring, slots, s, filler, l);
     if (getenv("RING_SPLIT")) {
         uint8_t *p[RING_MAX_SLOTS];
         for (uint32_t i = 0; i < s; ++i) {
-            separate[i] = malloc(l + 32);
-            memset(separate[i], POISON, l + 32);
+            // 16 guard bytes, the slot, 16 bytes a vector read may touch, 16 guard bytes.
+            separate[i] = malloc(bytes(l) + 48);
+            memset(separate[i], POISON, bytes(l) + 48);
             p[i] = separate[i] + 16;
         }
         ring_init_slots(&ring, p, s, filler, l);
-        if (getenv("RING_CACHE")) ring_cache(&ring, overlap, sizeof overlap);
+        // dvbtx.c's OVERLAP_SYMBOLS: history, the longest re-read, one cut symbol at each end.
+        const unsigned margin = getenv("RING_CACHE_MARGIN") ? (unsigned)atoi(getenv("RING_CACHE_MARGIN")) : 2;
+        if (getenv("RING_CACHE"))
+            ring_cache(&ring, overlap, HISTORY + margin + (BANK - STEP + LEAD + SPS - 1) / SPS);
+    }
+    if (packed) {
+        ring_packed(&ring);
     }
     ring_filler_length(&ring, dummy);
     seen_symbols = (uint64_t)(positions + 2) * l;
@@ -227,7 +248,7 @@ static int sim(int argc, char **argv)
                 blocked = 1;
                 break;
             }
-            memset(slot, POISON, length);
+            memset(slot, POISON, bytes(length));
             busy = 1;
             done = ready + (every && e % every == every - 1 ? burst : base);
         }
@@ -257,9 +278,13 @@ static void *encoder(void *arg)
             }
             pause_ns(&seed, 2, 20000);
         }
-        memset(slot, POISON, length);
+        memset(slot, POISON, bytes(length));
         for (uint32_t i = 0; i < length; ++i) {
-            slot[i] = frame_byte(e, i);
+            if (!packed) {
+                slot[i] = frame_byte(e, i);
+            } else if (i & 1) {
+                slot[i / 2] = (uint8_t)(frame_byte(e, i - 1) | frame_byte(e, i) << 4);
+            }
             if (i % 1024 == 0) {
                 pause_ns(&seed, 64, 50000);
             }
