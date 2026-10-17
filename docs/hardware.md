@@ -31,9 +31,13 @@ works. `idf.py flash` on the native port is unaffected.
 - Take RF from the board's U.FL connector with a U.FL-to-SMA pigtail.
 - Put at least 30 dB of attenuation between the board and the receiver. The radio can put out
   around +20 dBm; esp-sdr-zephyr's S3-to-S3 tests used 30 dB.
-- An E200 SDR records the signal for offline analysis and decoding. It reports an AD9364
-  (iio context `hw_model: Analog Devices PlutoSDR Rev.C (Z7010-AD9364)`, `ad9361-phy,model: ad9364`,
-  firmware v0.34), which supports up to 61.44 MS/s and 56 MHz of RF bandwidth.
+- An E200 SDR records the signal for offline analysis and decoding. Its firmware runs the
+  transceiver in AD9364 mode (iio context `hw_model: Analog Devices PlutoSDR Rev.C (Z7010-AD9364)`,
+  `ad9361-phy,model: ad9364`, firmware v0.34): up to 61.44 MS/s and 56 MHz of RF bandwidth. That
+  string is a firmware setting. The unit is the E200 with an **AD9363** (metal enclosure, per the
+  order), specified for 325 MHz-3.8 GHz and 20 MHz. In AD9364 mode it usually works wider, but
+  outside its guaranteed specification: measure its passband before trusting captures wider than
+  20 MHz.
 
 ## Station identification
 
@@ -94,8 +98,8 @@ signal within the licensed band when choosing the center.
 Analyze active capture interiors with `python3 host/capture.py file.iq --format i16
 --rate 10000000 --signal tone` (`f32` also works). Power is dBFS, not dBm. The `tag` phase
 sequence checks individual 40 MS/s samples and needs at least 50 MS/s complex capture and a
-qualified 40 MHz RF passband. The E200's AD9364 is specified for [up to 56 MHz channel
-bandwidth](https://www.analog.com/en/products/ad9364.html), but its passband has not been measured
+qualified 40 MHz RF passband. The E200's AD9363 runs in AD9364 mode, [up to 56 MHz channel
+bandwidth](https://www.analog.com/en/products/ad9364.html), outside the AD9363's 20 MHz specification, and its passband has not been measured
 here, so it is not yet qualified for this full-rate continuity test. Rejected tag acquisition is
 inconclusive. No RF result is claimed until the coordinator measures it.
 
