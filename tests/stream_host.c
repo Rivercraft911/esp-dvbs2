@@ -137,7 +137,7 @@ int main(int argc, char **argv)
     for (unsigned f = 0; f < frames + 2; ++f) {
         for (size_t i = 0; i < bytes; ++i) payload[i] = next_byte(&x);
         station_payload_header(payload, bytes, callsign);
-        assert(!dvbs2_bb_gcs_ro(&ws, mode, payload, bytes * 8, moon ? 2 : 0));
+        assert(!dvbs2_bb_gcs_ro(&ws, mode, payload, bytes * 8, sps == DVB_SPS_12_5 ? 2 : 0));
         dvbs2_bb_scramble(&ws, mode); dvbs2_bch(&ws, mode); dvbs2_ldpc(&ws, mode);
         uint8_t *out = phases + f * length;
         dvbs2_map(&ws, mode, out + 90); dvbs2_plframe(mode, 1, out);

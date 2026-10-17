@@ -18,6 +18,12 @@ def test_interlocks():
     u,d = c.operands('ee.vadds.s32.ld.incp q2, a10, q0, q0, q1')
     assert ('q2',2) in d and ('q0',1) in d
     assert c.replay([('bnez a4, 20',True)])['cycles'] == 3
+    # An expanded long LOOP ends immediately before RETW. Its final stores
+    # execute on every iteration, not once after the loop.
+    long_loop = list(enumerate(('entry a1, 32','wsr.lbeg a4','addi a4, a4, 1',
+                               'addi a3, a3, 1','ee.vst.128.ip q0, a2, 16',
+                               'ee.vst.128.ip q1, a2, 16','retw.n')))
+    assert c.replay(c.loop_stream(long_loop,2))['cycles']-c.replay(c.loop_stream(long_loop,1))['cycles'] == 3
     try:
         c.operands('unknown a2, a3')
     except ValueError:

@@ -91,11 +91,11 @@ def report(disassembly, dispatch=2396):
     root = pathlib.Path(__file__).resolve().parents[1]
     enc = [json.loads(l) for l in (root/'results/2026-10-17-moon-encoder/runs.jsonl').read_text().splitlines()]
     for mode,name,symbols,num,den,share,kernel in (
-            (3,'8PSK 26m667',22194,3,1,(2,7),'shaper_moon3a20_pie'),
-            (1,'QPSK 33m333',33282,12,5,(1,3),'shaper_moon24q_pie'),
-            (2,'8PSK 33m333',22194,12,5,(1,5),'shaper_moon24p_pie')):
+            (0,'8PSK 26m667',22194,3,1,(1,3),'shaper_moon3_pie'),
+            (3,'QPSK 33m333',33282,12,5,(2,7),'shaper_moon24qc_quads_pie'),
+            (2,'8PSK 33m333',22194,12,5,(1,3),'shaper_moon24p_pie')):
         frame = symbols*3*num/den
-        mc = 11 if mode == 1 else 17
+        mc = 11 if mode == 3 else 17
         encoder = next(r['kernel_plus_input_estimate_cycles'] for r in enc if
                        r.get('kind') == 'instruction_model' and r['variant'] == 'candidate'
                        and r['modcod'] == mc and r['input'] == 'gcs')
@@ -103,6 +103,7 @@ def report(disassembly, dispatch=2396):
         one = c.replay(c.loop_stream(body,1))['cycles']
         step = c.replay(c.loop_stream(body,2))['cycles']-one
         base = one-step
+        if mode == 3: step /= 4
 
         def bank(k,scale=1):
             start = k*15740-128 if k else 0
@@ -125,13 +126,15 @@ def report(disassembly, dispatch=2396):
                     if not n:
                         continue
                     groups = math.ceil((phase+n)/12)
-                    # Both chunks pack their own two history blocks. Partial
-                    # output may require two extra kernel calls and scalar stores.
-                    cost = (groups+2)*pack[mode]+(384 if mode == 1 else 32)
+                    # QPSK consumes quad bytes directly in the bulk loop. Its
+                    # at-most-eight edge blocks use the packed API; 1024 cycles
+                    # per chunk reserves edge packing and wrapper control.
+                    # This allowance, like the staging/copy costs, is estimated.
+                    cost = 1024 if mode == 3 else (groups+2)*pack[3 if mode == 0 else 2]+32
                     cost += groups*step*scale+3*base+144
                     if which == 'helper': helper += cost
                     else: local += cost
-                staged += math.ceil((fresh*den/num+16)/(4 if mode == 1 else 1))
+                staged += math.ceil((fresh*den/num+16)/(4 if mode == 3 else 1))
                 jobs += bool(h)
             # Ring copy one cycle/byte, sample copies half a cycle/word,
             # tick 1068/core/bank, control 1000. These are assumptions.
@@ -146,6 +149,7 @@ def report(disassembly, dispatch=2396):
             row = max(rows,key=lambda r:max(r['core0_cycles'],r['core1_cycles'])).copy()
             for key in ('core0_cycles','core1_cycles'):
                 row[key] = max(r[key] for r in rows)
+            row['helper_bank_max_cycles'] = max(r['helper_cycles'] for r in rows)
             return row
         zero = worst(0)
         kernel_only_sufficient = max(zero[c] for c in ('core0_cycles','core1_cycles')) <= CEILING
@@ -157,7 +161,7 @@ def report(disassembly, dispatch=2396):
         row = worst()
         yield dict(kind='two_core_model',mode=name,evidence='uncalibrated issue/capacity model; not Wi-Fi-up silicon',
                    frame_cycles=frame,encoder_cycles=encoder,encoder_bank_cycles=encoder*BANK/frame,
-                   kernel_cycles_per_block=step,pack_cycles_per_block=pack[mode],
+                   kernel_cycles_per_block=step,pack_cycles_per_block=0 if mode == 3 else pack[3 if mode == 0 else 2],
                    helper_share=list(share),dispatch_allowance_cycles_per_job=dispatch,
                    target_cycles=CEILING,deadline_cycles=BANK,
                    ideal_fill_ceiling_cycles=math.floor(2*CEILING-encoder*BANK/frame),**row,

@@ -25,8 +25,8 @@ def test(output=None, receiver=None):
         out = output or folder
         out.mkdir(parents=True, exist_ok=True)
         crcs = {}
-        for mc,num,den,span,alpha in ((11,12,5,9,.2),(17,12,5,9,.2),(17,3,1,9,.2),
-                                     (4,12,5,9,.2),(13,12,5,9,.2),(13,3,1,9,.2)):
+        for mc,num,den,span,alpha in ((11,12,5,7,.2),(17,12,5,7,.2),(17,3,1,6,.35),
+                                     (4,12,5,7,.2),(13,12,5,7,.2),(13,3,1,6,.35)):
             frames = 16
             name = f'{mc}-{num}-{den}'
             iq = out/(name+'.iq')
@@ -50,7 +50,7 @@ def test(output=None, receiver=None):
             assert r['workspace_heap_bytes'] == 12420
             assert not r['encoder_failed'] and r['underruns'] == r['overlap_mismatches'] == 0
             assert r['bch_cache_bytes'] == (8192 if mc in (4,13) else 0)
-            kernel = 'qpsk24' if quads else '8psk24' if num == 12 else '8psk3a20'
+            kernel = 'qpsk24c' if quads else '8psk24' if num == 12 else '8psk3'
             assert r['table_bytes'] == sum(t.nbytes for t in moon.table(kernel))
             symbols = onair.symbols(mc, frames+2, callsign='N0CALL', rolloff=alpha)
             phases = np.rint(np.angle(symbols)*4/np.pi).astype(int)%8
@@ -70,7 +70,9 @@ def test(output=None, receiver=None):
             crcs[f'{mc}/{num}/80/16'] = crc
             print('stream',name,'CRC',crc,'all samples equal Python; allocation failures/cleanup pass')
             if receiver:
-                command = [sys.executable,str(ROOT/'host/onair.py'),str(iq),'--rate','80000000',
+                decode_iq = out/(name+'.tail.iq')
+                decode_iq.write_bytes(iq.read_bytes()+bytes(4096*4))
+                command = [sys.executable,str(ROOT/'host/onair.py'),str(decode_iq),'--rate','80000000',
                            '--symbol-rate',str(80000000*den/num),'--rolloff',str(alpha),
                            '--modcod',str(mc),'--scale','512','--stream','16','--callsign','N0CALL',
                            '--shift','0','--receiver',str(receiver)]

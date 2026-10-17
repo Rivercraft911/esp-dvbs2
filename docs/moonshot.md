@@ -1,145 +1,97 @@
 # Two-core experiment
 
-**None of the three requested roll-off 0.20 modes closes the current model.**
-The complete host streams are correct. Silicon timing and Wi-Fi memory remain
-unmeasured. No serial port, board, flash or radio was accessed.
+**Compact QPSK 9/10 at 33.333333 Msym/s passes the instruction model.**
+It has not passed silicon timing or Wi-Fi heap admission. The coordinator's
+interrupted e0766d4 run is invalid and supplies no split timing evidence.
+This session opened no serial port and performed no flash or radio operation.
 
-The encoder from `910da2d` and kernels from `d655793` are merged. `33m333`
-selects exactly 100/3 Msym/s and 12/5 samples/symbol for QPSK/8PSK. 8PSK
-`26m667` selects 80/3 Msym/s and 3 samples/symbol. All three now select the
-block kernels, BBHEADER RO=10 and pulse roll-off 0.20. The portable FIR is gone.
-The occupied bandwidth passed to the filter selector is 40 MHz or 32 MHz.
-These are experimental selections, not admitted real-time modes.
+Both cfd012c and its round-two follow-up 73136ce are merged. The compact
+27,648-byte QPSK kernel uses the seven-symbol roll-off 0.20 pulse. Its support
+is `Rs*(1+alpha) = (100e6/3)*1.20 = 40e6 Hz`. The payload estimate is
+`(100e6/3)*58112/33282 = 58.202 Mb/s`, excluding station-ID pauses, input
+starvation and application framing. Frame dimensions come from host/dvbs2.py
+and EN 302 307-1 V1.4.1 clauses 5.1/5.5. The pulse and DAC-hold/alias mask
+checks are in host/moon_fill.py; this is not an RF spectrum measurement.
 
-The supplied 3-sps kernel used a six-symbol pulse at **0.35**, not 0.20.
-Changing its alpha alone fails the pulse model. Its new nine-symbol 0.20
-variant needs four table parts and 51 model cycles per twelve samples,
-versus 31 for the old pulse. The quantized pulse/hold/alias model passes
-Annex A; the analog radio still needs a cabled spectrum measurement.
-Sources: `host/moon_fill.py`, EN 302 307-1 V1.4.1, 5.6 p35 and Annex A p38.
+The original uint16 input kernel is fast enough only if packing is omitted
+from the bank account. The integrated QPSK loop instead reads quad bytes
+straight from the ring window, retaining history in a register. Four blocks
+consume five bytes and produce 48 samples in 116 modeled cycles. Each block
+still adds the same three independently rounded table rows. Edges use the
+original block API. No waveform arithmetic changes in the fused loop.
 
-## Ownership and schedule
+Core 1 stages an immutable window and publishes one release/acquire job at a
+time to a priority-6 helper on core 0, above the priority-5 encoder. QPSK gives
+2/7 of each fresh piece to the helper, rounded to twelve samples; 8PSK gives
+1/3. Both cores join before window reuse, overlap retention or bank return.
+A physical bank wrap can dispatch twice. Only core 1 reads ring state.
+Encoder work telemetry subtracts preempting helper bodies on core 0; cycle
+counters from different cores are never subtracted.
 
-Core 1 copies a bank's symbols into an immutable window, then publishes one
-job with release ordering. A priority-6 task on core 0 preempts the priority-5
-encoder. Both cores pack their own input and shape disjoint sample ranges.
-Their separate staging regions borrow the unused encoder workspace tail.
-Each chunk retains two input blocks of history. The helper observes publication
-with acquire ordering and release-stores completion. Core 1 joins before
-reusing the window, saving overlap samples or returning the bank. Ring slots
-can be reused after the window copy. Only core 1 accesses the ring's read state.
+The deadline is `15740 samples / 80e6 samples/s * 240e6 cycles/s = 47220 cycles`
+per core; the 15% reserve target is 40,137 cycles. host/moon_schedule.py
+replays assembled instructions and enumerates all 819 physical bank offsets.
+It now counts the final two instructions inside expanded long loops correctly.
 
-There is one job slot, no queue or general scheduler. Fixed helper fractions
-are 2/7 for 8PSK 3 sps, 1/3 for QPSK 2.4 sps and 1/5 for 8PSK 2.4 sps,
-rounded to twelve-sample boundaries. A physical wrap can need two jobs.
-The helper wakes the encoder locally after ring release, avoiding another
-cross-core interrupt. An unusually short piece runs locally.
+| Mode, 9/10 | Pulse | Core 0, cycles/bank | Core 1, cycles/bank | Result |
+|---|---|---:|---:|---|
+| QPSK 33m333 | 7 symbols, .20 | 38,903 | 38,948 | Model passes |
+| 8PSK 26m667 | 6 symbols, .35 | 50,469 | 53,660 | Timing/RAM fail |
+| 8PSK 33m333 | 7 symbols, .20 | 60,441 | 62,897 | Timing/RAM fail |
 
-Telemetry records dispatch, helper body, helper work per complete physical
-bank, join wait and the original full-bank wall time. Encoder wall intervals
-remain available; `encode_work_cycles_*` subtracts preempting helper bodies
-on the same core. Counters from different cores are never subtracted.
+These are estimates, not worst-case timing guarantees. Encoder demand uses
+99,787 QPSK or 101,466 8PSK cycles/frame from the instruction-model records in
+results/2026-10-17-moon-encoder/runs.jsonl, including an estimated 10,000-cycle
+input copy. Frame periods are 239,630.4 / 199,746 / 159,796.8 cycles respectively.
+Core 0 demand is `encoder*47220/frame + helper + jobs*2396 + 1068` cycles/bank.
+Core 1 is `max(local,helper) + staged bytes + copied samples/2 + jobs*2396 + 2068`.
+The 2,396-cycle dispatch allowance comes from the earlier measured notification
+maximum rounded upward (results/2026-10-17-qpsk-goal); 1,068 tick and 1,000
+control cycles are allowances. QPSK additionally reserves 1,024 cycles/chunk
+for at most eight edge blocks and wrapper work. SRAM contention, MULL
+throughput, Wi-Fi interrupts and these allowances need measurement. The helper
+body estimate reaches 13,379 cycles/bank, rather than the isolated 5.4k proposal.
 
-## Capacity, not a worst-case latency proof
+QPSK tables, three frames, dummy and window request
+`27648 + 25056 + 864 + 1744 = 55312 B` inside the existing 65,536-byte store.
+Its internal workspace/context remain 12,420 / 17,712 B; the helper requests
+2,048 B plus its task control block. Its actual Wi-Fi headroom is unknown.
 
-At 240 MHz/core and 80 MS/s, a fresh bank has 15,740 samples:
-`B = 15740 * 240e6 / 80e6 = 47220 cycles`, or 196.75 us.
-The 15% reserve ceiling is `0.85 B = 40137 cycles/core/bank`.
-Normal pilot-bearing frames have 22,194 8PSK or 33,282 QPSK symbols
-(EN 302 307-1, 5.5/Table 11). `F = symbols * 240e6 / Rs` cycles/frame.
+8PSK tables request 73,728 B (3 sps) or 76,800 B (2.4 sps). Two whole parts
+share the store with a frame and dummy. Extra tables plus ring/window request
+53,680 / 56,752 B of heap. Against the closest cleaned-main Wi-Fi headroom of
+47,291 B, reaching a 20,000 B floor needs at least 26,389 / 29,461 B reclaimed,
+before helper and linked-RAM changes. This comparison is a planning screen.
+A symmetry identity alone does not provide a fast restoration kernel. No new
+compressed format is retained without a timing path that can use it.
+The fast 3-sps kernel really uses .35, occupying 36 MHz at 80/3 Msym/s.
+At 2.4 sps, packing costs another 21 cycles/block; even zero kernel work leaves
+core 0 at 45,583 cycles with this split. It needs smaller tables and less
+packing/staging/dispatch work, as well as a faster full bank.
 
-Even with a freely divisible fill and zero overhead, the two-core sum permits
-only `2*40137 - E*B/F` fill cycles/bank: 56,287 (8PSK 26m667),
-60,610 (QPSK 33m333), 50,290 (8PSK 33m333). This is a necessary bound,
-not an available single-core deadline.
+All 57 retained waveform CRCs and the encoder fixture pass. Six new complete
+streams match Python at every sample and through full bank wraps. Their CRCs
+change intentionally with the new experimental pulses, table factoring and
+3-sps BBHEADER. LeanDVB recovers 14 contiguous QPSK / 13 fractional 8PSK /
+14 three-sps 8PSK frames with zero FEC corrections or payload errors. The
+receiver gets 4,096 zero samples after the pinned dump to drain lookahead.
+QEMU passes 324 block cases, 15,552 slices and 20,736 direct-quad cases; QEMU
+clocks are never used as silicon measurements.
 
-For encoder work E cycles/frame, helper work H and local work L cycles/bank:
-
-```
-core 0 demand = E*B/F + H + scheduling + tick
-core 1 time   = max(H,L) + ring staging + overlap copies + dispatch + tick + control
-```
-
-`host/moon_schedule.py` enumerates all 819 physical bank offsets. It replays
-assembled kernel and packing loop instructions through the existing LX7
-issue model. The handoff probe executes 32 real FreeRTOS notifications in
-QEMU: 340..909 instructions/dispatch, at most 1,331 issue cycles including
-redirects but excluding interlocks. QEMU CCOUNT is never a timing input.
-The model reserves 2,396 cycles/job on each core, rounded above the earlier
-2,394-cycle stream notification maximum in
-`results/2026-10-17-qpsk-goal/runs.jsonl`. It assumes one cycle/staged byte,
-half a cycle/copied sample word, 1,068 tick cycles/core and 1,000 control cycles.
-These allowances are estimates, not bounds on Wi-Fi/interrupt/cache/SRAM costs.
-
-| Mode, 9/10 | F, cycles | E, cycles/frame | Core 0, cycles/bank | Core 1, cycles/bank | Kernel reduction needed with this split |
-|---|---:|---:|---:|---:|---|
-| 8PSK 26m667 | 199,746 | 101,466 | 56,242 | 78,155 | 51 to <=8.05 cycles/block, 84.2% |
-| QPSK 33m333 | 239,630.4 | 99,787 | 51,070 | 59,233 | 48 to <=22.98 cycles/block, 52.1% |
-| 8PSK 33m333 | 159,796.8 | 101,466 | 57,860 | 100,869 | Kernel alone cannot suffice |
-
-E comes from `results/2026-10-17-moon-encoder/runs.jsonl`, including its
-estimated 10,000-cycle input copy. It excludes the test payload generator,
-station-header insertion, cache contention and stream bookkeeping. The board
-paces retain and time the real generator; they do not replace it with this
-estimate. Packing adds 18, 7.75 or 21 issue cycles/block respectively.
-With zero kernel work, 8PSK 33m333 still uses 41,878 cycles on core 0,
-1,741 over the ceiling. Packing, handoff or the split must change too.
-The reductions above require different kernel factoring; they are not
-predictions that instruction scheduling alone can achieve them.
-
-The model is a capacity rejection, not a claim of periodic 15% idle time.
-Even a passing capacity model would require measured deadline/latency checks
-with Wi-Fi up. No encoder stages are pipelined into a second workspace.
-
-## Memory and correctness
-
-The 65,536-byte store and the existing internal encoder workspace/context
-remain. Block input staging uses 2,740 bytes or less of the workspace tail.
-The helper requests a 2,048-byte stack plus its task control block.
-
-| Mode | Tables, B | Extra table heap, B | Ring/window heap, B |
-|---|---:|---:|---:|
-| 8PSK 26m667 | 98,304 | 49,152 | 29,104 |
-| QPSK 33m333 | 37,056 | 0 | 0 |
-| 8PSK 33m333 | 98,688 | 49,536 | 29,104 |
-
-These are requested sizes, not measured free heap. The closest cleaned-main
-9/10 layout had 47,291 bytes free with Wi-Fi up
-(`results/2026-10-17-cleanup/runs.jsonl`, `wifimem 11 26m667`). The 8PSK
-extra requests alone exceed that whole headroom. They need at least 50,965 /
-51,349 bytes reclaimed to reach a 20,000-byte floor, **before** new linked RAM,
-the helper stack, task control block and allocator overhead. Faster tables must
-also be smaller. QPSK fits the shared store; its Wi-Fi heap is still unmeasured.
-
-All 57 retained waveform CRCs and the encoder's extra fixture pass. Six new
-16-frame C streams match the independent Python model sample for sample,
-including frame seams and full bank-wrap cycles. LeanDVB recovers 14 contiguous
-QPSK frames and 13 8PSK frames with zero FEC corrections or payload errors.
-`tests/data/moon_stream_crcs.json` records these new waveforms. The S3 kernels
-pass 324 QEMU block cases and 15,552 guarded sample slices.
-
-## Coordinator
-
-After building/flashing the committed revision, with N0CALL already stored:
+After building/flashing the committed revision, with N0CALL stored:
 
 ```sh
-host/check.sh --moonshot --plan
-PYTHON=/path/to/python-with-numpy RX=/path/to/leandvb \
-  host/check.sh --moonshot notes/moon-board
+PYTHON=/Users/river/radioconda/bin/python3 \
+RX=/Users/river/Documents/stanford/SSI/esp-dvbs2/notes/leansdr/src/apps/leandvb \
+  host/check.sh --moonshot notes/moon-round3-board
 ```
 
-Criteria print first. Six 16-frame dumps cover all targets and three legacy
-paths; CRC/length/overlap and LeanDVB gates remain strict. Five paces cover
-three 30-second targets plus two regressions. Target paces keep Wi-Fi NULL/
-promiscuous receive up without TX keying, retuning, DAC or bank grants. They
-check the 40,137-cycle bank ceiling, encoder frame limits, helper/encoder
-capacity screen, dispatch <=2,396 cycles and zero underruns/late switches.
-Four `wifimem` probes cover all targets and the tight legacy mode. Targets
-require free-up and low-water >=20,000 bytes. Existing regression floors stay.
-Every failed stage is reported and later stages continue. The script never
-flashes or keys RF. The current targets are expected to fail timing/RAM.
-
-Host reproduction: `tests/test_rational.py --receiver /path/to/leandvb`.
-Instruction-model reproduction and hashes are in the
-[two-core results record](../results/2026-10-17-moon-two-core/README.md);
-raw traces and the longer analysis remain in ignored `notes/moon-sys/`.
+`--plan` opens no devices. The runner locks ownership across worktrees and
+checks native cu/tty aliases and the reset bridge before reset/open. It writes
+revision.json and board-info.json, keeps every command log and continues after
+failures with summary.tsv and a nonzero exit. The lock coordinates board.py
+users; unrelated tools must still leave the board alone. The coordinator must
+measure complete banks <=40,137 cycles, positive slack, no late fills/switches
+or underruns, exclusive encoder/helper capacity, and Wi-Fi-up free/minimum heap
+>=20,000 B. The two 8PSK gates are expected to fail. No real-time admission is
+claimed until the board passes.

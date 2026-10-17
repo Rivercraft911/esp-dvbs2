@@ -168,7 +168,7 @@ IRAM_ATTR void shaper_moon_sample_tables(uint32_t *dst, const uint16_t *src, uns
 IRAM_ATTR __attribute__((noinline)) void shaper_moon_pack(uint16_t *dst, const uint8_t *src,
                                                         unsigned offset, unsigned groups, unsigned mode)
 {
-    if ((mode == 1 || mode == 3)) {
+    if (mode == 1 || mode == 3) {
         while (groups && (offset&3)) {
             const uint8_t *p = src+offset/4;
             *dst++ = ((p[0]<<8 | p[1]) >> (6-2*(offset&3))) & 1023;
@@ -216,4 +216,34 @@ void shaper_moon_samples(uint32_t *dst, const uint16_t *src, unsigned skip, size
         table += shaper_moon_part_words(mode,j);
     }
     shaper_moon_sample_tables(dst,src,skip,count,tables,mode);
+}
+
+IRAM_ATTR void shaper_moon_quad_samples(uint32_t *dst, const uint8_t *src, unsigned offset,
+                                       unsigned skip, size_t count, const uint32_t *const *tables)
+{
+    uint16_t blocks[6];
+    while (count) {
+#ifdef __XTENSA__
+        if (!skip && !((uintptr_t)dst & 15) && !(offset & 3) && count >= 48) {
+            const unsigned runs = count/48;
+            shaper_moon24qc_quads_pie(dst,src+offset/4+1,runs,tables);
+            dst += 48*runs;
+            offset += 20*runs;
+            count -= 48*runs;
+            continue;
+        }
+#endif
+        // Pack each edge once, including its history. At most four blocks
+        // reach the next quad boundary; the rest goes through the fused loop.
+        unsigned groups = (skip+count+11)/12;
+        if (groups > 4) groups = 4-(offset&3);
+        const size_t available = 12*groups-skip;
+        const size_t take = available < count ? available : count;
+        shaper_moon_pack(blocks,src,offset,groups+2,3);
+        shaper_moon_sample_tables(dst,blocks+2,skip,take,tables,3);
+        dst += take;
+        offset += 5*groups;
+        count -= take;
+        skip = 0;
+    }
 }

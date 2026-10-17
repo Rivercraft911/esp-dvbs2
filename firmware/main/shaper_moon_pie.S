@@ -67,6 +67,62 @@
     three shaper_moon3_pie,12,18,9,9,9
     three shaper_moon24qc_pie,10,16,6,8,8
 
+// Compact QPSK directly from the ring's high-pair-first quad bytes. Four
+// blocks consume five new bytes. Keep the preceding symbols in a8 instead
+// of writing and reloading a temporary uint16_t stream. src starts at the
+// first of eleven contributing symbols, on a quad boundary; count is in
+// four-block (48-sample) iterations. Same three table rows as the block API.
+    .macro quad_rows shift
+    extui a10,a8,16+\shift,6
+    extui a11,a8,8+\shift,8
+    extui a12,a8,\shift,8
+    mull a10,a10,a14
+    mull a11,a11,a14
+    mull a12,a12,a14
+    add a10,a10,a5
+    add a11,a11,a6
+    add a12,a12,a7
+    three_vectors
+    .endm
+
+    .macro quad_byte
+    l8ui a9,a3,0
+    slli a8,a8,8
+    addi a3,a3,1
+    or a8,a8,a9
+    .endm
+
+    .global shaper_moon24qc_quads_pie
+    .type shaper_moon24qc_quads_pie,@function
+    .align 4
+shaper_moon24qc_quads_pie:
+    entry a1,32
+    beqz a4,.Lquad_done
+    xor_constant
+    l32i a7,a5,8
+    l32i a6,a5,4
+    l32i a5,a5,0
+    l8ui a8,a3,0
+    l8ui a9,a3,1
+    slli a8,a8,8
+    or a8,a8,a9
+    addi a3,a3,2
+    movi a14,48
+    loopnez a4,.Lquad_end
+    quad_byte
+    quad_rows 2
+    quad_byte
+    quad_rows 0
+    quad_byte
+    quad_byte
+    quad_rows 6
+    quad_byte
+    quad_rows 4
+.Lquad_end:
+.Lquad_done:
+    retw
+    .size shaper_moon24qc_quads_pie,.-shaper_moon24qc_quads_pie
+
 // QPSK's two five-symbol rows are reused as whole windows. The oldest
 // symbol only affects the first vector; its row occupies sixteen bytes.
     .global shaper_moon24q_pie

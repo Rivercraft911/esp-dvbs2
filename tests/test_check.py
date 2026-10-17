@@ -12,7 +12,7 @@ FAKE = r'''
 import argparse,json,os,pathlib,sys,zlib
 p=argparse.ArgumentParser()
 p.add_argument('command'); p.add_argument('--out',type=pathlib.Path); p.add_argument('--save',type=pathlib.Path)
-p.add_argument('--timeout'); p.add_argument('--reset',action='store_true'); a=p.parse_args()
+p.add_argument('--port'); p.add_argument('--timeout'); p.add_argument('--reset',action='store_true'); a=p.parse_args()
 x=a.command.split(); kind=x[0]; bad=os.getenv('FAIL_GATES')
 assert kind in ('info','fecbench','dvbdump','dvbpace','wifimem'), 'RF command in check!'
 with pathlib.Path('commands.jsonl').open('a') as f:f.write(json.dumps(a.command)+'\n')
@@ -26,8 +26,8 @@ else:
  quads=mc<12 and rate==80000000 ; resident=n!=40 and (moon or mc<12 or n==4)
  symbols=33282 if mc<12 else 22194
  r=dict(status='ESP_OK',encoder_failed=False,encoder_timed=True,callsign='N0CALL',underruns=0,stall_ms=0,
-        modcod=mc,sps=n/den,sps_num=n,sps_den=den,symbol_rate=rate*den//n,dac_rate=rate,rolloff=.2 if moon else .35,
-        pulse_symbols=9 if moon else 6 if mc>=12 and n==4 and rate==80000000 else 9,
+        modcod=mc,sps=n/den,sps_num=n,sps_den=den,symbol_rate=rate*den//n,dac_rate=rate,rolloff=.2 if n==12 else .35,
+        pulse_symbols=7 if n==12 else 6 if mc>=12 and n in (3,4) and rate==80000000 else 9,
         ring_slots=8 if n==40 else 3 if n<=4 or moon else 2,ring_format='raw' if n==40 else 'quads' if quads else 'packed',
         workspace_memory='internal' if resident else 'psram',
         fill_kernel='moon-pie-split' if moon else 'pie',paced_wifi_up=moon,
@@ -87,6 +87,11 @@ else:
 with a.out.open('a') as f:
  for r in rows:f.write(json.dumps(dict(command=a.command,**r))+'\n')
 '''
+FAKE = '''def reserve_port(port, reset=False):
+    if __import__('os').getenv('PORT_BUSY'): raise RuntimeError('serial port busy')
+    return open('session.lock','a+')
+if __name__ == '__main__':
+''' + ''.join('    '+line+'\n' for line in FAKE.splitlines())
 RX = r'''
 import json,os,sys
 mc=int(sys.argv[sys.argv.index('--modcod')+1]); frames=int(sys.argv[sys.argv.index('--stream')+1])
@@ -111,6 +116,11 @@ with tempfile.TemporaryDirectory() as tmp:
     env=dict(os.environ,PYTHON=sys.executable,PATH=str(root/'bin')+os.pathsep+os.environ['PATH'])
     plan=subprocess.run(['sh','host/check.sh','--plan'],cwd=root,env=env,capture_output=True,text=True,check=True)
     assert not (root/'commands.jsonl').exists() and '22351 B' in plan.stdout
+    busy = subprocess.run(['sh','host/check.sh',str(root/'busy')],cwd=root,
+                          env=dict(env,PORT_BUSY='1'),capture_output=True,text=True)
+    assert busy.returncode == 1 and not (root/'commands.jsonl').exists()
+    assert 'FAIL\tserial ownership' in (root/'busy/summary.tsv').read_text()
+    assert not (root/'busy/host-crcs.log').exists()
     for moon in (False,True):
       if (root/'commands.jsonl').exists(): (root/'commands.jsonl').unlink()
       for fail in (False,True):
@@ -118,6 +128,8 @@ with tempfile.TemporaryDirectory() as tmp:
         run=subprocess.run(['sh','host/check.sh',str(out)]+(['--moonshot'] if moon else []),cwd=root,
                            env=dict(env,**({'FAIL_GATES':'1'} if fail else {})),capture_output=True,text=True,timeout=60)
         assert run.returncode == int(fail), (run.stdout,run.stderr)
+        assert json.loads((out/'revision.json').read_text())['host_firmware'] == 'test-fw'
+        assert json.loads((out/'board-info.json').read_text())[0]['firmware'] == 'test-fw'
         summary=(out/'summary.tsv').read_text().splitlines()
         assert len(summary)==(25 if moon else 32), summary
         failures=[line for line in summary if line.startswith('FAIL')]
@@ -136,6 +148,8 @@ with tempfile.TemporaryDirectory() as tmp:
                            env=dict(env,ENCODER_GATES='1',**({'FAIL_GATES':'1'} if fail else {})),
                            capture_output=True,text=True,timeout=60)
         assert run.returncode == int(fail), (run.stdout,run.stderr)
+        assert json.loads((out/'revision.json').read_text())['host_firmware'] == 'test-fw'
+        assert json.loads((out/'board-info.json').read_text())[0]['firmware'] == 'test-fw'
         summary=(out/'summary.tsv').read_text().splitlines()
         assert len(summary)==23, summary
         failures=[line for line in summary if line.startswith('FAIL')]

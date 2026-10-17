@@ -15,18 +15,54 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import fcntl
+import hashlib
 import json
+import os
 import pathlib
 import shutil
 import subprocess
 import sys
 import time
+import tempfile
 import zlib
 
 import serial
 from serial.tools import list_ports
 
 DEFAULT_PORT = "/dev/cu.usbmodem101"
+
+
+def reserve_port(port: str, reset: bool = False):
+    """Lock across worktrees and reject existing cu/tty users before any reset/open.
+
+    A coordinator can pass this locked descriptor to its board.py children.
+    lsof also catches tools that do not participate in our advisory lock.
+    """
+    device = os.path.realpath(port).replace('/dev/tty.', '/dev/cu.')
+    name = hashlib.sha256(device.encode()).hexdigest()[:16]
+    path = pathlib.Path(tempfile.gettempdir()) / ('esp-dvbs2-' + name + '.lock')
+    inherited = os.getenv('ESP_DVBS2_LOCK_FD')
+    lock = os.fdopen(os.dup(int(inherited)), 'a+') if inherited else path.open('a+')
+    try:
+        assert os.fstat(lock.fileno()).st_ino == path.stat().st_ino, 'wrong board lock'
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        ports = [device]
+        if reset:
+            bridge = bridge_port()
+            if bridge: ports.append(bridge)
+        aliases = sorted({p for dev in ports for p in
+                          (dev, dev.replace('/dev/cu.', '/dev/tty.')) if pathlib.Path(p).exists()})
+        if aliases:
+            result = subprocess.run(['lsof', '-t', '--', *aliases], capture_output=True, text=True)
+            if result.returncode not in (0, 1) or result.stderr.strip():
+                raise RuntimeError('cannot check serial ownership: ' + result.stderr.strip())
+            if result.stdout.strip():
+                raise RuntimeError('serial port busy; owner PIDs: ' + result.stdout.strip().replace('\n', ', '))
+        return lock
+    except BaseException:
+        lock.close()
+        raise
 
 
 def open_port(port: str, reset: bool) -> serial.Serial:
@@ -158,7 +194,8 @@ def main() -> int:
     args = parser.parse_args()
 
     data = payload(args.send) if args.send else b""
-    records = run(args.port, args.command, args.timeout, args.reset, data, args.save)
+    with reserve_port(args.port, args.reset):
+        records = run(args.port, args.command, args.timeout, args.reset, data, args.save)
     if data:
         for r in records:
             r["host_crc32"] = zlib.crc32(data)

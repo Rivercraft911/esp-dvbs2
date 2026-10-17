@@ -37,6 +37,8 @@ def check_records(text):
     assert len(seen) == 324
     slices = [json.loads(x[1:]) for x in text.splitlines() if x.startswith('@{"test":"moon_slices"')]
     assert slices == [dict(test='moon_slices',cases=15552,errors=0)],slices
+    quads = [json.loads(x[1:]) for x in text.splitlines() if x.startswith('@{"test":"moon_quads"')]
+    assert quads == [dict(test='moon_quads',cases=20736,errors=0)],quads
     print('moon C/PIE: 324 unique cases, whole tables and every block match Python')
 
 

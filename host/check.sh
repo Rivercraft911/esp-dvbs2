@@ -18,6 +18,7 @@ p.add_argument('--plan', action='store_true', help='print every criterion withou
 p.add_argument('--moonshot', action='store_true', help='33m333 and 8PSK 26m667 gates, plus slim regressions')
 p.add_argument('--all-crcs', action='store_true', help='also dump every golden waveform on the board (much slower)')
 p.add_argument('--encoder', action='store_true', help='encoder candidate: target 9/10, stage timings and estimated 10k-cycle input')
+p.add_argument('--port', default='/dev/cu.usbmodem101')
 a = p.parse_args()
 if a.moonshot and a.encoder: p.error("choose --moonshot or --encoder")
 python = sys.executable
@@ -98,7 +99,7 @@ def dump_args(key):
 
 print(f'Pass criteria fixed before any command: firmware {firmware}, stored N0CALL; no NVS writes.')
 print('Host: all 57 retained waveform CRCs plus the encoder fixture; every filled word equals the plain encoder.')
-if a.moonshot: print('New modes: six split-kernel Python/C CRCs; roll-off 0.20; Wi-Fi-up paces; 40137 cycles/core/bank, 20000 B heap floor.')
+if a.moonshot: print('New modes: six split-kernel Python/C CRCs; fractional roll-off 0.20, 8PSK 3 sps 0.35; Wi-Fi-up paces; 40137 cycles/core/bank, 20000 B heap floor.')
 print('FEC: 140 phase CRCs, 14 zero-mismatch PIE checks, all four stage bits active.')
 print('Every stream: ESP_OK, encoder timed/healthy, zero underruns/stalls, correct rate/pulse/ring/mapper.')
 print('Dumps: exact byte count, firmware/USB/file CRC equality, zero overlap errors; LeanDVB')
@@ -116,15 +117,22 @@ if a.encoder:
     print('Encoder planning gate: same-frame post-payload mean AND live maximum + estimated 10,000 cycles/input copy')
     print('  <= 135,827 cycles/frame for internal 8PSK; <= 203,685 for QPSK 9/10 at 26m667.')
     print('  These are floor(0.85 * 240e6 * frame_symbols / (100e6/3)); real SPI input must be measured later.')
+print('Serial ownership: lock across worktrees, reject cu/tty and reset-bridge owners before reset/open.')
+print('Decode lookahead: append 4096 zero samples to new-mode receiver input only, outside the dump CRC.')
 print('Continue after failures, print every result and exit nonzero if any gate fails.', flush=True)
 if a.plan: sys.exit(0)
 out = a.out or pathlib.Path('notes',dt.datetime.now().strftime('check-%Y%m%d-%H%M%S'))
 out.mkdir(parents=True, exist_ok=False)
 summary = []
+lock = None
+(out/'revision.json').write_text(json.dumps(dict(
+    host_firmware=firmware, host_commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
+    port=a.port, started=dt.datetime.now(dt.timezone.utc).isoformat()),indent=2)+'\n')
 
-def run(cmd, log):
+def run(cmd, log, device=False):
     with (out/log).open('w') as f:
-        result = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, timeout=240)
+        result = subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, timeout=240,
+                                pass_fds=(lock.fileno(),) if device else ())
     assert result.returncode == 0, f'exit {result.returncode}; see {out/log}'
 
 def step(label, fn):
@@ -139,10 +147,10 @@ def step(label, fn):
     print(verdict+': '+label+(' '+detail if detail else ''), flush=True)
 
 def board(command, reset=False, save=None):
-    cmd = [python,'host/board.py',command,'--timeout','120','--out',str(out/'runs.jsonl')]
+    cmd = [python,'host/board.py',command,'--port',a.port,'--timeout','120','--out',str(out/'runs.jsonl')]
     if reset: cmd += ['--reset']
     if save: cmd += ['--save',str(out/save)]
-    run(cmd, command.replace(' ','-')+'.log')
+    run(cmd, command.replace(' ','-')+'.log', device=True)
     rows = [json.loads(l) for l in (out/'runs.jsonl').read_text().splitlines()]
     rows = [r for r in rows if r.get('command') == command]
     assert rows and not any('error' in r for r in rows), rows
@@ -150,6 +158,7 @@ def board(command, reset=False, save=None):
 
 def info():
     rows = board('info', reset=True)
+    (out/'board-info.json').write_text(json.dumps(rows,indent=2)+'\n')
     assert len(rows) == 1 and rows[0]['firmware'] == firmware and rows[0]['callsign'] == 'N0CALL', rows
 
 def stream(rows, mc, token):
@@ -163,11 +172,11 @@ def stream(rows, mc, token):
     assert r['status'] == 'ESP_OK' and not r['encoder_failed'] and r['encoder_timed'], r
     assert r['callsign'] == 'N0CALL' and r['underruns'] == r['stall_ms'] == 0, r
     assert r['modcod'] == mc and r['sps'] == n/den and r['symbol_rate'] == rate*den//n, r
-    assert r['rolloff'] == (.2 if moon else .35), r
+    assert r['rolloff'] == (.2 if n == 12 else .35), r
     if moon:
         assert r['sps_num'] == n and r['sps_den'] == den, r
         assert r['fill_kernel'] == 'moon-pie-split', r
-    assert r['pulse_symbols'] == (9 if moon else 6 if mc >= 12 and n == 4 and rate == 80000000 else 9), r
+    assert r['pulse_symbols'] == (7 if n == 12 else 6 if mc >= 12 and n in (3,4) and rate == 80000000 else 9), r
     assert r['ring_slots'] == (8 if n == 40 else 3 if n <= 4 or moon else 2), r
     assert r['ring_format'] == ('raw' if n == 40 else 'quads' if quads else 'packed'), r
     assert r['workspace_memory'] == ('internal' if resident else 'psram'), r
@@ -192,8 +201,12 @@ def decode(key):
     mc,token,frames,decim = dump_args(key)
     n,rate,_ = mode(mc,token)
     name = key.replace('/','-')
-    run([python,'host/onair.py',str(out/(name+'.iq')),'--rate',str(rate//decim),
-         '--symbol-rate',str(rate*(5 if n == 12 else 1)/n),'--rolloff',str(.2 if n == 12 or (mc >= 12 and n == 3) else .35),'--scale','512','--stream',str(frames),'--modcod',str(mc),
+    source = out/(name+'.iq')
+    if n == 12 or (mc >= 12 and n == 3):
+        source = out/(name+'.tail.iq')
+        source.write_bytes((out/(name+'.iq')).read_bytes()+bytes(4096*4))
+    run([python,'host/onair.py',str(source),'--rate',str(rate//decim),
+         '--symbol-rate',str(rate*(5 if n == 12 else 1)/n),'--rolloff',str(.2 if n == 12 else .35),'--scale','512','--stream',str(frames),'--modcod',str(mc),
          '--callsign','N0CALL','--receiver',receiver,'--shift','0'],name+'.decode.json')
     r = json.loads((out/(name+'.decode.json')).read_text())
     assert r['frame_lock'] and r['status_complete'] and r['payload_match'], r
@@ -236,6 +249,16 @@ def fec():
     board('fecbench pie')
     run([python,'tests/test_fecbench.py',str(out/'runs.jsonl'),'--correctness-only'],'fec-check.log')
 
+try:
+    sys.path.insert(0,'host')
+    import board as owner
+    lock = owner.reserve_port(a.port, reset=True)
+    os.environ['ESP_DVBS2_LOCK_FD'] = str(lock.fileno())
+except Exception as e:
+    step('serial ownership', lambda: (_ for _ in ()).throw(e))
+    print((out/'summary.tsv').read_text(),end='')
+    print('Board checks refused before reset/open. Records:',out)
+    sys.exit(1)
 step('all host waveform CRCs', lambda:run([python,'tests/test_stream.py'],'host-crcs.log'))
 if a.moonshot: step('new host streams', lambda:run([python,'tests/test_rational.py'],'host-new.log'))
 step('info',info)

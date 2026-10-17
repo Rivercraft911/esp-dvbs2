@@ -4,7 +4,8 @@ This peripheral-free app tests four kernels: 8PSK at 3 samples/symbol and
 QPSK/8PSK at 12/5 samples/symbol, with wide and compact QPSK tables.
 It checks 324 block cases and 15,552 guarded
 sample slices, including every fractional phase, destination alignment and a
-whole bank. QEMU checks instruction semantics, never silicon timing.
+whole bank. Another 20,736 guarded cases exercise compact QPSK directly
+from quad bytes, including the unrolled loop and every edge alignment. QEMU checks instruction semantics, never silicon timing.
 
 After activating ESP-IDF v6.1:
 
@@ -32,13 +33,10 @@ whole input block. They describe host dumps, not board measurements. The receive
 4,096 zero samples outside these CRCs to drain finite-input lookahead; every
 recovered frame must still match the sixteen real input frames exactly.
 
-These candidates are not live transmitter modes. Seven-symbol .20 pulses pass
-the exact quantized spectrum model. Wide QPSK meets the timing model but uses
-98,368 B of tables; compact QPSK uses 27,648 B and needs core 0 help. Both 8PSK
-kernels also need help under the complete-fill model. No new silicon timing,
-split-stream or Wi-Fi heap admission is claimed. `membench moon` is an isolated coordinator probe; the normal
-transmitter and its waveforms retain their existing selection. Long findings,
-raw logs and the RAM account are in ignored `notes/fill-round2.md`.
+The split transmitter selects compact QPSK at 12/5 sps, seven-symbol .20
+8PSK at 12/5 sps, and the six-symbol .35 8PSK kernel at 3 sps. The latter
+is not a .20 pulse. Admission still requires `host/check.sh --moonshot` on
+the board. See [the integrated account](../../docs/moonshot.md).
 
 `host/moon_fill.py --design` reproduces the seven-symbol integer coefficients.
 `--fallback` reports the .25/.35 mask, RAM and optimistic unassembled schedule

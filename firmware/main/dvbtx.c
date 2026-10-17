@@ -176,9 +176,13 @@ static void moon_helper(void *arg)
         if (dvb.helper_stop) break;
         if (!__atomic_load_n(&dvb.pending, __ATOMIC_ACQUIRE)) continue;
         const uint32_t before = esp_cpu_get_cycle_count();
-        shaper_moon_pack(dvb.blocks,dvb.job_src,dvb.job_offset,(dvb.job_skip+dvb.job_count+11)/12+2,dvb.moon_mode);
-        shaper_moon_sample_tables(dvb.job_dst,dvb.blocks+2,dvb.job_skip,dvb.job_count,
-                                  dvb.moon_tables,dvb.moon_mode);
+        if (enc.quads) shaper_moon_quad_samples(dvb.job_dst,dvb.job_src,dvb.job_offset,
+                                               dvb.job_skip,dvb.job_count,dvb.moon_tables);
+        else {
+            shaper_moon_pack(dvb.blocks,dvb.job_src,dvb.job_offset,(dvb.job_skip+dvb.job_count+11)/12+2,dvb.moon_mode);
+            shaper_moon_sample_tables(dvb.job_dst,dvb.blocks+2,dvb.job_skip,dvb.job_count,
+                                      dvb.moon_tables,dvb.moon_mode);
+        }
         moon_wake_encoder();
         const uint32_t cycles = esp_cpu_get_cycle_count()-before;
         dvb.helper_cycles += cycles;
@@ -204,8 +208,11 @@ static IRAM_ATTR void moon_shape(uint32_t *dst, uint64_t first, size_t count,
     const size_t helper = split > skip ? split-skip : 0;
     if (!helper) {
         moon_wake_encoder();
-        shaper_moon_pack(dvb.blocks,win,offset,groups+2,dvb.moon_mode);
-        shaper_moon_sample_tables(dst,dvb.blocks+2,skip,count,dvb.moon_tables,dvb.moon_mode);
+        if (enc.quads) shaper_moon_quad_samples(dst,win,offset,skip,count,dvb.moon_tables);
+        else {
+            shaper_moon_pack(dvb.blocks,win,offset,groups+2,dvb.moon_mode);
+            shaper_moon_sample_tables(dst,dvb.blocks+2,skip,count,dvb.moon_tables,dvb.moon_mode);
+        }
         return;
     }
     dvb.job_dst = dst;
@@ -220,9 +227,12 @@ static IRAM_ATTR void moon_shape(uint32_t *dst, uint64_t first, size_t count,
     if (dispatch > dvb.dispatch_max) dvb.dispatch_max = dispatch;
     const unsigned done = (skip+helper)/12;
     uint16_t *local = dvb.blocks+done+2;
-    shaper_moon_pack(local,win,offset+done*(dvb.den == 5 ? 5 : 4),groups-done+2,dvb.moon_mode);
-    shaper_moon_sample_tables(dst+helper,local+2,0,count-helper,
-                              dvb.moon_tables,dvb.moon_mode);
+    if (enc.quads) shaper_moon_quad_samples(dst+helper,win,offset+done*5,0,count-helper,dvb.moon_tables);
+    else {
+        shaper_moon_pack(local,win,offset+done*(dvb.den == 5 ? 5 : 4),groups-done+2,dvb.moon_mode);
+        shaper_moon_sample_tables(dst+helper,local+2,0,count-helper,
+                                  dvb.moon_tables,dvb.moon_mode);
+    }
     const uint32_t join = esp_cpu_get_cycle_count();
     while (__atomic_load_n(&dvb.pending, __ATOMIC_ACQUIRE)) { }
     const uint32_t waited = esp_cpu_get_cycle_count()-join;
@@ -536,8 +546,8 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
     const unsigned nslots = !enc.packed ? RING_SLOTS : (sps <= 4 || moon) ? 3 : 2;
     if (moon) {
         dvb.moon_mode = fractional ? (quads ? 3 : 2) : 0;
-        dvb.helper_num = 1;
-        dvb.helper_den = 3;
+        dvb.helper_num = quads ? 2 : 1;
+        dvb.helper_den = quads ? 7 : 3;
         dvb.pending = dvb.encoder_freed = 0;
         dvb.helper_stop = false;
         dvb.helper_cycles = dvb.helper_jobs = dvb.helper_max = 0;

@@ -33,3 +33,8 @@ void shaper_moon_fill_tables(uint32_t *, const uint16_t *, unsigned, const uint3
 void shaper_moon_sample_tables(uint32_t *, const uint16_t *, unsigned, size_t,
                                const uint32_t *const *, unsigned);
 void shaper_moon_pack(uint16_t *, const uint8_t *, unsigned, unsigned, unsigned);
+// Compact QPSK straight from quad bytes. offset is the same history offset
+// passed to pack; no input or destination alignment requirement at the edges.
+void shaper_moon_quad_samples(uint32_t *, const uint8_t *, unsigned, unsigned, size_t,
+                              const uint32_t *const *);
+void shaper_moon24qc_quads_pie(uint32_t *, const uint8_t *, unsigned, const uint32_t *const *);

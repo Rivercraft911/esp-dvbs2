@@ -92,7 +92,7 @@ def loop_stream(code, groups):
     long = next((i for i,(_,s) in enumerate(code) if s.startswith('wsr.lbeg')), None)
     if long is not None:
         begin = next(i for i,(_,s) in enumerate(code) if re.match(r'addi\S*\s+a4, a4, 1$',s))+1
-        end = len(code)-3
+        end = next(i for i in range(begin,len(code)) if code[i][1].startswith('retw'))
     else:
         k = next(i for i,(_,s) in enumerate(code) if s.startswith(('loopnez','loop\t')))
         begin = k+1

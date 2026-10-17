@@ -9,6 +9,7 @@ static uint32_t table[24672] __attribute__((aligned(16)));
 static uint32_t expected[16392] __attribute__((aligned(16)));
 static uint32_t guarded[16400] __attribute__((aligned(16)));
 static uint16_t input[1368] __attribute__((aligned(16)));
+static uint8_t quads[1720];
 
 static uint32_t hash(const uint32_t *p, unsigned words)
 {
@@ -66,7 +67,38 @@ int moon_check(void)
             }
         }
     printf("@{\"test\":\"moon_slices\",\"cases\":%u,\"errors\":%u}\n",slices,slice_bad);
-    return bad || slice_bad;
+    unsigned quad_cases = 0, quad_bad = 0;
+    const unsigned lengths[] = {0,1,11,12,13,47,48,49,95,96,97,16380};
+    for (unsigned level = 0; level < 3; ++level) {
+        shaper_moon_build(table,3,peaks[level]);
+        const uint32_t *tables[] = {table,table+768,table+3840};
+        for (unsigned seed = 0; seed < 3; ++seed) {
+            uint32_t x = seeds[seed];
+            for (unsigned i = 0; i < sizeof quads; ++i) {
+                x ^= x << 13, x ^= x >> 17, x ^= x << 5;
+                quads[i] = x;
+            }
+            for (unsigned phase = 0; phase < 4; ++phase) {
+                shaper_moon_pack(input,quads,phase,1368,3);
+                shaper_moon_c(expected,input+2,1366,table,3);
+                for (unsigned skip = 0; skip < 12; ++skip)
+                    for (unsigned offset = 0; offset < 4; ++offset)
+                        for (unsigned c = 0; c < sizeof lengths/sizeof lengths[0]; ++c) {
+                            const unsigned n = lengths[c], first = 4+offset;
+                            memset(guarded,0xa5,sizeof guarded);
+                            shaper_moon_quad_samples(guarded+first,quads,phase,skip,n,tables);
+                            for (unsigned j = 0; j < n; ++j)
+                                quad_bad |= guarded[first+j] != expected[skip+j];
+                            for (unsigned j = 0; j < first; ++j) quad_bad |= guarded[j] != 0xa5a5a5a5;
+                            for (unsigned j = first+n; j < sizeof guarded/sizeof guarded[0]; ++j)
+                                quad_bad |= guarded[j] != 0xa5a5a5a5;
+                            ++quad_cases;
+                        }
+            }
+        }
+    }
+    printf("@{\"test\":\"moon_quads\",\"cases\":%u,\"errors\":%u}\n",quad_cases,quad_bad);
+    return bad || slice_bad || quad_bad;
 }
 
 #ifdef MOON_HOST
