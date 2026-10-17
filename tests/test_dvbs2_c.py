@@ -23,9 +23,9 @@ U8P = ct.POINTER(ct.c_uint8)
 
 class NativeEncoder:
     def __enter__(self):
-        subprocess.run([sys.executable, str(ROOT / "host/gen_dvbs2_c.py"), "--check"],
+        subprocess.run([sys.executable, str(ROOT / "tests/reference/gen_dvbs2_c.py"), "--check"],
                        check=True)
-        subprocess.run([sys.executable, str(ROOT / "host/gen_dvbs2_fast.py"), "--check"], check=True)
+        subprocess.run([sys.executable, str(ROOT / "tests/reference/gen_dvbs2_fast.py"), "--check"], check=True)
         self.tmp = tempfile.TemporaryDirectory(prefix="dvbs2-c-")
         folder = pathlib.Path(self.tmp.name)
         bridge = folder / "sizes.c"

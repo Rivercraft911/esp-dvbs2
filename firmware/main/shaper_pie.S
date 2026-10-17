@@ -1,5 +1,5 @@
 // Pulse-shaping kernels on the ESP32-S3 PIE vector unit (ESP32-S3 TRM v1.8, chapter 1).
-// Table layout and the bit-exact model: shaper.h and host/shaper.py.
+// Table layout and the bit-exact model: shaper.h and archived host/shaper.py.
 //
 // Per output vector (four DAC words) the kernels load three part rows, add them with the
 // saturating 32-bit add (the offset-binary fields never come near saturation), XOR 0x80200 and

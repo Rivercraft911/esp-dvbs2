@@ -5,13 +5,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#ifndef SIGN_HOST
+#ifdef __XTENSA__
 #include "esp_heap_caps.h"
 #endif
 
 static void *buffer(size_t n)
 {
-#ifdef SIGN_HOST
+#ifndef __XTENSA__
     return aligned_alloc(16,(n+15)&~(size_t)15);
 #else
     return heap_caps_aligned_alloc(16,n,MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);

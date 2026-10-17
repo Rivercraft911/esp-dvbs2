@@ -1,4 +1,5 @@
 #include "lofty.h"
+#include "machine.h"
 #include "dvbs2.h"
 #include <assert.h>
 #include <inttypes.h>
@@ -80,6 +81,24 @@ static void kernels(void)
                    (unsigned[]){16,128,508}[peak],seed,hash(table,sizeof table),hash(want,1367*48));
         }
     printf("@{\"test\":\"lofty_end\",\"slices\":%u,\"errors\":0}\n",cases);
+    // I/Q fields do not overlap, so the fused ADD renderer must equal OR.
+    const unsigned shifts[] = {3,2,0};
+    for (unsigned level = 0; level < 3; ++level) {
+        assert(!machine_build(table,(unsigned[]){16,128,508}[level]));
+        uint32_t x = 2026;
+        for (unsigned b = 0; b < 1365; ++b) {
+            x ^= x<<13; x ^= x>>17; x ^= x<<5;
+            offsets[b] = x&0x7ff07ff0;
+            for (unsigned v = 0; v < 3; ++v)
+                for (unsigned p = 0; p < 4; ++p)
+                    want[12*b+4*v+p] = table[4*(256*v+((x>>(shifts[v]+4))&255))+p] |
+                        table[4*(256*(3+v)+((x>>(shifts[v]+20))&255))+p];
+        }
+        offsets[1365] = 0;
+        machine_render(got,offsets,1365,table);
+        assert(!memcmp(got,want,1365*48));
+    }
+    puts("machine add: 4095 blocks equal the independent OR kernel");
 }
 
 // Trace sentinels. The parser uses linked PCs, never QEMU's CCOUNT.
@@ -210,6 +229,10 @@ static void encoder(void)
     lofty_begin(); lofty_render(got,offsets,1365,table); lofty_end();
 #endif
     free(bits); free(cache); free(map); free(raw); free(payload); free(ws); free(f);
+#if !LOFTY_TRACE
+    void sign_mapper_check(void);
+    sign_mapper_check();
+#endif
 }
 
 #ifdef LOFTY_HOST

@@ -1,4 +1,4 @@
-// Table build and portable kernel for table-driven pulse shaping (shaper.h, host/shaper.py).
+// Table build and portable kernel for table-driven pulse shaping (shaper.h, archived host/shaper.py).
 
 #include "shaper.h"
 
@@ -60,7 +60,7 @@ static int part_value(const int32_t *taps, const int32_t *level, int n, int bits
 }
 
 // Biases: parts 1 and 2 start at 0, part 0 takes the rest of 512, so fields stay in 0..1023 and
-// the offset-binary sum of the three parts never carries from I into Q (host/shaper.py checks
+// the offset-binary sum of the three parts never carries from I into Q (archived host/shaper.py checks
 // the ranges for the generated taps).
 void shaper_build(shaper_table_t *t, uint32_t *blocks, const int32_t *taps, int n, int bits)
 {

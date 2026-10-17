@@ -12,8 +12,8 @@ from test_stream import compile_stream
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'host'))
 import lofty
-import onair
-import shaper
+sys.path.insert(0,str(ROOT/'tests/reference'))
+import waveforms as onair
 
 
 def checksum(data):
@@ -25,6 +25,7 @@ def checksum(data):
 def kernels(text):
     rows = [json.loads(l[1:]) for l in text.splitlines() if l.startswith('@{')]
     assert len(rows) == 11,len(rows)
+    assert "sign mapper: 96 frames" in text and "machine add: 4095 blocks" in text
     for r in rows[:9]:
         assert r['table'] == checksum(lofty.table(r['peak']).tobytes()),r
         x = (2026,7,0xffffffff)[r['seed']]
@@ -47,7 +48,8 @@ def check(out, receiver=None):
     kernel = out/'kernels'
     subprocess.run(['cc','-O2','-Wall','-Wextra','-Werror','-DLOFTY_HOST',
                     '-I'+str(out),'-I'+str(ROOT/'firmware/main'),'-I'+str(component/'include'),
-                    str(ROOT/'tests/lofty.c'),str(ROOT/'firmware/main/lofty.c'),
+                    str(ROOT/'tests/lofty.c'),str(ROOT/'tests/sign_mapper.c'),
+                    str(ROOT/'firmware/main/machine.c'),str(ROOT/'firmware/main/lofty.c'),
                     str(component/'fast.c'),str(component/'dvbs2.c'),'-o',str(kernel)],check=True)
     kernels(subprocess.check_output([str(kernel)],text=True))
     crcs = {}
@@ -68,7 +70,7 @@ def check(out, receiver=None):
         symbols = onair.symbols(mc,17,callsign='N0CALL')
         phases = np.rint(np.angle(symbols)*4/np.pi).astype(int)%8
         count = 16*onair.frame_symbols(mc)
-        expected = shaper.iq(lofty.shape(phases[:count]))
+        expected = lofty.iq(lofty.shape(phases[:count]))
         actual = np.fromfile(iq,dtype='<i2').reshape(-1,2)
         np.testing.assert_array_equal(actual,np.column_stack((expected.real,expected.imag)))
         crc = zlib.crc32(iq.read_bytes())
@@ -78,9 +80,9 @@ def check(out, receiver=None):
         if receiver:
             tail = out/f'{mc}.tail.iq'
             tail.write_bytes(iq.read_bytes()+bytes(4096*4))
-            cmd = [sys.executable,str(ROOT/'host/onair.py'),str(tail),'--rate','80000000',
+            cmd = [sys.executable,str(ROOT/'host/decode.py'),str(tail),'--rate','80000000',
                    '--symbol-rate',str(80000000/3),'--rolloff','.35','--modcod',str(mc),
-                   '--scale','512','--stream','16','--callsign','N0CALL','--shift','0',
+                   '--scale','512','--stream','16','--callsign','N0CALL',
                    '--receiver',str(receiver)]
             rx = subprocess.run(cmd,capture_output=True,text=True,timeout=120)
             (out/f'{mc}.decode.json').write_text(rx.stdout)
@@ -95,7 +97,7 @@ def check(out, receiver=None):
     if pinned.exists(): assert crcs == json.loads(pinned.read_text())
     (out/'crcs.json').write_text(json.dumps(crcs,indent=2)+'\n')
     for peak in (16,128,508):
-        margins = shaper.mask_margins(lofty.taps(peak),3,.35)
+        margins = lofty.mask_margins(lofty.taps(peak),3,.35)
         assert min(margins[k] for k in ('upper','lower','far')) > 0,margins
         print('pulse mask',peak,margins)
     quantized = lofty.quantized_mask()

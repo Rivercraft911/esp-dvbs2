@@ -1,19 +1,12 @@
 #pragma once
-
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
-// Test data stays in internal SRAM. No flash reads, allocation or floating point in fill().
-// Tag: seed 1, output state bit 0 as BPSK (+256 for 1), then right-shift Galois step
-// s = (s >> 1) ^ ((0 - (s & 1)) & 0x80200003). Period 2^32-1 DAC samples.
+// No allocation, flash reads or floating point in fill().
 typedef struct {
-    bool tag, sweep;
-    uint32_t bandwidth_40m; /* total Hz at 40 MS/s, for automatic filter selection */
-    uint32_t tone[80];
-    uint32_t rows[256][8];
-    uint32_t advance[256];
-    uint32_t jump[32][32];
+    uint32_t bandwidth_40m; // occupied Hz at 40 MS/s; doubles at 80 MS/s
+    uint32_t tone[40];
 } radio_signal_t;
 
 bool radio_signal_init(radio_signal_t *signal, const char *name);

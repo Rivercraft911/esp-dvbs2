@@ -2,13 +2,13 @@
 
 This is the readable model the firmware must match bit for bit. Standard: ETSI EN 302 307-1
 V1.4.1 (2014-11); clause, table and figure numbers refer to it. Code tables: dvbs2_tables.py,
-generated from the standard's PDF by gen_tables.py. Carried over from the RP2350 benchmark,
+transcribed from the standard's PDF (provenance in dvbs2_tables.py). Carried over from the RP2350 benchmark,
 where tests/test_dvbs2.py checked it against gr-dtv and leansdr stage by stage.
 
 Scope: QPSK (MODCOD 1-11) and 8PSK (12-17), normal (64 800 bit) and short (16 200 bit)
-FECFRAMEs; 16APSK (18-23) and 32APSK (24-28), normal frames only (Table 12). Pilots on/off,
+FECFRAMEs (Table 12). Pilots on/off,
 any PL scrambling code n (default 0). Not implemented:
-dummy PLFRAMEs (5.5.1), ISSY and null-packet deletion (Annex D), multiple streams, ACM,
+ISSY and null-packet deletion (Annex D), multiple streams, ACM,
 pulse shaping (5.6).
 
 Conventions
@@ -18,11 +18,6 @@ Conventions
 * The common QPSK/8PSK API uses a uint8 phase index p: exp(j p pi/4), p = 0..7. All data,
   pi/2-BPSK header and pilot symbols lie on these eight points, before and after PL scrambling.
   One phase byte per symbol also selects the pulse shaper's eight possible input symbols.
-* plframe_symbols()/transmit_symbols() return complex symbols for all four modulations.
-  APSK uses unit average constellation energy, one of the two scalings admitted by 5.4.3/4.
-
-Exact standard text line citations and normalization derivations: results/2026-10-16-apsk-decode/README.md.
-
 Mode adaptation for file transfer: Generic Continuous Stream (GCS). MATYPE-1 = 01 1 1 0 0 RO
 (Table 3: TS/GS = 01 generic continuous, SIS, CCM, ISSYI off, NPD off, roll-off), MATYPE-2 = 0
 (reserved for a single stream), UPL = 0 (continuous, 5.1.1), DFL = user bits in this frame,
@@ -47,12 +42,7 @@ from dvbs2_tables import BCH_PARAMS, BCH_POLYS, LDPC, Q  # noqa: E402
 
 RATES = ("1/4", "1/3", "2/5", "1/2", "3/5", "2/3", "3/4", "4/5", "5/6", "8/9", "9/10")
 PSK8_RATES = ("3/5", "2/3", "3/4", "5/6", "8/9", "9/10")
-APSK16_RATES = ("2/3", "3/4", "4/5", "5/6", "8/9", "9/10")
-APSK32_RATES = ("3/4", "4/5", "5/6", "8/9", "9/10")
-BITS_PER_SYMBOL = {"qpsk": 2, "8psk": 3, "16apsk": 4, "32apsk": 5}
-# 5.4.3 Table 9; 5.4.4 Table 10, dimensionless radius ratios, in rate order above.
-APSK16_GAMMA = (3.15, 2.85, 2.75, 2.70, 2.60, 2.57)
-APSK32_GAMMA = ((2.84, 5.27), (2.72, 4.87), (2.64, 4.64), (2.54, 4.33), (2.53, 4.30))
+BITS_PER_SYMBOL = {"qpsk": 2, "8psk": 3}
 Code = namedtuple("Code", "rate short kbch nbch t n q modcod rows")
 
 
@@ -67,15 +57,11 @@ def code(rate, short=False):
 
 
 def modcod(rate, modulation="qpsk"):
-    """Table 12: QPSK 1..11, 8PSK 12..17, 16APSK 18..23, 32APSK 24..28."""
+    """Table 12: QPSK 1..11, 8PSK 12..17."""
     if modulation == "qpsk":
         return RATES.index(rate) + 1
     if modulation == "8psk":
         return PSK8_RATES.index(rate) + 12
-    if modulation == "16apsk":
-        return APSK16_RATES.index(rate) + 18
-    if modulation == "32apsk":
-        return APSK32_RATES.index(rate) + 24
     raise ValueError(f"unsupported modulation: {modulation}")
 
 
@@ -258,7 +244,7 @@ def fecframe(bbf, rate, short=False):
 # ---------------------------------------------------------- mapping and PL framing (5.4, 5.5)
 
 def bit_interleave(fec, rate, modulation="8psk"):
-    """5.3.3, Table 8, Figures 7/8: write 3/4/5 columns for 8PSK/16APSK/32APSK, read rows.
+    """5.3.3, Table 8, Figures 7/8: write three columns for 8PSK, read rows.
     For rate 3/5 read columns 3, 2, 1; for all other rates read 1, 2, 3. Thus the first FEC bit
     is the third symbol bit for rate 3/5 and the first otherwise. QPSK has no interleaver."""
     modcod(rate, modulation)
@@ -287,43 +273,6 @@ def psk8_map(interleaved):
 def qpsk_phases(bI, bQ):
     """QPSK sign bits -> phase in pi/4 units (Figure 9): 00=1, 01=7, 10=3, 11=5."""
     return np.array([1, 7, 3, 5], np.uint8)[2 * np.asarray(bI) + np.asarray(bQ)]
-
-
-@lru_cache(maxsize=None)
-def apsk_constellation(rate, modulation):
-    """5.4.3/4, Figures 11/12 and Tables 9/10: binary label -> complex point, E=1.
-    Each ring's labels are read counter-clockwise from its first angle. Independent
-    implementation from the standard; no external transmitter/receiver code is used.
-    R1=sqrt(4/(1+3 gamma^2)) or sqrt(8/(1+3 gamma1^2+4 gamma2^2))."""
-    modcod(rate, modulation)
-    if modulation == "16apsk":
-        gamma = APSK16_GAMMA[APSK16_RATES.index(rate)]
-        r1 = np.sqrt(4 / (1 + 3 * gamma**2))
-        rings = ((r1, np.pi / 4, (12, 14, 15, 13)),
-                 (r1 * gamma, np.pi / 12, (4, 0, 8, 10, 2, 6, 7, 3, 11, 9, 1, 5)))
-    elif modulation == "32apsk":
-        g1, g2 = APSK32_GAMMA[APSK32_RATES.index(rate)]
-        r1 = np.sqrt(8 / (1 + 3 * g1**2 + 4 * g2**2))
-        rings = ((r1, np.pi / 4, (17, 21, 23, 19)),
-                 (r1 * g1, np.pi / 12, (16, 0, 1, 5, 4, 20, 22, 6, 7, 3, 2, 18)),
-                 (r1 * g2, 0, (24, 8, 25, 9, 13, 29, 12, 28, 30, 14, 31, 15, 11, 27, 10, 26)))
-    else:
-        raise ValueError("APSK constellation requires 16apsk or 32apsk")
-    out = np.empty(1 << BITS_PER_SYMBOL[modulation], np.complex128)
-    for radius, start, labels in rings:
-        out[list(labels)] = radius * np.exp(1j * (start + 2 * np.pi * np.arange(len(labels)) /
-                                                len(labels)))
-    out.flags.writeable = False
-    return out
-
-
-def apsk_map(interleaved, rate, modulation):
-    """5.4.3/4: group interleaved bits MSB first, then select the labelled APSK point."""
-    constellation = apsk_constellation(rate, modulation)
-    width = BITS_PER_SYMBOL[modulation]
-    bits = np.asarray(interleaved, np.uint8).reshape(-1, width)
-    labels = bits @ (1 << np.arange(width - 1, -1, -1))
-    return constellation[labels]
 
 
 SOF = 0x18D2E82                                   # 5.5.2.1, 26 bits
@@ -427,7 +376,7 @@ def plframe_phases(fec, rate, short=False, pilots=True, n=0, modulation="qpsk"):
     slots except the last, then phase += 2 R_n modulo 8 (5.5). The header is not scrambled."""
     mc = modcod(rate, modulation)
     if modulation not in ("qpsk", "8psk"):
-        raise ValueError("phase indices support QPSK/8PSK; use plframe_symbols for APSK")
+        raise ValueError("phase indices support QPSK/8PSK")
     assert len(fec) == code(rate, short).n
     if modulation == "8psk":
         phases = psk8_map(bit_interleave(fec, rate))
@@ -443,34 +392,11 @@ def plframe_phases(fec, rate, short=False, pilots=True, n=0, modulation="qpsk"):
     return np.concatenate([qpsk_phases(*plheader(mc, short, pilots)), phases])
 
 
-def plframe_symbols(fec, rate, short=False, pilots=True, n=0, modulation="qpsk"):
-    """PLFRAME as complex symbols. APSK supports normal frames only.
-    5.5: 90-symbol slots, 36 unit-energy pilots after each 16 slots except the last,
-    then multiply the body by exp(j R_n pi/2). Header/pilot energy is also one."""
-    if modulation in ("qpsk", "8psk"):
-        return symbols_from_phases(plframe_phases(fec, rate, short, pilots, n, modulation))
-    mc = modcod(rate, modulation)
-    if short:
-        raise ValueError("APSK reference supports normal frames only")
-    assert len(fec) == 64800
-    body = apsk_map(bit_interleave(fec, rate, modulation), rate, modulation)
-    if pilots:
-        slots = len(body) // 90
-        out = np.full(len(body) + 36 * ((slots - 1) // 16), (1 + 1j) / np.sqrt(2))
-        k = np.arange(len(body))
-        out[k + 36 * (k // 1440)] = body
-        body = out
-    body *= np.array([1, 1j, -1, -1j])[pl_scrambling_sequence(len(body), n)]
-    return np.concatenate([symbols(*plheader(mc, short, pilots)), body])
-
-
 def plframe_length(short, pilots, modulation="qpsk"):
     """Figure 13, Table 11: 90 (S+1) + 36 floor((S-1)/16) symbols with pilots.
-    S = nldpc/(90 etaMOD), etaMOD = 2/3/4/5 for QPSK/8PSK/16APSK/32APSK."""
+    S = nldpc/(90 etaMOD), etaMOD = 2 for QPSK or 3 for 8PSK."""
     if modulation not in BITS_PER_SYMBOL:
         raise ValueError(f"unsupported modulation: {modulation}")
-    if short and modulation in ("16apsk", "32apsk"):
-        raise ValueError("APSK reference supports normal frames only")
     S = (16200 if short else 64800) // (90 * BITS_PER_SYMBOL[modulation])
     return 90 * (S + 1) + (36 * ((S - 1) // 16) if pilots else 0)
 
@@ -490,24 +416,12 @@ def transmit_phases(data, rate, short=False, pilots=True, n=0, ro=0.35, modulati
     """User bits -> GCS PLFRAMEs in phase-index form. Final DATA FIELD is zero-padded (5.2.1)."""
     modcod(rate, modulation)
     if modulation not in ("qpsk", "8psk"):
-        raise ValueError("phase indices support QPSK/8PSK; use transmit_symbols for APSK")
+        raise ValueError("phase indices support QPSK/8PSK")
     dfl = code(rate, short).kbch - 80
     frames = []
     for k in range(0, max(len(data), 1), dfl):
         fec = fecframe(bbframe(data[k:k + dfl], rate, short, ro), rate, short)
         frames.append(plframe_phases(fec, rate, short, pilots, n, modulation))
-    return np.concatenate(frames)
-
-
-def transmit_symbols(data, rate, short=False, pilots=True, n=0, ro=0.35, modulation="qpsk"):
-    """User bits -> concatenated GCS PLFRAMEs as complex symbols, including APSK."""
-    modcod(rate, modulation)
-    plframe_length(short, pilots, modulation)
-    dfl = code(rate, short).kbch - 80
-    frames = []
-    for k in range(0, max(len(data), 1), dfl):
-        fec = fecframe(bbframe(data[k:k + dfl], rate, short, ro), rate, short)
-        frames.append(plframe_symbols(fec, rate, short, pilots, n, modulation))
     return np.concatenate(frames)
 
 

@@ -3,7 +3,11 @@
 
 /* ESP32-S3 SPI slave that fills an ingress ring (ingress.h) with no CPU work per byte.
  *
- * GP-SPI2 runs as a half-duplex slave (TRM v1.8 section 30.5.9). Each message is one CS
+ * With cfg.pv, GP-SPI2 uses the IDF full-duplex slave with MISO disconnected:
+ * mode 0, MSB first, raw 1332 bytes per CS, no prefix, up to 20 MHz.
+ * READY additionally requires the driver's post-setup callback to have armed DMA.
+ *
+ * Otherwise GP-SPI2 runs as a half-duplex slave (TRM v1.8 section 30.5.9). Each message is one CS
  * assertion: command Wr_DMA (0x03 one data line, 0x13 two, 0x23 four), one address byte (0),
  * eight dummy clocks, then the 1332-byte PV message, MSB first, SPI mode 0. In single-transfer
  * mode CS rising ends the transfer and the GDMA writes end-of-frame into the slot's descriptor
@@ -24,6 +28,7 @@ typedef struct {
     uint8_t *buffers[INGRESS_SLOTS]; /* optional borrowed internal DMA slots, each 1336 B */
     bool replay; /* diagnostic: presealed ring, DMA idle, no external sender */
     bool loopback;  /* the pads are driven by an on-chip master: only connect the slave inputs */
+    bool pv; /* raw PV-SPI v1, single-line, no command/address/dummy prefix; <=20 MHz */
 } ingress_spi_config;
 
 typedef struct {

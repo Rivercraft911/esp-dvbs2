@@ -7,7 +7,7 @@
 
 // QPSK/8PSK encoded on core 0 and shaped on core 1. Measured 80 MS/s modes
 // use QPSK blocks at 3/4 sps and short 8PSK at 4 sps. QPSK 12/5 sps uses a persistent prepare/render queue, roll-off .20.
-// These experiment modes have not passed silicon timing or Wi-Fi memory gates.
+// Timing evidence and remaining margins are in docs/measurements.md.
 void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, unsigned level,
                 unsigned sps, uint32_t dac_rate);
 

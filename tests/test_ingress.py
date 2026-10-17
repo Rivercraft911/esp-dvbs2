@@ -23,7 +23,7 @@ SLOTS, SLOT_BYTES, MARGIN = 4, 1336, 2
 NOP, TS, GCS = 0, 1, 2
 FAULT_EVERY = 64
 STATS = ("msgs", "bytes", "nops", "err_short", "err_long", "err_header", "err_crc",
-         "err_sync", "lost", "seq_back", "overruns", "restarts", "ready_falls")
+         "err_sync", "lost", "seq_back", "overruns", "restarts", "ready_falls", "ts_packets", "crc_chain")
 
 
 class Stats(ct.Structure):
@@ -56,6 +56,7 @@ class Native:
             str(ROOT / "tests/ingress_sim.c"), "-o", str(library)], check=True)
         lib = self.lib = ct.CDLL(str(library))
         api = {
+            "ingress_pv_pattern": (None, [ct.c_void_p, ct.c_uint16]),
             "ingress_pattern": (None, [ct.c_void_p, ct.c_uint16, ct.c_uint]),
             "sim_type": (None, [ct.c_void_p, ct.c_uint]),
             "sim_wrong_type": (ct.c_uint, [ct.c_void_p]),
@@ -210,8 +211,11 @@ def test_stream(native):
     s = ring.stats()
     check(bytes(out) == b"".join(payloads), "byte stream equals the payloads in order")
     check(s["msgs"] == 2000 and s["bytes"] == 2000 * PAYLOAD, "all messages accepted")
-    check(all(s[k] == 0 for k in STATS if k not in ("msgs", "bytes", "ready_falls")),
+    check(all(s[k] == 0 for k in STATS if k not in ("msgs", "bytes", "ready_falls", "ts_packets", "crc_chain")),
           f"no errors, losses or overruns: {s}")
+    chain = 0
+    for m in messages: chain = zlib.crc32(m[-4:], chain)
+    check(s["ts_packets"] == 14000 and s["crc_chain"] == chain, "PV sender counters and chain")
     check(ring.violations == 0, "the DMA never wrote a consumer-owned slot")
     ring.close()
 
@@ -285,6 +289,12 @@ def test_faults(native):
             "msgs": 301, "overruns": 0}
     check(all(s[k] == v for k, v in want.items()), f"fault counts {s}")
     check(bytes(out) == b"".join(kept), "only intact messages reach the stream")
+    chain = 0
+    for seq, payload in enumerate(payloads):
+        if payload in kept:
+            chain = zlib.crc32(pv_message(seq, payload)[-4:], chain)
+    check(s["crc_chain"] == chain and s["ts_packets"] == 7*len(kept),
+          "rejected messages do not enter accepted TS counters or CRC chain")
     check(ring.violations == 0, "ownership kept through faults")
     ring.close()
 

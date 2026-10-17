@@ -65,7 +65,7 @@ step regression-qpsk board 'dvbdump 11 26m667 16 128 1' --save "$OUT/reg-qpsk.iq
 step regression-8psk board 'dvbdump 13 20m 40 128 1' --save "$OUT/reg-8psk.iq"
 step baseline-demo-pace board "dvbpace 13 10m ${SECONDS_PER_RUN:-10}"
 step regression-pace board "dvbpace 11 26m667 ${SECONDS_PER_RUN:-10}"
-step gates "$PY" host/spi_input.py check "$OUT/runs.jsonl" --encoder-5pct --folder "$OUT" --firmware "$(git describe --always --dirty)"
+step gates "$PY" host/spi_input.py check "$OUT/runs.jsonl" --encoder-5pct --folder "$OUT" --firmware "$(git describe --always --tags --dirty)"
 printf '\nSummary (%s)\n' "$OUT"
 cat "$OUT/summary.txt"
 printf 'External CM5/S3 DMA and cable timing still require a separate run.\n'

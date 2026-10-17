@@ -145,12 +145,14 @@ with tempfile.TemporaryDirectory() as tmp:
     for folder in ('host','tests/data','bin'):(root/folder).mkdir(parents=True)
     shutil.copy(ROOT/'host/check.sh',root/'host/check.sh')
     for name in ('waveform_crcs.json','moon_stream_crcs.json','lofty_crcs.json'):shutil.copy(ROOT/'tests/data'/name,root/'tests/data'/name)
-    for topic in ('2026-10-17-qpsk-goal','2026-10-17-next4','2026-10-17-next5','2026-10-17-spi-in','2026-10-17-moonshot'):
+    shutil.copy(ROOT/'tests/data/lofty_gates.json',root/'tests/data/lofty_gates.json')
+    gates = json.loads((ROOT/'tests/data/lofty_gates.json').read_text())
+    for topic,rows in gates['baselines'].items():
         (root/'results'/topic).mkdir(parents=True)
-        for file in (ROOT/'results'/topic).glob('*'):shutil.copy(file,root/'results'/topic/file.name)
+        (root/'results'/topic/'runs.jsonl').write_text(''.join(json.dumps(r)+'\n' for r in rows))
     (root/'host/board.py').write_text(FAKE)
-    (root/'host/onair.py').write_text(RX)
-    for name in ('test_stream.py','test_fecbench.py','test_rational.py','test_lofty.py'):(root/'tests'/name).write_text('print("fake host check")\n')
+    (root/'host/decode.py').write_text(RX)
+    for name in ('test_stream.py','test_dvbs2_c.py','test_rational.py','test_lofty.py'):(root/'tests'/name).write_text('print("fake host check")\n')
     (root/'bin/git').write_text('#!/bin/sh\nprintf "test-fw\\n"\n')
     (root/'bin/git').chmod(0o755)
     env=dict(os.environ,PYTHON=sys.executable,PATH=str(root/'bin')+os.pathsep+os.environ['PATH'])
@@ -180,7 +182,7 @@ with tempfile.TemporaryDirectory() as tmp:
         assert run.stdout.index('Pass criteria') < run.stdout.index('PASS:')
         commands=[json.loads(line) for line in (root/'commands.jsonl').read_text().splitlines()]
         assert commands[-1]==('wifimem 11 33m333' if moon else 'wifimem 13 20m'), commands
-        assert len(commands)==(25 if moon else 22)*(2 if fail else 1), commands
+        assert len(commands)==(24 if moon else 21)*(2 if fail else 1), commands
         for command in ('dvbpace 11 26m667 30','dvbpace 15 20m 30','dvbpace 13 10m 30','dvbpace 17 5m 30'):
             assert command in commands
             if moon: assert commands.index(command)<commands.index('dvbpace 11 33m333 30')
@@ -201,7 +203,7 @@ with tempfile.TemporaryDirectory() as tmp:
         failures=[line for line in summary if line.startswith('FAIL')]
         assert bool(failures)==fail, failures
         commands=[json.loads(line) for line in (root/'commands.jsonl').read_text().splitlines()]
-        assert commands[-1]=='wifimem 17 20m' and len(commands)==26*(2 if fail else 1), commands
+        assert commands[-1]=='wifimem 17 20m' and len(commands)==25*(2 if fail else 1), commands
     # Each main timing metric independently invalidates an otherwise passing moonshot.
     for mode in ('11 26m667','15 20m','13 10m','17 5m'):
         for metric in ('max_fill_cycles','encode_cycles_mean','encode_cycles_live_max'):

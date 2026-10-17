@@ -1,7 +1,7 @@
 #pragma once
 
 // Table-driven pulse shaping into DAC words: signed 10-bit I in bits 9:0, Q in bits 19:10.
-// host/shaper.py is the model and explains the method: a 9-symbol pulse split into three parts
+// docs/how-it-works.md explains the method: a 9-symbol pulse split into three parts
 // of three symbols, each window's three part rows stored in one block, three rows added per
 // symbol and the sum XORed with 0x80200.
 //

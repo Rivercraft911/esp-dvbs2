@@ -13,7 +13,7 @@ if args[0]=='host/board.py':
     command=args[1]
     assert command.split()[0] in ('info','spipins','spiinput','spirx','dvbdump','dvbpace','wifimem')
     assert '--reset' not in args
-    if command in ('dvbpace 13 10m 10','wifimem 11 26m667'):
+    if command in ('dvbpace 13 10m 10','wifimem 11 26m667','spirx 1000 pv loop 9 2'):
         raise SystemExit(7)
 elif args[0]=='host/spi_input.py':
     assert args[1] in ('decode','check')
@@ -55,7 +55,26 @@ def main():
             extras=('', '26m667') if mc<12 else ()
             for rate in extras:
                 assert commands.count(f'wifimem {mc} {rate}'.strip()) == 2
-    print('SPI shell: demo first, slim runs, continues after failures, final summary and cleanup: ok')
+        env.update(CALLS=str(folder/'pv-calls'))
+        run=subprocess.run(['bash',str(ROOT/'host/pv-spi-board.sh'),str(folder/'pv')],
+                           env=env,cwd=ROOT,capture_output=True,text=True,timeout=20)
+        assert run.returncode == 1, run.stdout+run.stderr
+        calls=(folder/'pv-calls').read_text()
+        commands=[ast.literal_eval(line)[1] for line in calls.splitlines()]
+        assert commands[:3] == ['info', 'spipins devkit', 'spirx 3000 pv loop 9']
+        assert 'dvbpace 13 10m 30' in commands and 'spirx 1000 gcs loop 46.6' in commands
+        assert commands[-1] == 'spiinput off' and 'reg-8psk.iq' in calls and "'check'" in calls
+        decode=[ast.literal_eval(line) for line in calls.splitlines()
+                if "'decode'" in line]
+        assert len(decode) == 1
+        args=decode[0]
+        # dvbdump 13 5m, decimation 1: 40 MS/s / 5 Msym/s = 8 samples/symbol.
+        assert '--pv' in args and args[args.index('--modcod')+1] == '13'
+        assert args[args.index('--sps')+1] == '8' and args[args.index('--rate')+1] == '40000000'
+        summary=(folder/'pv/summary.txt').read_text()
+        assert summary.count('FAIL') == 1 and 'FAIL pv-fault-2' in summary and 'PASS gates' in summary
+        assert run.stdout.index('PASS requires') < run.stdout.index('Summary')
+    print('SPI shells: keep going after failures, final summary, PV/quad/regression checks and cleanup: ok')
 
 
 if __name__ == '__main__': main()

@@ -1,0 +1,240 @@
+{
+  "source": "88f5a64",
+  "source_paths": "results/<topic>/*.jsonl; moonshot uses runs.jsonl only",
+  "baselines": {
+    "2026-10-17-qpsk-goal": [
+      {
+        "command": "dvbpace 11 26m667 30",
+        "cmd": "dvbpace",
+        "status": "ESP_OK",
+        "max_fill_cycles": 39139,
+        "encode_cycles_mean": 227692,
+        "encode_cycles_live_max": 228865
+      },
+      {
+        "command": "dvbpace 4 26m667 30",
+        "cmd": "dvbpace",
+        "status": "ESP_OK",
+        "max_fill_cycles": 39005,
+        "encode_cycles_mean": 198324,
+        "encode_cycles_live_max": 200078
+      },
+      {
+        "command": "dvbpace 11 20mq4 30",
+        "cmd": "dvbpace",
+        "status": "ESP_OK",
+        "max_fill_cycles": 36766,
+        "encode_cycles_mean": 227880,
+        "encode_cycles_live_max": 228829
+      },
+      {
+        "command": "dvbpace 17 5m 30",
+        "cmd": "dvbpace",
+        "status": "ESP_OK",
+        "max_fill_cycles": 38870,
+        "encode_cycles_mean": 215215,
+        "encode_cycles_live_max": 221246
+      }
+    ],
+    "2026-10-17-next4": [
+      {
+        "command": "dvbpace 15 5m 30",
+        "cmd": "dvbpace",
+        "status": "ESP_OK",
+        "max_fill_cycles": 38492,
+        "encode_cycles_mean": 265635,
+        "encode_cycles_live_max": 275202
+      },
+      {
+        "command": "dvbpace 13 10m 30",
+        "cmd": "dvbpace",
+        "status": "ESP_OK",
+        "max_fill_cycles": 44349,
+        "encode_cycles_mean": 167519,
+        "encode_cycles_live_max": 168955
+      },
+      {
+        "command": "dvbpace 13 20m 30",
+        "cmd": "dvbpace",
+        "status": "ESP_OK",
+        "max_fill_cycles": 45571,
+        "encode_cycles_mean": 167447,
+        "encode_cycles_live_max": 170222
+      },
+      {
+        "command": "dvbpace 13 20ms6 30",
+        "cmd": "dvbpace",
+        "status": "ESP_OK",
+        "max_fill_cycles": 40508,
+        "encode_cycles_mean": 169057,
+        "encode_cycles_live_max": 171545
+      },
+      {
+        "command": "dvbpace 15 20ms6 30",
+        "cmd": "dvbpace",
+        "status": "ESP_OK",
+        "max_fill_cycles": 40546,
+        "encode_cycles_mean": 187147,
+        "encode_cycles_live_max": 188347
+      },
+      {
+        "command": "dvbpace 4 30",
+        "cmd": "dvbpace",
+        "status": "ESP_OK",
+        "max_fill_cycles": 42135,
+        "encode_cycles_mean": 681921,
+        "encode_cycles_live_max": 685896
+      }
+    ],
+    "2026-10-17-next5": [
+      {
+        "command": "dvbpace 4 5m 30",
+        "cmd": "dvbpace",
+        "status": "ESP_OK",
+        "max_fill_cycles": 39162,
+        "encode_cycles_mean": 155501,
+        "encode_cycles_live_max": 157871
+      },
+      {
+        "command": "dvbpace 11 5m 30",
+        "cmd": "dvbpace",
+        "status": "ESP_OK",
+        "max_fill_cycles": 39107,
+        "encode_cycles_mean": 184683,
+        "encode_cycles_live_max": 189085
+      },
+      {
+        "command": "dvbpace 4 10m 30",
+        "cmd": "dvbpace",
+        "status": "ESP_OK",
+        "max_fill_cycles": 44268,
+        "encode_cycles_mean": 155326,
+        "encode_cycles_live_max": 157794
+      },
+      {
+        "command": "dvbpace 11 10m 30",
+        "cmd": "dvbpace",
+        "status": "ESP_OK",
+        "max_fill_cycles": 44236,
+        "encode_cycles_mean": 184663,
+        "encode_cycles_live_max": 189506
+      },
+      {
+        "command": "dvbpace 4 10m80 30",
+        "cmd": "dvbpace",
+        "status": "ESP_OK",
+        "max_fill_cycles": 39970,
+        "encode_cycles_mean": 155487,
+        "encode_cycles_live_max": 157980
+      },
+      {
+        "command": "dvbpace 11 10m80 30",
+        "cmd": "dvbpace",
+        "status": "ESP_OK",
+        "max_fill_cycles": 39918,
+        "encode_cycles_mean": 184685,
+        "encode_cycles_live_max": 187631
+      },
+      {
+        "command": "dvbpace 4 20m 30",
+        "cmd": "dvbpace",
+        "status": "ESP_OK",
+        "max_fill_cycles": 45855,
+        "encode_cycles_mean": 155330,
+        "encode_cycles_live_max": 157825
+      },
+      {
+        "command": "dvbpace 11 20m 30",
+        "cmd": "dvbpace",
+        "status": "ESP_OK",
+        "max_fill_cycles": 45852,
+        "encode_cycles_mean": 184592,
+        "encode_cycles_live_max": 188969
+      },
+      {
+        "command": "dvbpace 13 20m 30",
+        "cmd": "dvbpace",
+        "status": "ESP_OK",
+        "max_fill_cycles": 45457,
+        "encode_cycles_mean": 167279,
+        "encode_cycles_live_max": 168789
+      }
+    ],
+    "2026-10-17-moonshot": [
+      {
+        "command": "dvbpace 4 10",
+        "cmd": "dvbpace",
+        "status": "ESP_OK",
+        "max_fill_cycles": 41453,
+        "encode_cycles_mean": 683547,
+        "encode_cycles_live_max": 693242
+      },
+      {
+        "command": "dvbpace 11 5m 10",
+        "cmd": "dvbpace",
+        "status": "ESP_OK",
+        "max_fill_cycles": 38938,
+        "encode_cycles_mean": 179913,
+        "encode_cycles_live_max": 183469
+      },
+      {
+        "command": "dvbpace 11 10m 10",
+        "cmd": "dvbpace",
+        "status": "ESP_OK",
+        "max_fill_cycles": 43464,
+        "encode_cycles_mean": 179570,
+        "encode_cycles_live_max": 183131
+      },
+      {
+        "command": "dvbpace 11 20m 30",
+        "cmd": "dvbpace",
+        "status": "ESP_OK",
+        "max_fill_cycles": 36685,
+        "encode_cycles_mean": 148067,
+        "encode_cycles_live_max": 157544
+      },
+      {
+        "command": "dvbpace 11 26m667 30",
+        "cmd": "dvbpace",
+        "status": "ESP_OK",
+        "max_fill_cycles": 38844,
+        "encode_cycles_mean": 148209,
+        "encode_cycles_live_max": 156798
+      },
+      {
+        "command": "dvbpace 17 5m 30",
+        "cmd": "dvbpace",
+        "status": "ESP_OK",
+        "max_fill_cycles": 38891,
+        "encode_cycles_mean": 212491,
+        "encode_cycles_live_max": 219903
+      },
+      {
+        "command": "dvbpace 13 10m 30",
+        "cmd": "dvbpace",
+        "status": "ESP_OK",
+        "max_fill_cycles": 43193,
+        "encode_cycles_mean": 155536,
+        "encode_cycles_live_max": 160474
+      },
+      {
+        "command": "dvbpace 15 20m 30",
+        "cmd": "dvbpace",
+        "status": "ESP_OK",
+        "max_fill_cycles": 41332,
+        "encode_cycles_mean": 168953,
+        "encode_cycles_live_max": 174507
+      },
+      {
+        "command": "dvbpace 11 33m333 30",
+        "cmd": "dvbpace",
+        "status": "ESP_OK",
+        "max_fill_cycles": 42472,
+        "encode_cycles_mean": 190048,
+        "encode_cycles_live_max": 219254
+      }
+    ]
+  },
+  "input_copy_cycles": 57972998,
+  "input_frames": 12021
+}

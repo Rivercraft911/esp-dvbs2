@@ -1,0 +1,1 @@
+{"file": "dec-3-11.json", "payload_frames": 14, "first_frame": 0, "payload_match": true, "payload_bit_errors": 0, "ldpc_bit_flips": 0, "bch_failed_frames": 0, "symbol_rate": 26666666.666666668, "modcods": [11], "mer_db": 37.98397703089065}

@@ -1,4 +1,4 @@
-"""New rate lifecycle and every output sample against the independent Python encoder and block convolution.
+"""Fractional-rate lifecycle and every output sample against the independent Python encoder and block convolution.
 
 No silicon timing or heap claims. Optional --receiver decodes actual C stream dumps.
 """
@@ -13,8 +13,9 @@ import numpy as np
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT/'host'))
-import onair
+sys.path.insert(0, str(ROOT/"tests/reference"))
 import machine as moon
+import waveforms as onair
 from test_stream import compile_stream
 
 
@@ -25,7 +26,7 @@ def test(output=None, receiver=None):
         out = output or folder
         out.mkdir(parents=True, exist_ok=True)
         crcs = {}
-        for mc,num,den,span,alpha in ((11,12,5,7,.2),(4,12,5,7,.2)):
+        for mc,num,den,span,alpha in ((mc,12,5,7,.2) for mc in range(4,12)):
             frames = 16
             name = f'{mc}-{num}-{den}'
             iq = out/(name+'.iq')
@@ -61,9 +62,9 @@ def test(output=None, receiver=None):
             c = np.pad(c,(0,(-len(c))%4))
             packed = np.sum(c.reshape(-1,4) << np.array([6,4,2,0]),axis=1).astype(np.uint8)
             expected = moon.shape(packed.tobytes(),0,(count+11)//12)[:count]
-            import shaper
-            z = shaper.iq(expected)
-            np.testing.assert_array_equal(actual,np.column_stack((z.real,z.imag)))
+            i = ((expected & 1023).astype(np.int16) ^ 512) - 512
+            q = (((expected >> 10) & 1023).astype(np.int16) ^ 512) - 512
+            np.testing.assert_array_equal(actual, np.column_stack((i, q)))
             crc = zlib.crc32(iq.read_bytes())
             assert crc == r['crc32']
             crcs[f'{mc}/{num}/80/16'] = crc
@@ -71,10 +72,10 @@ def test(output=None, receiver=None):
             if receiver:
                 decode_iq = out/(name+'.tail.iq')
                 decode_iq.write_bytes(iq.read_bytes()+bytes(4096*4))
-                command = [sys.executable,str(ROOT/'host/onair.py'),str(decode_iq),'--rate','80000000',
+                command = [sys.executable,str(ROOT/'host/decode.py'),str(decode_iq),'--rate','80000000',
                            '--symbol-rate',str(80000000*den/num),'--rolloff',str(alpha),
                            '--modcod',str(mc),'--scale','512','--stream','16','--callsign','N0CALL',
-                           '--shift','0','--receiver',str(receiver)]
+                           '--receiver',str(receiver)]
                 result = subprocess.run(command,capture_output=True,text=True,timeout=90)
                 (out/(name+'.decode.json')).write_text(result.stdout)
                 assert result.returncode == 0, (command,result.stdout,result.stderr)
@@ -91,7 +92,7 @@ def test(output=None, receiver=None):
                            capture_output=True,text=True,timeout=120,check=True)
         print('new modes: complete physical-bank wrap cycle, no leaks or sample discontinuities')
         golden = ROOT/'tests/data/moon_stream_crcs.json'
-        if golden.exists(): assert all(v == json.loads(golden.read_text())[k] for k,v in crcs.items())
+        assert crcs == json.loads(golden.read_text())
         if output: (output/'crcs.json').write_text(json.dumps(crcs,indent=2)+'\n')
 
 

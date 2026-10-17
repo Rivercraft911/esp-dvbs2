@@ -1,6 +1,6 @@
 """Run a separate LeanDVB process on cf32_le IQ and check its decoded BBFRAMEs.
 
-Local receiver build and the small macOS/status patch: notes/decode.md. No receiver
+Build a separate receiver as described in examples/self-check/README.md. No receiver
 code is imported here. GCS output contains the byte-aligned DATA FIELDs; TS output
 comes from the receiver's packet deframer. Acquisition may discard leading frames.
 An expected file must occur completely and contiguously in the recovered stream.
@@ -18,7 +18,7 @@ import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_RECEIVER = ROOT / "notes/leansdr/src/apps/leandvb"
+DEFAULT_RECEIVER = "leandvb"
 FEC_STATUS = re.compile(
     r"S2FEC modcod=(\d+) short=(\d+) pilots=(\d+) ldpc_flips=(\d+) "
     r"ldpc_checks_before=(\d+) ldpc_checks_after=(\d+) bch_errors=(-?\d+)")
@@ -128,6 +128,14 @@ def summarize(status, frames, payload, expected=None):
         "payload_sha256": hashlib.sha256(payload).hexdigest(),
         "status_complete": bool(attempts),
     }
+    if not attempts:
+        ldpc = [int(n) for n in re.findall(r"LDPCCORR = (-?\d+)", status)]
+        bch = [int(n) for n in re.findall(r"BCHCORR = (-?\d+)", status)]
+        report.update(ldpc_bit_flips=sum(ldpc) if ldpc else None,
+                      bch_corrected_bits=sum(max(n, 0) for n in bch) if bch else None,
+                      bch_failed_frames=sum(n < 0 for n in bch) if bch else None,
+                      fec_frames=len(bch) if bch else None,
+                      status_complete=bool(bch) and len(ldpc) == len(bch))
     # fd-bbf contains valid headers only. Count receiver-side rejection messages too.
     report["bbheader_rejected_frames"] = status.count("Bad bbframe")
     if expected is not None:
@@ -155,7 +163,7 @@ def decode(capture, *, sample_rate=None, symbol_rate=None, alpha=None,
     path, fs, rs, alpha = capture_info(capture, sample_rate, symbol_rate, alpha)
     executable = str(receiver or os.environ.get("LEANDVB", DEFAULT_RECEIVER))
     if not shutil.which(executable):
-        raise FileNotFoundError(f"LeanDVB not found: {executable}; build per notes/decode.md")
+        raise FileNotFoundError(f"LeanDVB not found: {executable}; see examples/self-check/README.md")
     if not math.isfinite(tune) or timeout <= 0 or not math.isfinite(rrc_rej) or rrc_rej <= 0:
         raise ValueError("tune must be finite; timeout and RRC rejection must be positive")
     with tempfile.TemporaryFile() as bb, tempfile.TemporaryFile() as ts, \
@@ -163,7 +171,7 @@ def decode(capture, *, sample_rate=None, symbol_rate=None, alpha=None,
         command = [executable, "--standard", "DVB-S2", "--f32", "-f", str(fs),
                    "--sr", str(rs), "--sampler", "rrc", "--rrc-rej", str(rrc_rej), "--fastdrift",
                    "--roll-off", str(alpha), "--ldpc-bf", "100",
-                   "--fd-bbf", str(bb.fileno()), "--fd-info", "2", "-d"]
+                   "--fd-bbf", str(bb.fileno()), "--fd-info", "2", "-d", "-d"]
         if tune:
             command += ["--tune", str(tune)]
         result = subprocess.run(command, stdin=source, stdout=ts, stderr=diagnostics,
@@ -193,33 +201,80 @@ def decode(capture, *, sample_rate=None, symbol_rate=None, alpha=None,
     return report, payload
 
 
+def payload(modcod, frames, callsign):
+    """Firmware test payload. No FEC model or receiver code is used here."""
+    import morse
+    kbch = {4: 32208, 5: 38688, 6: 43040, 7: 48408, 8: 51648,
+            9: 53840, 10: 57472, 11: 58192, 12: 38688, 13: 43040,
+            14: 48408, 15: 53840, 16: 57472, 17: 58192}
+    if modcod not in kbch or frames < 1:
+        raise ValueError("need MODCOD 4..17 and at least one frame")
+    size = (kbch[modcod] - 80) // 8
+    data, state = bytearray(size * frames), 2026
+    for i in range(len(data)):
+        state ^= (state << 13) & 0xffffffff
+        state ^= state >> 17
+        state ^= (state << 5) & 0xffffffff
+        data[i] = state & 255
+    if callsign:
+        header = ("ESP-DVBS2 ID=" + morse.callsign(callsign)).ljust(39).encode("ascii") + b"\n"
+        for at in range(0, len(data), size):
+            data[at:at+40] = header
+    return bytes(data)
+
+
+def stream_match(expected, got, per_frame):
+    if not got or len(got) % per_frame:
+        return None
+    at = expected.find(got)
+    while at >= 0 and at % per_frame:
+        at = expected.find(got, at + 1)
+    return at if at >= 0 else None
+
+
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("capture", type=Path)
-    parser.add_argument("--sample-rate", type=float, help="Hz, required for raw cfile")
-    parser.add_argument("--symbol-rate", type=float, help="symbols/s")
-    parser.add_argument("--alpha", type=float, choices=(0.20, 0.35))
-    parser.add_argument("--receiver", type=Path, help="local patched leandvb executable")
-    parser.add_argument("--expected", type=Path, help="complete payload to find contiguously")
-    parser.add_argument("--output", type=Path, required=True, help="all recovered GCS/TS bytes")
-    parser.add_argument("--log", type=Path, help="save unabridged receiver diagnostics")
-    parser.add_argument("--tune", type=float, default=0, help="receiver frequency bias in Hz")
-    parser.add_argument("--timeout", type=float, default=120)
-    parser.add_argument("--rrc-rej", type=float, default=20,
-                        help="receiver RRC filter rejection in dB; APSK loopbacks use 40")
-    args = parser.parse_args()
+    p = argparse.ArgumentParser(description="Decode board samples with a separate LeanDVB process.")
+    p.add_argument("capture", type=Path)
+    p.add_argument("--rate", "--sample-rate", dest="rate", type=float, required=True, help="samples/s")
+    p.add_argument("--symbol-rate", type=float, required=True, help="symbols/s")
+    p.add_argument("--rolloff", type=float, choices=(.20, .35), default=.35)
+    p.add_argument("--scale", type=float, default=512, help="int16 full scale, board=512")
+    p.add_argument("--format", choices=("i16", "cf32"), default="i16")
+    p.add_argument("--modcod", type=int, default=4)
+    p.add_argument("--stream", type=int, required=True, help="number of dumped test frames")
+    p.add_argument("--callsign", default="N0CALL", help="callsign in the dumped payload")
+    p.add_argument("--receiver", type=Path, help="leandvb executable, or set LEANDVB")
+    p.add_argument("--log", type=Path)
+    p.add_argument("--output", type=Path, help="save recovered bytes")
+    a = p.parse_args()
     try:
-        report, _ = decode(args.capture, sample_rate=args.sample_rate,
-                           symbol_rate=args.symbol_rate, alpha=args.alpha,
-                           receiver=args.receiver,
-                           expected=args.expected.read_bytes() if args.expected else None,
-                           output=args.output, log=args.log, tune=args.tune, timeout=args.timeout,
-                           rrc_rej=args.rrc_rej)
-        print(json.dumps(report, sort_keys=True))
-        return 0 if (report["frame_lock"] and report["bb_frames"] and
-                     report["status_complete"] and report.get("payload_match", True)) else 1
+        import numpy as np
+        expected = payload(a.modcod, a.stream, a.callsign)
+        with tempfile.TemporaryDirectory() as tmp:
+            source = a.capture
+            if a.format == "i16":
+                if not math.isfinite(a.scale) or a.scale <= 0 or source.stat().st_size % 4:
+                    raise ValueError("need positive scale and complete int16 I/Q pairs")
+                raw = np.fromfile(source, dtype="<i2").reshape(-1, 2) / a.scale
+                source = Path(tmp) / "samples.cfile"
+                # Receiver lookahead only. Never included in a dump's CRC.
+                np.r_[raw[:, 0] + 1j*raw[:, 1], np.zeros(4096)].astype("<c8").tofile(source)
+            report, got = decode(source, sample_rate=a.rate, symbol_rate=a.symbol_rate,
+                                 alpha=a.rolloff, receiver=a.receiver, output=a.output, log=a.log)
+        size = len(expected) // a.stream
+        at = stream_match(expected, got, size)
+        report.update(stream_frames=a.stream, payload_match=at is not None,
+                      first_frame=None if at is None else at // size,
+                      payload_frames=len(got) // size,
+                      payload_bit_errors=None if at is None else 0,
+                      compared_bits=0 if at is None else len(got)*8,
+                      receiver_flush_samples=4096 if a.format == "i16" else 0)
+        report.pop("command", None)
+        print(json.dumps(report, sort_keys=True, allow_nan=False))
+        return 0 if report["frame_lock"] and report["payload_match"] and report["status_complete"] else 1
     except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
-        parser.exit(2, f"decode: {exc}\n")
+        print(json.dumps({"error": str(exc)}))
+        return 2
 
 
 if __name__ == "__main__":

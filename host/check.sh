@@ -19,12 +19,14 @@ p.add_argument('--lofty', action='store_true', help='8PSK 26m667 after slim, fix
 p.add_argument('--moonshot', action='store_true', help='QPSK 33m333 gate after the main regressions')
 p.add_argument('--all-crcs', action='store_true', help='also dump every golden waveform on the board (much slower)')
 p.add_argument('--encoder', action='store_true', help='encoder candidate: target 9/10, stage timings and measured SPI copy cost')
-p.add_argument('--port', default='/dev/cu.usbmodem1101')
+p.add_argument('--port', default='/dev/cu.usbmodem101')
 a = p.parse_args()
 if sum((a.lofty,a.moonshot,a.encoder)) > 1: p.error("choose --lofty, --moonshot or --encoder")
 python = sys.executable
 receiver = os.getenv('RX', '/Users/river/Documents/stanford/SSI/esp-dvbs2/notes/leansdr/src/apps/leandvb')
-firmware = subprocess.check_output(['git','describe','--always','--dirty'], text=True).strip()
+firmware = subprocess.check_output(['git','rev-parse','--short','HEAD'], text=True).strip()
+if subprocess.run(['git','diff','--quiet','HEAD'],stdout=subprocess.DEVNULL).returncode: firmware += '-dirty'
+gates = json.loads(pathlib.Path('tests/data/lofty_gates.json').read_text())
 golden = json.loads(pathlib.Path('tests/data/waveform_crcs.json').read_text())
 # mc/sps/DAC MHz/frames. Original 57 CRCs: 46f90af with adopted opt-in pulses.
 # The extra 17/4/80/16 fixture is checked by the plain encoder and LeanDVB.
@@ -71,8 +73,7 @@ if a.all_crcs: selected = list(golden)
 metrics = ('max_fill_cycles','encode_cycles_mean','encode_cycles_live_max')
 
 def baseline(topic, command):
-    rows = [json.loads(line) for f in sorted(pathlib.Path('results',topic).glob('runs.jsonl' if topic == '2026-10-17-moonshot' else '*.jsonl'))
-            for line in f.read_text().splitlines()]
+    rows = gates['baselines'][topic]
     found = [r for r in rows if r.get('command') == command and r.get('status') == 'ESP_OK']
     assert len(found) == 1, (topic,command,len(found))
     return found[0]
@@ -80,14 +81,7 @@ def baseline(topic, command):
 # Main bf28f7b publishes b9eb7d7's real ingress copy windows, including replay.
 # QPSK GCS: ceil(57,972,998 cycles / 12,021 frames) = 4,823 cycles/frame.
 # This measured mean is a planning floor, never a worst-case copy bound.
-spi_rows = []
-for line in pathlib.Path('results/2026-10-17-spi-in/board.log').read_text().splitlines():
-    try: spi_rows.append(json.loads(line))
-    except ValueError: pass
-spi_copy = [r for r in spi_rows if r.get('cmd') == 'dvbpace' and r.get('modcod') == 11
-            and r.get('input') == 'gcs' and r.get('input_replay')]
-assert len(spi_copy) == 1
-copy_cycles = (spi_copy[0]['input_copy_cycles']+spi_copy[0]['frames_encoded']-1)//spi_copy[0]['frames_encoded']
+copy_cycles = (gates['input_copy_cycles']+gates['input_frames']-1)//gates['input_frames']
 
 main_limits = [{k:baseline(topic,cmd)[k]*102//100 for k in metrics} for _,_,_,topic,cmd in main_paces]
 limits = [{k:baseline(topic,cmd)[k]*102//100 for k in metrics} for _,_,_,topic,cmd in paces]
@@ -137,11 +131,11 @@ def dump_args(key):
     return mc,token,frames,decim
 
 print(f'Pass criteria fixed before any command: firmware {firmware}, stored N0CALL; no NVS writes.')
-print('Host: all 57 retained waveform CRCs plus the encoder fixture; every filled word equals the plain encoder.')
+print('Host: all retained main waveform CRCs; every filled word equals the plain encoder.')
 if a.lofty: print('8PSK 26m667: five-symbol .35 pulse; <=40137 cycles/bank, <=169784 cycles/frame including input, Wi-Fi up/min >=20000 B.')
 if a.lofty: print('Main regression paces use 10 s with the original ceilings; candidates use 20/20/10 s. Main gate first; keep going.')
 if a.moonshot: print('Queue: QPSK 9/10, 16 frames, fractional roll-off 0.20; Wi-Fi-up paces; 40137 cycles/core/bank, 20000 B heap floor.')
-print('FEC: 140 phase CRCs, 14 zero-mismatch PIE checks, all four stage bits active.')
+print('FEC: host encoder stages against Python; all four PIE stage bits active in board paces.')
 print('Every stream: ESP_OK, encoder timed/healthy, zero underruns/stalls, correct rate/pulse/ring/mapper.')
 print('Dumps: exact byte count, firmware/USB/file CRC equality, zero overlap errors; LeanDVB')
 print('  recovers >=N-2 QPSK frames; 8PSK allows <=1 leading acquisition frame and <=3 EOF frames,')
@@ -253,9 +247,9 @@ def decode(key):
     if n == 12 or (mc >= 12 and n == 3):
         source = out/(name+'.tail.iq')
         source.write_bytes((out/(name+'.iq')).read_bytes()+bytes(4096*4))
-    run([python,'host/onair.py',str(source),'--rate',str(rate//decim),
+    run([python,'host/decode.py',str(source),'--rate',str(rate//decim),
          '--symbol-rate',str(rate*(5 if n == 12 else 1)/n),'--rolloff',str(.2 if n == 12 else .35),'--scale','512','--stream',str(frames),'--modcod',str(mc),
-         '--callsign','N0CALL','--receiver',receiver,'--shift','0'],name+'.decode.json')
+         '--callsign','N0CALL','--receiver',receiver],name+'.decode.json')
     r = json.loads((out/(name+'.decode.json')).read_text())
     assert r['frame_lock'] and r['status_complete'] and r['payload_match'], r
     assert 0 <= r['first_frame'] <= 1, r
@@ -308,9 +302,6 @@ def memory(mc,token,up,low):
     assert r['wifi_free_up'] >= up and r['wifi_min_free'] >= low, r
     assert r['frames_played'] == r['positions'] == r['max_fill_call_cycles'] == 0, r
 
-def fec():
-    board('fecbench pie')
-    run([python,'tests/test_fecbench.py',str(out/'runs.jsonl'),'--correctness-only'],'fec-check.log')
 
 try:
     lock = owner.reserve_port(a.port, reset=True)
@@ -322,7 +313,7 @@ except Exception as e:
     sys.exit(1)
 step('all host waveform CRCs', lambda:run([python,'tests/test_stream.py'],'host-crcs.log'))
 step('info',info)
-step('fecbench pie',fec)
+step('host encoder stages',lambda:run([python,'tests/test_dvbs2_c.py'],'host-encoder.log'))
 def check_dumps(keys):
     for key in keys:
         step('dump '+key,lambda key=key:dump(key))
