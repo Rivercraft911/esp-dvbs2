@@ -190,3 +190,16 @@ Reproduce host models/decodes with `python3 host/maxrate.py --disassembly notes/
 --no-show-raw-insn tests/shaper_pie/build/esp-idf/main/libmain.a`. The existing
 [QEMU procedure](../tests/shaper_pie/README.md) also runs the new cases; check its log
 with `python3 tests/test_maxrate.py notes/qemu.log`.
+
+## Merge scope
+
+Changed files: `firmware/main/CMakeLists.txt`, `firmware/main/membench.c`,
+`firmware/main/shaper_block.c`, `firmware/main/shaper_block.h`,
+`firmware/main/shaper_block_pie.S`, `host/maxrate.py`, `tests/maxrate.c`,
+`tests/test_maxrate.py`, `tests/shaper_pie.c`, `tests/shaper_pie/README.md`,
+`tests/shaper_pie/main/CMakeLists.txt`, `.github/workflows/ci.yml`, this report,
+and `results/2026-10-16-max-astra/{README.md,runs.jsonl}`.
+No encoder, stream, radio or legacy shaper implementation changed. The only
+production entry point added is the isolated block benchmark at the end of
+`membench`. Retain it for measurement; do not treat this branch as adoption of
+the new tables into the transmitter.
