@@ -75,6 +75,14 @@ void dvbs2_plframe(const dvbs2_mode *mode, int pilots, uint8_t *output);
  * header and pilots. output: dvbs2_frame_symbols(mode, pilots) bytes, any
  * alignment. */
 typedef struct dvbs2_fast dvbs2_fast;
+/* Optional BCH A/B controls. The default uses byte rows for t > 8 and
+ * register-based nibble rows for t = 8. NIBBLE selects register-based rows
+ * for all modes, LEGACY the original nibble kernel. SRAM copies the default
+ * byte table into existing scratch each frame, including the copy in timing.
+ * MAP_COMPACT selects the former 256-byte mapping table for A/B timing.
+ * dvbs2_fast_pie() still reports only the four active stage bits. */
+enum { DVBS2_BCH_NIBBLE = 16, DVBS2_BCH_LEGACY = 32, DVBS2_BCH_SRAM = 64,
+       DVBS2_MAP_COMPACT = 128 };
 enum { DVBS2_PIE_BB = 1, DVBS2_PIE_BCH = 2, DVBS2_PIE_LDPC = 4, DVBS2_PIE_MAP = 8 };
 size_t dvbs2_fast_size(void);
 /* Smaller allocation valid only for this mode (14736 bytes for 8PSK 2/3

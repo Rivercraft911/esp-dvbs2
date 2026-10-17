@@ -13,7 +13,7 @@
 //   dvbpace <modcod> [5m|10m for 8PSK] <seconds> [peak] [stall ms]  the same encoder, fills and deadlines, no radio
 //   wifimem [<modcod> [5m|10m for 8PSK]]  Wi-Fi start-up heap next to that transmitter's memory;
 //              starts and stops Wi-Fi like dvb but never keys, retunes or plays (dvbtx.c)
-//   fecbench [plain|c|pie]  normal-frame encoder correctness and stage timing (fecbench.c)
+//   fecbench [plain|c|pie|legacy|nibble|sram]  normal-frame encoder correctness and stage timing (fecbench.c)
 //   usbrx N    receive N bytes over USB as fast as the host sends them; report the rate
 
 #include <errno.h>
