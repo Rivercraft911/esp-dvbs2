@@ -88,20 +88,15 @@ static inline uint32_t funnel(uint32_t lo, uint32_t hi, unsigned shift)
 #ifdef DVBS2_PIE
 /* pie.S */
 void dvbs2_pie_xor(uint8_t *dst, const uint8_t *src, const uint8_t *prbs, unsigned blocks);
-void dvbs2_pie_bch16(const uint8_t *msg, unsigned words, const uint8_t *tables, uint8_t *r);
-void dvbs2_pie_bch32(const uint8_t *msg, unsigned words, const uint8_t *tables, uint8_t *r);
 void dvbs2_pie_bch_regs16(const uint8_t *msg, unsigned words, const uint8_t *tables, uint8_t *r);
 void dvbs2_pie_bch_regs32(const uint8_t *msg, unsigned words, const uint8_t *tables, uint8_t *r);
 void dvbs2_pie_bch_byte(const uint8_t *msg, unsigned bytes, const uint8_t *tables, uint8_t *r);
-void dvbs2_pie_bch_copy(uint8_t *dst, const uint8_t *src);
 void dvbs2_pie_u2(const uint8_t *bits, uint8_t *u2, unsigned groups);
 void dvbs2_pie_rows(const uint8_t *u2, const uint16_t *prog, uint8_t *p, unsigned q);
 void dvbs2_pie_transpose(uint8_t *p, unsigned blocks, const uint8_t *carry);
 void dvbs2_pie_index8(const uint8_t *a, const uint8_t *b, const uint8_t *c,
                       const uint8_t *gold, uint16_t *index, unsigned chunks);
 void dvbs2_pie_index4(const uint8_t *x, const uint8_t *gold, uint16_t *index, unsigned chunks);
-void dvbs2_pie_run8_compact(const uint16_t *index, const uint32_t *table, uint8_t *block,
-                            unsigned vectors, unsigned sar_byte, uint8_t *tail);
 void dvbs2_pie_run8(const uint16_t *index, const uint32_t *table, uint8_t *block,
                     unsigned vectors, unsigned sar_byte, uint8_t *tail);
 void dvbs2_pie_run4_packed(const uint16_t *index, const uint32_t *table, uint8_t *block,
@@ -168,8 +163,7 @@ int dvbs2_fast_prepare(dvbs2_fast *f, const dvbs2_mode *mode, int pilots, unsign
     f->q = mode->q;
     f->data_symbols = 64800 / mode->bits_per_symbol;
     f->pilot_blocks = pilots ? (f->data_symbols / 90 - 1) / 16 : 0;
-    f->pie = pie & (PIE_MASK | DVBS2_BCH_NIBBLE | DVBS2_BCH_LEGACY |
-                    DVBS2_BCH_SRAM | DVBS2_MAP_COMPACT | DVBS2_MAP_SPARSE | DVBS2_MAP_QUADS);
+    f->pie = pie & (PIE_MASK | DVBS2_BCH_NIBBLE | DVBS2_MAP_SPARSE | DVBS2_MAP_QUADS);
     f->ldxq_bias = 0;
 #ifdef DVBS2_PIE
     if (f->pie & DVBS2_PIE_MAP) {
@@ -390,17 +384,9 @@ HOT void dvbs2_fast_bch(dvbs2_fast *f, dvbs2_workspace *ws)
     uint32_t w[8] __attribute__((aligned(16))) = {0};
 #ifdef DVBS2_PIE
     if (f->pie & DVBS2_PIE_BCH) {
-        if (f->bch_bytes > 16 && !(f->pie & (DVBS2_BCH_NIBBLE | DVBS2_BCH_LEGACY))) {
-            const uint8_t *table = f->byte_bch;
-            if (f->pie & DVBS2_BCH_SRAM) {
-                dvbs2_pie_bch_copy(f->scratch, table);
-                table = f->scratch;
-            }
-            dvbs2_pie_bch_byte(ws->bits, bytes, table, (uint8_t *)w);
+        if (f->bch_bytes > 16 && !(f->pie & DVBS2_BCH_NIBBLE)) {
+            dvbs2_pie_bch_byte(ws->bits, bytes, f->byte_bch, (uint8_t *)w);
             words = (bytes + 3) / 4; /* byte kernel already consumed the tail */
-        } else if (f->pie & DVBS2_BCH_LEGACY) {
-            (f->bch_bytes > 16 ? dvbs2_pie_bch32 : dvbs2_pie_bch16)(
-                ws->bits, words, f->bch, (uint8_t *)w);
         } else {
             (f->bch_bytes > 16 ? dvbs2_pie_bch_regs32 : dvbs2_pie_bch_regs16)(
                 ws->bits, words, f->bch, (uint8_t *)w);
@@ -749,9 +735,7 @@ static HOT void map_pie(dvbs2_fast *f, const uint8_t *bits, uint8_t *output)
     } else {
         dvbs2_pie_index4(bits, f->gold, index, (d + 63) / 64);
     }
-    const uint32_t *map = f->mode->bits_per_symbol == 3 && (f->pie & DVBS2_MAP_COMPACT)
-                              ? fast_map_3_compact : f->map;
-    const uint32_t *table = (const uint32_t *)((const uint8_t *)map + f->ldxq_bias);
+    const uint32_t *table = (const uint32_t *)((const uint8_t *)f->map + f->ldxq_bias);
     const unsigned runs = f->pilots ? f->pilot_blocks + 1 : 1;
     for (unsigned r = 0; r < runs; ++r) {
         const unsigned k = r * 1440;
@@ -760,9 +744,7 @@ static HOT void map_pie(dvbs2_fast *f, const uint8_t *bits, uint8_t *output)
         const uintptr_t at = (uintptr_t)dst;
         uint8_t *block = (uint8_t *)((at - 1) & ~(uintptr_t)15);
         const unsigned vectors = length / 16;
-        (f->mode->bits_per_symbol == 3
-             ? ((f->pie & DVBS2_MAP_COMPACT) ? dvbs2_pie_run8_compact : dvbs2_pie_run8)
-             : dvbs2_pie_run)(
+        (f->mode->bits_per_symbol == 3 ? dvbs2_pie_run8 : dvbs2_pie_run)(
             index + k / 4, table, block, vectors, (unsigned)(-at & 15), f->tail);
         /* The kernel leaves the final aligned block in f->tail: the run's
          * last (at & 15) bytes, or a whole vector when dst is aligned. */

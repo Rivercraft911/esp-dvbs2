@@ -66,20 +66,15 @@ for name, (_, good) in dvbtx.items():
             else:
                 good.append((f"{mc} {rate} 60 128 25", (mc, 60, 128, 25, 40000000, sps)))
                 dvbtx[name][0].append(f"{mc} {rate} 601")
-    # 10m80 and 20m: the 8- and 4-sps samples on the 80 MS/s schedule.
-    for rate, sps in (("10m80", 8), ("20m", 4)):
+    for mc in range(4, 18):
         if name == "dvb":
-            good += [(f"2400 {mc} {rate} 30", (2400, mc, 30, 0, 128, sps, 80000000))
-                     for mc in (4, 11, 12, 13, 17)]
-            dvbtx[name][0].extend([f"2400 13 {rate} 61", f"2400 4 {rate} 0"])
+            good.append((f"2400 {mc} 20m 30", (2400, mc, 30, 0, 128, 4, 80000000)))
         elif name == "dvbdump":
-            good += [(f"{mc} {rate} 40", (mc, 40, 128, sps // 4, 0, sps, 80000000))
-                     for mc in (4, 11, 12, 13, 17)]
-            dvbtx[name][0].extend([f"13 {rate} 40 128 3", f"4 {rate} 0"])
+            good.append((f"{mc} 20m 16", (mc, 16, 128, 1, 0, 4, 80000000)))
         else:
-            good += [(f"{mc} {rate} 60 128 25", (mc, 60, 128, 25, 80000000, sps))
-                     for mc in (4, 11, 12, 13, 17)]
-            dvbtx[name][0].extend([f"13 {rate} 601", f"4 {rate} 0"])
+            good.append((f"{mc} 20m 30", (mc, 30, 128, 0, 80000000, 4)))
+        for removed in ("10m80", "20ms6", "20mq4"):
+            dvbtx[name][0].append(("2400 " if name == "dvb" else "") + f"{mc} {removed} 30")
     if name != "dvb":
         dvbtx[name][0].extend(["13 20 40", "13 20M 40", "13 40m 1", "13 10m40 1", "13 10m8 1"])
     else:
@@ -93,25 +88,17 @@ dvbtx["wifimem"] = (["x", "3", "18", "12", "12 1m", "4 5m extra", "13 5m extra",
                      ("13 5m", (13, 8, 40000000)), ("17 5m", (17, 8, 40000000)),
                      ("4 5m", (4, 8, 40000000)), ("11 10m", (11, 4, 40000000)),
                      ("8 10m", (8, 4, 40000000)), ("15 10m", (15, 4, 40000000)), (" 17\t10m", (17, 4, 40000000))])
-dvbtx["wifimem"][1].extend([(f"{mc} {rate}", (mc,sps,80000000,0))
-                            for mc,rate,sps in ((13,"20m",4),(17,"20m",4),(13,"10m80",8))])
-
-dvbtx["dvb"][0].append("2400 13 20ms6 1")
-for mc in range(12, 18):
-    dvbtx["wifimem"][1].append((f"{mc} 20ms6", (mc, 4, 80000000, 1)))
-dvbtx["wifimem"][0].extend(["13 20ms6 extra", "4 20ms6", "13 20ms6 30"])
-dvbtx["dvbdump"][1].append(("13 20ms6 40", (13,40,128,1,0,4,80000000,1)))
-dvbtx["dvbpace"][1].append(("15 20ms6 30", (15,30,128,0,80000000,4,0,1)))
-
-for token, sps in (("26m667",3),("20mq4",4)):
-    for mc in range(4,12):
-        dvbtx['dvb'][1].append((f'2400 {mc} {token} 30',(2400,mc,30,0,128,sps,80000000,2)))
-        dvbtx['dvbdump'][1].append((f'{mc} {token} 16',(mc,16,128,1,0,sps,80000000,2)))
-        dvbtx['dvbpace'][1].append((f'{mc} {token} 30',(mc,30,128,0,80000000,sps,0,2)))
-        dvbtx['wifimem'][1].append((f'{mc} {token}',(mc,sps,80000000,2)))
-    for mc in range(12,18):
-        for cmd in dvbtx:
-            dvbtx[cmd][0].append(('2400 ' if cmd == 'dvb' else '')+f'{mc} {token}'+('' if cmd == 'wifimem' else ' 30'))
+dvbtx["wifimem"][1].extend([(f"{mc} 20m", (mc,4,80000000)) for mc in range(4,18)])
+for token in ("10m80", "20ms6", "20mq4"):
+    dvbtx["wifimem"][0].append(f"13 {token}")
+for mc in range(4,12):
+    dvbtx['dvb'][1].append((f'2400 {mc} 26m667 30',(2400,mc,30,0,128,3,80000000)))
+    dvbtx['dvbdump'][1].append((f'{mc} 26m667 16',(mc,16,128,1,0,3,80000000)))
+    dvbtx['dvbpace'][1].append((f'{mc} 26m667 30',(mc,30,128,0,80000000,3)))
+    dvbtx['wifimem'][1].append((f'{mc} 26m667',(mc,3,80000000)))
+for mc in range(12,18):
+    for cmd in dvbtx:
+        dvbtx[cmd][0].append(('2400 ' if cmd == 'dvb' else '')+f'{mc} 26m667'+('' if cmd == 'wifimem' else ' 30'))
 dvbtx['dvbdump'][0].extend(['11 26m667 16 128 2','11 26m667 16 128 3'])
 
 prelude = r'''
@@ -123,7 +110,6 @@ prelude = r'''
 #include <stdlib.h>
 #include <string.h>
 #include "radio_s3.h"
-enum { DVB_PULSE_LEGACY, DVB_PULSE_SHORT, DVB_PULSE_QUADS };
 static int signal_storage;
 #define tx_signal ((void *)&signal_storage)
 static bool configured = true;
@@ -166,26 +152,23 @@ static void stub(unsigned *count, unsigned a, unsigned b, unsigned c, unsigned d
     printf("@{\"status\":\"ESP_OK\"}\n");
 }
 static void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain,
-                      unsigned level, unsigned sps, uint32_t rate, unsigned pulse)
+                      unsigned level, unsigned sps, uint32_t rate)
 {
     stub(&dvb_calls, freq, modcod, seconds, gain, level, sps, rate);
-    got[7] = pulse;
 }
 static void dvbtx_dump(unsigned modcod, unsigned frames, unsigned level, unsigned decim,
-                       unsigned stall, unsigned sps, uint32_t rate, unsigned short_pulse)
+                       unsigned stall, unsigned sps, uint32_t rate)
 {
     stub(&dump_calls, modcod, frames, level, decim, stall, sps, rate);
-    got[7] = short_pulse;
 }
 static void dvbtx_pace(unsigned modcod, uint32_t seconds, unsigned level, unsigned stall,
-                       unsigned sps, uint32_t rate, unsigned short_pulse)
+                       unsigned sps, uint32_t rate)
 {
     stub(&pace_calls, modcod, seconds, level, stall, rate, sps, 0);
-    got[7] = short_pulse;
 }
-static void dvbtx_wifi(unsigned modcod, unsigned sps, uint32_t rate, unsigned short_pulse)
+static void dvbtx_wifi(unsigned modcod, unsigned sps, uint32_t rate)
 {
-    stub(&wifi_calls, modcod, sps, rate, short_pulse, 0, 0, 0);
+    stub(&wifi_calls, modcod, sps, rate, 0, 0, 0, 0);
 }
 #define RF_CALLS (calls + dvb_calls)
 '''
@@ -269,7 +252,6 @@ with tempfile.TemporaryDirectory() as directory:
 #include <stdbool.h>
 #include <string.h>
 #include "radio_s3.h"
-enum { DVB_PULSE_LEGACY, DVB_PULSE_SHORT, DVB_PULSE_QUADS };
 typedef struct { unsigned rate, cycles; } geometry_t;
 static bool gaps;
 static geometry_t geometry(uint32_t rate) { return (geometry_t){rate, 240000000U / rate}; }
@@ -281,11 +263,9 @@ typedef struct {
     radio_s3_fill_fn fill;
     void *ctx;
     radio_s3_stats_t *stats;
-    radio_s3_chain_t chain;
     geometry_t geo;
     bool gaps;
 } run_t;
-static radio_s3_chain_t chain;
 static bool configured;
 static unsigned workers;
 static const char *station_store_get(void) { return configured ? "N0CALL" : ""; }

@@ -1,0 +1,96 @@
+Pass criteria fixed before any command: firmware f5b7c3a, stored N0CALL; no NVS writes.
+Host: all 57 waveform CRCs from 46f90af; every filled word equals the plain encoder.
+FEC: 140 phase CRCs, 14 zero-mismatch PIE checks, all four stage bits active.
+Every stream: ESP_OK, encoder timed/healthy, zero underruns/stalls, correct rate/pulse/ring/mapper.
+Dumps: exact byte count, firmware/USB/file CRC equality, zero overlap errors; LeanDVB
+  recovers >=N-2 QPSK frames; 8PSK allows <=1 leading acquisition frame and <=3 EOF frames,
+  with zero LDPC checks/flips, BCH errors/corrections and payload errors.
+  dump (4, '', 16, 10) CRC32 240969024
+  dump (13, '5m', 16, 1) CRC32 3555910566
+  dump (13, '10m', 40, 1) CRC32 474263962
+  dump (4, '20m', 16, 1) CRC32 3789273049
+  dump (11, '20m', 16, 1) CRC32 2081653259
+  dump (13, '20m', 16, 1) CRC32 3479114506
+  dump (15, '20m', 16, 1) CRC32 68643998
+  dump (4, '26m667', 16, 1) CRC32 3388792897
+  dump (11, '26m667', 16, 1) CRC32 1271511239
+Paces: four 30 s key runs and four 10 s regressions; zero late fills/switches/fatal lateness, positive slack, live encoder, conserved fill words.
+  4 1m, 10 s: ceilings {'max_fill_cycles': 42977, 'encode_cycles_mean': 695559, 'encode_cycles_live_max': 699613} cycles (encoder cycles/frame), <=102% of 2026-10-17-next4: dvbpace 4 30
+  11 5m, 10 s: ceilings {'max_fill_cycles': 39889, 'encode_cycles_mean': 188376, 'encode_cycles_live_max': 192866} cycles (encoder cycles/frame), <=102% of 2026-10-17-next5: dvbpace 11 5m 30
+  11 10m, 10 s: ceilings {'max_fill_cycles': 45120, 'encode_cycles_mean': 188356, 'encode_cycles_live_max': 193296} cycles (encoder cycles/frame), <=102% of 2026-10-17-next5: dvbpace 11 10m 30
+  11 20m, 30 s: ceilings {'max_fill_cycles': 37501, 'encode_cycles_mean': 232437, 'encode_cycles_live_max': 233405} cycles (encoder cycles/frame), <=102% of 2026-10-17-qpsk-goal: dvbpace 11 20mq4 30
+  11 26m667, 30 s: ceilings {'max_fill_cycles': 39921, 'encode_cycles_mean': 232245, 'encode_cycles_live_max': 233442} cycles (encoder cycles/frame), <=102% of 2026-10-17-qpsk-goal: dvbpace 11 26m667 30
+  17 5m, 30 s: ceilings {'max_fill_cycles': 39647, 'encode_cycles_mean': 219519, 'encode_cycles_live_max': 225670} cycles (encoder cycles/frame), <=102% of 2026-10-17-qpsk-goal: dvbpace 17 5m 30
+  13 10m, 10 s: ceilings {'max_fill_cycles': 45235, 'encode_cycles_mean': 170869, 'encode_cycles_live_max': 172334} cycles (encoder cycles/frame), <=102% of 2026-10-17-next4: dvbpace 13 10m 30
+  15 20m, 30 s: ceilings {'max_fill_cycles': 41356, 'encode_cycles_mean': 190889, 'encode_cycles_live_max': 192113} cycles (encoder cycles/frame), <=102% of 2026-10-17-next4: dvbpace 15 20ms6 30
+  wifimem 17 5m: up >= 22351 B, minimum >= 22351 B; no playback.
+  wifimem 11 26m667: up >= 43203 B, minimum >= 41387 B; no playback.
+  wifimem 13 20m: up >= 36727 B, minimum >= 34875 B; no playback.
+Continue after failures, print every result and exit nonzero if any gate fails.
+PASS: all host waveform CRCs
+PASS: info
+PASS: fecbench pie
+PASS: dump 4/40/40/16
+PASS: decode 4/40/40/16
+PASS: dump 13/8/40/16
+PASS: decode 13/8/40/16
+PASS: dump 13/4/40/40
+PASS: decode 13/4/40/40
+PASS: dump 4/4/80/16
+PASS: decode 4/4/80/16
+PASS: dump 11/4/80/16
+PASS: decode 11/4/80/16
+PASS: dump 13/4/80/16
+PASS: decode 13/4/80/16
+PASS: dump 15/4/80/16
+PASS: decode 15/4/80/16
+PASS: dump 4/3/80/16
+PASS: decode 4/3/80/16
+PASS: dump 11/3/80/16
+PASS: decode 11/3/80/16
+PASS: pace 4 1m
+PASS: pace 11 5m
+PASS: pace 11 10m
+PASS: pace 11 20m
+PASS: pace 11 26m667
+FAIL: pace 17 5m {'host_time': '2026-10-17T09:39:57+00:00', 'command': 'dvbpace 17 5m 30', 'cmd': 'dvbpace', 'modcod': 17, 'rate': '9/10', 'symbol_rate': 5000000, 'rolloff': 0.35, 'pilots': 1, 'frame_symbols': 22194, 'payload_bytes_per_frame': 7264, 'peak_level': 128, 'seconds': 30, 'dac_rate': 40000000, 'step_words': 14268, 'pulse_symbols': 9, 'fills': 113373, 'switches': 113372, 'late_fills': 0, 'late_switches': 0, 'max_fill_cycles': 38908, 'min_fill_slack_cycles': 46433, 'max_switch_late_cycles': 0, 'fatal_la ... (see runs.jsonl/logs)
+PASS: pace 13 10m
+PASS: pace 15 20m
+PASS: wifimem 17 5m
+PASS: wifimem 11 26m667
+PASS: wifimem 13 20m
+
+Every result:
+PASS	all host waveform CRCs	
+PASS	info	
+PASS	fecbench pie	
+PASS	dump 4/40/40/16	
+PASS	decode 4/40/40/16	
+PASS	dump 13/8/40/16	
+PASS	decode 13/8/40/16	
+PASS	dump 13/4/40/40	
+PASS	decode 13/4/40/40	
+PASS	dump 4/4/80/16	
+PASS	decode 4/4/80/16	
+PASS	dump 11/4/80/16	
+PASS	decode 11/4/80/16	
+PASS	dump 13/4/80/16	
+PASS	decode 13/4/80/16	
+PASS	dump 15/4/80/16	
+PASS	decode 15/4/80/16	
+PASS	dump 4/3/80/16	
+PASS	decode 4/3/80/16	
+PASS	dump 11/3/80/16	
+PASS	decode 11/3/80/16	
+PASS	pace 4 1m	
+PASS	pace 11 5m	
+PASS	pace 11 10m	
+PASS	pace 11 20m	
+PASS	pace 11 26m667	
+FAIL	pace 17 5m	{'host_time': '2026-10-17T09:39:57+00:00', 'command': 'dvbpace 17 5m 30', 'cmd': 'dvbpace', 'modcod': 17, 'rate': '9/10', 'symbol_rate': 5000000, 'rolloff': 0.35, 'pilots': 1, 'frame_symbols': 22194, 'payload_bytes_per_frame': 7264, 'peak_level': 128, 'seconds': 30, 'dac_rate': 40000000, 'step_words': 14268, 'pulse_symbols': 9, 'fills': 113373, 'switches': 113372, 'late_fills': 0, 'late_switches': 0, 'max_fill_cycles': 38908, 'min_fill_slack_cycles': 46433, 'max_switch_late_cycles': 0, 'fatal_la ... (see runs.jsonl/logs)
+PASS	pace 13 10m	
+PASS	pace 15 20m	
+PASS	wifimem 17 5m	
+PASS	wifimem 11 26m667	
+PASS	wifimem 13 20m	
+31 passed, 1 failed. Records: notes/check-20261017-023456

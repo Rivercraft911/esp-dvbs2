@@ -201,17 +201,11 @@ class Profile:
 
 
 PROFILES = {p.name: p for p in (
-    Profile("8psk-n4-a20", 0.20, 4, "8psk"),
     Profile("8psk-n4-a35", 0.35, 4, "8psk"),
-    Profile("8psk-n5-a20", 0.20, 5, "8psk"),
-    Profile("8psk-n5-a35", 0.35, 5, "8psk"),
-    Profile("8psk-n8-a20", 0.20, 8, "8psk"),
     Profile("8psk-n8-a35", 0.35, 8, "8psk"),
-    Profile("qpsk-n40-a20", 0.20, 40, "qpsk"),
     Profile("qpsk-n40-a35", 0.35, 40, "qpsk"),
 )}
-ON_DEVICE = ("8psk-n4-a20", "8psk-n4-a35", "8psk-n5-a20", "8psk-n5-a35",
-             "8psk-n8-a20", "8psk-n8-a35", "qpsk-n40-a20", "qpsk-n40-a35")
+ON_DEVICE = tuple(PROFILES)
 
 
 # ---------------------------------------------------------------- symbols and samples
@@ -426,10 +420,9 @@ def formats(n, alphabet, span=L):
 # ---------------------------------------------------------------- firmware
 
 # Device tests (firmware/main/membench.c): symbol counts that nearly fill a 16380-word bank.
-TESTS = {"shape4": ("8psk-n4-a20", 4093), "shape4a35": ("8psk-n4-a35", 4093),
-         "shape5": ("8psk-n5-a20", 3276), "shape5a35": ("8psk-n5-a35", 3276),
-         "shape8": ("8psk-n8-a20", 2047), "shape8a35": ("8psk-n8-a35", 2047),
-         "shape40": ("qpsk-n40-a20", 409), "shape40a35": ("qpsk-n40-a35", 409)}
+TESTS = {"shape4a35": ("8psk-n4-a35", 4093),
+         "shape8a35": ("8psk-n8-a35", 2047),
+         "shape40a35": ("qpsk-n40-a35", 409)}
 SEED = 2026
 
 
@@ -441,9 +434,6 @@ def expected_checks():
         words = shape(p, random_symbols(p, count + HISTORY, SEED))
         out[f"{test}_build"] = checksum(p.table.ravel())
         out[f"{test}_c"] = out[f"{test}_pie"] = checksum(words)
-        if p.n == 4:
-            out[f"{test}_rows"] = out[f"{test}_all"] = checksum(words)
-            out[f"{test}_rows_all"] = checksum(words)
     return out
 
 

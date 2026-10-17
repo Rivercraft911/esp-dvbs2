@@ -3,19 +3,16 @@
 // Interrupts stay enabled, so raw totals include interrupt service during a frame. A pinned task
 // keeps every CCOUNT subtraction on the same CPU. This command never starts the radio.
 //
-// Implementations, chosen per run so one image gives the A/B comparison:
-//   plain  the reference stages in dvbs2.c
-//   c      fast.c in portable C (bb_scramble is part of bb, so it reads 0)
-//   pie    fast.c with the ESP32-S3 vector kernels from pie.S. Before the timed frames of each
-//          mode, a pie_check record compares every PIE stage with the C stage on one frame.
-//   legacy also selects the original compact mapper. nibble/sram select the BCH controls
-//   documented in dvbs2.h; all
-//   report impl:"pie", bch_variant:<name>. Copy time is inside BCH timing.
-// Preparing the fast tables for each mode happens before the warmup frame and is not timed.
+// plain: bit-level reference stages in dvbs2.c, PSRAM workspace.
+// pie (default): internal workspace and resident BCH, packed map/PL as in the fast
+// transmitter. QPSK uses quad bytes; 8PSK uses symbol pairs. CRCs are canonical
+// phases, unpacked AFTER timing. dvbpace measures the complete stream and cache traffic.
+// Each PIE stage is also compared with portable C before timing a mode.
 
 #include "fecbench.h"
 
 #include <inttypes.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -87,10 +84,10 @@ static int encode_fast(dvbs2_fast *f, dvbs2_workspace *ws, const dvbs2_mode *mod
     dvbs2_fast_ldpc(f, ws);
     cycles[3] = esp_cpu_get_cycle_count() - before;
     before = esp_cpu_get_cycle_count();
-    dvbs2_fast_map(f, ws, output);
+    dvbs2_fast_map_packed(f, ws, output);
     cycles[4] = esp_cpu_get_cycle_count() - before;
     before = esp_cpu_get_cycle_count();
-    dvbs2_fast_pl(f, output);
+    dvbs2_fast_pl_packed(f, output);
     cycles[5] = esp_cpu_get_cycle_count() - before;
     *total = esp_cpu_get_cycle_count() - start;
     return 0;
@@ -131,7 +128,7 @@ static int encode(dvbs2_fast *f, dvbs2_workspace *ws, const dvbs2_mode *mode,
     return 0;
 }
 
-static const char *const impl_names[] = {"plain", "c", "pie", "legacy", "nibble", "sram"};
+static const char *const impl_names[] = {"plain", "pie"};
 static unsigned impl;
 
 // Before timing a pie run: feed one GCS frame through each PIE stage and the portable C stage
@@ -187,16 +184,16 @@ static void fecbench_task(void *waiter)
 {
     const uint32_t internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     const uint32_t external = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
-    dvbs2_workspace *ws = heap_caps_aligned_alloc(16, sizeof *ws, external);
+    dvbs2_workspace *ws = heap_caps_aligned_alloc(16, sizeof *ws, impl ? internal : external);
+    uint8_t *packed = impl ? heap_caps_malloc(DVBS2_MAX_SYMBOLS / 2 + 16, internal) : NULL;
     uint8_t *payload = NULL;
     uint8_t *output = NULL;
     dvbs2_fast *fast = impl ? heap_caps_aligned_alloc(16, dvbs2_fast_size(), internal) : NULL;
-    dvbs2_workspace *ws2 = impl >= 2 ? heap_caps_aligned_alloc(16, sizeof *ws2, external) : NULL;
-    uint8_t *output2 = impl >= 2 ? heap_caps_malloc(DVBS2_MAX_SYMBOLS, external) : NULL;
-    const unsigned options[] = {0, 0, 0, DVBS2_BCH_LEGACY | DVBS2_MAP_COMPACT,
-                                DVBS2_BCH_NIBBLE, DVBS2_BCH_SRAM};
-    const unsigned pie = impl >= 2 ? 15u | options[impl] : 0;
-    if (!ws || (impl && !fast) || (impl >= 2 && (!ws2 || !output2))) {
+    dvbs2_workspace *ws2 = impl != 0 ? heap_caps_aligned_alloc(16, sizeof *ws2, external) : NULL;
+    uint8_t *output2 = impl != 0 ? heap_caps_malloc(DVBS2_MAX_SYMBOLS, external) : NULL;
+    const unsigned pie = impl ? 15 : 0;
+    uint8_t *bch = impl ? heap_caps_aligned_alloc(16, DVBS2_BCH_CACHE_BYTES, internal) : NULL;
+    if (!ws || (impl && (!fast || !bch || !packed)) || (impl != 0 && (!ws2 || !output2))) {
         printf("@{\"cmd\":\"fecbench\",\"error\":\"encoder allocation failed\"}\n");
         goto done;
     }
@@ -219,13 +216,13 @@ static void fecbench_task(void *waiter)
            "\"rolloff\":0.35,\"inputs\":[\"gcs\",\"ts\"],\"workspace_bytes\":%u,"
            "\"payload_buffer_bytes\":%d,\"phase_buffer_bytes\":%d,\"impl\":\"%s\","
            "\"bch_variant\":\"%s\",\"fast_bytes\":%u,\"pie_mask\":%u,\"ldxq_bias\":%d,"
-           "\"payload_memory\":\"internal\",\"workspace_memory\":\"psram\","
+           "\"payload_memory\":\"internal\",\"workspace_memory\":\"%s\","
            "\"free_internal\":%u,\"largest_internal\":%u}\n",
            app->version, app->idf_ver, esp_timer_get_time(), CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
            xPortGetCoreID(), (unsigned)dvbs2_mode_count, FRAMES, (unsigned)sizeof *ws,
-           DVBS2_FEC_BYTES, DVBS2_MAX_SYMBOLS, impl_names[impl >= 2 ? 2 : impl],
+           DVBS2_FEC_BYTES, DVBS2_MAX_SYMBOLS, impl_names[impl],
            impl_names[impl],
-           fast ? (unsigned)dvbs2_fast_size() : 0, pie_used, ldxq_bias,
+           fast ? (unsigned)dvbs2_fast_size() : 0, pie_used, ldxq_bias, impl ? "internal" : "psram",
            (unsigned)heap_caps_get_free_size(internal),
            (unsigned)heap_caps_get_largest_free_block(internal));
 
@@ -237,13 +234,12 @@ static void fecbench_task(void *waiter)
         heap_caps_free(output);
         heap_caps_free(fast);
         heap_caps_free(payload);
-        const unsigned output_caps = mode->bits_per_symbol == 3 ? internal : external;
-        // Largest allocation first. Cached workspace in PSRAM; hot scratch and
-        // 8PSK phase output in SRAM. Payload fits the fragment after phases.
+        const unsigned output_caps = external;
+        // Output CRC buffer is outside timing; context and payload are internal.
         output = heap_caps_malloc(symbols, output_caps);
         fast = impl ? heap_caps_aligned_alloc(16, dvbs2_fast_mode_size(mode), internal) : NULL;
         payload = heap_caps_malloc(payload_bytes, internal);
-        if (!payload || !output || (impl && !fast)) {
+        if (!payload || !output || (impl && (!fast || !bch || !packed))) {
             printf("@{\"cmd\":\"fecbench\",\"error\":\"mode allocation failed\"}\n");
             goto done;
         }
@@ -268,7 +264,7 @@ static void fecbench_task(void *waiter)
                 goto done;
             }
             fill_payload(payload, payload_bytes, input, 0, &state);
-            if (impl >= 2 && input == 0) {
+            if (impl != 0 && input == 0) {
                 const unsigned mismatch = check_pie(fast, mode, pie, ws2, ws, output2, output,
                                                     payload);
                 printf("@{\"cmd\":\"fecbench\",\"event\":\"pie_check\",\"modcod\":%u,"
@@ -277,7 +273,10 @@ static void fecbench_task(void *waiter)
                     goto done;
                 }
             }
-            if (encode(fast, ws, mode, input ? &ts : NULL, payload, output, cycles, &total) != 0) {
+            if (fast && mode->bits_per_symbol == 2 &&
+                dvbs2_fast_prepare(fast, mode, PILOTS, pie | DVBS2_MAP_QUADS)) goto done;
+            if (fast && mode->t > 8 && dvbs2_fast_cache_bch(fast, bch)) goto done;
+            if (encode(fast, ws, mode, input ? &ts : NULL, payload, fast ? packed : output, cycles, &total) != 0) {
                 printf("@{\"cmd\":\"fecbench\",\"error\":\"warmup encode failed\","
                        "\"modcod\":%u,\"input\":\"%s\"}\n", mode->modcod, input ? "ts" : "gcs");
                 goto done;
@@ -287,12 +286,18 @@ static void fecbench_task(void *waiter)
             for (unsigned frame = 0; frame < FRAMES; ++frame) {
                 const size_t offset = frame * payload_bytes;
                 fill_payload(payload, payload_bytes, input, offset, &state);
-                if (encode(fast, ws, mode, input ? &ts : NULL, payload, output, cycles,
+                if (encode(fast, ws, mode, input ? &ts : NULL, payload, fast ? packed : output, cycles,
                            &total) != 0) {
                     printf("@{\"cmd\":\"fecbench\",\"error\":\"encode failed\","
                            "\"modcod\":%u,\"input\":\"%s\",\"frame\":%u}\n",
                            mode->modcod, input ? "ts" : "gcs", frame);
                     goto done;
+                }
+                if (fast) {
+                    const bool quads = mode->bits_per_symbol == 2;
+                    for (size_t i = symbols; i-- > 0;)
+                        output[i] = quads ? 2 * ((packed[i / 4] >> (6 - 2 * (i & 3))) & 3) + 1 :
+                                           (packed[i / 2] >> (4 * (i & 1))) & 7;
                 }
                 const uint32_t crc = phase_crc32(output, symbols);
                 printf("@{\"cmd\":\"fecbench\",\"event\":\"frame\",\"modcod\":%u,"
@@ -303,7 +308,7 @@ static void fecbench_task(void *waiter)
                        "\"bb\":%" PRIu32 ",\"bb_scramble\":%" PRIu32 ",\"bch\":%" PRIu32 ","
                        "\"ldpc\":%" PRIu32 ",\"interleave_map\":%" PRIu32 ","
                        "\"pl\":%" PRIu32 ",\"total\":%" PRIu32 "}}\n",
-                       mode->modcod, impl_names[impl >= 2 ? 2 : impl], mode->rate,
+                       mode->modcod, impl_names[impl], mode->rate,
                        mode->bits_per_symbol == 3 ? "8psk" : "qpsk",
                        input ? "ts" : "gcs", frame, seed, (unsigned)offset,
                        (unsigned)payload_bytes, (unsigned)symbols, crc, cycles[0], cycles[1],
@@ -316,6 +321,8 @@ static void fecbench_task(void *waiter)
     printf("@{\"cmd\":\"fecbench\",\"event\":\"end\",\"frames_reported\":%u}\n", reported);
 
 done:
+    heap_caps_free(packed);
+    heap_caps_free(bch);
     heap_caps_free(output2);
     heap_caps_free(ws2);
     heap_caps_free(fast);
@@ -332,7 +339,7 @@ int fecbench_run(const char *name)
                    strcmp(name, impl_names[impl]) != 0; ++impl) {
     }
     if (impl == sizeof impl_names / sizeof impl_names[0]) {
-        printf("@{\"cmd\":\"fecbench\",\"error\":\"implementation is plain, c, pie, legacy, nibble or sram\"}\n");
+        printf("@{\"cmd\":\"fecbench\",\"error\":\"implementation is plain or pie\"}\n");
         return -1;
     }
     if (xTaskCreatePinnedToCore(fecbench_task, "fecbench", 4096,

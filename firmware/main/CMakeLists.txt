@@ -1,7 +1,5 @@
 idf_component_register(SRCS "main.c" "spi_input.c" "station_commands.c" "dvbtx.c" "ring.c" "membench.c" "fecbench.c" "shaper.c" "shaper_pie.S"
-                       "qpsk_probe.c" "shaper_qpsk.c" "shaper_qpsk_pie.S"
-                       "shaper_apsk.c" "shaper_apsk_pie.S"
-                       "shaper_block.c" "shaper_block_pie.S"
+                       "shaper_qpsk.c" "shaper_qpsk_pie.S"
                        "shaper_short.c" "shaper_short_pie.S"
                        INCLUDE_DIRS "."
                        LDFRAGMENTS "stream.lf"

@@ -47,66 +47,6 @@ dvbs2_pie_xor:
     retw
     .size dvbs2_pie_xor, . - dvbs2_pie_xor
 
-/* BCH: eight four-bit slices per 32-bit message word. Each slice is 512
- * bytes: sixteen 16-byte low rows, then sixteen 16-byte high rows. The
- * complete table is 4096 bytes and fits alongside the other cached tables. */
-    .macro bch_nibble shift, high
-    extui a8, a6, \shift, 4
-    slli a8, a8, 4
-    add a8, a8, a4
-    ee.vld.128.xp q2, a8, a13
-    .if \high
-    ee.vld.128.ip q3, a8, 0
-    .endif
-    ee.xorq q0, q0, q2
-    .if \high
-    ee.xorq q1, q1, q3
-    .endif
-    add a4, a4, a9
-    .endm
-
-    .macro bch_kernel name, high
-    .align 4
-    .global \name
-    .type \name, @function
-\name:
-    entry a1, 32
-    ee.zero.q q0
-    ee.zero.q q1
-    .if !\high
-    ee.zero.q q7
-    .endif
-    mov a10, a4
-    movi a9, 512
-    movi a13, 256
-    loopnez a3, 99f
-    l32i a6, a2, 0
-    ee.movi.32.a q0, a7, 0
-    addi a2, a2, 4
-    xor a6, a6, a7
-    .if \high
-    ee.srci.2q q1, q0, 3
-    .else
-    ee.srci.2q q7, q0, 3
-    .endif
-    mov a4, a10
-    bch_nibble 4, \high
-    bch_nibble 0, \high
-    bch_nibble 12, \high
-    bch_nibble 8, \high
-    bch_nibble 20, \high
-    bch_nibble 16, \high
-    bch_nibble 28, \high
-    bch_nibble 24, \high
-99:
-    ee.vst.128.ip q0, a5, 16
-    ee.vst.128.ip q1, a5, 16
-    retw
-    .size \name, . - \name
-    .endm
-    bch_kernel dvbs2_pie_bch32, 1
-    bch_kernel dvbs2_pie_bch16, 0
-
 /* The local pointer is below the 48-byte window-spill save area.
  * Same nibble rows, with bases resident in a4/a9..a15. For all but
  * the low nibble, EXTUI can leave four junk low address bits: VLD ignores
@@ -224,21 +164,6 @@ dvbs2_pie_bch_byte:
     ee.vst.128.ip q1, a5, 16
     retw
     .size dvbs2_pie_bch_byte, . - dvbs2_pie_bch_byte
-
-/* Copies a BCH table into the LDPC scratch which is dead until BCH ends.
- * 8192 bytes, no additional permanent internal allocation. */
-    .align 4
-    .global dvbs2_pie_bch_copy
-    .type dvbs2_pie_bch_copy, @function
-dvbs2_pie_bch_copy:
-    entry a1, 32
-    movi a4, 512
-    loop a4, 99f
-    ee.vld.128.ip q0, a3, 16
-    ee.vst.128.ip q0, a2, 16
-99:
-    retw
-    .size dvbs2_pie_bch_copy, . - dvbs2_pie_bch_copy
 
 /* LDPC doubled groups: u2 = u u u[0..5] per 360-bit group u (45 bytes), 96
  * bytes each. U0 = u[0..15], U1 = u[16..31], U2 = u[32..47], X = u[29..44];
@@ -751,51 +676,6 @@ dvbs2_pie_run4_packed:
     retw
     .size dvbs2_pie_run4_packed, . - dvbs2_pie_run4_packed
 
-/* Former compact-table mapper, retained for radio-off A/B timing. */
-    .align 4
-    .global dvbs2_pie_run8_compact
-    .type dvbs2_pie_run8_compact, @function
-dvbs2_pie_run8_compact:
-    entry a1, 32
-    wur.sar_byte a6
-    splat q5, 0x00300030
-    splat q6, 0x00030003
-    splat q7, 0x000c000c
-    ee.zero.q q4
-    srli a8, a5, 1
-    loopnez a8, 98f
-    ee.vld.128.ip q2, a2, 16
-    ssai 2
-    ee.vsr.32 q0, q2
-    ee.andq q0, q0, q6
-    ssai 4
-    ee.vsr.32 q1, q2
-    ee.andq q1, q1, q7
-    ee.orq q0, q0, q1
-    ssai 6
-    ee.vsr.32 q1, q2
-    ee.andq q1, q1, q5
-    ee.orq q0, q0, q1
-    ee.andq q3, q2, q6
-    ssai 2
-    ee.vsr.32 q1, q2
-    ee.andq q1, q1, q7
-    ee.orq q3, q3, q1
-    ssai 4
-    ee.vsr.32 q1, q2
-    ee.andq q1, q1, q5
-    ee.orq q2, q3, q1
-    pair_lookup 0
-    ee.srcq.128.st.incp q4, q1, a4
-    ee.orq q4, q1, q1
-    pair_lookup 4
-    ee.srcq.128.st.incp q4, q1, a4
-    ee.orq q4, q1, q1
-98:
-    /* All 8PSK runs are multiples of 32 symbols (1440 or 21600). */
-    ee.srcq.128.st.incp q4, q1, a7
-    retw
-    .size dvbs2_pie_run8_compact, . - dvbs2_pie_run8_compact
 
 /* LDPC parity packing: append each column's q bits (natural order) to a
  * big-endian bit stream of 32-bit words. Column t's 32 rows of block b sit,

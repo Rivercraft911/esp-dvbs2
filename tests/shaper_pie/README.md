@@ -1,72 +1,32 @@
-# Shaper PIE check in QEMU
+# Shaper PIE checks in QEMU
 
-This ESP-IDF app compares every output word of the 4-sample and 5-sample PIE kernels with C,
-then emits table and sample checksums for the Python model. It does not initialize the radio.
-Both roll-offs and three seeds exercise empty calls, short lengths, bank-sized calls,
-the staged-row kernel, and the helpers that handle every n4 tail using PIE.
-CI builds this harness; execution needs Espressif's ESP32-S3 QEMU.
+This peripheral-free ESP-IDF app checks the adopted n4/n8/n40 sample glue,
+QPSK block kernels, six-symbol 8PSK pulse, ring pack/unpack and word copies.
+The independent host oracles also check tables and guarded output slices.
+QEMU establishes instruction semantics, never silicon timing.
 
-From the repository root, after activating ESP-IDF v6.1:
+After activating ESP-IDF v6.1:
 
 ```sh
 idf.py -C tests/shaper_pie build
-cd tests/shaper_pie/build
-python -m esptool --chip esp32s3 merge-bin -o flash.bin --fill-flash-size 4MB @flash_args
-cd ../../..
-mkdir -p notes
+(cd tests/shaper_pie/build && python -m esptool --chip esp32s3 merge-bin \
+  -o flash.bin --fill-flash-size 4MB @flash_args)
 qemu-system-xtensa -nographic -machine esp32s3 \
   -drive file=tests/shaper_pie/build/flash.bin,if=mtd,format=raw \
   -serial file:notes/shaper-pie.log -monitor none
 ```
 
-Stop QEMU after `QEMU-END` appears in the serial log. On macOS the QEMU build may need
-`DYLD_LIBRARY_PATH` pointing to its SDL2 library. If the sandbox prevents the IDF component
-manager's process discovery, set `IDF_COMPONENT_MANAGER=0` for the build. No managed component
-is needed by this app.
+Stop after `QEMU-END`. On macOS QEMU may need its SDL2 directory in
+`DYLD_LIBRARY_PATH`. If sandbox process discovery fails, build with
+`IDF_COMPONENT_MANAGER=0`; no managed components are required.
 
 ```sh
-/Library/Frameworks/Python.framework/Versions/3.13/bin/python3 \
-  tests/test_shaper.py notes/shaper-pie.log
+python3 tests/test_shaper.py notes/shaper-pie.log
+python3 tests/test_tx_samples.py notes/shaper-pie.log
+python3 tests/test_shaper_short.py notes/shaper-pie.log
+python3 tests/test_qpsk_fill.py notes/shaper-pie.log
 ```
 
-The checker requires all 324 cases, zero word mismatches, intact output guards, and table and
-output checksums equal to `host/shaper.py`. QEMU verifies instructions, not silicon timing.
-
-The same app now runs `tests/tx_samples.c`: 3,360 raw/scaled-phase sample-glue cases at
-QPSK 4/8/40 and 8PSK 4/8 sps, every edge offset, short tail and 80 wrapping DAC-bank schedules per profile.
-Pass the same log to `python3 tests/test_tx_samples.py notes/shaper-pie.log` to require
-zero word mismatches, intact guards and hashes identical to the host legacy-C oracle.
-The 324 table/PIE cases still compare with the independent Python shaper model.
-It also checks 39,170 pack/unpack cases, including all three unpack formats, and 864 word-copy
-cases with guards, all pointer alignments, short lengths, overlap-sized and bank-sized copies.
-
-For the instruction issue model and the quality/budget sweep, from the root:
-
-```sh
-xtensa-esp32s3-elf-objdump -d --no-show-raw-insn \
-  tests/shaper_pie/build/esp-idf/main/libmain.a > notes/shaper.dis
-python3 host/shaper_cycles.py notes/shaper.dis
-python3 host/shaper_budget.py --disassembly notes/shaper.dis --qemu notes/shaper-pie.log
-```
-
-The n8 calibration is a prior radio-off measurement. The 22% stress factor comes from the
-encoder's prior model error and is a sensitivity check, not a bound on shaper timing.
-
-The four-symbol n3 experiment adds 24 cases with two history words, zero-length
-calls, short groups and a full bank. It reuses the existing output buffers and
-allocates one 24 KiB table while running. Check with
-`python3 tests/test_maxrate.py notes/shaper-pie.log`; model its assembled loop with
-`python3 host/maxrate.py --disassembly notes/shaper.dis`. The model excludes bus
-contention and interrupts. See `docs/max-astra.md` for the whole-transmitter budget.
-The QPSK four-symbol kernel shares these buffers and runs 19,368 further cases:
-3/4 samples per symbol, all sample/output alignments, partial and bank-sized calls,
-three seeds, and peak levels 16/128/508. Empty calls also accept null buffers. Run
-`python3 tests/test_qpsk_fill.py notes/shaper-pie.log` to require all records, intact
-guards and exact Python table/output checks. See [QPSK fill](../../docs/qpsk-fill.md)
-for the separate radio-off probe and its timing gates.
-
-The integrated quad ring adds 65,536 guarded packed-copy slices: every byte
-alignment, every two-bit phase, partial bytes and vector edges. The same QPSK
-checker must finish after the `quad copies: 65536 guarded slices` line. The
-staged-row and 5-sps experiments now execute from flash to free internal RAM;
-their old standalone timing comparisons no longer apply. QEMU timings never do.
+All records, hashes and guards must match the host. The quad ring also checks
+65,536 packed-copy slices. Removed row-staging, five-sample and 8PSK n3
+prototypes remain in git history. [Current fill design](../../docs/bank-fill.md).

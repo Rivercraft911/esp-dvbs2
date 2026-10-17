@@ -11,7 +11,7 @@ from stream_profile import DEADLINE, MAX_FILL, MIN_SLACK, summarize
 p = dict(calls=2, cycles=100, max_cycles=80, flash_miss=4, psram_miss=8,
          data_access=20, instruction_miss=6)
 r = dict(cmd="dvbpace", seconds=60, status="ESP_OK", encoder_failed=False,
-         late_fills=0, fatal_late=0, underruns=0, max_fill_cycles=MAX_FILL,
+         late_fills=0, late_switches=0, fatal_late=0, underruns=0, max_fill_cycles=MAX_FILL,
          min_fill_slack_cycles=MIN_SLACK, encode_cycles_mean=350,
          profile=dict(fill_words=32760, fill_cycles=400, cache_scope="shared windows",
                       fill={k: dict(p) for k in ("copy", "whole", "partial")},
@@ -26,6 +26,11 @@ for key, value in (("late_fills", 1), ("fatal_late", 1), ("underruns", 1),
                    ("seconds", 59), ("status", "ESP_FAIL"), ("encoder_failed", True)):
     assert not summarize(dict(r, **{key: value}))["passes_60s_15_percent"], key
 assert MAX_FILL == 72766 and MIN_SLACK == 12842 and DEADLINE == 85608
+fast = dict(r, dac_rate=80000000, step_words=15740, max_fill_cycles=40137,
+            min_fill_slack_cycles=7083)
+assert summarize(fast)["passes_60s_15_percent"]
+assert not summarize(dict(fast, max_fill_cycles=40138))["passes_60s_15_percent"]
+assert not summarize(dict(fast, late_switches=1))["passes_60s_15_percent"]
 with tempfile.TemporaryDirectory() as tmp:
     src = pathlib.Path(tmp) / "profile.c"
     src.write_text(r'''

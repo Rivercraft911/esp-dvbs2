@@ -113,12 +113,6 @@ static IRAM_ATTR void fill_c(uint32_t *dst, const uint8_t *sym, int nsym,
         const uint32_t *p1 = t->blocks + (h >> (SPAN * b) & wmask) * bw + row;
         const uint32_t *p2 = t->parts == 2 ? NULL :
             t->blocks + (h >> (2 * SPAN * b) & wmask) * bw + 2 * row;
-        if (n & 3) {  // 5 samples/symbol, rows padded to eight words
-            for (int i = 0; i < n; ++i) {
-                *dst++ = (p0[i] + p1[i] + (p2 ? p2[i] : 0)) ^ SHAPER_XOR;
-            }
-            continue;
-        }
         for (int i = 0; i < n; i += 4) {
             dst[0] = (p0[0] + p1[0] + (p2 ? p2[0] : 0)) ^ SHAPER_XOR;
             dst[1] = (p0[1] + p1[1] + (p2 ? p2[1] : 0)) ^ SHAPER_XOR;
@@ -152,27 +146,14 @@ IRAM_ATTR void shaper_fill_raw(uint32_t *dst, const uint8_t *sym, int nsym,
     if (!nsym) {
         return;
     }
-    if (t->parts == 2) {
-        // The stream consumes scaled codes. Keep raw-phase callers correct too.
-        for (int i = 0; i < nsym; ++i) raw_c(dst + 4 * i, sym + i, 1, t);
-        return;
-    }
 #ifdef __XTENSA__
     if (t->n == 40) {
         shaper_fill40_raw_pie(dst, sym, nsym, t->blocks);
         return;
     }
-    const int groups = (nsym - 1) / 6, bulk = 6 * groups + 1;
-    (t->bits == 2
-        ? (t->n == 8 ? shaper_fill8_qpsk_raw_pie : shaper_fill4_qpsk_raw_pie)
-        : (t->n == 8 ? shaper_fill8_raw_pie : shaper_fill4_raw_pie))(dst, sym, groups, t->blocks);
-    raw_c(dst + bulk * t->n, sym + bulk, nsym - bulk, t);
-#else
-    // Host execution of the same edge glue, without Xtensa instructions.
-    for (int i = 0; i < nsym; ++i) {
-        raw_c(dst + i * t->n, sym + i, 1, t);
-    }
 #endif
+    // Fast transmitter modes consume scaled codes; raw phases are a C oracle only.
+    for (int i = 0; i < nsym; ++i) raw_c(dst + i * t->n, sym + i, 1, t);
 }
 
 IRAM_ATTR void shaper_samples(uint32_t *dst, const uint8_t *sym, unsigned skip, size_t count,
@@ -256,19 +237,6 @@ IRAM_ATTR void shaper_samples_codes_profile(uint32_t *dst, const uint8_t *sym, u
     samples(dst, sym, skip, count, t, whole, partial, 1);
 }
 
-// Stage row addresses on the producer core. The consumer needs rows[-6..nsym], one pointer
-// per three-symbol window. Supply legacy codes 16*k, sym[-8..nsym). No per-sample work here.
-void shaper_rows4(const uint32_t **rows, const uint8_t *sym, int nsym,
-                            const uint32_t *blocks)
-{
-    uint32_t h = (uint32_t)sym[-8] * 8 + sym[-7];
-    for (int i = -6; i < nsym; ++i) {
-        h = (h * 8 + sym[i]) & 0x1ff0;
-        rows[i] = blocks + h;   // 16 * window words = 64 bytes
-    }
-    rows[nsym] = blocks;  // one harmless look-ahead for the pipelined consumer
-}
-
 #ifdef __XTENSA__
 // Input is already in internal RAM with its history. A bank wrap may split this into two
 // calls; n4 makes both pieces symbol aligned. Avoid the slow C tail and partial-sample path.
@@ -285,15 +253,4 @@ IRAM_ATTR void shaper_fill4_all_pie(uint32_t *dst, const uint8_t *sym, int nsym,
     }
 }
 
-void shaper_fill4_rows_all_pie(uint32_t *dst, const uint32_t *const *rows, int nsym)
-{
-    if (!nsym) {
-        return;
-    }
-    const int groups = (nsym - 1) / 6, bulk = 6 * groups + 1;
-    shaper_fill4_rows_pie(dst, rows, groups);
-    for (int i = bulk; i < nsym; ++i) {
-        shaper_fill4_rows_pie(dst + 4 * i, rows + i, 0);
-    }
-}
 #endif

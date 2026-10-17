@@ -147,6 +147,8 @@ int usb_serial_jtag_write_bytes(const void *, size_t, unsigned);
 
 
 def test_stream(output=None, receiver=None, input_only=False):
+    golden = json.loads((ROOT / "tests/data/waveform_crcs.json").read_text())
+    seen = set()
     if output:
         output.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
@@ -179,12 +181,12 @@ def test_stream(output=None, receiver=None, input_only=False):
         # External TS/GCS: actual ingress checks, split copies, both mapper layouts,
         # repeated starts, every allocation failure, empty startup and resumed input.
         for kind in (1, 2, 3, 4):
-            for mc, sps, pulse in ((4,3,2), (11,3,2), (4,4,2), (11,4,2), (13,4,0), (17,8,0), (4,40,0)):
+            for mc, sps, input_rate in ((4,3,80), (11,3,80), (4,4,80), (11,4,80), (13,4,40), (17,8,40), (4,40,40)):
                 iq = (output or folder)/f"input-{kind}-{mc}-n{sps}.iq"
-                input_rate = 40000000 if mc == 13 or sps == 40 else 80000000
+                input_rate *= 1000000
                 input_frames = 40 if mc == 13 else 16
                 subprocess.run([str(exe), str(mc), str(sps), str(iq),
-                                "N0CALL", str(input_rate), str(pulse), str(input_frames), str(kind)],
+                                "N0CALL", str(input_rate), str(input_frames), str(kind)],
                                capture_output=True, text=True, timeout=60, check=True)
                 if receiver and mc in (11, 13):
                     sys.path.insert(0, str(ROOT / "host"))
@@ -193,39 +195,27 @@ def test_stream(output=None, receiver=None, input_only=False):
         print("input stream: TS/GCS, split reads, startup/starvation/recovery, allocation cleanup, every DAC word: ok")
         if input_only:
             return
-        crcs = {}
-        for mc, sps, call, rate, short in ((13, 4, "N0CALL", 40, 0), (15, 4, "N0CALL", 40, 0), (17, 4, "", 40, 0),
-                                    (12, 8, "", 40, 0), (13, 8, "N0CALL", 40, 0), (15, 8, "N0CALL", 40, 0),
-                                    (17, 8, "", 40, 0), (4, 40, "N0CALL", 40, 0), (13, 4, "N0CALL", 80, 0),
-                                    (15, 4, "N0CALL", 80, 0), (17, 4, "", 80, 0), (12, 8, "", 80, 0),
-                                    (13, 8, "N0CALL", 80, 0), (13, 4, "N0CALL", 80, 1),
-                                    (15, 4, "N0CALL", 80, 1), (17, 4, "", 80, 1),
-                                    (15, 8, "N0CALL", 80, 0),
-                                    *[(mc, n, "N0CALL", rate, 0) for mc in range(4, 12)
-                                      for n, rate in ((8, 40), (4, 40), (8, 80), (4, 80))],
-                                    *[(mc, n, "N0CALL", 80, 2) for mc in range(4,12) for n in (3,4)]):
+        cases = [(4, 40, "N0CALL", 40)]
+        cases += [(mc,n,"N0CALL",40) for mc in range(4,18) for n in (8,4)]
+        cases += [(mc,4,"N0CALL",80) for mc in range(4,18)]
+        cases += [(mc,3,"N0CALL",80) for mc in range(4,12)]
+        cases = [(mc,n,call,rate,16 if mc < 12 and rate == 80 else 40) for mc,n,call,rate in cases]
+        cases += [(mc,4,"N0CALL",80,16) for mc in (13,15)]
+        cases += [(4,40,"N0CALL",40,16), (13,8,"N0CALL",40,16)]
+        cases += [(mc,4,"N0CALL",80,40) for mc in (4,11)]
+        for mc, sps, call, rate, frames in cases:
+            short = (2 if mc < 12 else 1) if rate == 80 else 0
             quads = short == 2
-            frames = 16 if quads else 40
             iq = output / f'{mc}-n{sps}-{rate}m-s{6 if short == 1 else 9}-q{int(quads)}.iq' if output else folder / "dump.iq"
-            out = subprocess.run([str(exe), str(mc), str(sps), str(iq), call, str(rate * 1000000), str(short), str(frames)],
+            out = subprocess.run([str(exe), str(mc), str(sps), str(iq), call, str(rate * 1000000), str(frames)],
                                  capture_output=True, text=True, timeout=60, check=True).stdout
             records = [json.loads(line[1:]) for line in out.splitlines() if line.startswith("@")]
             dumps = [r for r in records if "crc32" in r]
             assert len(dumps) == 2
-            # Published 40-frame board CRCs, with N0CALL in the payload header.
-            expected = {(4, 40): 1435641601, (13, 8): 1937985440, (15, 8): 1163322913,
-                        (13, 4): 474263962, (15, 4): 1757765864,
-                        (4, 8): 3933043456, (11, 8): 1552954365,
-                        (4, 4): 2594131925, (11, 4): 2779934507}
             for r in dumps:
-                assert r["crc32"] == zlib.crc32(iq.read_bytes())
-                if not short and (mc, sps) in expected:
-                    assert r["crc32"] == expected[mc, sps], (mc, sps, rate, r["crc32"])
-                if short == 1 and mc in (13, 15):
-                    assert r["crc32"] == {13: 3178964763, 15: 4256019779}[mc]
-                if quads and mc in (4,11):
-                    assert r['crc32'] == {(3,4):3388792897, (3,11):1271511239,
-                                          (4,4):3789273049, (4,11):2081653259}[sps,mc]
+                key = f"{mc}/{sps}/{rate}/{frames}"
+                seen.add(key)
+                assert r["crc32"] == golden[key] == zlib.crc32(iq.read_bytes()), key
                 assert r["status"] == "ESP_OK" and not r["encoder_failed"]
                 assert r["callsign"] == call
                 packed = sps != 40
@@ -290,41 +280,43 @@ def test_stream(output=None, receiver=None, input_only=False):
                         assert r["ring_heap_bytes"] == need
                 assert all(p["calls"] == r["frames_encoded"] for p in r["profile"]["encoder"].values())
                 assert r["symbol_rate"] == rate * 1000000 // sps
-            if receiver and mc < 12 and sps != 40:
+            if receiver and (mc < 12 or mc in (13, 15)):
                 cmd = [sys.executable, str(ROOT / "host/onair.py"), str(iq),
-                       "--rate", str(rate * 1000000 // (2 if sps == 8 else 1)), "--symbol-rate", str(rate * 1000000 / sps),
+                       "--rate", str(rate * 1000000 // (10 if sps == 40 else 2 if mc < 12 and sps == 8 else 1)), "--symbol-rate", str(rate * 1000000 / sps),
                        "--scale", "512", "--modcod", str(mc), "--stream", str(frames),
-                       "--callsign", call, "--receiver", str(receiver)]
+                       "--callsign", call, "--shift", "0", "--receiver", str(receiver)]
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
                 assert result.returncode == 0, (cmd, result.stdout, result.stderr)
                 decoded = json.loads(result.stdout)
-                assert decoded["payload_match"] and decoded["payload_frames"] >= frames-2, decoded
+                assert decoded["payload_match"] and decoded["frame_lock"] and decoded["status_complete"], decoded
+                assert 0 <= decoded["first_frame"] <= 1, decoded
+                assert (decoded["payload_frames"] + decoded["first_frame"] >= frames-3 if mc >= 12 else
+                        decoded["payload_frames"] >= frames-2), decoded
                 assert all(decoded[k] == 0 for k in ("bch_failed_frames", "bch_corrected_bits",
                            "ldpc_checks_before", "ldpc_bit_flips", "payload_bit_errors")), decoded
                 print(f"LeanDVB: MODCOD {mc}, {sps} sps at {rate} MS/s, "
                       f"{decoded['payload_frames']} contiguous bit-exact frames")
             # The fill depends on the sample index only: the 80 MS/s bank geometry (other lead,
             # tail and step) must give the same samples as 40 MS/s.
-            crcs[mc, sps, call, rate, short] = dumps[0]["crc32"]
-            if rate == 80 and not short:
-                assert crcs[mc, sps, call, 80, 0] == crcs[mc, sps, call, 40, 0]
             print(f"stream host: MODCOD {mc}, {sps} sps at {rate} MS/s, {dumps[0]['ring_format']} ring, "
                   f"callsign {call or 'none'}, 2 x {frames} frames, "
                   f"CRC {dumps[0]['crc32']}, "
                   "all DAC words match plain encoder; cleanup and notifications pass")
 
+        assert seen == set(golden), (seen ^ set(golden))
+
         # More than one complete physical-wrap cycle for both geometries. Every
         # word is still checked by the plain encoder oracle inside the C harness.
         for rate, short, frames in ((40000000, 0, 256), (80000000, 1, 160), (80000000, 2, 200)):
             subprocess.run([str(exe), "11" if short == 2 else "13", "3" if short == 2 else "4", str(folder / "wrap.iq"), "N0CALL",
-                            str(rate), str(short), str(frames)], capture_output=True,
+                            str(rate), str(frames)], capture_output=True,
                            text=True, timeout=120, check=True)
         print("stream host: complete 1365/819-bank wrap cycles, sample reuse matches the oracle")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", nargs="?", type=pathlib.Path)
-    parser.add_argument("--receiver", type=pathlib.Path, help="also decode new QPSK modes in LeanDVB")
+    parser.add_argument("--receiver", type=pathlib.Path, help="also decode QPSK and 8PSK 2/3, 5/6 waveforms in LeanDVB")
     parser.add_argument("--input-only", action="store_true")
     args = parser.parse_args()
     test_stream(args.output, args.receiver, args.input_only)

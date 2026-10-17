@@ -3,9 +3,9 @@
     python3 tests/test_fecbench.py
     python3 tests/test_fecbench.py results/<date>-fec/runs.jsonl [--correctness-only]
 
-fecbench runs one implementation per command: plain (dvbs2.c), c (fast.c in
-portable C) or pie (fast.c with the ESP32-S3 vector kernels). All three must
-produce the same 140 phase CRCs.
+fecbench selects plain (dvbs2.c) or pie (the shipped packed fast path).
+Both produce the same 140 canonical phase CRCs. The reader still accepts old
+implementation/variant labels so archived results remain verifiable.
 
 The device recipe is fixed in firmware/main/fecbench.c. Timing is never inferred
 from the native test: its clock advances a synthetic 17 counts per read. Native
@@ -179,7 +179,7 @@ def check_records(records, expected):
                 assert record["bch_variant"] in (("pie", "legacy", "nibble", "sram")
                                                   if impl == "pie" else (impl,)), record
             if impl == "pie":
-                assert record["pie_mask"] == 15, ("PIE kernels not all in use", record)
+                assert record["pie_mask"] == (0 if record["firmware"] == "native-synthetic-cycles" else 15), ("PIE kernels not all in use", record)
             active = dict(metadata=record, impl=impl, frames={})
         elif event == "mode":
             assert active is not None, "mode without begin"
@@ -316,11 +316,11 @@ def report(runs):
 if __name__ == "__main__":
     if len(sys.argv) == 1:
         expected = reference_records()
-        for impl in ("plain", "c"):
+        for impl in ("plain", "pie"):
             runs = check_records(native_records(impl), expected)
             assert len(runs) == 1 and runs[0]["impl"] == impl
         test_checker(expected)
-        print("fecbench: actual C command (plain and fast C) emits 140 phase CRCs equal to the "
+        print("fecbench: actual C command (plain and shipped packed path) emits 140 phase CRCs equal to the "
               "reference; checker rejects missing, duplicate and corrupt records. "
               "Native clock counts are synthetic; no performance was measured.")
     else:
