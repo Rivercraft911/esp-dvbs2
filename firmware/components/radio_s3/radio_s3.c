@@ -540,6 +540,11 @@ static void dry_worker(void *arg)
         error = fill_bank(run, 1, RADIO_S3_STEP_WORDS - RADIO_S3_LEAD_WORDS);
     }
     for (uint64_t j = 0; error == ESP_OK && j * RADIO_S3_STEP_WORDS < samples; ++j) {
+        // Let IDLE1 run now and then. A sink that rarely blocks (iddump keeps 1 sample in
+        // 4000) otherwise starves it past the 5 s task watchdog, whose log lands in the dump.
+        if ((j & 63) == 63) {
+            vTaskDelay(1);
+        }
         const uint32_t *now = radio_s3_bank(j & 1), *next = radio_s3_bank((j + 1) & 1);
         const uint64_t edge = (j + 1) * RADIO_S3_STEP_WORDS;
         for (uint64_t n = edge - RADIO_S3_LEAD_WORDS; n < edge + RADIO_S3_TAIL_WORDS; ++n) {
