@@ -1,14 +1,71 @@
 # Demo receiver
 
-Clean file playback works through LeanDVB, MPEG-TS and FFmpeg. The weak-signal
-10 Msym/s path is not ready for a reliable live demo with this LeanDVB build.
-See [measurements](../results/2026-10-17-demo-rx/README.md) for speed and failures.
-No E200, other lab device or serial port was accessed in developing this receiver.
+The demo defaults to **QPSK 3/4 at 10 Msym/s**, with a 20 MS/s receive stream.
+The [file measurements](../results/2026-10-17-demo-rx/README.md) give 2.47× real
+time at Es/N₀ 15 dB, with every attempted frame recovered. 8PSK 2/3 at the same
+rates gives 0.58× and cannot keep up. These are decoder file timings, not RF or
+complete noisy video pipeline qualification. No SDR, serial port or lab network
+device was accessed in this follow-up. The coordinator must qualify the full
+receive chain for 60 seconds before the demo.
 
-For Monday, first qualify 5 Msym/s QPSK 3/4 with a 10 MS/s E200 stream. The
-file decoder has substantially more margin in that mode under noise. Increase
-to 10 Msym/s or change to 8PSK only after the complete receive path holds for
-60 seconds. This is a proposed bring-up order, not an RF qualification result.
+## macOS setup
+
+B200 uses SoapySDR → SoapyUHD → UHD. E200 uses SoapySDR → SoapyPlutoSDR →
+libiio, or the existing libiio command-line backend. Install the B200 stack:
+
+```sh
+brew install soapysdr uhd ffmpeg
+brew tap pothosware/pothos
+brew install pothosware/pothos/soapyuhd
+# Match the Python ABI used by the installed SoapySDR formula.
+SOAPY_PYTHON="$(brew deps soapysdr | sed -n '/^python@/p' | tail -n 1)"
+"$(brew --prefix "$SOAPY_PYTHON")/bin/python${SOAPY_PYTHON#python@}" -m venv --system-site-packages .venv
+.venv/bin/python -m pip install numpy scipy
+.venv/bin/python -c 'import SoapySDR; print(SoapySDR.__file__)'
+export LEANDVB=/Users/river/Documents/stanford/SSI/esp-dvbs2/notes/leansdr/src/apps/leandvb
+```
+
+If `.venv` already uses another Python version, create the matching environment
+at `notes/rx-venv` instead and substitute that path. Do not install an unrelated
+`SoapySDR` wheel from PyPI. Homebrew's Python bindings and driver modules must
+match the installed SoapySDR ABI. Software-only `SoapySDRUtil --info` lists
+modules without probing a radio. UHD may need its matching FPGA/firmware images:
+run `"$(brew --prefix uhd)/lib/uhd/utils/uhd_images_downloader.py"` during setup.
+The receiver does not update E200 firmware or its AD9364-mode configuration.
+[Homebrew SoapySDR](https://formulae.brew.sh/formula/soapysdr),
+[UHD](https://formulae.brew.sh/formula/uhd),
+[SoapyUHD formula](https://github.com/pothosware/homebrew-pothos/blob/master/soapyuhd.rb).
+
+For E200, build the upstream Pluto module against libiio **0.25**. This avoids
+assuming an unavailable Homebrew Pluto formula or mixing libiio 0.x/1.x APIs.
+Homebrew supplies the build dependencies; all source/build files stay in notes/:
+
+```sh
+brew install cmake pkgconf libxml2 libusb
+RX_IIO="$PWD/notes/libiio-0.25"
+git clone --branch v0.25 --depth 1 https://github.com/analogdevicesinc/libiio notes/libiio-src
+cmake -S notes/libiio-src -B notes/libiio-build \
+  -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_INSTALL_PREFIX="$RX_IIO" \
+  -DCMAKE_PREFIX_PATH="$(brew --prefix);$(brew --prefix libxml2)" \
+  -DWITH_LOCAL_BACKEND=OFF -DWITH_TESTS=ON
+cmake --build notes/libiio-build -j 4
+cmake --install notes/libiio-build
+git clone --depth 1 https://github.com/pothosware/SoapyPlutoSDR notes/SoapyPlutoSDR
+cmake -S notes/SoapyPlutoSDR -B notes/pluto-build \
+  -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_INSTALL_PREFIX="$PWD/notes/soapy-pluto" \
+  -DCMAKE_PREFIX_PATH="$RX_IIO;$(brew --prefix soapysdr);$(brew --prefix)"
+cmake --build notes/pluto-build -j 4
+cmake --install notes/pluto-build
+export SOAPY_SDR_PLUGIN_PATH="$PWD/notes/soapy-pluto/lib/SoapySDR/modules$(SoapySDRUtil --abi-version)"
+```
+
+`libad9361` is optional in upstream SoapyPlutoSDR; these commands do not install
+it. E200 firmware must already expose the requested rate. The legacy backend
+uses `--libiio "$RX_IIO"` and does not require SoapySDR or its Python bindings.
+These install instructions were checked against upstream build descriptions;
+the installs and device initialization were not run here.
+[SoapyPlutoSDR dependencies/build](https://github.com/pothosware/SoapyPlutoSDR),
+[libiio v0.25](https://github.com/analogdevicesinc/libiio/tree/v0.25).
 
 ## Run from a file
 
@@ -22,8 +79,9 @@ export LEANDVB=/Users/river/Documents/stanford/SSI/esp-dvbs2/notes/leansdr/src/a
 ```
 
 The last line is the single command for the demo. It generates a moving 960 × 480,
-15 frame/s H.264 test card in `notes/demo-fixture/` on first use, encodes it through
-`host/dvbs2.py`, and loops the resulting IQ at 5 Msym/s. Open the printed
+15 frame/s H.264 test card in `notes/demo-qpsk-10m/` on first use, encodes it through
+`host/dvbs2.py`, and loops QPSK 3/4 IQ at 10 Msym/s. An older
+`notes/demo-fixture/` is ignored. Open the printed
 `http://127.0.0.1:8765` if the browser does not open automatically. Everything is
 local. FFmpeg is found through `FFMPEG`, PATH, or the `imageio-ffmpeg` package.
 LeanDVB is a separate executable; no LeanSDR code is incorporated here.
@@ -38,6 +96,7 @@ The Flat button shows ordinary video. Select 360° for a 2:1 equirectangular inp
 then drag or use arrow keys to look around and scroll or use +/− to zoom. Reset
 restores the view. The test card exercises the projection and contains moving
 video; it is not a photographed panorama. The browser uses WebGL and no CDN.
+Without WebGL it shows flat decoded video and disables the panorama controls.
 The dashboard displays JPEG frames from the decoded TS, up to 1280 pixels wide;
 it has no audio player. Full resolution H.264 and audio stay in `--ts-out`.
 
@@ -55,7 +114,7 @@ adaptation in EN 302 307-1 clauses 5.1.4 to 5.1.6. Sending TS bytes inside the
 existing generic-stream BBFRAME does not turn it into TS. Coordinate this with
 the SPI engineer. `dvbs2.ts_bbframes()` is the tested reference.
 
-To make a QPSK 3/4 or 10 Msym/s fixture:
+To make another QPSK 3/4 fixture explicitly:
 
 ```sh
 .venv/bin/python host/rx_fixture.py notes/video-qpsk --modcod 7 --symbol-rate 10000000
@@ -118,26 +177,84 @@ python3 host/rx_rate.py --uri ip:192.168.1.10 --sample-rate 30000000 \
   --seconds 60 --out notes/e200-30m-rate.json
 ```
 
+## B200 bandwidth and decoder speed
+
+The [B200 product specification](https://www.ettus.com/all-products/ub200-kit/)
+states 56 MHz instantaneous RF bandwidth and 61.44 MS/s continuous quadrature
+streaming over USB 3.0. This is a published capability, not a measurement of the
+incoming unit or this Mac. The B200 uses AD9364; B210 uses AD9361. Both fit this
+single-RX-channel wrapper. USB 2.0 is unsuitable for these proposed rates.
+[UHD B2x0 manual, comparative features and clock-rate sections](https://files.ettus.com/manual/page_usrp_b200.html).
+
+For roll-off α = 0.35 and two complex samples/symbol, occupied bandwidth is
+`B = (1+α) Rs` in Hz, and input sample rate is `Fs = 2 Rs` in sample/s.
+Thus the published receiver ceilings give
+`Rs ≤ min(56 MHz/1.35, 61.44 MS/s/2) = 30.72 Msym/s`.
+61.44 MS/s of int16 I + int16 Q uses `Fs × 4 = 245.76 MB/s` over USB;
+CF32 expands that to 491.52 MB/s in host memory. Neither is a DDR burst claim.
+
+| QPSK 3/4 Rs | Fs | Occupied B | TS capacity | Clean RTF estimate | 15 dB RTF estimate |
+|---|---|---|---|---|---|
+| 10 Msym/s | 20 MS/s | 13.5 MHz | 14.521 Mb/s | 2.69× measured | 2.47× measured |
+| 20 Msym/s | 40 MS/s | 27 MHz | 29.042 Mb/s | 1.35× | 1.24× |
+| 26.667 Msym/s | 53.333 MS/s | 36 MHz | 38.722 Mb/s | 1.01× | 0.93× |
+
+TS capacity is `(48328 bit / 33282 symbol) × Rs`, with normal frames and pilots,
+from the [reference/standard derivation](../results/2026-10-17-demo-rx/README.md#complete-backend).
+Higher-rate RTF is the **estimate** `RTF10 × 10 Msym/s / Rs`, assuming constant
+work per symbol. It omits live driver and browser costs. The clean/15 dB
+compute ceilings are 26.9/24.7 Msym/s by this scaling. Therefore **20 Msym/s is a
+plausible qualification target**; **26.67 Msym/s has essentially no clean margin
+and falls behind at 15 dB**. B200 bandwidth permits both; the measured LeanDVB
+speed does not establish a reliable 26.67 Msym/s live demo. At worse noise the
+10 Msym/s mode also loses margin. Stay with 10 Msym/s for Monday.
+
+To qualify 20 Msym/s later add `--symbol-rate 20000000` (40 MS/s, 27 MHz filter).
+For 80/3 Msym/s use `--symbol-rate 26666667 --sample-rate 53333334 --bandwidth 36000001`.
+These set receiver rates only, not transmitter MODCOD or rate.
+
 ## Coordinator: live dashboard
 
 After the coordinator has arranged the licensed frequency, at least 30 dB of
 attenuation into the receiver, and authorized the transmitter separately:
 
 ```sh
-.venv/bin/python host/demo_rx.py --e200 --uri ip:192.168.1.10 \
-  --sample-rate 20000000 --symbol-rate 10000000 \
-  --center 2420000000 --bandwidth 13500000 --gain 0 \
-  --ts-out notes/live.ts --log notes/live-rx.log
+.venv/bin/python host/demo_rx.py --device b200 --center 2420000000 --gain 0 \
+  --ts-out notes/monday-b200.ts --log notes/monday-b200.log
+# Same command and defaults, with E200/SoapyPlutoSDR selected:
+.venv/bin/python host/demo_rx.py --device e200 --uri ip:192.168.1.10 \
+  --center 2420000000 --gain 0 --ts-out notes/monday-e200.ts --log notes/monday-e200.log
+# Existing libiio 0.25 path, also available as legacy --e200:
+.venv/bin/python host/demo_rx.py --device e200 --backend libiio --libiio "$RX_IIO" \
+  --uri ip:192.168.1.10 --center 2420000000 --gain 0 \
+  --ts-out notes/monday-iio.ts --log notes/monday-iio.log
 ```
 
-This configures RX with verified readbacks, powers the TX LO down, checks the
-scan format and launches exactly one `iio_readdev` RX process. It tees the same
-IQ bytes internally to a bounded FFT snapshot queue and LeanDVB. The waterfall
-can discard display updates; the IQ decode path never silently drops blocks.
-Backpressure propagates to the reader. Watch input rate and growing lag.
-`--tune HZ` specifies a measured carrier offset from the E200 center. Adjust
-manual `--gain` while avoiding ADC clipping; 0 dB is a starting setting, not a
-measured optimum. There is no AGC or automatic carrier search in this wrapper.
+Select **QPSK 3/4, 10 Msym/s, pilots, roll-off 0.35, MPEG-TS framing** at the
+transmitter separately. The receiver detects MODCOD; it cannot change the
+transmitter. The default RX settings are 20 MS/s, 13.5 MHz RF filter and manual
+0 dB gain. B200 selects RX2, channel 0, `driver=uhd,type=b200`; add `--serial SERIAL`
+for a particular unit. E200 selects A_BALANCED, channel 0,
+`driver=plutosdr,uri=ip:192.168.1.10`. Use the appropriate physical RX connector.
+Both use normalized CF32 inside the host; SoapyUHD requests `WIRE=sc16` over USB.
+Soapy readbacks tolerate 1 ppm sample-rate rounding, 1 Hz LO rounding, 1% filter
+rounding and 0.5 dB gain steps, and otherwise fail before streaming. Requested
+and actual settings appear in `/api/state` and the diagnostic log. The wrapper
+opens only one RX stream. Overflow, corruption, unexpected stream end or five
+seconds without samples fails visibly rather than silently hiding IQ loss.
+SoapyPlutoSDR cannot prove absence of drops its driver does not report.
+[SoapyUHD stream arguments](https://github.com/pothosware/SoapyUHD),
+[SoapyPlutoSDR settings](https://github.com/pothosware/SoapyPlutoSDR/blob/master/PlutoSDR_Settings.cpp).
+
+The libiio backend verifies exact readbacks and scan format, powers the TX LO
+down and launches one continuous `iio_readdev`. The Soapy paths open no TX
+stream; they do not provide that libiio TX-LO powerdown check. All paths tee
+the same IQ internally to a bounded spectrum snapshot queue and LeanDVB. Only
+display updates may be discarded. Decoder backpressure reaches the device;
+Soapy overflows stop reception. Watch input rate and growing lag.
+`--tune HZ` specifies a measured carrier offset from RX center. Adjust manual
+`--gain` to avoid clipping; 0 dB is a starting setting, not a measured optimum.
+There is no AGC or automatic carrier search in this wrapper.
 Use unique log/TS filenames: existing files are never overwritten.
 
 For 5 Msym/s use `--sample-rate 10000000 --symbol-rate 5000000 --bandwidth 6750000`.
@@ -206,5 +323,19 @@ RX_INTEGRATION=1 .venv/bin/python tests/test_demo_rx.py
 
 The optional integration test synthesizes H.264/TS IQ, checks decoded TS bytes
 against the source, runs paced playback across loops, and fetches live JSON and
-JPEG endpoints. It never uses hardware. Browser visual and interaction testing
-was blocked by the local-origin approval gate, so it remains a coordinator check.
+JPEG endpoints. It never uses hardware. The follow-up static render check runs
+the actual dashboard script in jsdom and
+renders the 2D spectrum/waterfall on CPU canvases. It checks video API calls,
+flat fallback, panorama drag/keys/zoom/reset, fullscreen requests, stale values,
+source errors and disconnects, without HTTP or device access:
+
+```sh
+.venv/bin/python tests/test_rx_device.py
+npm install --prefix /tmp/rx-dom jsdom @napi-rs/canvas
+NODE_PATH=/tmp/rx-dom/node_modules node tests/test_demo_rx_render.cjs
+```
+
+Headless Chrome was attempted and aborted under the process sandbox. This
+static route caught and fixed blank video when WebGL is unavailable, and errors
+hidden in that mode. GPU shader output, responsive layout and actual fullscreen
+still need a coordinator browser check. The static test is in CI.

@@ -61,7 +61,8 @@ planning tools, not silicon timing measurements.
 Needs ESP-IDF v6.1, ESP32-S3 with 8 MB PSRAM, Python 3 with numpy, scipy,
 pyserial and matplotlib. Independent decode also needs a local LeanDVB build.
 The [local receive dashboard](docs/demo-rx.md) plays reference H.264 through
-LeanDVB and has a spectrum, waterfall and 360° video view.
+LeanDVB and has a spectrum, waterfall and 360° video view. It defaults to QPSK
+3/4 at 10 Msym/s, with B200/SoapyUHD and E200/SoapyPlutoSDR or libiio inputs.
 [File measurements](results/2026-10-17-demo-rx/README.md) document decoder speed
 and noise limits. Live RF still needs coordinator qualification.
 

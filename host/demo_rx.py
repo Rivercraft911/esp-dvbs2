@@ -5,7 +5,7 @@
     python3 host/demo_rx.py --file dump.iq --sample-rate 40000000 --symbol-rate 10000000
     producer | python3 host/demo_rx.py --stdin --sample-rate 20000000 --symbol-rate 10000000
 
-E200 access happens ONLY with --e200, for the coordinator to run.
+SDR access happens ONLY with --device or legacy --e200, for the coordinator to run.
 """
 import argparse
 from collections import deque
@@ -36,7 +36,10 @@ class State:
         self.lock = threading.RLock()
         self.started = time.monotonic()
         self.ts_history = deque()
-        self.data = dict(source="FILE REPLAY" if args.file else "LIVE INPUT", status="starting",
+        source = "FILE REPLAY" if args.file else "LIVE INPUT"
+        if getattr(args, "device", None):
+            source = args.device.upper() + " / " + args.backend.upper()
+        self.data = dict(source=source, status="starting", device_settings=None,
                          sample_rate=args.sample_rate, symbol_rate=args.symbol_rate,
                          center_hz=args.center, modcod=None, mer_db=None, frames_ok=0,
                          frames_failed=0, bbheader_failed=0, frame_lock=False, ts_bytes=0,
@@ -258,12 +261,25 @@ class Receiver:
     def input(self):
         a, s = self.args, self.state
         source = None
+        radio_source = None
         try:
-            if a.e200:
+            if a.device and a.backend == "soapy":
+                from rx_device import SoapyRX
+                radio_source = SoapyRX(a)
+                metadata = radio_source.configure()
+                with s.lock:
+                    s.data["device_settings"] = metadata
+                if self.log:
+                    self.log.write(json.dumps({"sdr": metadata}) + "\n")
+                if self.stop.is_set():
+                    return
+            elif a.device:
                 import sdr
                 radio = sdr.SDR(sdr.Settings(uri=a.uri, lo_hz=int(a.center), rate_hz=a.sample_rate,
                                             bandwidth_hz=a.bandwidth, gain_db=a.gain), a.libiio)
                 metadata = radio.configure()
+                with s.lock:
+                    s.data["device_settings"] = metadata
                 if self.stop.is_set():
                     return
                 # One and only one RX process. Both I and Q, single RF channel, no -s limit.
@@ -282,7 +298,9 @@ class Receiver:
             width = 4 if a.format == "s16" else 8
             last_fft = 0
             while not self.stop.is_set():
-                for block in read_blocks(source, 262144*width, self.stop):
+                blocks = (radio_source.blocks(self.stop) if radio_source else
+                          read_blocks(source, 262144*width, self.stop))
+                for block in blocks:
                     if len(block) % width:
                         raise ValueError("input ends in a partial I/Q sample")
                     now = time.monotonic()
@@ -312,7 +330,7 @@ class Receiver:
                     break
             self.decoder.stdin.close()
             if not self.stop.is_set():
-                if a.e200 and self.source_process.wait(timeout=6):
+                if a.device and a.backend == "libiio" and self.source_process.wait(timeout=6):
                     raise RuntimeError("E200 reader failed: " + " ".join(self.source_log))
                 code = self.decoder.wait(timeout=30)
                 if code:
@@ -321,6 +339,8 @@ class Receiver:
                     s.data["status"] = "ended"
                     s.data["frame_lock"] = False
         finally:
+            if radio_source:
+                radio_source.close()
             if source and source is not sys.stdin.buffer:
                 source.close()
 
@@ -391,9 +411,11 @@ def arguments(argv=None):
     source.add_argument("--file", type=Path)
     source.add_argument("--stdin", action="store_true")
     source.add_argument("--e200", action="store_true", help="COORDINATOR ONLY: configure and stream E200 RX")
+    source.add_argument("--device", choices=("b200", "e200"), help="COORDINATOR ONLY: live RX device")
+    p.add_argument("--backend", choices=("soapy", "libiio"), default="soapy")
     p.add_argument("--sample-rate", type=int)
     p.add_argument("--symbol-rate", type=int)
-    p.add_argument("--format", choices=("s16", "f32"), default="s16")
+    p.add_argument("--format", choices=("s16", "f32"))
     p.add_argument("--scale", type=float, help="FFT full scale: E200 2048, board 512, f32 1")
     p.add_argument("--loop", action="store_true")
     p.add_argument("--unpaced", action="store_true", help="file throughput check, not live playback")
@@ -402,8 +424,10 @@ def arguments(argv=None):
     p.add_argument("--tune", type=float, default=0, help="carrier offset from center, Hz")
     p.add_argument("--center", type=float, default=2420000000)
     p.add_argument("--uri", default="ip:192.168.1.10")
-    p.add_argument("--bandwidth", type=int, default=13500000)
+    p.add_argument("--bandwidth", type=int, help="RF filter bandwidth, default 1.35*symbol rate, Hz")
     p.add_argument("--gain", type=float, default=0)
+    p.add_argument("--antenna", help="RX input, default B200 RX2 or E200 A_BALANCED")
+    p.add_argument("--serial", help="B200 serial number when more than one is connected")
     p.add_argument("--libiio", type=Path)
     p.add_argument("--port", type=int, default=8765)
     p.add_argument("--seconds", type=float, help="stop automatically and print final JSON")
@@ -412,14 +436,43 @@ def arguments(argv=None):
     p.add_argument("--log", type=Path, help="save receiver diagnostics, refuses overwrite")
     p.add_argument("--telemetry", type=Path, help="tail regular JSONL file; never open serial here")
     a = p.parse_args(argv)
+    if a.e200:
+        a.device, a.backend = "e200", "libiio"
+    if a.backend == "libiio" and a.device != "e200":
+        p.error("libiio backend requires --device e200")
+    if a.serial and a.device != "b200":
+        p.error("--serial requires --device b200")
+    if a.device:
+        a.symbol_rate = a.symbol_rate if a.symbol_rate is not None else 10_000_000
+        a.sample_rate = a.sample_rate if a.sample_rate is not None else 2*a.symbol_rate
+        a.antenna = a.antenna or ("RX2" if a.device == "b200" else "A_BALANCED")
+        if a.backend == "libiio" and a.antenna != "A_BALANCED":
+            p.error("libiio demo RX uses A_BALANCED")
     if a.demo:
-        folder = Path("notes/demo-fixture")
+        # Use a versioned path so older 8PSK/5 Msym/s fixtures cannot change the default.
+        folder = Path("notes/demo-qpsk-10m")
         meta_path = folder / "fixture.json"
         if not meta_path.exists():
             make_fixture(folder)
         meta = json.loads(meta_path.read_text())
         a.file, a.format, a.loop = folder/"video.cf32", "f32", True
         a.sample_rate, a.symbol_rate = meta["sample_rate"], meta["symbol_rate"]
+        if (meta["modcod"], a.sample_rate, a.symbol_rate) != (7, 20_000_000, 10_000_000):
+            p.error("default demo fixture must be QPSK 3/4 at 10 Msym/s; move the old fixture")
+    expected_format = "f32" if a.device and a.backend == "soapy" else "s16"
+    a.format = a.format or expected_format
+    if a.device and a.format != expected_format:
+        p.error(f"{a.backend} RX emits {expected_format} I/Q")
+    if a.device and a.unpaced:
+        p.error("--unpaced is for files, not SDR input")
+    if a.bandwidth is None:
+        a.bandwidth = math.ceil(1.35*a.symbol_rate) if a.symbol_rate else 13_500_000
+    if a.bandwidth <= 0:
+        p.error("bandwidth must be positive")
+    if a.device == "b200" and (a.sample_rate > 61_440_000 or a.bandwidth > 56_000_000):
+        p.error("B200 single-channel limits: 61.44 MS/s and 56 MHz RF bandwidth")
+    if a.device and a.bandwidth < 1.35*a.symbol_rate:
+        p.error("RX bandwidth must cover the roll-off 0.35 waveform: >=1.35*symbol rate")
     a.scale = a.scale if a.scale is not None else (2048 if a.format == "s16" else 1)
     if not math.isfinite(a.scale) or a.scale <= 0:
         p.error("scale must be finite and positive")
@@ -429,8 +482,6 @@ def arguments(argv=None):
         p.error("finite frequency and gain required")
     if a.seconds is not None and (not math.isfinite(a.seconds) or a.seconds <= 0):
         p.error("seconds must be finite and positive")
-    if a.e200 and a.format != "s16":
-        p.error("E200 emits s16 I/Q")
     if a.file and (not a.file.is_file() or not a.file.stat().st_size):
         p.error("file must be a nonempty regular file")
     if a.telemetry and not a.telemetry.is_file():

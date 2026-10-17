@@ -28,7 +28,7 @@ def ffmpeg_path():
         raise FileNotFoundError("install ffmpeg, or pip install imageio-ffmpeg, or set FFMPEG")
 
 
-def make_fixture(directory, seconds=2, rs=5_000_000, modcod=13):
+def make_fixture(directory, seconds=2, rs=10_000_000, modcod=7):
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     if any(directory.iterdir()):
@@ -76,8 +76,8 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("directory", type=Path)
     p.add_argument("--seconds", type=float, default=2)
-    p.add_argument("--symbol-rate", type=int, default=5_000_000)
-    p.add_argument("--modcod", type=int, choices=(7, 13), default=13)
+    p.add_argument("--symbol-rate", type=int, default=10_000_000)
+    p.add_argument("--modcod", type=int, choices=(7, 13), default=7)
     a = p.parse_args()
     if not 0 < a.seconds <= 30 or a.symbol_rate <= 0:
         p.error("positive symbol rate and 0 < seconds <= 30 required")

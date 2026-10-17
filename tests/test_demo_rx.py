@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 import urllib.request
 
 import numpy as np
@@ -111,6 +112,23 @@ class ReceiverTests(unittest.TestCase):
             demo_rx.arguments(['--stdin','--sample-rate','20000000','--symbol-rate','10000000',
                                '--telemetry','/dev/null'])
 
+    def test_demo_ignores_legacy_fixture_and_validates_new_cache(self):
+        with tempfile.TemporaryDirectory() as tmp, contextlib.chdir(tmp):
+            legacy=Path('notes/demo-fixture');legacy.mkdir(parents=True)
+            (legacy/'fixture.json').write_text(json.dumps(dict(modcod=13,sample_rate=10000000,symbol_rate=5000000)))
+            current=Path('notes/demo-qpsk-10m');current.mkdir()
+            (current/'video.cf32').write_bytes(b'\0'*8)
+            meta=current/'fixture.json'
+            meta.write_text(json.dumps(dict(modcod=7,sample_rate=20000000,symbol_rate=10000000)))
+            with patch('demo_rx.make_fixture') as make:
+                a=demo_rx.arguments(['--demo'])
+                make.assert_not_called()
+            self.assertEqual(a.file,current/'video.cf32')
+            self.assertEqual((a.sample_rate,a.symbol_rate),(20000000,10000000))
+            meta.write_text(json.dumps(dict(modcod=13,sample_rate=20000000,symbol_rate=10000000)))
+            with self.assertRaises(SystemExit),contextlib.redirect_stderr(io.StringIO()):
+                demo_rx.arguments(['--demo'])
+
 
     def test_telemetry_regular_file_and_invalid_records(self):
         s = self.state()
@@ -156,14 +174,16 @@ class IntegrationTests(unittest.TestCase):
         root=Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as tmp:
             directory=Path(tmp)/'fixture'
-            fixture,meta=rx_fixture.make_fixture(directory,seconds=1)
+            fixture,meta=rx_fixture.make_fixture(directory)
+            self.assertEqual((meta['modcod'],meta['symbol_rate'],meta['sample_rate']),
+                             (7,10_000_000,20_000_000))
             # Allocate an unused loopback port without connecting to any device.
             with socket.socket() as sock:
                 sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]
             cmd=[sys.executable,str(root/'host/demo_rx.py'),'--file',str(fixture),'--format','f32',
                  '--sample-rate',str(meta['sample_rate']),'--symbol-rate',str(meta['symbol_rate']),
                  '--receiver',os.environ['LEANDVB'],'--loop','--no-open','--port',str(port),
-                 '--seconds','8','--ts-out',str(Path(tmp)/'received.ts')]
+                 '--seconds','10','--ts-out',str(Path(tmp)/'received.ts')]
             with subprocess.Popen(cmd,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True) as proc:
                 self.assertEqual(proc.stdout.readline().strip(),f'http://127.0.0.1:{port}')
                 state=None
@@ -185,6 +205,7 @@ class IntegrationTests(unittest.TestCase):
                 self.assertEqual(proc.returncode,0,err)
                 final=json.loads(out.strip())
                 self.assertGreater(final['video_frames'],10)
+                self.assertLess(final['behind_s'],.3)
             received=(Path(tmp)/'received.ts').read_bytes()
             self.assertEqual(len(received)%188,0)
             self.assertTrue(all(received[n]==0x47 for n in range(0,len(received),188)))
