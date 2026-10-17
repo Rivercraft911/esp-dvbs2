@@ -1,5 +1,7 @@
 # 26.67 Msym/s: the combined budget fails
 
+This is the first-round report. [Round two](round2.md) uses the newer encoder and bank geometry.
+
 The four-symbol prototype reduces the estimated n3 bank fill from 60.7k to **43.1k
 cycles**, but does not support 26.67 Msym/s. Together with the measured 262.1k-cycle
 encoder it needs **463.2k cycles/frame**, against **399,492 across both cores**.
