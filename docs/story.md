@@ -127,6 +127,24 @@ bank fills, none late, smallest slack 6,390 cycles. Nothing received it, so this
 transmit path running, not signal quality.
 ([keyed run](../results/2026-10-16-keyed-box/README.md))
 
+## 11. 10 Msym/s fits
+
+Three changes made the 10 Msym/s fill fit, after a cycle profile of every stage. Frames stay in
+internal RAM packed two symbols per byte, so neither core touches PSRAM per symbol. The 2,048
+samples both banks share are kept in a cache instead of being shaped twice. At 10 Msym/s the
+ring holds three frames. The longest fill fell from 98k-112k to 57k cycles, a third of the
+deadline to spare, and the encoder in the stream from about 700k to 257k cycles per frame. The
+dumps stayed byte-identical. ([build-out](../results/2026-10-16-buildout/README.md))
+
+A new BCH kernel with an 8 KiB byte table then won on the bench and lost in the stream. It
+saved 24k cycles in BCH, and the same 24k reappeared in the framing stages as cache misses: the
+encoder's tables and workspace all share a 32 KiB data cache. The smaller register-based kernel
+went in instead, taking 8PSK 5/6 from 376k to 291k cycles per frame.
+([integration](../results/2026-10-16-next/README.md))
+
+Keyed in the box, 8PSK 2/3 and 5/6 ran at 10 Msym/s, 19.4 and 24.2 Mb/s, for 30 s each with
+every deadline met. ([keyed at 10 Msym/s](../results/2026-10-16-keyed-10m/README.md))
+
 ## Side roads
 
 - **APSK.** The Python reference does 16APSK and 32APSK, and 56 host loopbacks through LeanDVB
@@ -138,11 +156,12 @@ transmit path running, not signal quality.
 - **DMA as the sample engine.** Ruled out. The S3's GDMA moved internal memory at 53-63 MB/s,
   so copying one bank took 250k-306k cycles against the 85.6k deadline, and letting DMA copy the
   bank overlap while the CPU shaped the rest was slower in every case than the CPU alone. The
-  CPU with PIE stays the sample engine. Code and records are on branch `exp/rd-offload`.
+  CPU with PIE stays the sample engine. ([DMA](../results/2026-10-16-dma-offload/README.md))
 
 ## Now
 
-In progress: 10 Msym/s under the fill deadline (keeping frames in internal RAM and reusing the
-bank overlap from a CPU-side cache), a faster encoder for 20 Msym/s and above, a 6-symbol pulse
-that needs two table lookups instead of three, and 26.67 Msym/s at 80 MS/s, 3 samples per
-symbol. After that, a receiver decoding the signal over RF.
+Next is 80 MS/s: 20 Msym/s at 4 samples per symbol and 26.67 Msym/s at 3. A bank is then due
+every 42,804 cycles, against today's 57k fill, and the encoder must fit a 20 Msym/s frame in
+266k cycles. Leads: filling each bank in one pass, a 6-symbol pulse with two lookups per sample,
+encoder tables placed so they stop evicting each other, and a wider transmit filter. After
+that, a receiver decoding the signal over RF.

@@ -16,16 +16,16 @@ leaves through the S3's own Wi-Fi radio.
 
 | | Best so far | Run |
 |---|---|---|
-| Continuous transmit | 8PSK 2/3 at 5 Msym/s (9.68 Mb/s), keyed for 30 s in a shielded box, every bank deadline met, 7% slack | [keyed](results/2026-10-16-keyed-box/README.md) |
+| Continuous transmit | 8PSK 2/3 at 10 Msym/s (19.4 Mb/s) and 5/6 (24.2 Mb/s), keyed for 30 s each in a shielded box, every bank deadline met, 33% slack | [keyed](results/2026-10-16-keyed-10m/README.md) |
 | Bit-exact from the chip | QPSK 1/2 to 9/10 at 1 Msym/s, 8PSK 2/3 and 5/6 at 5 and 10 Msym/s: the DAC samples decoded by LeanDVB, radio off | [QPSK](results/2026-10-16-dryrun/README.md), [8PSK](results/2026-10-16-8psk-board/README.md) |
 | MER of those samples | 47.0 dB QPSK at 1 Msym/s; 8PSK 43.3 dB at 5 and 41.6 dB at 10 Msym/s after a modelled DAC hold | [QPSK](results/2026-10-16-dryrun/README.md), [8PSK](results/2026-10-16-integrate/README.md) |
-| Encoder | 213k cycles per 8PSK 2/3 frame, 20% of one core at 5 Msym/s | [fast encoder](results/2026-10-16-fec-limit/README.md) |
-| Pulse shaping | 1.78 cycles per sample, 34% of one core at 40 MS/s | [shaper](results/2026-10-16-shaper/README.md) |
+| Encoder | 206k cycles per 8PSK 2/3 frame on the bench, 261k in the live stream: 49% of one core at 10 Msym/s | [bench](results/2026-10-16-next/README.md), [keyed](results/2026-10-16-keyed-10m/README.md) |
+| Pulse shaping | 1.78 cycles per sample; a whole bank at 10 Msym/s in 57k of its 85.6k cycles | [shaper](results/2026-10-16-shaper/README.md), [build-out](results/2026-10-16-buildout/README.md) |
 | RF, test tone | image -35 dBc, carrier leak about -45 dBc | [first RF](results/2026-10-16-radio/README.md) |
 | Payload in | 4.6 Mb/s over USB | [usb](results/2026-10-16-usb/README.md) |
 
-Not yet: a receiver decoding the signal over RF, 10 Msym/s holding its deadlines (the fill and
-the stream's encoder are both too slow so far), and payload arriving over SPI.
+Not yet: a receiver decoding the signal over RF, 20 Msym/s and above at 80 MS/s (the bank fill
+needs about a third fewer cycles), and payload arriving over SPI.
 
 ## How it works
 
@@ -71,7 +71,8 @@ only on the DAC rate, so a higher symbol rate costs no extra shaping, only encod
 
 ## Next
 
-- 10 Msym/s within the fill deadline, then 20 and 26.67 Msym/s at 80 MS/s with a wider transmit filter.
+- 20 and 26.67 Msym/s at 80 MS/s with a wider transmit filter: the fill must drop from 57k to
+  under 43k cycles per bank, and the encoder under 266k (20 Msym/s) or 200k (26.67) per frame.
 - A 6-symbol pulse: two table lookups per sample instead of three.
 - A receiver decoding the signal over RF, starting with a cabled path.
 - Payload over SPI from a second board, APSK in firmware.
