@@ -35,16 +35,31 @@ dvbtx = {
     "dvb": (["", "2400", "2400 4", "2389 4 1", "2451 4 1", "2400 3 1", "2400 12 1",
              "2400 4 0", "2400 4 61", "2400 4 1 18", "2400 4 1 0 15", "2400 4 1 0 509",
              "2400 4 1 0 128 x", "2400 4 1.5", "2400 0x4 1"],
-            [("2400 4 1", (2400, 4, 1, 0, 128)), ("2450 11 60 17 508", (2450, 11, 60, 17, 508)),
-             ("2390 4 1 0 16", (2390, 4, 1, 0, 16))]),
+            [("2400 4 1", (2400, 4, 1, 0, 128, 40)), ("2450 11 60 17 508", (2450, 11, 60, 17, 508, 40)),
+             ("2390 4 1 0 16", (2390, 4, 1, 0, 16, 40))]),
     "dvbdump": (["", "4", "3 1", "12 1", "4 0", "4 257", "4 1 15", "4 1 509", "4 1 128 0",
                  "4 1 128 3", "4 1 128 21", "4 1 128 10 2001", "4 1 128 10 0 x", "4 -1"],
-                [("4 40", (4, 40, 128, 10, 0)), ("11 256 508 1 2000", (11, 256, 508, 1, 2000)),
-                 ("6 1 64 20", (6, 1, 64, 20, 0))]),
+                [("4 40", (4, 40, 128, 10, 0, 40)), ("11 256 508 1 2000", (11, 256, 508, 1, 2000, 40)),
+                 ("6 1 64 20", (6, 1, 64, 20, 0, 40))]),
     "dvbpace": (["", "4", "4 0", "4 601", "3 1", "12 1", "4 1 15", "4 1 128 2001",
                  "4 1 128 0 x", "4 1.5"],
-                [("4 30", (4, 30, 128, 0)), ("11 600 64 25", (11, 600, 64, 25))]),
+                [("4 30", (4, 30, 128, 0, 0, 40)), ("11 600 64 25", (11, 600, 64, 25, 0, 40))]),
 }
+
+for name, (_, good) in dvbtx.items():
+    for mc in range(12, 18):
+        for rate, sps in (("5m", 8), ("10m", 4)):
+            if name == "dvb":
+                good.append((f"2400 {mc} {rate} 1", (2400, mc, 1, 0, 128, sps)))
+                dvbtx[name][0].extend([f"2400 {mc} 1", f"2400 {mc} 1m 1"])
+            elif name == "dvbdump":
+                good.append((f"{mc} {rate} 40", (mc, 40, 128, sps // 4, 0, sps)))
+                good.append((f"{mc} {rate} 2 64 1 20", (mc, 2, 64, 1, 20, sps)))
+                dvbtx[name][0].extend([f"{mc} {rate} 40 128 10", f"{mc} {rate} 40 128 3"])
+            else:
+                good.append((f"{mc} {rate} 60 128 25", (mc, 60, 128, 25, 0, sps)))
+                dvbtx[name][0].append(f"{mc} {rate} 601")
+    dvbtx[name][0].extend(["4 5m 1", "18 5m 1", "13 5m", "13 10m 1 128 0 extra"])
 
 prelude = r'''
 #include <assert.h>
@@ -81,26 +96,26 @@ static const char *esp_err_to_name(esp_err_t error)
     (void)error;
     return "ESP_OK";
 }
-static unsigned dvb_calls, dump_calls, pace_calls, got[5];
-static void stub(unsigned *count, unsigned a, unsigned b, unsigned c, unsigned d, unsigned e)
+static unsigned dvb_calls, dump_calls, pace_calls, got[6];
+static void stub(unsigned *count, unsigned a, unsigned b, unsigned c, unsigned d, unsigned e, unsigned f)
 {
     ++*count;
-    got[0] = a, got[1] = b, got[2] = c, got[3] = d, got[4] = e;
+    got[0] = a, got[1] = b, got[2] = c, got[3] = d, got[4] = e, got[5] = f;
     printf("@{\"status\":\"ESP_OK\"}\n");
 }
 static void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain,
-                      unsigned level)
+                      unsigned level, unsigned sps)
 {
-    stub(&dvb_calls, freq, modcod, seconds, gain, level);
+    stub(&dvb_calls, freq, modcod, seconds, gain, level, sps);
 }
 static void dvbtx_dump(unsigned modcod, unsigned frames, unsigned level, unsigned decim,
-                       unsigned stall)
+                       unsigned stall, unsigned sps)
 {
-    stub(&dump_calls, modcod, frames, level, decim, stall);
+    stub(&dump_calls, modcod, frames, level, decim, stall, sps);
 }
-static void dvbtx_pace(unsigned modcod, uint32_t seconds, unsigned level, unsigned stall)
+static void dvbtx_pace(unsigned modcod, uint32_t seconds, unsigned level, unsigned stall, unsigned sps)
 {
-    stub(&pace_calls, modcod, seconds, level, stall, 0);
+    stub(&pace_calls, modcod, seconds, level, stall, 0, sps);
 }
 #define RF_CALLS (calls + dvb_calls)
 '''

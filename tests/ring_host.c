@@ -30,15 +30,17 @@
 #define LEAD 64
 #define TAIL 2048
 #define STEP (BANK - LEAD - TAIL)
-#define SPS 40
+static unsigned sps = 40;
+#define SPS sps
 #define HISTORY 8
-#define WINDOW (HISTORY + 412)
+#define WINDOW (HISTORY + 4096)
 #define POISON 0xEE
 #define FILLER 0xFA
 #define UNSEEN 0xFFFF
 
 static ring_t ring;
-static uint32_t length, nslots;
+static uint32_t length, nslots, dummy, recorded;
+static struct position { uint64_t start, end; uint32_t choice; } *events;
 static uint16_t *seen;
 static uint64_t seen_symbols;
 
@@ -62,6 +64,10 @@ static void fill(uint64_t first, size_t count)
     const int nsym = ring_window(&ring, win, sizeof win, first, count, SPS, HISTORY, BANK);
     if (nsym < 0) {
         fail("ring_window", (long long)first, (long long)count);
+    }
+    while (recorded < ring.next_position) {
+        const unsigned i = recorded % RING_CHOICES;
+        events[recorded++] = (struct position){ring.start[i], ring.end[i], ring.choice[i]};
     }
     const int64_t s0 = (int64_t)(first / SPS) - HISTORY;
     for (int j = 0; j < HISTORY + nsym; ++j) {
@@ -119,21 +125,19 @@ static void check(void)
 {
     uint32_t e = 0, fillers = 0;
     for (uint32_t q = 0; q < ring.next_position; ++q) {
-        int kind = -1;   // 0 frame, 1 filler
-        for (uint32_t i = 0; i < length; ++i) {
-            const uint16_t v = seen[(uint64_t)q * length + i];
-            if (v == UNSEEN) {
-                continue;
-            }
-            if (kind < 0) {
-                kind = v == FILLER;
-            }
-            if (v != (kind ? FILLER : frame_byte(e, i))) {
-                fail(kind ? "filler content" : "frame out of order", q, i);
+        const struct position *p = events + q;
+        const int kind = p->choice == RING_FILLER;
+        if (!kind && p->choice != e) {
+            fail("frame selection out of order", p->choice, e);
+        }
+        for (uint64_t i = p->start; i < p->end && i < seen_symbols; ++i) {
+            const uint16_t v = seen[i];
+            if (v != UNSEEN && v != (kind ? FILLER : frame_byte(e, (uint32_t)(i - p->start)))) {
+                fail(kind ? "filler content" : "frame out of order", q, (long long)i);
             }
         }
-        if (kind < 0) {
-            fail("chosen position never read", q, 0);
+        if (p->end - p->start != (kind ? dummy : length)) {
+            fail("position length", q, (long long)(p->end - p->start));
         }
         kind ? ++fillers : ++e;
     }
@@ -147,11 +151,15 @@ static void check(void)
 static void setup(uint32_t l, uint32_t s, uint32_t positions)
 {
     length = l, nslots = s;
-    uint8_t *slots = malloc((size_t)s * l), *filler = malloc(l);
+    dummy = getenv("RING_DUMMY") ? (unsigned)atoi(getenv("RING_DUMMY")) : l;
+    sps = getenv("RING_SPS") ? (unsigned)atoi(getenv("RING_SPS")) : 40;
+    uint8_t *slots = malloc((size_t)s * l), *filler = malloc(dummy);
     memset(slots, POISON, (size_t)s * l);
-    memset(filler, FILLER, l);
+    memset(filler, FILLER, dummy);
     ring_init(&ring, slots, s, filler, l);
+    ring_filler_length(&ring, dummy);
     seen_symbols = (uint64_t)(positions + 2) * l;
+    events = calloc(seen_symbols / (dummy < l ? dummy : l) + 8, sizeof *events);
     seen = malloc(seen_symbols * sizeof *seen);
     for (uint64_t i = 0; i < seen_symbols; ++i) {
         seen[i] = UNSEEN;
@@ -165,6 +173,7 @@ static int sim(int argc, char **argv)
         return 2;
     }
     const uint32_t positions = (uint32_t)atoi(argv[4]);
+    sps = getenv("RING_SPS") ? (unsigned)atoi(getenv("RING_SPS")) : 40;
     const uint64_t period = (uint64_t)atoi(argv[2]) * SPS;   // one frame, in samples
     const uint64_t base = period * (uint64_t)atoi(argv[5]) / 1000;
     const uint32_t every = (uint32_t)atoi(argv[6]);

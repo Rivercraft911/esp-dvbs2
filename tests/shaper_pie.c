@@ -7,10 +7,13 @@
 #include "shaper.h"
 #include "shaper_taps.h"
 
-static uint32_t blocks[8192] __attribute__((aligned(16)));
-static uint32_t reference[16380];
-static uint32_t guarded[4 + 16380 + 4] __attribute__((aligned(16)));
-static uint8_t symbols[SHAPER_HISTORY + 4095];
+// Reuse the bank-sized oracle buffers for both suites so the QEMU app fits SRAM.
+extern uint32_t test_reference[16440], test_guarded[4 + 16384 + 4];
+extern uint8_t test_symbols[SHAPER_HISTORY + 4100];
+#define blocks shaper_store
+#define reference test_reference
+#define guarded test_guarded
+#define symbols test_symbols
 
 static uint32_t checksum(const uint32_t *p, size_t words)
 {
@@ -20,6 +23,8 @@ static uint32_t checksum(const uint32_t *p, size_t words)
     }
     return h;
 }
+
+int tx_samples_check(void);
 
 void app_main(void)
 {
@@ -61,5 +66,6 @@ void app_main(void)
             }
         }
     }
+    if (tx_samples_check()) { puts("TX-SAMPLES-FAIL"); }
     puts("QEMU-END");
 }

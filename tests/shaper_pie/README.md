@@ -30,3 +30,9 @@ is needed by this app.
 
 The checker requires all 30 cases, zero word mismatches, intact output guards, and table and
 output checksums equal to `host/shaper.py`. QEMU verifies instructions, not silicon timing.
+
+The same app now runs `tests/tx_samples.c`: 1,520 raw-phase sample-glue cases at
+4/8/40 sps, every edge offset, short tail and 80 wrapping DAC-bank schedules per profile.
+Pass the same log to `python3 tests/test_tx_samples.py notes/shaper-pie.log` to require
+zero word mismatches, intact guards and hashes identical to the host legacy-C oracle.
+The existing 30 table/PIE cases still compare with the independent Python shaper model.

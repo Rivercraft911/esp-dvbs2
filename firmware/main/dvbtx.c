@@ -1,24 +1,11 @@
-// DVB-S2 from the chip: QPSK normal frames encoded continuously on core 0 and shaped into the DAC
-// banks on core 1.
-//
-//   dvb <MHz> <modcod 4..11> <1..60 seconds> [0..17 gain] [16..508 peak level]
-//   dvbdump <modcod 4..11> <frames> [peak level] [decimation] [stall ms]   the samples, no radio
-//   dvbpace <modcod 4..11> <seconds> [peak level] [stall ms]   the timed fills, no radio
-//
-// An encoder task on core 0 writes frames with pilots, as phase codes 16 k, into a ring of
-// RING_SLOTS frame slots in PSRAM (ring.h); the bank fill on core 1 reads the symbols it needs
-// from there. Frame e carries bytes [e * B, (e + 1) * B) of one payload stream,
-// B = (kbch - 80) / 8: xorshift32 seeded with 2026 (x ^= x << 13, x ^= x >> 17, x ^= x << 5;
-// byte = x & 0xff), so host/onair.py can rebuild it. If the encoder is late, the fill plays a
-// filler frame instead, the same MODCOD carrying an empty BBFRAME (DFL = 0), and counts an
-// underrun; payload is never lost or reordered. EN 302 307-1 clause 5.1.5 asks for a dummy
-// PLFRAME in this case; dvbs2.h cannot make one yet, and its 3330 symbols would change the frame
-// grid (results/2026-10-16-stream). `stall` makes the encoder sleep that long after each frame,
-// to provoke underruns.
-//
-// One symbol is 40 DAC samples: 1 Msym/s at 40 MS/s. The pulse is the roll-off 0.35 table,
-// matching the roll-off the encoder signals, scaled so the worst-case |I + jQ| is the requested
-// level (default 128, the edge of the transmit chain's linear range, results/2026-10-16-radio).
+// Continuous QPSK at 1 Msym/s (40 sps), or 8PSK at 5/10 Msym/s (8/4 sps).
+// 8PSK requires an explicit 5m or 10m before duration/frame count in all commands.
+// Core 0 encodes raw phases into PSRAM, core 1 copies windows and shapes DAC banks.
+// Payload: xorshift32 seed 2026, one contiguous byte stream across data frames.
+// On underrun the ring inserts a 3330-symbol dummy PLFRAME (EN 302 307-1 5.1.5,
+// 5.5.1), preserving each choice for overlapping bank reads. No payload is skipped.
+// RRC roll-off 0.35 matches the BBHEADER (dvbs2.h). Peak scaling uses the
+// conservative bound sqrt(2)*508 LSB for every table (host/shaper.py Profile.taps).
 
 #include "dvbtx.h"
 
@@ -43,18 +30,16 @@
 
 #define RING_SLOTS 8                // frames the encoder may run ahead: 233 ms at 1 Msym/s
 #define PILOTS 1
-#define SPS 40                      // samples per symbol
-#define BANK_SYMBOLS 412            // a 16380-sample fill spans at most 411 symbols, plus one
-#define TAPS (9 * SPS)
-#define WORST_PEAK 718.4            // max |I + jQ| of the full-scale a35 table (host/shaper.py)
+#define BANK_SYMBOLS 4096           // ceil(16380/4) + 1, worst offset at 4 sps
+#define TAPS (9 * 40)
+#define WORST_PEAK 718.4            // conservative sqrt(2)*508 LSB axis bound, before rounding
 #define SEED 2026
 #define ENCODER_PRIORITY 5          // above the command loop, below the Wi-Fi and IPC tasks
 
 typedef struct {
     ring_t ring;
-    const uint32_t *blocks;         // shaper table
+    shaper_table_t table;
     uint8_t win[SHAPER_HISTORY + BANK_SYMBOLS];
-    uint32_t part[SPS] __attribute__((aligned(16)));
     uint32_t max_fill_cycles;       // one fill call
 } dvb_t;
 
@@ -71,7 +56,7 @@ typedef struct {
     bool failed;
     SemaphoreHandle_t exited;
     uint32_t frames;                // encoded and published
-    uint64_t cycles;                // per frame: payload, encoding and phase codes, raw
+    uint64_t cycles;                // per frame: payload and encoding into PSRAM, raw
     uint32_t min_cycles, max_cycles;
 } encoder_t;
 
@@ -86,52 +71,24 @@ static uint32_t next_byte(uint32_t *x)
     return *x & 0xff;
 }
 
-// Samples [first, first + count) into dst. dst stays 16-byte aligned wherever a whole symbol
-// starts: a bank holds sample n at word n % 16380, and 16380 and 40 are both multiples of 4.
+// A whole-symbol start n has n % sps == 0. Since sps = 4, 8 or 40 and
+// 16380 are multiples of four, (n % 16380)*4 bytes is 16-byte aligned.
+// At 8 sps 16380 % 8 == 4, so a bank wrap can split a symbol in half.
 static IRAM_ATTR esp_err_t fill(uint32_t *dst, uint64_t first, size_t count, void *ctx)
 {
     (void)ctx;
     const uint32_t before = esp_cpu_get_cycle_count();
-    const int nsym = ring_window(&dvb.ring, dvb.win, sizeof dvb.win, first, count, SPS,
-                                 SHAPER_HISTORY, RADIO_S3_BANK_WORDS);
-    if (nsym < 0) {
+    const unsigned sps = dvb.table.n;
+    if (ring_window(&dvb.ring, dvb.win, sizeof dvb.win, first, count, sps,
+                    SHAPER_HISTORY, RADIO_S3_BANK_WORDS) < 0) {
         return ESP_FAIL;
     }
-    const uint8_t *sym = dvb.win + SHAPER_HISTORY;
-    size_t skip = first % SPS;
-    if (skip) {
-        shaper_fill40_pie(dvb.part, sym++, 1, dvb.blocks);
-        size_t take = SPS - skip < count ? SPS - skip : count;
-        memcpy(dst, dvb.part + skip, take * 4);
-        dst += take, count -= take;
-    }
-    const size_t whole = count / SPS;
-    if (whole) {
-        shaper_fill40_pie(dst, sym, (int)whole, dvb.blocks);
-        dst += whole * SPS, count -= whole * SPS, sym += whole;
-    }
-    if (count) {
-        shaper_fill40_pie(dvb.part, sym, 1, dvb.blocks);
-        memcpy(dst, dvb.part, count * 4);
-    }
+    shaper_samples(dst, dvb.win + SHAPER_HISTORY, first % sps, count, &dvb.table);
     const uint32_t cycles = esp_cpu_get_cycle_count() - before;
     if (cycles > dvb.max_fill_cycles) {
         dvb.max_fill_cycles = cycles;
     }
     return ESP_OK;
-}
-
-// One PL frame of phase codes 16 k from `bytes` payload bytes (0: an empty BBFRAME).
-static int encode(dvbs2_fast *fast, dvbs2_workspace *ws, const uint8_t *payload,
-                  size_t bytes, uint8_t *out, size_t symbols)
-{
-    if (dvbs2_encode_frame(fast, ws, NULL, payload, bytes * 8, out)) {
-        return -1;
-    }
-    for (size_t i = 0; i < symbols; ++i) {
-        out[i] <<= 4;
-    }
-    return 0;
 }
 
 // Core 0: frame after frame into the ring, waiting while every slot is still needed.
@@ -152,7 +109,7 @@ static void encoder_task(void *arg)
         for (size_t i = 0; i < bytes; ++i) {
             e->payload[i] = next_byte(&x);
         }
-        if (encode(e->fast, e->ws, e->payload, bytes, out, dvb.ring.frame_symbols)) {
+        if (dvbs2_encode_frame(e->fast, e->ws, NULL, e->payload, bytes * 8, out)) {
             e->failed = true;
             goto done;
         }
@@ -182,13 +139,14 @@ static void release(void)
     enc.fast = NULL, enc.ws = NULL, enc.payload = enc.slots = enc.filler = NULL;
 }
 
-// Build the scaled table and the filler frame, start the encoder on core 0 and wait until it has
+// Build the scaled table and the dummy frame, start the encoder on core 0 and wait until it has
 // filled every slot. Returns the frame length in symbols, or 0 after printing an error for `cmd`.
-static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, unsigned stall_ms)
+static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, unsigned stall_ms,
+                            unsigned sps)
 {
     const dvbs2_mode *mode = dvbs2_find_mode(modcod);
-    if (!mode || mode->bits_per_symbol != 2) {
-        printf("@{\"cmd\":\"%s\",\"error\":\"QPSK modcods 4..11 only\"}\n", cmd);
+    if (!mode || (mode->bits_per_symbol == 2 ? sps != 40 : (sps != 8 && sps != 4))) {
+        printf("@{\"cmd\":\"%s\",\"error\":\"invalid MODCOD/sps\"}\n", cmd);
         return 0;
     }
     const size_t symbols = dvbs2_frame_symbols(mode, PILOTS);
@@ -204,28 +162,25 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
     enc.ws = heap_caps_aligned_alloc(16, sizeof *enc.ws, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     enc.payload = heap_caps_malloc((mode->kbch - 80) / 8, MALLOC_CAP_SPIRAM);
     enc.slots = heap_caps_malloc(RING_SLOTS * symbols, MALLOC_CAP_SPIRAM);
-    enc.filler = heap_caps_malloc(symbols, MALLOC_CAP_SPIRAM);
+    enc.filler = heap_caps_malloc(DVBS2_DUMMY_SYMBOLS, MALLOC_CAP_SPIRAM);
     if (!enc.fast || !enc.ws || !enc.payload || !enc.slots || !enc.filler ||
             dvbs2_fast_prepare(enc.fast, mode, PILOTS, 15)) {
         printf("@{\"cmd\":\"%s\",\"error\":\"allocation failed\"}\n", cmd);
         release();
         return 0;
     }
-    if (encode(enc.fast, enc.ws, NULL, 0, enc.filler, symbols)) {
-        printf("@{\"cmd\":\"%s\",\"error\":\"encoder failed\"}\n", cmd);
-        release();
-        return 0;
-    }
-    // Scale the pulse so the worst case over all symbol histories peaks at `level`.
+    dvbs2_dummy(enc.filler);
+    // Scale the conservative envelope to level; table rounding adds at most 1.5 LSB/axis.
     static int32_t taps[TAPS];
-    for (int i = 0; i < TAPS; ++i) {
-        taps[i] = (int32_t)((double)shaper_taps_qpsk_n40_a35[i] * level / WORST_PEAK);
+    const int32_t *source = sps == 40 ? shaper_taps_qpsk_n40_a35 :
+                            sps == 8 ? shaper_taps_8psk_n8_a35 : shaper_taps_8psk_n4_a35;
+    for (unsigned i = 0; i < 9 * sps; ++i) {
+        taps[i] = (int32_t)((double)source[i] * level / WORST_PEAK);
     }
-    shaper_table_t table;
-    shaper_build(&table, shaper_store, taps, SPS, 2);
-    dvb.blocks = shaper_store;
+    shaper_build(&dvb.table, shaper_store, taps, sps, mode->bits_per_symbol);
     dvb.max_fill_cycles = 0;
     ring_init(&dvb.ring, enc.slots, RING_SLOTS, enc.filler, symbols);
+    ring_filler_length(&dvb.ring, DVBS2_DUMMY_SYMBOLS);
 
     enc.exited = xSemaphoreCreateBinaryStatic(&exited_storage);
     if (xTaskCreatePinnedToCore(encoder_task, "encoder", 4096, &enc, ENCODER_PRIORITY, NULL, 0)
@@ -277,7 +232,7 @@ static void print_mode(const char *cmd, unsigned modcod, size_t symbols, unsigne
     const dvbs2_mode *mode = dvbs2_find_mode(modcod);
     printf("@{\"cmd\":\"%s\",\"modcod\":%u,\"rate\":\"%s\",\"symbol_rate\":%u,\"rolloff\":0.35,"
            "\"pilots\":%d,\"frame_symbols\":%u,\"payload_bytes_per_frame\":%u,\"peak_level\":%u",
-           cmd, modcod, mode->rate, RADIO_S3_DAC_RATE / SPS, PILOTS, (unsigned)symbols,
+           cmd, modcod, mode->rate, RADIO_S3_DAC_RATE / dvb.table.n, PILOTS, (unsigned)symbols,
            (unsigned)((mode->kbch - 80) / 8), level);
 }
 
@@ -292,9 +247,10 @@ static void print_timing(const radio_s3_stats_t *s)
            s->elapsed_samples);
 }
 
-void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, unsigned level)
+void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, unsigned level,
+                unsigned sps)
 {
-    const size_t symbols = start_encoder("dvb", modcod, level, 0);
+    const size_t symbols = start_encoder("dvb", modcod, level, 0, sps);
     if (!symbols) {
         return;
     }
@@ -309,9 +265,10 @@ void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, 
            err != ESP_OK ? ",\"error\":\"radio run failed\"" : "");
 }
 
-void dvbtx_pace(unsigned modcod, uint32_t seconds, unsigned level, unsigned stall_ms)
+void dvbtx_pace(unsigned modcod, uint32_t seconds, unsigned level, unsigned stall_ms,
+                 unsigned sps)
 {
-    const size_t symbols = start_encoder("dvbpace", modcod, level, stall_ms);
+    const size_t symbols = start_encoder("dvbpace", modcod, level, stall_ms, sps);
     if (!symbols) {
         return;
     }
@@ -358,13 +315,13 @@ static esp_err_t sink(const uint32_t *bank, uint64_t first, size_t count, void *
 }
 
 void dvbtx_dump(unsigned modcod, unsigned frames, unsigned level, unsigned decim,
-                unsigned stall_ms)
+                unsigned stall_ms, unsigned sps)
 {
-    const size_t symbols = start_encoder("dvbdump", modcod, level, stall_ms);
+    const size_t symbols = start_encoder("dvbdump", modcod, level, stall_ms, sps);
     if (!symbols) {
         return;
     }
-    const uint64_t samples = (uint64_t)frames * symbols * SPS;
+    const uint64_t samples = (uint64_t)frames * symbols * dvb.table.n;
     const uint64_t bytes = (samples + decim - 1) / decim * 4;
     static dump_t d;
     d.decim = decim, d.used = 0, d.crc = 0;

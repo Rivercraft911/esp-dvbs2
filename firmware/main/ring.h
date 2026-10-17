@@ -3,7 +3,8 @@
 // Frame ring between the encoder on one core and the bank fill on the other.
 //
 // The encoder finishes PL frames in order and writes frame e into slot e % nslots. The fill plays
-// them on a fixed grid: position p holds symbols [p * L, (p + 1) * L), L = frame_symbols. The
+// them in variable-length positions: a data frame has frame_symbols symbols; a dummy has
+// filler_symbols symbols. Each retained position records its absolute start and end. The
 // first time the fill reads position p it takes the next finished frame, or the filler frame if
 // the encoder is late (an underrun), and keeps that choice, so the bank overlap re-reads the same
 // symbols. Frames are never skipped or reordered: an underrun only inserts the filler, and the
@@ -18,12 +19,13 @@
 #include <stdint.h>
 
 #define RING_FILLER UINT32_MAX
-#define RING_CHOICES 4      // positions whose choice the fill keeps; one read spans at most two
+#define RING_CHOICES 8      // > ceil((16380/4 + 8)/3330) + 2, even with only dummies
 
 typedef struct {
     uint8_t *slots;               // nslots frames of frame_symbols bytes
     const uint8_t *filler;        // played when the encoder is late
     uint32_t frame_symbols;
+    uint32_t filler_symbols;
     uint32_t nslots;
     uint32_t published;           // encoder: frames finished
     uint32_t freed;               // fill: frames no later read needs
@@ -32,12 +34,16 @@ typedef struct {
     uint32_t next_frame;          // the next encoder frame to play
     uint32_t release_position;    // positions below this are released
     uint32_t choice[RING_CHOICES];
+    uint64_t start[RING_CHOICES], end[RING_CHOICES];
+    uint64_t chosen_end;          // first symbol not assigned to a position
     uint32_t underruns;           // positions that got the filler
     int64_t min_lead;             // fewest symbols ready beyond a read, over all reads
 } ring_t;
 
 void ring_init(ring_t *r, uint8_t *slots, uint32_t nslots, const uint8_t *filler,
                uint32_t frame_symbols);
+// Set before the first read; defaults to frame_symbols for legacy callers.
+void ring_filler_length(ring_t *r, uint32_t symbols);
 
 // Encoder: where frame e goes, or NULL while a later read may still need that slot.
 uint8_t *ring_slot(ring_t *r, uint32_t e);

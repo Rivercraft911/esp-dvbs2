@@ -46,3 +46,15 @@ void shaper_fill4_pie(uint32_t *dst, const uint8_t *sym, int groups, const uint3
 void shaper_fill8_pie(uint32_t *dst, const uint8_t *sym, int groups, const uint32_t *blocks);
 // 40 samples/symbol, 2-bit codes (QPSK): nsym >= 1 symbols -> nsym * 40 words.
 void shaper_fill40_pie(uint32_t *dst, const uint8_t *sym, int nsym, const uint32_t *blocks);
+
+// Encoder phases k = 0..7, with eight raw history bytes. The raw PIE variants have the
+// same group/count contracts as above. No shifted copy of a PLFRAME is needed.
+void shaper_fill4_raw_pie(uint32_t *, const uint8_t *, int, const uint32_t *);
+void shaper_fill8_raw_pie(uint32_t *, const uint8_t *, int, const uint32_t *);
+void shaper_fill40_raw_pie(uint32_t *, const uint8_t *, int, const uint32_t *);
+// Any number of whole symbols, including zero. C handles the last 0..5 at 4/8 sps.
+void shaper_fill_raw(uint32_t *dst, const uint8_t *sym, int nsym, const shaper_table_t *t);
+// Samples at offset skip within sym[0]. dst must be aligned where a whole symbol starts.
+// Partial symbols use aligned scratch; all PIE calls produce whole symbols.
+void shaper_samples(uint32_t *dst, const uint8_t *sym, unsigned skip, size_t count,
+                    const shaper_table_t *t);

@@ -413,6 +413,14 @@ def plframe(fec, rate, short=False, pilots=True, n=0):
             np.concatenate([hQ, bQ]).astype(np.uint8))
 
 
+def dummy_phases():
+    """5.5.1, 5.5.4 (pp. 31, 33): 90-symbol MODCOD 0 header + 36 carrier slots.
+    No pilot blocks. Reset PL scrambler after the header, including for dummies."""
+    head = qpsk_phases(*plheader(0, False, False))
+    body = (1 + 2 * pl_scrambling_sequence(36 * 90, 0)) & 7
+    return np.concatenate([head, body]).astype(np.uint8)
+
+
 def plframe_phases(fec, rate, short=False, pilots=True, n=0, modulation="qpsk"):
     """QPSK/8PSK PLFRAME as uint8 phase indices p, symbol = exp(j p pi/4).
     The interleaver applies only to 8PSK (5.3.3); 90-symbol slots, 36 pilots after each 16

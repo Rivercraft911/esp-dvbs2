@@ -176,7 +176,7 @@ PROFILES = {p.name: p for p in (
     Profile("qpsk-n40-a20", 0.20, 40, "qpsk"),
     Profile("qpsk-n40-a35", 0.35, 40, "qpsk"),
 )}
-ON_DEVICE = ("8psk-n4-a20", "8psk-n4-a35", "8psk-n8-a20", "qpsk-n40-a20", "qpsk-n40-a35")
+ON_DEVICE = ("8psk-n4-a20", "8psk-n4-a35", "8psk-n8-a20", "8psk-n8-a35", "qpsk-n40-a20", "qpsk-n40-a35")
 
 
 # ---------------------------------------------------------------- symbols and samples

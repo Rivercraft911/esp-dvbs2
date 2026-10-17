@@ -80,6 +80,12 @@ the rate that would allow 20 Msym/s. [Run details](results/2026-10-16-shaper/REA
 | QPSK at 1 Msym/s decoded by a DVB-S2 receiver | |
 | 8PSK 2/3 at 5 Msym/s with the payload arriving over SPI | |
 
+8PSK MODCOD 12..17 is now wired into the continuous transmitter at 5 and 10 Msym/s.
+Use an explicit rate token: `dvbdump 13 5m 40` or `dvbpace 15 10m 60`.
+QPSK commands keep their syntax. The pulse and BBHEADER both use roll-off 0.35.
+Underruns insert standard 3,330-symbol dummy PLFRAMEs. Host loopback and QEMU checks
+cover the new path; board timing and RF still need the [coordinator checks](docs/hardware.md#8psk-radio-off-checks).
+
 ## Build and run
 
 Needs ESP-IDF v6.1, an ESP32-S3 with 8 MB of PSRAM, Python 3 with numpy, pyserial and matplotlib.
