@@ -57,6 +57,7 @@ class NativeEncoder:
             "dvbs2_encode_frame": (ct.c_int, [ct.c_void_p, ct.c_void_p, ct.c_void_p,
                                               U8P, ct.c_size_t, U8P]),
             "dvbs2_fast_prepare": (ct.c_int, [ct.c_void_p, ct.c_void_p, ct.c_int, ct.c_uint]),
+            "dvbs2_fast_cache_bch": (ct.c_int, [ct.c_void_p, U8P]),
             "dvbs2_fast_pie": (ct.c_uint, [ct.c_void_p]),
             "dvbs2_fast_bb_gcs": (ct.c_int, [ct.c_void_p, ct.c_void_p, U8P, ct.c_size_t]),
             "dvbs2_fast_bb_ts": (ct.c_int, [ct.c_void_p, ct.c_void_p, ct.c_void_p,
@@ -439,8 +440,35 @@ def test_packed(native):
           "alignments; equal to the model's phases packed two per byte; QPSK refused")
 
 
+def test_bch_cache(native):
+    lib = native.lib
+    cache = np.full(8192 + 64, 0xA5, np.uint8)
+    at = 16 + (-cache.ctypes.data % 16)
+    table = cache[at:at + 8192].ctypes.data_as(U8P)
+    assert lib.dvbs2_fast_cache_bch(None, table) == -1
+    for modcod, modulation, rate in MODES:
+        mode, c = lib.dvbs2_find_mode(modcod), d.code(rate)
+        assert lib.dvbs2_fast_prepare(native.fast, mode, 1, 15) == 0
+        assert lib.dvbs2_fast_cache_bch(native.fast, cache[at + 1:].ctypes.data_as(U8P)) == -1
+        if c.t == 8:
+            assert lib.dvbs2_fast_cache_bch(native.fast, table) == -1
+            continue
+        data = np.random.default_rng(modcod).integers(0, 2, c.kbch, dtype=np.uint8)
+        native.load(data)
+        assert lib.dvbs2_fast_cache_bch(native.fast, table) == 0
+        lib.dvbs2_fast_bch(native.fast, native.ws)
+        np.testing.assert_array_equal(native.bits(c.nbch), d.bch_encode(data, rate))
+        saved = cache.copy()
+        assert lib.dvbs2_fast_cache_bch(native.fast, None) == 0
+        lib.dvbs2_fast_bch(native.fast, native.ws)
+        np.testing.assert_array_equal(native.bits(c.nbch), d.bch_encode(data, rate))
+        np.testing.assert_array_equal(cache, saved)
+        assert np.all(cache[:at] == 0xA5) and np.all(cache[at + 8192:] == 0xA5)
+    print("resident BCH: every t=10/12 mode, canonical parity, guards, restore and invalid alignment")
+
+
 if __name__ == "__main__":
     with NativeEncoder() as native:
         for test in (test_modes, test_gcs, test_ts, test_ldpc_boundaries, test_invalid_inputs,
-                     test_fast, test_complete_frame, test_packed):
+                     test_fast, test_complete_frame, test_packed, test_bch_cache):
             test(native)

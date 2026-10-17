@@ -6,6 +6,7 @@ commands, allocation failure cleanup and dump CRCs. All clocks/heap sizes are sy
 import json
 import pathlib
 import subprocess
+import sys
 import tempfile
 import zlib
 
@@ -144,7 +145,9 @@ int usb_serial_jtag_write_bytes(const void *, size_t, unsigned);
 '''
 
 
-def test_stream():
+def test_stream(output=None):
+    if output:
+        output.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
         folder = pathlib.Path(tmp)
         (folder / "native.h").write_text(NATIVE)
@@ -167,22 +170,41 @@ def test_stream():
                         str(ROOT / "firmware/components/dvbs2/fast.c"),
                         str(ROOT / "firmware/components/station_id/station_id.c"),
                         "-lm", "-o", str(exe)], check=True)
-        for mc, sps, call in ((13, 4, ""), (15, 4, "N0CALL"), (17, 4, ""), (12, 8, ""),
+        for mc, sps, call in ((13, 4, "N0CALL"), (15, 4, "N0CALL"), (17, 4, ""), (12, 8, ""),
                               (13, 8, "N0CALL"), (15, 8, "N0CALL"), (17, 8, ""), (4, 40, "N0CALL")):
-            iq = folder / "dump.iq"
+            iq = output / f'{mc}-n{sps}.iq' if output else folder / "dump.iq"
             out = subprocess.run([str(exe), str(mc), str(sps), str(iq), call], capture_output=True,
                                  text=True, timeout=60, check=True).stdout
             records = [json.loads(line[1:]) for line in out.splitlines() if line.startswith("@")]
             dumps = [r for r in records if "crc32" in r]
             assert len(dumps) == 2
+            # The five published 40-frame board CRCs, with N0CALL in the payload header.
+            expected = {(4, 40): 1435641601, (13, 8): 1937985440, (15, 8): 1163322913,
+                        (13, 4): 474263962, (15, 4): 1757765864}
             for r in dumps:
                 assert r["crc32"] == zlib.crc32(iq.read_bytes())
+                if (mc, sps) in expected:
+                    assert r["crc32"] == expected[mc, sps]
                 assert r["status"] == "ESP_OK" and not r["encoder_failed"]
                 assert r["callsign"] == call
                 packed = sps != 40
+                profile = r["profile"]
+                assert profile["shaped_words"] + profile["reused_words"] == profile["fill_words"]
+                assert profile["reused_words"] > 0 if packed else profile["reused_words"] == 0
                 assert r["ring_slots"] == (3 if sps == 4 else 2 if packed else 8)
+                assert r["prefill_frames"] == r["ring_slots"]
+                assert 0 <= r["encode_cycles_live_max"] <= r["encode_cycles_max"]
                 assert r["ring_memory"] == ("internal" if packed else "psram")
                 assert r["ring_format"] == ("packed" if packed else "raw")
+                assert r["workspace_memory"] == ("internal" if sps == 4 else "psram")
+                assert r["workspace_bytes"] == 12420
+                assert r["workspace_heap_bytes"] == r["workspace_bytes"]
+                assert r["fast_heap_bytes"] == r["fast_bytes"]
+                cached = sps == 4 and mc != 17
+                assert r["bch_cache_bytes"] == (8192 if cached else 0)
+                assert r["bch_cache_heap_bytes"] == r["bch_cache_bytes"]
+                assert r["bch_variant"] == ("resident-byte" if cached else "nibble")
+                assert bool(int(r["layout"]["bch"], 16)) == cached
                 slots = [int(a, 16) for a in r["layout"]["slots"]]
                 assert len(set(slots)) == r["ring_slots"]
                 payload = int(r["layout"]["payload"], 16)
@@ -205,10 +227,10 @@ def test_stream():
                         assert r["ring_heap_bytes"] == need
                 assert all(p["calls"] == r["frames_encoded"] for p in r["profile"]["encoder"].values())
             print(f"stream host: MODCOD {mc}, {sps} sps, {dumps[0]['ring_format']} ring, "
-                  f"callsign {call or 'none'}, 2 x 16 frames, "
+                  f"callsign {call or 'none'}, 2 x 40 frames, "
                   f"CRC {dumps[0]['crc32']}, "
                   "all DAC words match plain encoder; cleanup and notifications pass")
 
 
 if __name__ == "__main__":
-    test_stream()
+    test_stream(pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else None)

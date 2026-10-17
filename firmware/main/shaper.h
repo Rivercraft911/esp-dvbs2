@@ -66,6 +66,13 @@ void shaper_samples(uint32_t *dst, const uint8_t *sym, unsigned skip, size_t cou
 void shaper_samples_profile(uint32_t *dst, const uint8_t *sym, unsigned skip, size_t count,
                             const shaper_table_t *t, stream_profile_t *whole,
                             stream_profile_t *partial);
+// Same sample/phase contract, consuming codes 16*k directly (ring_packed_codes).
+void shaper_samples_codes_profile(uint32_t *dst, const uint8_t *sym, unsigned skip, size_t count,
+                                  const shaper_table_t *t, stream_profile_t *whole,
+                                  stream_profile_t *partial);
+// Disjoint word buffers, including DAC SRAM. Uses aligned PIE copies where possible;
+// scalar edges use word stores, never libc's possible byte stores.
+void shaper_copy_words(uint32_t *dst, const uint32_t *src, size_t words);
 
 // The prototypes below take legacy codes 16*k, like the non-raw kernels above.
 // Producer-side row staging, codes sym[-8..nsym), rows[-6..nsym] (one valid guard).

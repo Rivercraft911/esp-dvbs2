@@ -1,0 +1,5 @@
+{"file": "dec-13-10m.json", "payload_frames": 36, "first_frame": 1, "payload_match": true, "payload_bit_errors": 0, "ldpc_bit_flips": 0, "bch_failed_frames": 0, "modcods": [13], "symbol_rate": 10000000.0, "mer_db": 40.65819103395488}
+{"file": "dec-13-5m.json", "payload_frames": 37, "first_frame": 0, "payload_match": true, "payload_bit_errors": 0, "ldpc_bit_flips": 0, "bch_failed_frames": 0, "modcods": [13], "symbol_rate": 5000000.0, "mer_db": 43.7803166559235}
+{"file": "dec-15-10m.json", "payload_frames": 36, "first_frame": 1, "payload_match": true, "payload_bit_errors": 0, "ldpc_bit_flips": 0, "bch_failed_frames": 0, "modcods": [15], "symbol_rate": 10000000.0, "mer_db": 40.666148474859696}
+{"file": "dec-15-5m.json", "payload_frames": 36, "first_frame": 1, "payload_match": true, "payload_bit_errors": 0, "ldpc_bit_flips": 0, "bch_failed_frames": 0, "modcods": [15], "symbol_rate": 5000000.0, "mer_db": 43.77651661830585}
+{"file": "dec-qpsk.json", "payload_frames": 38, "first_frame": 0, "payload_match": true, "payload_bit_errors": 0, "ldpc_bit_flips": 0, "bch_failed_frames": 0, "modcods": [4], "symbol_rate": 1000000.0, "mer_db": 43.81924771439334}

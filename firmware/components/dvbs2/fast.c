@@ -31,12 +31,13 @@
 #define GOLD 2720               /* one 8PSK Gold plane, 169 x 16 bytes rounded */
 
 struct dvbs2_fast {
-    const uint8_t *bch, *gold, *prbs;
+    const uint8_t *bch, *gold, *prbs, *byte_bch;
     const uint32_t *map;
     const uint16_t *prog;
     uint8_t *p;
     uint8_t carry[ROW] __attribute__((aligned(16)));
     uint8_t tail[16] __attribute__((aligned(16)));
+    uint8_t packed_header[48], packed_pilots[400];
     const uint8_t *header;
     const dvbs2_mode *mode;
     unsigned pilots, pie, ldxq_bias;
@@ -103,6 +104,8 @@ void dvbs2_pie_run8_compact(const uint16_t *index, const uint32_t *table, uint8_
                             unsigned vectors, unsigned sar_byte, uint8_t *tail);
 void dvbs2_pie_run8(const uint16_t *index, const uint32_t *table, uint8_t *block,
                     unsigned vectors, unsigned sar_byte, uint8_t *tail);
+void dvbs2_pie_run8_packed(const uint16_t *index, const uint32_t *table, uint8_t *block,
+                           unsigned vectors, unsigned sar_byte, uint8_t *tail);
 void dvbs2_pie_run(const uint16_t *index, const uint32_t *table, uint8_t *block,
                    unsigned vectors, unsigned sar_byte, uint8_t *tail);
 void dvbs2_pie_pack(const uint8_t *p, const uint16_t *cols, unsigned q, uint32_t *out,
@@ -119,6 +122,8 @@ void dvbs2_pie_nibbles(const uint8_t *src, uint8_t *dst, unsigned vectors);
 
 /* ---------------------------------------------------------------- prepare */
 
+static void pack_c(const uint8_t *raw, uint8_t *packed, unsigned symbols);
+
 static void prepare_map(dvbs2_fast *f)
 {
     f->map = f->mode->bits_per_symbol == 3 ? fast_map_3 : fast_map_2;
@@ -126,6 +131,8 @@ static void prepare_map(dvbs2_fast *f)
                   ? (f->pilots ? fast_gold_3_1 : fast_gold_3_0)
                   : (f->pilots ? fast_gold_2_1 : fast_gold_2_0);
     f->header = fast_headers + 90 * (2 * (f->mode->modcod - 4) + f->pilots);
+    pack_c(f->header, f->packed_header, 90);
+    pack_c(fast_pilots, f->packed_pilots, 36 * f->pilot_blocks);
 }
 
 int dvbs2_fast_prepare(dvbs2_fast *f, const dvbs2_mode *mode, int pilots, unsigned pie)
@@ -161,12 +168,24 @@ int dvbs2_fast_prepare(dvbs2_fast *f, const dvbs2_mode *mode, int pilots, unsign
 #endif
     f->prbs = dvbs2_prbs_table();
     f->bch = mode->t == 12 ? fast_bch_12 : mode->t == 10 ? fast_bch_10 : fast_bch_8;
+    f->byte_bch = mode->t == 12 ? fast_bch_byte_12 : fast_bch_byte_10;
     /* QPSK and 8PSK share their code-rate program. */
     f->prog = fast_prog[mode->bits_per_symbol == 2 ? mode->modcod - 4 :
                         (unsigned[]){1, 2, 3, 5, 6, 7}[mode->modcod - 12]];
     f->p = f->scratch + f->groups * U2;
     memset(f->scratch, 0, dvbs2_fast_mode_size(mode) - sizeof *f);
     prepare_map(f);
+    return 0;
+}
+
+int dvbs2_fast_cache_bch(dvbs2_fast *f, uint8_t *table)
+{
+    if (!f || !f->mode || f->mode->t == 8 || ((uintptr_t)table & 15)) {
+        return -1;
+    }
+    const uint8_t *source = f->mode->t == 12 ? fast_bch_byte_12 : fast_bch_byte_10;
+    if (table) memcpy(table, source, DVBS2_BCH_CACHE_BYTES);
+    f->byte_bch = table ? table : source;
     return 0;
 }
 
@@ -351,7 +370,7 @@ HOT void dvbs2_fast_bch(dvbs2_fast *f, dvbs2_workspace *ws)
 #ifdef DVBS2_PIE
     if (f->pie & DVBS2_PIE_BCH) {
         if (f->bch_bytes > 16 && !(f->pie & (DVBS2_BCH_NIBBLE | DVBS2_BCH_LEGACY))) {
-            const uint8_t *table = f->mode->t == 12 ? fast_bch_byte_12 : fast_bch_byte_10;
+            const uint8_t *table = f->byte_bch;
             if (f->pie & DVBS2_BCH_SRAM) {
                 dvbs2_pie_bch_copy(f->scratch, table);
                 table = f->scratch;
@@ -745,12 +764,9 @@ HOT void dvbs2_fast_map(dvbs2_fast *f, const dvbs2_workspace *ws, uint8_t *outpu
 
 /* ---------------------------------------------------------------- packed */
 
-/* Two symbols per byte: byte i = phase[2i] | phase[2i + 1] << 4. Every PLFRAME
- * part (90-symbol header, 1440-symbol data runs, 36-symbol pilot blocks) starts
- * at an even symbol, so parts never share a byte. Each 1440-symbol data run is
- * mapped by the normal stage into an aligned scratch area after the 8PSK index
- * pass (scratch holds at least 14592 bytes in every 8PSK mode), packed there and
- * copied out, so no full-frame phase buffer is needed. */
+/* Two symbols per byte. PIE maps four symbols directly to a packed halfword,
+ * with no phase-byte temporary or second packing/copy pass. The C reference
+ * still uses one run of temporary phases after the index area. */
 #define PACK_RUN 1440
 #define PACK_TEMP (169 * 64 + 16)   /* after the index; run8 writes 16 bytes before dst */
 
@@ -770,7 +786,7 @@ HOT int dvbs2_fast_map_packed(dvbs2_fast *f, const dvbs2_workspace *ws, uint8_t 
 #ifdef DVBS2_PIE
     const int pie = (f->pie & DVBS2_PIE_MAP) != 0;
     uint16_t *index = (uint16_t *)f->scratch;
-    const uint32_t *table = (const uint32_t *)((const uint8_t *)f->map + f->ldxq_bias);
+    const uint32_t *table = (const uint32_t *)((const uint8_t *)fast_map_3_packed + f->ldxq_bias);
     if (pie) {
         const uint8_t *a = ws->bits, *c = ws->bits + 5400;
         if (f->mode->modcod == 12) {
@@ -778,20 +794,24 @@ HOT int dvbs2_fast_map_packed(dvbs2_fast *f, const dvbs2_workspace *ws, uint8_t 
             c = ws->bits;
         }
         dvbs2_pie_index8(a, ws->bits + 2700, c, f->gold, index, (f->data_symbols + 127) / 128);
+        const unsigned runs = f->pilots ? f->pilot_blocks + 1 : 1;
+        for (unsigned r = 0; r < runs; ++r) {
+            const unsigned k = f->pilots ? r * PACK_RUN : 0;
+            const unsigned length = f->pilots ? PACK_RUN : f->data_symbols;
+            uint8_t *dst = packed + (90 + k + 36 * r) / 2;
+            const uintptr_t at = (uintptr_t)dst;
+            uint8_t *block = (uint8_t *)((at - 1) & ~(uintptr_t)15);
+            const unsigned vectors = length / 32;
+            dvbs2_pie_run8_packed(index + k / 4, table, block, vectors,
+                                  (unsigned)(-at & 15), f->tail);
+            memcpy(block + 16 * vectors, f->tail, (at & 15) ? (at & 15) : 16);
+        }
+        return 0;
     }
 #endif
     for (unsigned k = 0; k < f->data_symbols; k += PACK_RUN) {
-#ifdef DVBS2_PIE
-        if (pie) {
-            dvbs2_pie_run8(index + k / 4, table, temp - 16, PACK_RUN / 16, 0, f->tail);
-            memcpy(temp + PACK_RUN - 16, f->tail, 16);
-            dvbs2_pie_nibbles(temp, temp, PACK_RUN / 32);
-        } else
-#endif
-        {
-            map_c_run(f, ws->bits, k, PACK_RUN, temp, 0);
-            pack_c(temp, temp, PACK_RUN);
-        }
+        map_c_run(f, ws->bits, k, PACK_RUN, temp, 0);
+        pack_c(temp, temp, PACK_RUN);
         const unsigned at = 90 + k + (f->pilots ? 36 * (k / 1440) : 0);
         memcpy(packed + at / 2, temp, PACK_RUN / 2);
     }
@@ -800,9 +820,9 @@ HOT int dvbs2_fast_map_packed(dvbs2_fast *f, const dvbs2_workspace *ws, uint8_t 
 
 HOT void dvbs2_fast_pl_packed(const dvbs2_fast *f, uint8_t *packed)
 {
-    pack_c(f->header, packed, 90);
+    memcpy(packed, f->packed_header, 45);
     for (unsigned b = 0; b < f->pilot_blocks; ++b) {
-        pack_c(fast_pilots + 36 * b, packed + (90 + 1440 * (b + 1) + 36 * b) / 2, 36);
+        memcpy(packed + (90 + 1440 * (b + 1) + 36 * b) / 2, f->packed_pilots + 18 * b, 18);
     }
 }
 
