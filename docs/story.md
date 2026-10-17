@@ -145,6 +145,28 @@ went in instead, taking 8PSK 5/6 from 376k to 291k cycles per frame.
 Keyed in the box, 8PSK 2/3 and 5/6 ran at 10 Msym/s, 19.4 and 24.2 Mb/s, for 30 s each with
 every deadline met. ([keyed at 10 Msym/s](../results/2026-10-16-keyed-10m/README.md))
 
+## 12. 20 Msym/s
+
+Four engineers then worked in parallel on one brief, the last factor of two.
+([fill](../results/2026-10-16-next2/README.md), [20 Msym/s](../results/2026-10-16-20msym/README.md))
+
+- **Fill:** samples already finished in the bank overlap are reused instead of shaped twice,
+  and a 554-byte symbol cache that was shifted with ROM's byte-by-byte `memmove` became 10
+  bytes. The 4 samples/symbol bank went from 57k to 44k cycles.
+- **Encoder:** with its workspace and BCH table moved into internal RAM, flash misses fell to
+  zero and an 8PSK 2/3 frame went from 262k to 167k cycles.
+- **Bank geometry:** the lead and overlap had been inherited from another project and never
+  measured, and the switches that landed late were the 1 kHz OS tick on the fill core. With
+  interrupts masked through each switch and a 512-sample overlap at 80 MS/s, a bank is due
+  every 47,220 cycles instead of 42,804.
+- **26.67 Msym/s:** two new kernels for 3 samples per symbol measured 4.06 and then 2.84 cycles
+  per sample. The chip's 26.67 Msym/s samples decode bit-exact, but a whole bank still takes
+  46.4k cycles. ([short pulse](../results/2026-10-16-short-board/README.md))
+
+Keyed in the box, 8PSK 2/3 and 5/6 ran at 20 Msym/s from the 80 MS/s DAC, 38.7 and 48.4 Mb/s,
+for 30 s each with every deadline met.
+([keyed at 20 Msym/s](../results/2026-10-16-keyed-20m/README.md))
+
 ## Side roads
 
 - **APSK.** The Python reference does 16APSK and 32APSK, and 56 host loopbacks through LeanDVB
@@ -160,8 +182,5 @@ every deadline met. ([keyed at 10 Msym/s](../results/2026-10-16-keyed-10m/README
 
 ## Now
 
-Next is 80 MS/s: 20 Msym/s at 4 samples per symbol and 26.67 Msym/s at 3. A bank is then due
-every 42,804 cycles, against today's 57k fill, and the encoder must fit a 20 Msym/s frame in
-266k cycles. Leads: filling each bank in one pass, a 6-symbol pulse with two lookups per sample,
-encoder tables placed so they stop evicting each other, and a wider transmit filter. After
-that, a receiver decoding the signal over RF.
+The fill has 4% slack at 20 Msym/s and the transmit filter is narrower than the signal, so
+those come next, with 26.67 Msym/s after them. Then a receiver decoding the signal over RF.
