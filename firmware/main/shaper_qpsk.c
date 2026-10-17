@@ -49,7 +49,8 @@ int shaper_qpsk_build(uint32_t *table, unsigned n, unsigned level)
     return 0;
 }
 
-IRAM_ATTR void shaper_qpsk_c(uint32_t *dst, const uint8_t *src, unsigned groups,
+// Reference only: keep it in flash; the timed probe uses PIE.
+void shaper_qpsk_c(uint32_t *dst, const uint8_t *src, unsigned groups,
                             const uint32_t *table, unsigned n)
 {
     const unsigned row = 4*n;
@@ -76,6 +77,7 @@ static IRAM_ATTR void fill(uint32_t *dst, const uint8_t *src, unsigned groups,
 IRAM_ATTR void shaper_qpsk_samples(uint32_t *dst, const uint8_t *src, unsigned skip,
                                   size_t count, const uint32_t *table, unsigned n)
 {
+    if (!count) return;
     const unsigned row = 4*n;
     uint32_t scratch[16] __attribute__((aligned(16)));
     // The bank schedule gives aligned block boundaries. Keep the general API safe for

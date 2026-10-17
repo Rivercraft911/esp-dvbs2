@@ -183,11 +183,15 @@ void qpsk_probe_command(const char *cmd, char *args)
     }
     printf(",\"experiment\":\"qpsk-fill\",\"encoder_timed\":false,\"sps\":%u,\"dac_rate\":%u,"
            "\"modcod\":%lu,\"callsign\":\"%s\",\"source_memory\":\"%s\",\"source_bytes\":%u,"
-           "\"state_bytes\":%u,\"table_bytes\":%u,\"free_internal\":%u,"
+           "\"state_bytes\":%u,\"state_heap_bytes\":%u,\"source_heap_bytes\":%u,"
+           "\"table_bytes\":%u,\"free_internal\":%u,\"largest_internal\":%u,"
            "\"shaped_words\":%" PRIu64 ",\"reused_words\":%" PRIu64 ",\"status\":\"%s\"}\n",
            n,RATE,modcod,station_store_get(),dump ? "psram" : "internal",(unsigned)bytes,
-           (unsigned)sizeof *p,(unsigned)(QPSK_TABLE_WORDS(n)*4),
-           (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),p->shaped,p->reused,
+           (unsigned)sizeof *p,(unsigned)heap_caps_get_allocated_size(p),
+           (unsigned)heap_caps_get_allocated_size(source),(unsigned)(QPSK_TABLE_WORDS(n)*4),
+           (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+           (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+           p->shaped,p->reused,
            esp_err_to_name(err));
 done:
     heap_caps_free(source); heap_caps_free(d); heap_caps_free(p);

@@ -27,6 +27,12 @@ static uint32_t hash(const uint32_t *p, unsigned n)
 int qpsk_fill_check(void)
 {
     unsigned cases = 0, errors = 0;
+    shaper_qpsk_samples(NULL,NULL,0,0,NULL,3);
+    shaper_qpsk_samples(NULL,NULL,0,0,NULL,4);
+#ifdef __XTENSA__
+    shaper_qpsk3_pie(NULL,NULL,0,NULL);
+    shaper_qpsk4_pie(NULL,NULL,0,NULL);
+#endif
     const unsigned levels[] = {16,128,508};
     const unsigned counts[] = {0,1,2,3,4,7,11,12,13,15,16,17,31,32,47,48,49,768,15740,16380};
     for (unsigned n = 3; n <= 4; ++n) {

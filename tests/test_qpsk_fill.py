@@ -1,5 +1,4 @@
 """Independent table/convolution checks, native C and optional QEMU records. No devices."""
-import ctypes
 import json
 import pathlib
 import subprocess
