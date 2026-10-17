@@ -181,6 +181,8 @@ def test_stream():
                 assert r["callsign"] == call
                 packed = sps != 40
                 assert r["ring_slots"] == (3 if sps == 4 else 2 if packed else 8)
+                assert r["prefill_frames"] == r["ring_slots"]
+                assert 0 <= r["encode_cycles_live_max"] <= r["encode_cycles_max"]
                 assert r["ring_memory"] == ("internal" if packed else "psram")
                 assert r["ring_format"] == ("packed" if packed else "raw")
                 assert r["workspace_memory"] == ("internal" if sps == 4 else "psram")

@@ -81,7 +81,7 @@ typedef struct {
     SemaphoreHandle_t exited;
     uint32_t frames;                // encoded and published
     uint64_t cycles;                // per frame: payload and encoding, raw
-    uint32_t min_cycles, max_cycles;
+    uint32_t min_cycles, max_cycles, live_max_cycles; // live excludes the initial ring prefill
     stream_profile_t stage[6];      // payload, BB, BCH, LDPC, map, PL
     uint32_t slot_waits;
 } encoder_t;
@@ -219,6 +219,7 @@ static void encoder_task(void *arg)
         e->cycles += spent;
         e->min_cycles = spent < e->min_cycles ? spent : e->min_cycles;
         e->max_cycles = spent > e->max_cycles ? spent : e->max_cycles;
+        if (f >= dvb.ring.nslots && spent > e->live_max_cycles) e->live_max_cycles = spent;
         if (e->stall_ms) {
             vTaskDelay(pdMS_TO_TICKS(e->stall_ms));
         }
@@ -420,12 +421,14 @@ static void stop_encoder(void)
            "\"frames_played\":%" PRIu32 ",\"positions\":%" PRIu32 ",\"underruns\":%" PRIu32 ","
            "\"min_lead_symbols\":%lld,\"encode_cycles_mean\":%" PRIu64 ","
            "\"encode_cycles_min\":%" PRIu32 ",\"encode_cycles_max\":%" PRIu32 ","
+           "\"encode_cycles_live_max\":%" PRIu32 ",\"prefill_frames\":%u,"
            "\"encoder_failed\":%s,\"max_fill_call_cycles\":%" PRIu32 ",\"free_internal\":%u,"
            "\"largest_internal\":%u,\"min_free_internal\":%u",
            (int)r->nslots, enc.stall_ms, enc.frames, r->next_frame, r->next_position, r->underruns,
            r->min_lead == INT64_MAX ? -1LL : (long long)r->min_lead,
            enc.frames ? enc.cycles / enc.frames : 0, enc.frames ? enc.min_cycles : 0,
-           enc.max_cycles, enc.failed ? "true" : "false", dvb.max_fill_cycles,
+           enc.max_cycles, enc.live_max_cycles, (unsigned)r->nslots,
+           enc.failed ? "true" : "false", dvb.max_fill_cycles,
            (unsigned)internal, (unsigned)largest, (unsigned)lowest);
     printf(",\"callsign\":\"%s\"", station_store_get());
     printf(",\"workspace_memory\":\"%s\",\"workspace_bytes\":%u,\"fast_bytes\":%u,"
