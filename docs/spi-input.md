@@ -1,9 +1,10 @@
 # Payload over SPI
 
-The first board run passed payload correctness but failed paced input and Wi-Fi
-allocation. [Unchanged coordinator records](../results/2026-10-17-spi-in-first/README.md)
-contain the measurements. The revised code below is host-tested; its hardware
-throughput, encoder deadlines and 20,000 B Wi-Fi reserve still need board checks.
+The [second coordinator run](../results/2026-10-17-spi-in-second/README.md) verified
+46.768 Mb/s in standalone loopback, but the 30 s demo starved and some Wi-Fi
+heap probes fell below 20,000 B. Main's cleanup is now merged. The pacing fixes
+and memory estimates below need a fresh board run. No external-source rate is
+qualified yet.
 
 `spiinput ts` or `spiinput gcs` selects an external sender for the next `dvbdump`,
 `dvbpace`, `wifimem` or `dvb`. `spiinput off` restores synthetic payload. The sender
@@ -136,86 +137,124 @@ transport errors and zero underruns with the CM5. This is a margin calculation,
 not measured Linux throughput. Ordinary single-line 25 MHz SPI cannot supply the
 46.56 Mb/s high-rate QPSK case. Use the second S3's quad sender for that check.
 
-## Separate sender, receive cost and memory
+## Pacing and what loopback proves
 
-The first loopback's priority-2 sender shared core 1 with the priority-23 timed
-worker. Only 39 messages arrived during 40.44 s of paced scheduling, while an
-untimed USB dump decoded exactly. That loopback was not an external-source model.
-Now encoder loopback sends on **core 0, priority 6**, above the priority-5 encoder,
-and sleeps on a microsecond timer between messages. Standalone `spirx` uses core 1,
-priority 2. `spiinput ts loop 22` gives the demo a fixed offered-rate ceiling. Sender
-preemption is included in encoder wall-cycle windows. High rates can still overload
-core 0. Never interpret its achieved rate as an external RX limit. At 40 MHz, one
-quad transfer takes 67.2 µs, so polling alone occupies at least 14.0% of a core
-at 22 Mb/s offered, or 35.1% at 55 Mb/s. Using the measured synthetic encoder's
-`227692/299538=76.0%` as a proxy gives **111.1%** total at 55 Mb/s before receive
-CRC/copy and sender CRC costs. This is an overload estimate: input replaces synthetic
-generation, and READY can reduce the actual sender rate. The external sender has
-none of this polling cost on the receiving S3.
+The second run's demo had zero transport errors, 10,009 encoded frames and
+23,399 dummy frames in 30 s of payload scheduling. Its active encoder mean/live
+maximum were 375,739/433,311 cycles, below the 532,656-cycle frame budget.
+The sender saw READY low 9,994 times. Both sides added avoidable waits: the
+encoder waited after successful partial reads, and the sender used one-tick
+sleeps after READY low. One full 1 ms tick consumes 45.1% of a demo frame period.
+The encoder now drains partial reads immediately and waits only after zero bytes;
+the sender polls READY with a 50 µs timer sleep. Host tests enforce both changes.
+Only a fresh paced board run can establish zero underruns.
 
-`sender.cpu_us / sender.us` is the measured scheduled CPU fraction on its reported
-core (FreeRTOS ESP-timer runtime statistics; ISR time can be attributed to the
-interrupted task). Build, polling/build and diagnostic CRC windows are cycle-counter
-wall intervals and can overlap/include preemption. They must not be added as CPU
-usage. `sender.heap_bytes` excludes the separately reported 2,048 B task stack/TCB.
-The coordinator gate requires at least 256 B of sender stack unused at its
-low-water mark (`stack_min_free`); the smaller stack still needs that board check.
-Its second GDMA channel reads every message. The external sender adds **zero** S3
-sender task, SPI3 driver allocation or transmit DMA traffic.
+Loopback encoding uses a core-0 priority-6 sender above the priority-5 encoder.
+Standalone `spirx` uses core 1, priority 2. `spiinput ts loop 22` sets an offered
+ceiling, not a guaranteed delivered rate. Sender CPU, transmit DMA and pattern/CRC
+construction all consume resources absent with an external sender. At 40 MHz,
+one quad transaction takes `(24+1332*2+4)/40e6 = 67.3 µs`, including four configured
+CS setup/hold clocks. With the mandatory 10 µs gap the wire-only ceiling is
+`1316*8/77.3e-6 = 136.20 Mb/s`. GPIO, driver, timer and verification costs reduce it.
 
-Per full message, minimal receive SRAM traffic is `1332 DMA write + 1328 CRC read +
-2*1316 copy = 5292 B`. The loop sender adds `1332 construction writes + 1328 seal CRC
-reads + 1316 diagnostic CRC reads + 1332 DMA reads = 5308 B`. Both exclude table
-lookups, descriptors, instruction traffic and the encoder. At demo rate, 1838.58
-messages/s imply **9.73 MB/s receive + 9.76 MB/s sender**; at 46.56 Mb/s, about
-**23.40 + 23.47 MB/s**. These are derived lower bounds, not measured bus occupancy.
-At 40 MHz quad SPI, modeled payload capacity is 136.37 Mb/s including the 10 µs gap;
-measured one-board pattern verification only achieved 43.17/64.77 Mb/s.
+Measured standalone verified rates were **22.020, 46.768 and 57.650 Mb/s** at
+22, 46.6 and 87 Mb/s ceilings. Thus the one-board fixture proves error-free receive
+plus pattern checking at 46.768 Mb/s for that 1 s run; the saturated run reached
+57.650 Mb/s, not 87. It proves neither a receiving S3's external-source ceiling nor
+paced encoding at those rates. The script gates 22/46.6, then reports untargeted
+`loop 0` saturation separately. A second S3 is required to test external quad DMA;
+the CM5 is required to qualify its single-line Linux sender.
 
-`spiinput ts replay` or `gcs replay` preloads four sealed pattern messages and
-repeats them through the real parser, CRC, split copies, descriptor release and
-encoder. Sequence tracking resets on replay release; repeated sequences are a
-diagnostic fixture, never a wire protocol change. It allocates SPI2/receive DMA
-resources but leaves DMA idle, with READY low, no SPI3 or sender task. `--replay`
-tells the host decoder to expect pattern sequences 0..3 repeated. This isolates
-**receive computation**, not external DMA bandwidth, interrupt latency or cable
-integrity. Those require an external sender; replay cannot certify them.
+`sender.cpu_us / sender.us` is measured scheduled CPU fraction (ISR time may be
+charged to the interrupted task). Build, polling/build and CRC cycle windows
+include preemption and overlap; do not add them as CPU usage. `heap_bytes` excludes
+the 2,048 B sender stack/TCB. Its measured low-water stack margin must stay >=256 B.
 
-`input_cycles` includes CRC, copy, parsing and descriptor release; sleeps awaiting
-bytes are excluded. `input_copy_cycles` is the memcpy subset, already included.
-Divide by `frames_encoded` for cycles/frame (a final unfinished frame can also
-contribute). `input_frame_cycles_max` is active RX work for one completed frame;
-`encode_cycles_live_max` includes that RX work plus encoding. ISR callback totals
-and maxima exclude interrupt entry/exit; some callback windows already overlap
-active measurements. Do not double count them. External paced zero-underrun tests
-are the deadline proof.
+Per full message the receive traffic lower bound is `1332 DMA write + 1328 CRC read
++ 2*1316 copy = 5292 B`. Loopback adds `1332 construction + 1328 seal CRC + 1316
+verification CRC + 1332 DMA read = 5308 B`, excluding tables/instructions/descriptors.
+At the demo's 1838.58 messages/s these are 9.73 and 9.76 MB/s respectively, not
+measured bus occupancy.
 
-For QPSK 9/10 at 80/3 Msym/s: `B=7264 B`, `S=33282 symbols`,
-`budget=240e6*S/(80e6/3)=299538 cycles/frame`, `R=46.56 Mb/s`.
-The [synthetic mean](../results/2026-10-17-qpsk-goal/README.md) is 227692 cycles,
-leaving 71846 cycles. The old GCS dump's live max 289707 left only 9831 cycles;
-it was not a paced pass. Its measured 1,316 B copy maximum of 2301 cycles projects
-`7264/1316*2301=12701 cycles/frame`, **an estimate**, not a maximum for a full frame.
+`spiinput ts replay` or `gcs replay` repeats four sealed pattern messages through
+the actual parser, CRC, split copies, descriptor releases and encoder. DMA remains
+idle and READY low. Sequence tracking resets on replay release, a diagnostic fixture
+only. `--replay` selects the corresponding host oracle. The second run's QPSK TS/GCS
+replay passed 30 s with zero underruns, mean 245,089/208,957 cycles and live maximum
+260,542/222,688 cycles. Replay isolates receive computation; it cannot certify DMA
+contention, interrupt latency or cable timing. Demo replay precedes high-rate replay
+in the revised script to distinguish receiver cost from loopback interference.
 
-Memory changes, derived from the layout:
+`input_cycles` includes active parsing, CRC, copies and release, excluding sleeps.
+`input_copy_cycles` is already included. Divide by `frames_encoded` for cycles/frame;
+a final partial frame may also contribute. `encode_cycles_live_max` includes active
+RX and encoding, plus preemption, but excludes input waits. ISR callback windows
+exclude entry/exit and can overlap active windows. `isr_max` now copies the recorded
+maximum into telemetry; the old zero was a reporting omission.
 
-- Four slots need **5,344 B**, half the old 10,688 B. They borrow whole disjoint
-  slots from unused shaper-store/workspace tails when all four fit. At QPSK n3,
-  two fit after the packed dummy and two after the shaper window in the workspace:
-  **zero additional receive-buffer heap**. S3 descriptors need 48 B.
-- Packed external payload borrows fast encoder scratch before encoding. No second
-  payload allocation is needed. Input uses nibble BCH, saving the 8,192 B byte
-  cache in modes that used it; bit-exact host checks cover both BCH variants.
-- At 8-sps 8PSK the external-input fast context moves to PSRAM, as its workspace
-  already does. This preserves SRAM but changes cache contention. Its deadlines
-  must be checked separately; the 10 Msym/s demo uses internal context/workspace.
-- The diagnostic SPI master lives in flash. Its old linked IRAM contribution was
-  3,937 B; the new map has zero. Receive callbacks and hot CRC/copy remain in IRAM.
+The failed 257,061-cycle QPSK mean was **synthetic input**, after `spiinput off`.
+Its payload stage averaged 88,080 cycles versus 58,763 in the earlier QPSK result;
+the other stages were nearly unchanged. The compiled scalar generator used a taken
+branch per byte. Four-byte grouping now produces the identical xorshift32 sequence
+with a hardware loop. This is an instruction-count improvement awaiting measurement;
+the 254,607-cycle mean and 299,538-cycle live-maximum gates remain unchanged.
+For QPSK 9/10, `B=7264 B`, `S=33282 symbols`, `R=8*B*(80e6/3)/S=46.56 Mb/s` and
+`240e6*S/(80e6/3)=299538 cycles/frame` (mode table and EN 302 307-1 §5.5).
 
-Wi-Fi must start with receive buffers still allocated and retain **at least
-20,000 B** free and low-water internal SRAM, for TS and GCS in every selected mode.
-The main-branch 41,387 B was its low-water mark; free-up was 43,203 B. These layout
-savings predict recovery but do not establish a new free-up measurement.
+## Internal RAM after merging main
+
+Requested sizes come from `start_encoder` and `dvbs2_fast_mode_size`, in bytes.
+The fixed shaper store is 65,536 B; two separate DAC banks reserve 131,072 B.
+Input uses nibble BCH and borrows context scratch for payload, so there is no
+8,192 B BCH allocation or separate packed-input payload. Target context size is
+`F=592+max(96*(nbch/360)+1536*ceil(q/32), bits==3 ? 10816 : 16224) B`;
+`nbch` and `q` come from the mode table, and 592 B is the aligned S3 context header.
+
+| Mode | Table, B | Ring/dummy in store, B | Workspace heap, B | Other internal heap, B | RX slots |
+|---|---:|---:|---:|---:|---|
+| QPSK default | 32,768 | PSRAM | 12,420 PSRAM | F + 420 window | 4 in store |
+| QPSK 5m | 8,192 | 33,344 + 1,696 | 12,420 | F | 4 in store |
+| QPSK 10m | 4,096 | 50,016 + 1,696 | 12,420 | F | 4 in store |
+| QPSK 20m | 49,152 | 864 dummy + 12,432 workspace | 0 | F + 25,056 ring | 2 store + 2 workspace |
+| QPSK 26m667 | 36,864 | 25,056 + 864 | 12,420 | F | 2 store + 2 workspace |
+| 8PSK 5m | 65,536 | none | 12,420 PSRAM | 23,936 ring/dummy + 2,058 window + 5,344 RX | heap |
+| 8PSK 10m | 32,768 | 22,240 + 1,696 | 12,420 | F + 11,120 ring | 4 in store |
+| 8PSK 20m | 16,384 | 33,360 + 1,696 | 12,420 | F | 4 in store |
+
+8PSK 5m also puts F in PSRAM. Packed frames include 16 readable guard bytes and
+16-byte rounding. Four receive slots occupy `4*1336=5344 B`; descriptor storage
+is 48 B static. At QPSK 20m, the store tail has 3,088 B and the workspace tail
+has 3,236 B, each fitting two slots. At 26m667 the respective tails are 2,752 and
+2,900 B. All inputs and outputs stay disjoint. Task/driver/allocator overhead is
+excluded from requested sizes and included in board heap telemetry.
+
+Main reclaimed 4,096 B of static internal RAM
+([cleanup record](../results/2026-10-17-cleanup/README.md)). Applying only that
+saving to each second-run minimum of Wi-Fi-up free/low-water heap, across TS/GCS,
+gives the estimates below. New `20m` uses old `20mq4` for QPSK and `20ms6` for 8PSK;
+its heap layout is compared to that exact old kernel. Values are **predictions,
+not measurements of this revision**. The odd first QPSK-5m minimum is retained.
+
+| MODCOD | F, B | Default, B | 5m, B | 10m, B | 20m, B | 26m667, B |
+|---|---:|---:|---:|---:|---:|---:|
+| 4 | 16,816 | 46,683 | 32,787 | 34,695 | 22,059 | 34,695 |
+| 5 | 16,816 | 46,683 | 34,695 | 34,695 | 22,059 | 34,695 |
+| 6 | 16,816 | 46,683 | 34,695 | 34,695 | 22,059 | 34,695 |
+| 7 | 16,816 | 46,683 | 34,695 | 34,695 | 22,059 | 34,695 |
+| 8 | 17,488 | 46,011 | 34,023 | 34,023 | 21,387 | 34,023 |
+| 9 | 16,816 | 46,683 | 34,695 | 34,695 | 22,059 | 34,695 |
+| 10 | 17,488 | 46,011 | 34,023 | 34,023 | 21,387 | 34,023 |
+| 11 | 17,680 | 45,819 | 33,831 | 33,831 | 21,195 | 33,831 |
+| 12 | 15,568 | n/a | 32,543 | 24,819 | 35,943 | n/a |
+| 13 | 15,184 | n/a | 32,543 | 25,203 | 36,327 | n/a |
+| 14 | 16,624 | n/a | 32,543 | 23,763 | 34,887 | n/a |
+| 15 | 16,528 | n/a | 32,543 | 23,859 | 34,983 | n/a |
+| 16 | 17,488 | n/a | 32,543 | 22,899 | 34,023 | n/a |
+| 17 | 17,680 | n/a | 32,543 | 22,707 | 33,831 | n/a |
+
+The tightest prediction is 21,195 B, only 1,195 B above the unchanged 20,000 B
+floor. Wi-Fi fragmentation, code placement and allocation behavior require the
+coordinator's all-mode receive-only sweep before declaring success.
 
 ## Coordinator checks, no RF
 
@@ -230,11 +269,11 @@ idf.py -B build-xiao -D SDKCONFIG=sdkconfig.xiao.local \
 ```
 
 `bash host/spi-in-board.sh [new-directory]` runs demo loopback first, receive-compute
-replay at 26m667, receive-only Wi-Fi probes, isolated throughput/faults, then synthetic
+replay at 10m and 26m667, receive-only Wi-Fi probes, isolated throughput/faults, then synthetic
 CRCs. It continues after failures, writes `summary.txt`, exits nonzero if any gate
 fails, and restores input off. Default paced windows are 10 s; set
 `SECONDS_PER_RUN=30` for acceptance. Set `WIFI_ALL=1` for receive-only Wi-Fi
-probes in every supported MODCOD/rate (TS and GCS), rather than the six default
+probes in every supported MODCOD/rate (TS and GCS), rather than the seven default
 representatives. `PY`, `RX`, `PINS`, `PORT` override local paths.
 
 Pass requirements: exact dump bytes and USB/file CRC; independent LeanDVB decode
@@ -244,7 +283,7 @@ the 40-frame demo must recover at least 36 contiguous exact frames. At 26m667,
 fill <=40137 cycles, slack >=7083, encoder mean <=254607 and live max <=299538,
 including active input copies. Deliberate fault-6 starvation must insert dummies
 and recover. Synthetic CRCs remain 1271511239 (11/26m667/16 frames) and 3178964763
-(13/20ms6/40 frames), with N0CALL.
+(13/20m/40 frames), with N0CALL.
 
 The slim Wi-Fi sample covers demo and the main memory layouts. To check another
 mode, use `spiinput ts`, `wifimem MODCOD RATE`, then repeat with GCS; do not leave
