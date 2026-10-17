@@ -1,54 +1,36 @@
-# Integrated QPSK, offline checks
+# QPSK at 26.67 Msym/s in real time, radio off
 
-Firmware source: `a64e260`, after merge `7bcdb01` of next5 `298235f` and
-qpsk-fill `81f0b4c`. The handoff commit adds the board script, its fake-board test
-and this report. These are host, QEMU, build and derived allocation results.
-**No integrated silicon timing or Wi-Fi measurement is recorded here.** No
-serial port was opened, flash written or radio started.
+The lofty QPSK goal holds on silicon: QPSK 9/10 at 26.67 Msym/s, 46.6 Mb/s in 36 MHz, with the
+encoder, ring and fill running together at 80 MS/s. Every bank was on time for 30 s with 16.6%
+of the bank period to spare (longest fill 39,139 of 47,220 cycles), and the dumps decode
+bit-exact. Internal RAM is back above the floor in every mode probed. No RF was transmitted.
 
-`runs.jsonl` contains 169 records: 34 host-program passes, 65 stream configurations,
-48 LeanDVB checks plus four detailed new-mode MER/decoder results, two QEMU
-summaries, linked sections, build provenance and fourteen allocation models.
-Host clocks and heap-size stubs are not board measurements. The retained log
-hashes identify the local test outputs in the gitignored `notes/` directory.
-Large IQ files remain there, not in the repository.
+Firmware `10ee312` (exp/qpsk-goal: main `2cf2ac2` + exp/qpsk-fill + the live 3 samples/symbol
+stream), ESP32-S3 at 240 MHz. Records: `runs.jsonl` (paced runs), `dumps.jsonl`, `heap.jsonl`
+(`wifimem`: Wi-Fi start and stop, never keyed). A slim check, per the 5-minute default.
 
-- All eighteen existing 40-frame CRC gates pass, unchanged. Every generated
-  DAC word also agrees with the plain encoder and independently checked table.
-- All eight QPSK MODCODs pass at both new rates. The four requested 16-frame CRCs
-  are 3388792897 / 1271511239 (3 sps) and 3789273049 / 2081653259 (4 sps).
-  Each new configuration decodes fourteen contiguous bit-exact frames with
-  zero payload errors, LDPC checks/flips or BCH failures/corrections.
-- New dump MER is 37.995 / 37.984 dB (MODCOD 4 / 11 at 3 sps) and
-  41.219 / 41.206 dB (4 sps). These are host raw-sample measurements.
-- Native stream tests exercise allocation failures, cleanup, borrowed workspace
-  ownership, repeats and full physical-wrap cycles. Ring tests add forced dummy
-  insertion and threaded producers at both bank geometries.
-- QEMU: 140 FEC CRCs, fourteen PIE checks, 896 existing packed frames and 512
-  quad frames with borrowed payload, all output alignments and guarded workspace
-  tails. Shaper checks include 65,536 quad-copy slices, 19,368 QPSK slices and all
-  prior shaper/glue cases. No QEMU cycle count is used as performance evidence.
-- All 34 host programs pass. The board-script test runs its 34 fake commands and
-  22 fake decodes, then injects command, CRC, decode and minimum-heap failures;
-  the resulting four failures are retained and every later command still runs.
-- IDF v6.1 builds with `IDF_COMPONENT_MANAGER=0`. The initially requested plain
-  build failed in sandbox-denied `psutil`/`sysctl` discovery, before project
-  compilation. The unused component manager is the only workaround.
+| `dvbpace`, 30 s | Longest fill | Bank period | Smallest slack | Encoder mean / live max | Min lead, symbols |
+|---|---:|---:|---:|---:|---:|
+| QPSK 9/10, 26.67 Msym/s (`26m667`) | 39,139 | 47,220 | 7,816 | 227,692 / 228,865 | 39,258 |
+| QPSK 1/2, 26.67 Msym/s | 39,005 | 47,220 | 7,948 | 198,324 / 200,078 | 40,318 |
+| QPSK 9/10, 20 Msym/s (`20mq4`) | 36,766 | 47,220 | 10,187 | 227,880 / 228,829 | 46,080 |
+| 8PSK 9/10, 5 Msym/s | 38,870 | 85,608 | 46,469 | 215,215 / 221,246 | 16,835 |
 
-The linked image recovers 3,328 B internal capacity against next5, and 768 B
-against main `4f926aa`. Existing per-mode heap requests are unchanged. The
-new 3-sps layout has no ring heap; the 4-sps layout borrows its workspace from
-unused table storage. Both retain three ring slots, resident BCH and PIE buffer
-alignment. Wi-Fi minima are predictions until measured.
+Every run `ESP_OK`, zero late fills, late switches and underruns. Gates set before the run:
+longest fill at most 40,137 and slack at least 7,083 cycles (15%): both 26.67 Msym/s runs pass.
+One core's budget per QPSK frame at 26.67 Msym/s is 299,538 cycles; the encoder uses 76%.
 
-The [handoff](../../docs/qpsk-goal.md) contains the per-mode allocation table,
-cycle allowances, unresolved hardware gates and all commands/CRCs. The script
-prints pass criteria before any board action:
+| Dump, 16 frames | CRC32 (= host model) | LeanDVB | MER, raw samples |
+|---|---:|---|---:|
+| QPSK 1/2, 26.67 Msym/s | 3388792897 | 14 frames, 0 errors | 37.99 dB |
+| QPSK 9/10, 26.67 Msym/s | 1271511239 | 14 frames, 0 errors | 37.98 dB |
+| QPSK 1/2, 20 Msym/s (`20mq4`) | 3789273049 | 14 frames, 0 errors | 41.22 dB |
+| QPSK 9/10, 20 Msym/s (`20mq4`) | 2081653259 | 14 frames, 0 errors | 41.21 dB |
 
-```sh
-bash host/qpsk-goal-board.sh
-```
+Raw-sample MER leaves out the DAC hold that the pulse pre-compensates (45.0 dB with an ideal
+hold in the host model). Regression dumps `13 20ms6` (3178964763) and `11 20m` (2779934507)
+match. Free internal RAM with Wi-Fi up: 41,387 B for QPSK 26.67 Msym/s and 22,351 B for 8PSK
+9/10 at 5 Msym/s (19,043 B on next5): the 3,328 B recovered here put it back above 20 KB.
 
-This is for the coordinator after a separate build/flash. It includes no keyed
-command and requires the current firmware plus stored N0CALL. A successful
-radio-off pace would still not qualify RF spectrum or receiver performance.
+Not shown: RF. 36 MHz is wider than the +-10 MHz measured for the transmit filter in this
+bring-up mode, so the wide filter mode is needed before this signal is clean on air.
