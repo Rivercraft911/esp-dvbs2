@@ -78,6 +78,7 @@ the rate that would allow 20 Msym/s. [Run details](results/2026-10-16-shaper/REA
 | Whole chain on the chip, bank samples decoded by LeanDVB (radio off) | done, [dry run](results/2026-10-16-dryrun/README.md), 47 dB MER |
 | Continuous encoding on one core while the other fills banks (radio off) | done, [stream](results/2026-10-16-stream/README.md), every deadline met |
 | 8PSK in the transmitter, radio off | 5 Msym/s bit-exact with 7% fill slack; 10 Msym/s bit-exact but misses the fill deadline ([run](results/2026-10-16-8psk-board/README.md)) |
+| 8PSK 2/3 at 5 Msym/s keyed through the radio (shielded box, no receiver) | done, [30 s, every deadline met](results/2026-10-16-keyed-box/README.md) |
 | QPSK at 1 Msym/s decoded by a DVB-S2 receiver | |
 | 8PSK 2/3 at 5 Msym/s with the payload arriving over SPI | |
 
