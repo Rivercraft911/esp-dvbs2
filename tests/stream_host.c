@@ -78,6 +78,7 @@ esp_err_t radio_s3_paced_run(uint32_t sec, radio_s3_fill_fn fn, void *ctx, radio
 esp_err_t radio_s3_run(uint32_t freq, uint8_t gain, uint32_t sec, radio_s3_fill_fn fn,
                        void *ctx, radio_s3_stats_t *stats)
 { (void)freq; (void)gain; (void)sec; (void)fn; (void)ctx; (void)stats; abort(); }
+esp_err_t radio_s3_wifi_probe(radio_s3_stats_t *stats) { (void)stats; abort(); }
 
 int main(int argc, char **argv)
 {
@@ -99,9 +100,16 @@ int main(int argc, char **argv)
         uint8_t *out = phases + f * length;
         dvbs2_map(&ws, mode, out + 90); dvbs2_plframe(mode, 1, out);
     }
-    // Every command-owned allocation can fail. Cleanup must leave no live allocations.
-    for (int i = 0; i < (mc == 17 ? 4 : 3); ++i) {
-        if (sps != 4) break;
+    // Every command-owned allocation can fail: count them on a good start, then fail each.
+    // Cleanup must leave no live allocations.
+    allocation_count = 0;
+    assert(start_encoder("dvbdump", mc, 128, 0, sps));
+    const int allocations = allocation_count;
+    assert(allocations == (sps == 4 ? 3 : sps == 8 ? 4 : 6));
+    stop_encoder();
+    printf("}\n");
+    assert(live_allocations == 0);
+    for (int i = 0; i < allocations; ++i) {
         fail_after = i;
         assert(!start_encoder("dvbdump", mc, 128, 0, sps));
         assert(live_allocations == 0);

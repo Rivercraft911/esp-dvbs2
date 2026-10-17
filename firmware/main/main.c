@@ -11,6 +11,8 @@
 //   dvb <MHz> <modcod> [5m|10m for 8PSK] <1..60 seconds> [0..17 gain] [16..508 peak]  DVB-S2 on air (dvbtx.c)
 //   dvbdump <modcod> [5m|10m for 8PSK] <frames> [peak] [decimation] [stall ms]  the same samples over USB, no radio
 //   dvbpace <modcod> [5m|10m for 8PSK] <seconds> [peak] [stall ms]  the same encoder, fills and deadlines, no radio
+//   wifimem [<modcod> [5m|10m for 8PSK]]  Wi-Fi start-up heap next to that transmitter's memory;
+//              starts and stops Wi-Fi like dvb but never keys, retunes or plays (dvbtx.c)
 //   fecbench [plain|c|pie]  normal-frame encoder correctness and stage timing (fecbench.c)
 //   usbrx N    receive N bytes over USB as fast as the host sends them; report the rate
 
@@ -36,10 +38,14 @@
 #include "membench.h"
 #include "radio_s3.h"
 #include "radio_signals.h"
+#include "shaper.h"
 #include "station_commands.h"
 #include "station_store.h"
 
-static DRAM_ATTR radio_signal_t signal;
+// tx's test signals borrow the shaping table's internal store: commands run one at a time, and
+// every DVB command rebuilds its table. This keeps 13.5 KB of static RAM free for the heap.
+_Static_assert(sizeof(radio_signal_t) <= sizeof shaper_store, "tx signal must fit the store");
+static radio_signal_t *const tx_signal = (radio_signal_t *)shaper_store;
 
 static IRAM_ATTR esp_err_t fill_signal(uint32_t *dst, uint64_t first, size_t count, void *ctx)
 {
@@ -147,6 +153,24 @@ static void cmd_dvbpace(char *args)
     dvbtx_pace(modcod, seconds, top, stall, sps);
 }
 
+static void cmd_wifimem(char *args)
+{
+    char *save, *code = strtok_r(args, " \t", &save);
+    char *rate = strtok_r(NULL, " \t", &save);
+    uint32_t modcod = 0, sps = 0;
+    if (code) {
+        char *after = rate;
+        const bool ok = tx_mode(code, &rate, &save, &modcod, &sps);
+        // QPSK takes no rate token; 8PSK takes exactly one. Nothing may follow.
+        if (!ok || (modcod < 12 && after) || rate) {
+            printf("@{\"cmd\":\"wifimem\",\"error\":\"usage: wifimem [<modcod 4..11 | 12..17 "
+                   "5m|10m>]\"}\n");
+            return;
+        }
+    }
+    dvbtx_wifi(modcod, sps);
+}
+
 static void cmd_tx(char *args)
 {
     if (!station_require("tx")) {
@@ -161,13 +185,13 @@ static void cmd_tx(char *args)
     if (!number(mhz, 2390, 2450, &freq) || !name ||
         !number(duration, 1, 60, &seconds) ||
         (level && !number(level, 0, RADIO_S3_GAIN_MAX, &gain)) || extra ||
-        !radio_signal_init(&signal, name)) {
+        !radio_signal_init(tx_signal, name)) {
         printf("@{\"cmd\":\"tx\",\"error\":\"usage: tx <2390..2450 integer MHz> "
                "<tone|tone<1..511>|two|tag|neg|low|ionly|qonly|zero|dci|dcq> <1..60 seconds> [0..17 gain, default 0]\"}\n");
         return;
     }
     radio_s3_stats_t s = {0};
-    const esp_err_t err = radio_s3_run(freq, gain, seconds, fill_signal, &signal, &s);
+    const esp_err_t err = radio_s3_run(freq, gain, seconds, fill_signal, tx_signal, &s);
     printf("@{\"cmd\":\"tx\",\"freq_mhz\":%lu,\"signal\":\"%s\",\"seconds\":%lu,"
            "\"gain\":%lu,\"dac_rate_nominal\":%u,\"bank_words\":%u,\"step_words\":%u,"
            "\"elapsed_samples\":%llu,\"elapsed_cycles\":%llu,\"fills\":%lu,"
@@ -212,12 +236,16 @@ static void cmd_info(void)
 // that every byte arrived intact and in order.
 static void cmd_usbrx(unsigned total)
 {
-    static uint8_t buf[4096];
+    uint8_t *buf = heap_caps_malloc(4096, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!buf) {
+        printf("@{\"cmd\":\"usbrx\",\"error\":\"allocation failed\"}\n");
+        return;
+    }
     unsigned got = 0;
     uint32_t crc = 0xFFFFFFFFu;
     int64_t first = 0, last = 0;
     while (got < total) {
-        const int want = total - got < sizeof buf ? (int)(total - got) : (int)sizeof buf;
+        const int want = total - got < 4096 ? (int)(total - got) : 4096;
         const int n = usb_serial_jtag_read_bytes(buf, want, pdMS_TO_TICKS(2000));
         if (n <= 0) {
             break;
@@ -234,6 +262,7 @@ static void cmd_usbrx(unsigned total)
         }
         got += (unsigned)n;
     }
+    heap_caps_free(buf);
     const double seconds = (last - first) / 1e6;
     printf("@{\"cmd\":\"usbrx\",\"bytes\":%u,\"requested\":%u,\"us\":%lld,\"mbit_per_s\":%.3f,"
            "\"crc32\":%lu}\n", got, total, (long long)(last - first),
@@ -314,6 +343,9 @@ void app_main(void)
             fecbench_run("plain");
         } else if (strncmp(line, "fecbench ", 9) == 0) {
             fecbench_run(line + 9);
+        } else if (strcmp(line, "wifimem") == 0 || strncmp(line, "wifimem ", 8) == 0) {
+            cmd_wifimem(line + 7);
+            strcpy(line, "wifimem");
         } else if (strncmp(line, "usbrx ", 6) == 0) {
             cmd_usbrx((unsigned)strtoul(line + 6, NULL, 10));
         } else {

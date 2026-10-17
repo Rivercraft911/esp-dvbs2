@@ -40,18 +40,30 @@ static inline TickType_t xTaskGetTickCount(void) {
     return (uint32_t)((uint64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000);
 }
 static inline uint32_t esp_cpu_get_cycle_count(void) { return 17; }
-static int fail_after = -1, live_allocations;
+static int fail_after = -1, live_allocations, allocation_count;
+static struct { void *p; size_t n; unsigned caps; } native_blocks[64];
 static inline void *heap_caps_aligned_alloc(size_t a, size_t n, unsigned caps) {
-    (void)caps;
+    ++allocation_count;
     if (fail_after == 0) return NULL;
     if (fail_after > 0) --fail_after;
     void *p = NULL; assert(!posix_memalign(&p, a < sizeof(void *) ? sizeof(void *) : a, n));
+    for (unsigned i = 0; i < 64; ++i)
+        if (!native_blocks[i].p) { native_blocks[i].p = p; native_blocks[i].n = n;
+                                   native_blocks[i].caps = caps; break; }
     ++live_allocations; return p;
 }
 static inline void *heap_caps_malloc(size_t n, unsigned caps) {
     return heap_caps_aligned_alloc(16, n, caps);
 }
-static inline void heap_caps_free(void *p) { if (p) { --live_allocations; free(p); } }
+static inline size_t heap_caps_get_allocated_size(void *p) {
+    for (unsigned i = 0; i < 64; ++i) if (native_blocks[i].p == p) return native_blocks[i].n;
+    abort();
+}
+static inline void heap_caps_free(void *p) {
+    if (!p) return;
+    for (unsigned i = 0; i < 64; ++i) if (native_blocks[i].p == p) native_blocks[i].p = NULL;
+    --live_allocations; free(p);
+}
 static inline size_t heap_caps_get_free_size(unsigned c) { (void)c; return 65536; }
 #define heap_caps_get_largest_free_block heap_caps_get_free_size
 #define heap_caps_get_minimum_free_size heap_caps_get_free_size
@@ -148,8 +160,8 @@ def test_stream():
                         str(ROOT / "firmware/components/dvbs2/fast.c"),
                         str(ROOT / "firmware/components/station_id/station_id.c"),
                         "-lm", "-o", str(exe)], check=True)
-        for mc, sps, call in ((13, 4, ""), (15, 4, "N0CALL"), (17, 4, ""), (13, 8, "N0CALL"),
-                              (4, 40, "N0CALL")):
+        for mc, sps, call in ((13, 4, ""), (15, 4, "N0CALL"), (17, 4, ""), (12, 8, ""),
+                              (13, 8, "N0CALL"), (15, 8, "N0CALL"), (17, 8, ""), (4, 40, "N0CALL")):
             iq = folder / "dump.iq"
             out = subprocess.run([str(exe), str(mc), str(sps), str(iq), call], capture_output=True,
                                  text=True, timeout=60, check=True).stdout
@@ -160,15 +172,30 @@ def test_stream():
                 assert r["crc32"] == zlib.crc32(iq.read_bytes())
                 assert r["status"] == "ESP_OK" and not r["encoder_failed"]
                 assert r["callsign"] == call
-                assert r["ring_slots"] == (2 if sps == 4 else 8)
-                assert r["ring_memory"] == ("internal" if sps == 4 else "psram")
+                packed = sps != 40
+                assert r["ring_slots"] == (2 if packed else 8)
+                assert r["ring_memory"] == ("internal" if packed else "psram")
+                assert r["ring_format"] == ("packed" if packed else "raw")
                 slots = [int(a, 16) for a in r["layout"]["slots"]]
                 assert len(set(slots)) == r["ring_slots"]
-                if sps == 4:
-                    assert all(a % 16 == 0 for a in slots)
-                    assert slots[0] == int(r["layout"]["table"], 16) + 32768
+                payload = int(r["layout"]["payload"], 16)
+                filler = int(r["layout"]["filler"], 16)
+                if packed:
+                    # Two packed frames, the packed dummy, then the payload, each with the
+                    # 16 bytes the vector unpack may read past its end.
+                    frame = (22194 // 2 + 31) // 16 * 16
+                    assert slots == [slots[0], slots[0] + frame] and slots[0] % 16 == 0
+                    assert filler == slots[0] + 2 * frame
+                    assert payload == filler + (3330 // 2 + 31) // 16 * 16
+                    need = payload - slots[0] + r["payload_bytes_per_frame"]
+                    if sps == 4:
+                        assert slots[0] == int(r["layout"]["table"], 16) + 32768
+                        assert r["ring_heap_bytes"] == 0 and need <= 32768
+                    else:
+                        assert r["ring_heap_bytes"] == need
                 assert all(p["calls"] == r["frames_encoded"] for p in r["profile"]["encoder"].values())
-            print(f"stream host: MODCOD {mc}, {sps} sps, callsign {call or 'none'}, 2 x 16 frames, "
+            print(f"stream host: MODCOD {mc}, {sps} sps, {dumps[0]['ring_format']} ring, "
+                  f"callsign {call or 'none'}, 2 x 16 frames, "
                   f"CRC {dumps[0]['crc32']}, "
                   "all DAC words match plain encoder; cleanup and notifications pass")
 
