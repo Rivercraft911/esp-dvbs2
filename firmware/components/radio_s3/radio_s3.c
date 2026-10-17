@@ -61,10 +61,24 @@
 #define TONE_CTRL 0x60006040U
 #define DAC_RUN (1U << 31)
 #define DAC_LOOP (1U << 19)
-#define CYCLES_PER_SAMPLE 6U
-#define STEP_CYCLES (RADIO_S3_STEP_WORDS * CYCLES_PER_SAMPLE)
-#define TAIL_LIMIT_CYCLES ((RADIO_S3_TAIL_WORDS - RADIO_S3_LEAD_WORDS) * CYCLES_PER_SAMPLE)
-#define EARLY_SWITCH_CYCLES ((RADIO_S3_LEAD_WORDS / 2) * CYCLES_PER_SAMPLE)
+#define DAC_RATE_80M (1U << 15) /* pinned register document:257-306, "DUMP_DAC_RATE_80M" */
+
+/* A run's bank geometry (radio_s3.h) and DAC rate, at 240 MHz. Copied into the run so that
+ * the schedule reads it from internal RAM. */
+typedef struct {
+    uint32_t rate_bit;          /* DAC_CTRL */
+    uint32_t cycles;            /* CPU cycles per sample */
+    uint32_t lead, tail, step;  /* words */
+} geometry_t;
+
+static geometry_t geometry(uint32_t dac_rate)
+{
+    if (dac_rate == RADIO_S3_DAC_RATE_80M) {
+        return (geometry_t){DAC_RATE_80M, 3, RADIO_S3_LEAD_WORDS_80M, RADIO_S3_TAIL_WORDS_80M,
+                            RADIO_S3_STEP_WORDS_80M};
+    }
+    return (geometry_t){0, 6, RADIO_S3_LEAD_WORDS, RADIO_S3_TAIL_WORDS, RADIO_S3_STEP_WORDS};
+}
 
 /* Reserve full physical banks, including the unused last four words. The linker
  * assertions also exclude static DRAM and IRAM aliases. This table is consumed
@@ -141,6 +155,7 @@ typedef struct {
     radio_s3_sink_fn sink;
     void *sink_ctx;
     radio_s3_dry_stats_t *dry;
+    geometry_t geo;
 } run_t;
 
 static inline uint32_t IRAM_ATTR cycles(void)
@@ -197,11 +212,17 @@ static inline __attribute__((always_inline)) esp_err_t schedule(run_t *run, uint
 {
     radio_s3_stats_t *stats = run->stats;
     uint64_t total_samples = run->samples;
+    const geometry_t g = run->geo;
+    const uint32_t step_cycles = g.step * g.cycles;
+    /* A late switch must still land before the old bank's tail runs out; LEAD of it is kept
+     * back for an unknown DAC read-ahead. */
+    const int32_t tail_limit = (int32_t)((g.tail - g.lead) * g.cycles);
+    const uint32_t early = g.lead / 2 * g.cycles;
     esp_err_t error = ESP_OK;
     uint32_t irq;
     uint32_t previous = epoch;
-    uint32_t target = epoch + STEP_CYCLES;
-    uint64_t handoff = RADIO_S3_STEP_WORDS;
+    uint32_t target = epoch + step_cycles;
+    uint64_t handoff = g.step;
     unsigned next = 1;
     for (;;) {
         uint32_t now = cycles();
@@ -209,7 +230,7 @@ static inline __attribute__((always_inline)) esp_err_t schedule(run_t *run, uint
         previous = now;
         if (handoff >= total_samples) {
             /* At most one bank interval remains, so the uint32 deadline is safe. */
-            uint32_t end = target - (uint32_t)((handoff - total_samples) * CYCLES_PER_SAMPLE);
+            uint32_t end = target - (uint32_t)((handoff - total_samples) * g.cycles);
             wait_until(end);
             break;
         }
@@ -220,14 +241,14 @@ static inline __attribute__((always_inline)) esp_err_t schedule(run_t *run, uint
         } else if ((uint32_t)-fill_late < stats->min_fill_slack_cycles) {
             stats->min_fill_slack_cycles = (uint32_t)-fill_late;
         }
-        if (fill_late >= (int32_t)TAIL_LIMIT_CYCLES) {
+        if (fill_late >= tail_limit) {
             stats->fatal_late++;
             error = ESP_ERR_TIMEOUT;
             break;
         }
 
-        /* Half the lead is deliberate timing margin: aim 32 samples early;
-         * both banks contain the same samples for all 64 lead samples.
+        /* Half the lead is deliberate timing margin: aim LEAD/2 samples early;
+         * both banks contain the same samples for all LEAD samples.
          * Mask levels 1-3 from the end of the fill to the switch, so that core 1
          * serves interrupts only while it fills. A switch then lands late only if
          * its fill overran. With the mask over just the last 320 cycles, the 1 kHz
@@ -235,9 +256,9 @@ static inline __attribute__((always_inline)) esp_err_t schedule(run_t *run, uint
          * radio); the interrupts move to the next fill, at most one tick per bank.
          */
         irq = portSET_INTERRUPT_MASK_FROM_ISR();
-        wait_until(target - EARLY_SWITCH_CYCLES);
+        wait_until(target - early);
         now = cycles();
-        if ((int32_t)(now - target) >= (int32_t)TAIL_LIMIT_CYCLES) {
+        if ((int32_t)(now - target) >= tail_limit) {
             portCLEAR_INTERRUPT_MASK_FROM_ISR(irq);
             stats->fatal_late++;
             error = ESP_ERR_TIMEOUT;
@@ -262,10 +283,10 @@ static inline __attribute__((always_inline)) esp_err_t schedule(run_t *run, uint
             (void)esp_task_wdt_reset();
         }
         next ^= 1;
-        handoff += RADIO_S3_STEP_WORDS;
-        target += STEP_CYCLES;
+        handoff += g.step;
+        target += step_cycles;
         if (handoff < total_samples) {
-            error = fill_bank(run, next, handoff - RADIO_S3_LEAD_WORDS);
+            error = fill_bank(run, next, handoff - g.lead);
             if (error != ESP_OK) {
                 break;
             }
@@ -279,12 +300,12 @@ static inline __attribute__((always_inline)) esp_err_t schedule(run_t *run, uint
     /* A long interrupt can also postpone the final stop past the active
      * bank's overlap. Expose that fault even though no further switch follows.
      */
-    if (error == ESP_OK && (int32_t)(now - target) >= (int32_t)TAIL_LIMIT_CYCLES) {
+    if (error == ESP_OK && (int32_t)(now - target) >= tail_limit) {
         stats->fatal_late++;
         error = ESP_ERR_TIMEOUT;
     }
     stats->elapsed_cycles += (uint32_t)(now - previous);
-    stats->elapsed_samples = stats->elapsed_cycles / CYCLES_PER_SAMPLE;
+    stats->elapsed_samples = stats->elapsed_cycles / g.cycles;
     return error;
 }
 
@@ -296,7 +317,7 @@ static esp_err_t IRAM_ATTR __attribute__((noinline)) stream(run_t *run)
     if (error != ESP_OK) {
         return error;
     }
-    error = fill_bank(run, 1, RADIO_S3_STEP_WORDS - RADIO_S3_LEAD_WORDS);
+    error = fill_bank(run, 1, run->geo.step - run->geo.lead);
     if (error != ESP_OK) {
         return error;
     }
@@ -346,10 +367,11 @@ keyed:
     REG_CLR_BIT(TONE_CTRL, 1U << 18);
     /* Keying can clear bank ownership, so grant only after keying. */
     REG_WRITE(BANK_USAGE, ownership | (1U << 2));
-    REG_WRITE(DAC_CTRL, DAC_RUN | RADIO_S3_BANK_WORDS);
+    const uint32_t rate = run->geo.rate_bit;
+    REG_WRITE(DAC_CTRL, DAC_RUN | rate | RADIO_S3_BANK_WORDS);
     uint32_t irq = portSET_INTERRUPT_MASK_FROM_ISR();
     uint32_t epoch = cycles();
-    REG_WRITE(DAC_CTRL, DAC_RUN | DAC_LOOP | RADIO_S3_BANK_WORDS);
+    REG_WRITE(DAC_CTRL, DAC_RUN | DAC_LOOP | rate | RADIO_S3_BANK_WORDS);
     portCLEAR_INTERRUPT_MASK_FROM_ISR(irq);
     return schedule(run, epoch, ownership, true);
 }
@@ -359,7 +381,7 @@ static esp_err_t IRAM_ATTR __attribute__((noinline)) paced(run_t *run)
 {
     esp_err_t error = fill_bank(run, 0, 0);
     if (error == ESP_OK) {
-        error = fill_bank(run, 1, RADIO_S3_STEP_WORDS - RADIO_S3_LEAD_WORDS);
+        error = fill_bank(run, 1, run->geo.step - run->geo.lead);
     }
     if (error != ESP_OK) {
         return error;
@@ -553,29 +575,29 @@ static void dry_worker(void *arg)
     run_t *run = arg;
     radio_s3_dry_stats_t *stats = run->dry;
     const uint64_t samples = run->samples;
+    const uint64_t step = run->geo.step, lead = run->geo.lead, tail = run->geo.tail;
     esp_err_t error = fill_bank(run, 0, 0);
     if (error == ESP_OK) {
-        error = fill_bank(run, 1, RADIO_S3_STEP_WORDS - RADIO_S3_LEAD_WORDS);
+        error = fill_bank(run, 1, step - lead);
     }
-    for (uint64_t j = 0; error == ESP_OK && j * RADIO_S3_STEP_WORDS < samples; ++j) {
+    for (uint64_t j = 0; error == ESP_OK && j * step < samples; ++j) {
         // Let IDLE1 run now and then. A sink that rarely blocks (iddump keeps 1 sample in
         // 4000) otherwise starves it past the 5 s task watchdog, whose log lands in the dump.
         if ((j & 63) == 63) {
             vTaskDelay(1);
         }
         const uint32_t *now = radio_s3_bank(j & 1), *next = radio_s3_bank((j + 1) & 1);
-        const uint64_t edge = (j + 1) * RADIO_S3_STEP_WORDS;
-        for (uint64_t n = edge - RADIO_S3_LEAD_WORDS; n < edge + RADIO_S3_TAIL_WORDS; ++n) {
+        const uint64_t edge = (j + 1) * step;
+        for (uint64_t n = edge - lead; n < edge + tail; ++n) {
             const size_t at = n % RADIO_S3_BANK_WORDS;
             stats->overlap_mismatches += now[at] != next[at];
         }
-        stats->overlap_words += RADIO_S3_LEAD_WORDS + RADIO_S3_TAIL_WORDS;
-        const uint64_t left = samples - j * RADIO_S3_STEP_WORDS;
-        error = run->sink(now, j * RADIO_S3_STEP_WORDS,
-                          left < RADIO_S3_STEP_WORDS ? (size_t)left : RADIO_S3_STEP_WORDS,
+        stats->overlap_words += lead + tail;
+        const uint64_t left = samples - j * step;
+        error = run->sink(now, j * step, left < step ? (size_t)left : (size_t)step,
                           run->sink_ctx);
-        if (error == ESP_OK && (j + 1) * RADIO_S3_STEP_WORDS < samples) {
-            error = fill_bank(run, j & 1, (j + 2) * RADIO_S3_STEP_WORDS - RADIO_S3_LEAD_WORDS);
+        if (error == ESP_OK && (j + 1) * step < samples) {
+            error = fill_bank(run, j & 1, (j + 2) * step - lead);
         }
     }
     stats->fills = run->stats->fills;
@@ -666,35 +688,53 @@ finished:
     return run->error;
 }
 
-esp_err_t radio_s3_dry_run(radio_s3_fill_fn fill, void *ctx, uint64_t samples,
-                           radio_s3_sink_fn sink, void *sink_ctx, radio_s3_dry_stats_t *stats)
+static bool known_rate(uint32_t dac_rate)
 {
-    if (!fill || !sink || !stats || samples == 0) {
+    return dac_rate == RADIO_S3_DAC_RATE || dac_rate == RADIO_S3_DAC_RATE_80M;
+}
+
+esp_err_t radio_s3_dry_run_rate(radio_s3_fill_fn fill, void *ctx, uint64_t samples,
+                                uint32_t dac_rate, radio_s3_sink_fn sink, void *sink_ctx,
+                                radio_s3_dry_stats_t *stats)
+{
+    if (!fill || !sink || !stats || samples == 0 || !known_rate(dac_rate)) {
         return ESP_ERR_INVALID_ARG;
     }
     memset(stats, 0, sizeof *stats);
     radio_s3_stats_t timing = {0};
     run_t run = {.fill = fill, .ctx = ctx, .stats = &timing, .samples = samples,
-                 .sink = sink, .sink_ctx = sink_ctx, .dry = stats};
+                 .sink = sink, .sink_ctx = sink_ctx, .dry = stats, .geo = geometry(dac_rate)};
     return on_core1(dry_worker, &run);
 }
 
-esp_err_t radio_s3_paced_run(uint32_t seconds, radio_s3_fill_fn fill, void *ctx,
-                             radio_s3_stats_t *stats)
+esp_err_t radio_s3_dry_run(radio_s3_fill_fn fill, void *ctx, uint64_t samples,
+                           radio_s3_sink_fn sink, void *sink_ctx, radio_s3_dry_stats_t *stats)
 {
-    if (!fill || !stats || seconds == 0 || seconds > 600) {
+    return radio_s3_dry_run_rate(fill, ctx, samples, RADIO_S3_DAC_RATE, sink, sink_ctx, stats);
+}
+
+esp_err_t radio_s3_paced_run_rate(uint32_t seconds, uint32_t dac_rate, radio_s3_fill_fn fill,
+                                  void *ctx, radio_s3_stats_t *stats)
+{
+    if (!fill || !stats || seconds == 0 || seconds > 600 || !known_rate(dac_rate)) {
         return ESP_ERR_INVALID_ARG;
     }
     memset(stats, 0, sizeof *stats);
     stats->min_fill_slack_cycles = UINT32_MAX;
-    run_t run = {.seconds = seconds, .samples = (uint64_t)seconds * RADIO_S3_DAC_RATE,
+    run_t run = {.seconds = seconds, .samples = (uint64_t)seconds * dac_rate,
                  .identify = station_store_get()[0] != 0,
-                 .fill = fill, .ctx = ctx, .stats = stats};
+                 .fill = fill, .ctx = ctx, .stats = stats, .geo = geometry(dac_rate)};
     esp_err_t error = on_core1(paced_worker, &run);
     if (stats->min_fill_slack_cycles == UINT32_MAX) {
         stats->min_fill_slack_cycles = 0;
     }
     return error;
+}
+
+esp_err_t radio_s3_paced_run(uint32_t seconds, radio_s3_fill_fn fill, void *ctx,
+                             radio_s3_stats_t *stats)
+{
+    return radio_s3_paced_run_rate(seconds, RADIO_S3_DAC_RATE, fill, ctx, stats);
 }
 
 static esp_err_t no_fill(uint32_t *dst, uint64_t first, size_t count, void *ctx)
@@ -715,6 +755,7 @@ esp_err_t radio_s3_wifi_probe(radio_s3_stats_t *stats)
     run_t run = {
         .samples = 30ULL * RADIO_S3_DAC_RATE, .identify = true, .limit_duration = true,
         .probe = true, .seconds = 30, .fill = no_fill, .stats = stats, .chain = chain,
+        .geo = geometry(RADIO_S3_DAC_RATE),
     };
     return on_core1(worker, &run);
 }
@@ -736,6 +777,7 @@ esp_err_t radio_s3_run(uint32_t freq_mhz, uint8_t gain, uint32_t seconds,
         .samples = (uint64_t)seconds * RADIO_S3_DAC_RATE, .identify = true, .limit_duration = true,
         .freq_mhz = freq_mhz, .gain = gain, .seconds = seconds,
         .fill = fill, .ctx = ctx, .stats = stats, .chain = chain,
+        .geo = geometry(RADIO_S3_DAC_RATE), /* the ID generator is 40 MS/s only */
     };
     esp_err_t error = on_core1(worker, &run);
     if (stats->min_fill_slack_cycles == UINT32_MAX) {

@@ -211,6 +211,8 @@ with tempfile.TemporaryDirectory() as directory:
 #include <stdbool.h>
 #include <string.h>
 #include "radio_s3.h"
+typedef struct { unsigned cycles; } geometry_t;
+static geometry_t geometry(uint32_t rate) { return (geometry_t){240000000U / rate}; }
 typedef struct {
     uint64_t samples;
     bool identify, limit_duration;
@@ -219,6 +221,7 @@ typedef struct {
     void *ctx;
     radio_s3_stats_t *stats;
     radio_s3_chain_t chain;
+    geometry_t geo;
 } run_t;
 static radio_s3_chain_t chain;
 static bool configured;
@@ -228,6 +231,7 @@ static void worker(void *arg) { (void)arg; }
 static int on_core1(void (*fn)(void *), run_t *run)
 {
     assert(fn == worker && run->identify && run->limit_duration && run->samples == 40000000);
+    assert(run->geo.cycles == 6);   // keyed runs stay at 40 MS/s until the ID is rate-aware
     workers++;
     return ESP_OK;
 }
