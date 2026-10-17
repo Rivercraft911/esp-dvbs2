@@ -429,9 +429,14 @@ static void stop_encoder(void)
            (unsigned)internal, (unsigned)largest, (unsigned)lowest);
     printf(",\"callsign\":\"%s\"", station_store_get());
     printf(",\"workspace_memory\":\"%s\",\"workspace_bytes\":%u,\"fast_bytes\":%u,"
+           "\"workspace_heap_bytes\":%u,\"fast_heap_bytes\":%u,\"bch_cache_heap_bytes\":%u,"
            "\"bch_cache_bytes\":%u,\"bch_variant\":\"%s\"",
            enc.packed && dvb.table.n == 4 ? "internal" : "psram", (unsigned)sizeof *enc.ws,
-           (unsigned)dvbs2_fast_mode_size(enc.mode), enc.bch ? DVBS2_BCH_CACHE_BYTES : 0,
+           (unsigned)dvbs2_fast_mode_size(enc.mode),
+           (unsigned)heap_caps_get_allocated_size(enc.ws),
+           (unsigned)heap_caps_get_allocated_size(enc.fast),
+           enc.bch ? (unsigned)heap_caps_get_allocated_size(enc.bch) : 0,
+           enc.bch ? DVBS2_BCH_CACHE_BYTES : 0,
            enc.bch ? "resident-byte" : "nibble");
     printf(",\"ring_memory\":\"%s\",\"ring_format\":\"%s\",\"ring_heap_bytes\":%u,"
            "\"payload_memory\":\"%s\",\"slot_waits\":%" PRIu32,
