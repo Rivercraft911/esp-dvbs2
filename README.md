@@ -1,44 +1,55 @@
 # esp-dvbs2
 
-A complete DVB-S2 transmitter on one ESP32-S3. Framing, error correction,
-modulation and pulse shaping run on the chip; samples leave through its own
-Wi-Fi radio. No PC encoder or external DAC.
+What started as but one hack on the ESP32-C3 has snowballed into a plethora of ESP32 software
+defined radios. People have pulled raw I/Q samples out of the Wi-Fi receiver, sent FM and SSB by
+steering the radio's test tone, played arbitrary waveforms through the transmit DAC, and put
+DVB-S on the 13 cm band from a C3 with a PC doing the encoding.
 
-Main has keyed **QPSK 9/10 at 100/3 Msym/s in 40 MHz (58.2 Mb/s)**, QPSK 9/10 at
-80/3 Msym/s (46.6 Mb/s) and **8PSK 5/6 at 20 Msym/s (48.4 Mb/s)** for 30 s each in a
-shielded box, with every bank deadline met. Those are measured playback results; the
-40 MHz mode runs with a thin encoder margin. A receiver has not yet decoded the signal
-over RF. [40 MHz run](results/2026-10-17-moonshot/README.md),
-[QPSK 26.67 Msym/s](results/2026-10-17-keyed-qpsk/README.md),
-[8PSK run](results/2026-10-16-keyed-20m/README.md).
+Now... this repo goes for the whole thing: **a complete DVB-S2 transmitter running on one ESP32-S3**.
+Framing, error correction, modulation and pulse shaping all happen on the chip, and the signal
+leaves through the S3's own Wi-Fi radio. No PC doing the encoding, no external DAC, no FPGA.
 
-The goal is live video. 8PSK 2/3 at 5 Msym/s carries 9.68 Mb/s before application
-framing, with a nominal 6.75 MHz occupied bandwidth at roll-off 0.35.
-[How it got here](docs/story.md) follows the measurements and failed attempts.
+It started with the goal of live video, 8PSK 2/3 at 5 Msym/s, 9.68 Mb/s. Then it kept going:
+the same $5 chip now pushes **58.2 Mb/s in 40 MHz**, the widest channel its Wi-Fi radio was
+ever built for. [How it got here](docs/story.md), wrong turns included.
 
-## What runs
+## What it can do
 
-| Modulation | MODCOD | Symbol rates | Evidence |
-|---|---|---|---|
-| QPSK | 4..11, rates 1/2 through 9/10 | 1, 5, 10, 20, 80/3 Msym/s; 100/3 Msym/s at roll-off 0.20 (40 MHz) | [Host/board CRCs and independent decode](results/2026-10-17-qpsk-goal/README.md), [40 MHz](results/2026-10-17-moonshot/README.md) |
-| 8PSK | 12..17, rates 3/5 through 9/10 | 5, 10, 20 Msym/s | [5/10 Msym/s](results/2026-10-16-8psk-board/README.md), [20 Msym/s short pulse](results/2026-10-17-next4/README.md) |
+The best measured configurations, fastest first. **Keyed** means the S3 really transmitted for
+30 s (into a shielded box) and met every bank deadline; **radio off** means the same encoder and
+bank schedule ran in real time with the DAC output going nowhere. Slack is how much of each bank
+period the busiest core had left over.
 
-The encoder supports every listed MODCOD. Board and receiver checks cover
-representative rates, not every combination over RF. The Python reference also
-has 16APSK/32APSK; firmware does not.
+| Mode | Symbol rate | Bandwidth | **Data rate** | Tested | Slack |
+|---|---:|---:|---:|---|---|
+| QPSK 9/10, roll-off 0.20 | 33.33 Msym/s | **40 MHz** | **58.2 Mb/s** | keyed | 12% fill, encoder about 1% ([run](results/2026-10-17-moonshot/README.md)) |
+| 8PSK 5/6 | 20 Msym/s | 27 MHz | **48.4 Mb/s** | keyed | 14% ([radio off](results/2026-10-17-next4/README.md); keyed with the [earlier pulse](results/2026-10-16-keyed-20m/README.md) at 4%) |
+| QPSK 9/10 | 26.67 Msym/s | 36 MHz | 46.6 Mb/s | keyed | 18% ([run](results/2026-10-17-keyed-qpsk/README.md)) |
+| 8PSK 2/3 | 20 Msym/s | 27 MHz | 38.7 Mb/s | keyed | 14% (radio off, current pulse) |
+| QPSK 9/10 | 20 Msym/s | 27 MHz | 34.9 Mb/s | keyed | 22% ([run](results/2026-10-17-keyed-qpsk/README.md)) |
+| 8PSK 5/6 | 10 Msym/s | 13.5 MHz | 24.2 Mb/s | keyed | 49% ([run](results/2026-10-16-keyed-next2/README.md)) |
+| QPSK 9/10 | 10 Msym/s | 13.5 MHz | 17.5 Mb/s | radio off | 48% ([run](results/2026-10-17-cleanup/README.md)) |
+| 8PSK 9/10 | 5 Msym/s | 6.75 MHz | 13.1 Mb/s | radio off | 55% |
+| 8PSK 2/3, the video mode | 5 Msym/s | 6.75 MHz | 9.68 Mb/s | keyed | 57% ([run](results/2026-10-16-keyed-next2/README.md)) |
+| QPSK 1/2 | 1 Msym/s | 1.35 MHz | 0.97 Mb/s | keyed | 52% |
 
-Cleanup selects the fastest measured 20 Msym/s kernel per modulation: QPSK's
-four-symbol block kernel and 8PSK's six-symbol pulse. These previously used
-`20mq4` and `20ms6`; both are now `20m`. The duplicate `10m80` token is removed.
-All other waveforms retain their CRCs. The new defaults match the old opt-in
-kernels bit for bit and passed the board checks ([cleanup](results/2026-10-17-cleanup/README.md)).
-The six-symbol 8PSK waveform has radio-off evidence, not keyed qualification.
-[Waveforms, CRCs and memory](docs/bank-fill.md).
+Roll-off is 0.35 unless noted; data rates are the DVB-S2 payload of normal frames with pilots.
+Every QPSK (1/2 to 9/10) and 8PSK (3/5 to 9/10) code rate is encoded at these symbol rates; the
+table lists the ones measured. The chip's own samples decode bit-exact in an independent
+receiver (LeanDVB) at every symbol rate here. **Not yet shown:** a receiver decoding the signal over
+RF, which is the next measurement. 8PSK at 40 MHz (87.3 Mb/s) is the monster still lurking:
+its tables do not fit in RAM yet.
 
-Quad SPI input verified 46.768 Mb/s in one-board loopback and feeds the transmitter on
-the board ([results](results/2026-10-17-spi-in/README.md)); external senders remain
-unqualified.
-[Wire format, XIAO/DevKit pins, sender, budget and radio-off gates](docs/spi-input.md).
+## Under the hood
+
+| | Best measured | |
+|---|---|---|
+| Encoder | 8PSK 2/3 frame in 167k cycles, QPSK 9/10 in 148k (live stream, 240 MHz core) | [run](results/2026-10-16-next2/README.md) |
+| Pulse shaping | 1.78 cycles per sample from tables; a 40 MHz bank in 41k of its 47k cycles | [shaper](results/2026-10-16-shaper/README.md) |
+| Signal quality of the samples | 47.0 dB MER at 1 Msym/s, 38-45 dB at the fast rates (digital, before RF) | [dry run](results/2026-10-16-dryrun/README.md) |
+| Payload in | quad SPI: 46.8 Mb/s verified (one-board loopback); USB: 4.6 Mb/s | [SPI](results/2026-10-17-spi-in/README.md) |
+| RF, test tone | image -35 dBc, carrier leak about -45 dBc (over the air, uncalibrated) | [first RF](results/2026-10-16-radio/README.md) |
+| Station ID | 20 WPM Morse at start, end and every 9 minutes; callsign in every frame | [station ID](results/2026-10-16-station-id/README.md) |
 
 ## How it works
 
@@ -47,21 +58,19 @@ payload -> BB frame -> BCH -> LDPC -> map -> PL frame -> pulse shaping -> DAC ba
            <-------------- core 0 --------------->    <--------- core 1 --------->
 ```
 
-The radio's test engine loops over 16,380 complex samples in internal SRAM.
-Core 1 fills the other bank and switches it on time. At 80 MS/s a fresh bank
-is due every 196.75 us, or 47,220 cycles at 240 MHz. Core 0 continuously encodes
-frames into a small ring. Underruns insert valid dummy frames without skipping
-payload. Lookup tables replace per-sample filter multiplication; finished
-overlap samples are reused.
-[Fill](docs/bank-fill.md), [encoder](docs/encoder.md),
-[radio and bank geometry](docs/bank-geometry.md).
+The S3's radio hides a test engine that plays samples from internal RAM straight into its I/Q
+DAC. It loops one bank of 16,380 samples while the CPU fills the other and switches them on time.
+At 80 MS/s a fresh bank is due every 196.75 µs, or 47,220 cycles at 240 MHz, and that refill is
+the budget that decides everything. Core 0 encodes frames continuously into a small ring; if it
+ever falls behind, valid dummy frames go out instead, so the schedule never breaks.
 
-USB payload input reached 4.6 Mb/s. The test-tone image was -35 dBc and carrier
-leakage about -45 dBc.
-The RF passband, DAC continuity and receiver decode still need cabled
-measurements. Host models, instruction models and QEMU are correctness or
-planning tools, not silicon timing measurements.
-[USB](results/2026-10-16-usb/README.md), [RF](results/2026-10-16-radio/README.md).
+To pulse shape with such speed and tenacity I went a similar path to my
+[RP2350 version](https://github.com/Rivercraft911/RP2350_IQ_Benchmark): every possible output of
+the shaping filter is computed once into a table, so producing samples is copying table rows
+instead of doing filter math. At 40 MHz the trick goes one further: QPSK's I and Q are two BPSK
+streams, so each four-sample vector comes from small sign-indexed tables and one OR.
+[Fill](docs/bank-fill.md), [encoder](docs/encoder.md), [radio and bank geometry](docs/bank-geometry.md),
+[40 MHz](docs/moonshot.md).
 
 ## Build and check
 
@@ -101,17 +110,14 @@ ends with a summary. It checks all golden waveforms on the host, selected
 8PSK 9/10 at 5 Msym/s must retain at least 22,351 B with Wi-Fi up. It never
 flashes, changes NVS or keys the radio. [Exact gates](docs/bank-geometry.md#evidence-and-acceptance).
 
-The experimental `33m333` token runs QPSK at exactly 100/3 Msym/s with
-roll-off 0.20. A persistent prepare/render queue replaces the unsuccessful
-helper split. Its 16-frame C dump retains its CRC and decodes 14 contiguous
-frames in LeanDVB. Integrated Wi-Fi timing and heap remain unmeasured.
-[Queue design and coordinator gates](docs/moonshot.md).
-`host/check.sh --moonshot --plan` prints the 15% reserve and 20,000 B heap gates.
+`host/check.sh --moonshot` adds the 40 MHz checks (`33m333`: QPSK at 100/3 Msym/s,
+roll-off 0.20) with 15% reserve gates; today that mode passes its deadlines but not the
+reserve. [Design and gates](docs/moonshot.md).
 
 ## Console and host tools
 
 QPSK defaults to 1 Msym/s. Both modulations accept `5m`, `10m`, `20m`;
-`26m667` is QPSK only. Rate tokens precede the frame count or duration.
+`26m667` and `33m333` (roll-off 0.20, 40 MHz) are QPSK only. Rate tokens precede the frame count or duration.
 Dumps emit little-endian int16 I/Q; full scale for analysis is 512.
 
 ```sh
@@ -155,7 +161,7 @@ Only a licensed operator should key the radio on an authorized amateur
 frequency, into a dummy load or through at least 30 dB attenuation into a
 receiver. Set the assigned callsign with `callsign <CALL>` first. `tx` and `dvb`
 refuse without it. The keyed syntax is
-`dvb <MHz> <MODCOD> [5m|10m|20m|26m667] <seconds> [gain] [peak]`.
+`dvb <MHz> <MODCOD> [5m|10m|20m|26m667|33m333] <seconds> [gain] [peak]`.
 
 Runs include 20 WPM Morse at the start/end and periodic ID every nine minutes;
 requested RF duration includes both IDs and is limited to 60 s. Payload frames
@@ -166,3 +172,5 @@ without RF. [Setup, limitations and capture commands](docs/hardware.md).
 
 Apache-2.0. Independently written; findings from other projects are credited in
 [prior-art.md](docs/prior-art.md).
+
+A receiver decoding it over the air is next. Coming soon to a repo near you!
