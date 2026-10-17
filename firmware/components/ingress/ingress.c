@@ -13,14 +13,18 @@
 #define HOT
 #endif
 
-/* Four 256-entry tables with separate base addresses, so each lookup is extract, scale-add and
- * load. Built on first use, 4 KiB in internal RAM. */
-static uint32_t crc_t0[256], crc_t1[256], crc_t2[256], crc_t3[256];
-static bool crc_ready;
+/* The SPI owner lends 4 KiB while input is active. Other callers retain a
+ * table-free CRC, so radio-off encoder commands reserve no ingress SRAM. */
+static uint32_t *crc_t0, *crc_t1, *crc_t2, *crc_t3;
 typedef uint32_t __attribute__((may_alias, aligned(4))) word32;
 
-static void crc_init(void)
+void pv_crc32_tables(uint32_t *table)
 {
+    crc_t0 = table;
+    crc_t1 = table ? table+256 : NULL;
+    crc_t2 = table ? table+512 : NULL;
+    crc_t3 = table ? table+768 : NULL;
+    if (!table) return;
     for (uint32_t i = 0; i < 256; ++i) {
         uint32_t c = i;
         for (int k = 0; k < 8; ++k) {
@@ -33,17 +37,21 @@ static void crc_init(void)
         crc_t2[i] = (crc_t1[i] >> 8) ^ crc_t0[crc_t1[i] & 0xff];
         crc_t3[i] = (crc_t2[i] >> 8) ^ crc_t0[crc_t2[i] & 0xff];
     }
-    crc_ready = true;
 }
 
 /* Slicing by four: one aligned 32-bit load and four table lookups per word. */
 HOT uint32_t pv_crc32(uint32_t crc, const void *data, size_t n)
 {
-    if (!crc_ready) {
-        crc_init();
-    }
     const uint8_t *p = data;
     crc = ~crc;
+    if (!crc_t0) {
+        while (n--) {
+            crc ^= *p++;
+            for (unsigned bit = 0; bit < 8; ++bit)
+                crc = (crc >> 1) ^ (0xedb88320u & (0u-(crc&1)));
+        }
+        return ~crc;
+    }
     for (; n && ((uintptr_t)p & 3); --n) {
         crc = crc_t0[(crc ^ *p++) & 0xff] ^ (crc >> 8);
     }
@@ -138,9 +146,6 @@ void ingress_init(ingress_ring *r, uint8_t *buffers, const ingress_hw *hw)
         d->buf = buffers ? buffers + i * INGRESS_SLOT_BYTES : NULL;
         d->next = i + 1 < INGRESS_SLOTS ? &r->desc[i + 1] : NULL;
         d->dw0 = INGRESS_OWNER_DMA | INGRESS_SLOT_BYTES;
-    }
-    if (!crc_ready) {
-        crc_init();
     }
 }
 

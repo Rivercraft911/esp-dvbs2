@@ -6,9 +6,7 @@ mapper with resident byte BCH (t = 10/12) or flash paired BCH (t = 8), and spars
 and guarded output buffers. Its oracle is the portable C
 encoder, whose stages are checked against Python by `tests/test_dvbs2_c.py`.
 It also checks 512 four-code QPSK frames with borrowed context payload, both BCH
-policies, all alignments and guarded workspace tails. All 512 quad cases enable cooperative encoder handoffs. The callback clears all
-eight PIE vector registers and changes SAR/SAR_BYTE; resumed BCH slices and LDPC
-rows must still match the plain encoder. No radio or peripheral is initialized. QEMU establishes correctness, not timing.
+policies, all alignments and guarded workspace tails. QEMU establishes correctness, not timing.
 QEMU has no PSRAM, so `bench.c` redirects its allocation capability to internal
 RAM. The command's printed PSRAM metadata does not describe these emulated buffers.
 

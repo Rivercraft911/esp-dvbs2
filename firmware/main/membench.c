@@ -13,7 +13,6 @@
 #include "sdkconfig.h"
 #include "shaper.h"
 #include "shaper_qpsk.h"
-#include "shaper_moon.h"
 #include "shaper_taps.h"
 #define BANK_WORDS RADIO_S3_BANK_WORDS
 #define REPEATS 7
@@ -141,68 +140,4 @@ void membench_run(void)
     shaper_bench();
     short_bench();
     qpsk_bench();
-}
-
-void membench_moon(void)
-{
-    // Commands own the banks. Input lives in bank 1 and output in bank 0;
-    // radio_s3_bank only returns their reserved addresses. No radio registers.
-    const unsigned internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
-    uint16_t *src = (uint16_t *)radio_s3_bank(1);
-    uint32_t *dst = radio_s3_bank(0), cycles[REPEATS];
-    for (unsigned mode = 0; mode < SHAPER_MOON_MODES; ++mode) {
-        const size_t words = shaper_moon_words(mode);
-        uint32_t *oracle = heap_caps_aligned_alloc(16,words*4,MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        const uint32_t *tables[4] = {0};
-        void *extra[4] = {0};
-        const unsigned parts = shaper_moon_parts(mode);
-        size_t used = 0, at = 0, heap = 0;
-        if (!oracle) {
-            printf("@{\"cmd\":\"membench moon\",\"mode\":%u,\"error\":\"PSRAM allocation failed\"}\n",mode);
-            continue;
-        }
-        shaper_moon_build(oracle,mode,128);
-        for (unsigned j = 0; j < parts; ++j) {
-            const size_t n = shaper_moon_part_words(mode,j);
-            uint32_t *p;
-            if (used+n <= SHAPER_STORE_WORDS) {
-                p = shaper_store+used;
-                used += n;
-            } else {
-                p = extra[j] = heap_caps_aligned_alloc(16,n*4,internal);
-                heap += n*4;
-            }
-            if (!p) break;
-            memcpy(p,oracle+at,n*4);
-            tables[j] = p;
-            at += n;
-        }
-        if (at == words) {
-            uint32_t x = 2026;
-            const unsigned bits = mode == 0 ? 12 : mode == 2 ? 15 : 10;
-            for (unsigned i = 0; i < 1367; ++i) {
-                x ^= x << 13, x ^= x >> 17, x ^= x << 5;
-                src[i] = x & ((1u << bits)-1);
-            }
-            shaper_moon_c(dst,src+2,1365,oracle,mode);
-            const uint32_t expected = checksum(dst,BANK_WORDS);
-            if (mode == 0) {
-                TIME(cycles,shaper_moon3_pie(dst,src+2,1365,tables[0],tables[1],tables[2]));
-            } else if (mode == 3) {
-                TIME(cycles,shaper_moon24qc_pie(dst,src+2,1365,tables[0],tables[1],tables[2]));
-            } else {
-                TIME(cycles,(mode == 1 ? shaper_moon24q_pie : shaper_moon24p_pie)(dst,src+2,1365,tables));
-            }
-            char name[24];
-            snprintf(name,sizeof name,"moon%u_pie",mode);
-            report(name,cycles,BANK_WORDS,checksum(dst,BANK_WORDS));
-            printf("@{\"cmd\":\"membench moon\",\"mode\":%u,\"table_bytes\":%u,"
-                   "\"internal_heap_bytes\":%u,\"expected\":%"PRIu32",\"table_check\":%"PRIu32"}\n",
-                   mode,(unsigned)(words*4),(unsigned)heap,expected,checksum(oracle,words));
-        } else {
-            printf("@{\"cmd\":\"membench moon\",\"mode\":%u,\"error\":\"internal allocation failed\"}\n",mode);
-        }
-        for (unsigned j = 0; j < parts; ++j) heap_caps_free(extra[j]);
-        heap_caps_free(oracle);
-    }
 }

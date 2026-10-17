@@ -28,14 +28,15 @@ else:
  r=dict(status='ESP_OK',encoder_failed=False,encoder_timed=True,callsign='N0CALL',underruns=0,stall_ms=0,
         modcod=mc,sps=n/den,sps_num=n,sps_den=den,symbol_rate=rate*den//n,dac_rate=rate,rolloff=.2 if n==12 else .35,
         pulse_symbols=7 if n==12 else 6 if mc>=12 and n in (3,4) and rate==80000000 else 9,
-        ring_slots=8 if n==40 else 3 if n<=4 or moon else 2,ring_format='raw' if n==40 else 'quads' if quads else 'packed',
+        ring_slots=8 if n==40 else 2 if moon or (quads and n==3) else 3 if n<=4 else 2,ring_format='raw' if n==40 else 'quads' if quads else 'packed',
         workspace_memory='internal' if resident else 'psram',
-        fill_kernel='moon-pie-split' if moon else 'pie',paced_wifi_up=moon,
-        wifi_free_up=50000,wifi_min_free=50000,helper_jobs=1,helper_bank_max_cycles=1,
+        fill_kernel='moon-queue' if moon else 'pie',paced_wifi_up=moon,
+        wifi_free_up=50000,wifi_min_free=50000,prepare_pages=48,local_pages=12,queue_pages=48,
+        queue_low_pages=1,queue_empty=0,prepare_max_cycles=1,raw_max_cycles=1,queue_wake_max_cycles=1,
         dispatch_max_cycles=1,encode_work_cycles_mean=1,encode_work_cycles_live_max=1,
         encode_frame_work_cycles_mean=1,encode_frame_work_cycles_live_max=1,
         payload_source='internal-frame' if moon else 'xorshift32',input_frames=int(moon),
-        input_memory='internal' if moon else 'none',encoder_priority=5,helper_priority=4,encoder_pie=15,
+        input_memory='internal' if moon else 'none',encoder_priority=5,encoder_stack_min_free=1024,encoder_pie=15,
         packed_mapper='none' if n==40 else 'quads' if quads else 'direct' if resident else 'sparse')
  if kind=='dvbdump':
   frames=int(x[3] if named else x[2]); decim=int(x[-1]); size=((frames*symbols*n+den-1)//den+decim-1)//decim*4
@@ -63,7 +64,7 @@ else:
            encode_kernel_cycles_mean=1,encode_kernel_cycles_live_max=1,
            prefill_frames=r['ring_slots'],frames_played=10,frames_encoded=12,
            profile=dict(shaped_words=8,reused_words=2,fill_words=10,
-                        encoder={k:dict(cycles=10,helper_cycles=1) for k in ('payload','bb','bch','ldpc','map','pl')}))
+                        encoder={k:dict(cycles=10,prepare_cycles=1) for k in ('payload','bb','bch','ldpc','map','pl')}))
   # Exercise the exact two-percent boundary for each timing metric.
   old={'11 20m':('dvbpace 11 20mq4 30','max_fill_cycles'),
        '13 10m':('dvbpace 13 10m 30','encode_cycles_mean'),
@@ -76,6 +77,11 @@ else:
   if moon:
    ceiling=240000000*symbols*n*85//(rate*den*100)
    r.update(max_fill_cycles=40137+bool(bad or (os.getenv('FAIL_8PSK') and mc>=12)),encode_cycles_mean=ceiling,encode_cycles_live_max=ceiling)
+   fault=os.getenv('QUEUE_GATES')
+   if fault=='empty':r['queue_empty']=1
+   if fault=='low':r['queue_low_pages']=0
+   if fault=='core0':r['prepare_max_cycles']=3000
+   if fault=='stack':r['encoder_stack_min_free']=511
    if mc==11 and os.getenv('COPY_BUDGET'):
     r['encode_kernel_cycles_mean']=r['encode_kernel_cycles_live_max']=ceiling-4823
     if os.getenv('COPY_BUDGET')!='exact':r[os.environ['COPY_BUDGET']]+=1
@@ -151,15 +157,15 @@ with tempfile.TemporaryDirectory() as tmp:
         assert json.loads((out/'revision.json').read_text())['host_firmware'] == 'test-fw'
         assert json.loads((out/'board-info.json').read_text())[0]['firmware'] == 'test-fw'
         summary=(out/'summary.tsv').read_text().splitlines()
-        assert len(summary)==(48 if moon else 33), summary
+        assert len(summary)==(40 if moon else 33), summary
         failures=[line for line in summary if line.startswith('FAIL')]
         assert bool(failures)==fail, failures
         assert any('main regression gate' in line for line in failures)==fail
         if moon: assert any('candidate admission' in line for line in failures)==fail
         assert run.stdout.index('Pass criteria') < run.stdout.index('PASS:')
         commands=[json.loads(line) for line in (root/'commands.jsonl').read_text().splitlines()]
-        assert commands[-1]==('wifimem 17 26m667' if moon else 'wifimem 13 20m'), commands
-        assert len(commands)==(31 if moon else 22)*(2 if fail else 1), commands
+        assert commands[-1]==('wifimem 11 33m333' if moon else 'wifimem 13 20m'), commands
+        assert len(commands)==(25 if moon else 22)*(2 if fail else 1), commands
         for command in ('dvbpace 11 26m667 30','dvbpace 15 20m 30','dvbpace 13 10m 30','dvbpace 17 5m 30'):
             assert command in commands
             if moon: assert commands.index(command)<commands.index('dvbpace 11 33m333 30')
@@ -198,11 +204,11 @@ with tempfile.TemporaryDirectory() as tmp:
                            env=dict(env,COPY_BUDGET=metric),capture_output=True,text=True,timeout=60)
         assert run.returncode==int(metric!='exact'), (run.stdout,run.stderr)
         assert ('FAIL\tQPSK admission' in (out/'summary.tsv').read_text()) == (metric!='exact')
-    out=root/'8psk-only'
-    run=subprocess.run(['sh','host/check.sh','--moonshot',str(out)],cwd=root,
-                       env=dict(env,FAIL_8PSK='1'),capture_output=True,text=True,timeout=60)
-    assert run.returncode==1, (run.stdout,run.stderr)
-    summary=(out/'summary.tsv').read_text()
-    assert 'PASS\tmain regression gate' in summary and 'PASS\tQPSK admission' in summary
-    assert 'FAIL\tcandidate admission' in summary
+    for fault in ('empty','low','core0','stack'):
+        out=root/('queue-'+fault)
+        run=subprocess.run(['sh','host/check.sh','--moonshot',str(out)],cwd=root,
+                           env=dict(env,QUEUE_GATES=fault),capture_output=True,text=True,timeout=60)
+        assert run.returncode==1, (run.stdout,run.stderr)
+        summary=(out/'summary.tsv').read_text()
+        assert 'PASS\tmain regression gate' in summary and 'FAIL\tQPSK admission' in summary
 print('check: dry plan, all commands run after failures, strict CRC/decode/2%/heap gates, final exit and summary pass')

@@ -180,19 +180,27 @@ static unsigned check_pie(dvbs2_fast *f, const dvbs2_mode *mode, unsigned pie,
     return bad;
 }
 
+extern uint32_t shaper_store[16384]; // command-exclusive internal table store
+
 static void fecbench_task(void *waiter)
 {
     const uint32_t internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     const uint32_t external = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
-    dvbs2_workspace *ws = heap_caps_aligned_alloc(16, sizeof *ws, impl ? internal : external);
-    uint8_t *packed = impl ? heap_caps_malloc(DVBS2_MAX_SYMBOLS / 2 + 16, internal) : NULL;
+    const size_t workspace = (sizeof(dvbs2_workspace)+15) & ~(size_t)15;
+    const size_t packed_bytes = (DVBS2_MAX_SYMBOLS/2+16+15) & ~(size_t)15;
+    _Static_assert(((sizeof(dvbs2_workspace)+15)&~15)+
+                   ((DVBS2_MAX_SYMBOLS/2+31)&~15)+DVBS2_BCH_CACHE_BYTES <=
+                   sizeof shaper_store, "fecbench scratch fits the idle store");
+    dvbs2_workspace *ws = impl ? (dvbs2_workspace *)shaper_store :
+        heap_caps_aligned_alloc(16, sizeof *ws, external);
+    uint8_t *packed = impl ? (uint8_t *)shaper_store+workspace : NULL;
     uint8_t *payload = NULL;
     uint8_t *output = NULL;
     dvbs2_fast *fast = impl ? heap_caps_aligned_alloc(16, dvbs2_fast_size(), internal) : NULL;
     dvbs2_workspace *ws2 = impl != 0 ? heap_caps_aligned_alloc(16, sizeof *ws2, external) : NULL;
     uint8_t *output2 = impl != 0 ? heap_caps_malloc(DVBS2_MAX_SYMBOLS, external) : NULL;
     const unsigned pie = impl ? 15 : 0;
-    uint8_t *bch = impl ? heap_caps_aligned_alloc(16, DVBS2_BCH_CACHE_BYTES, internal) : NULL;
+    uint8_t *bch = impl ? (uint8_t *)shaper_store+workspace+packed_bytes : NULL;
     if (!ws || (impl && (!fast || !bch || !packed)) || (impl != 0 && (!ws2 || !output2))) {
         printf("@{\"cmd\":\"fecbench\",\"error\":\"encoder allocation failed\"}\n");
         goto done;
@@ -321,14 +329,12 @@ static void fecbench_task(void *waiter)
     printf("@{\"cmd\":\"fecbench\",\"event\":\"end\",\"frames_reported\":%u}\n", reported);
 
 done:
-    heap_caps_free(packed);
-    heap_caps_free(bch);
     heap_caps_free(output2);
     heap_caps_free(ws2);
     heap_caps_free(fast);
     heap_caps_free(output);
     heap_caps_free(payload);
-    heap_caps_free(ws);
+    if (!impl) heap_caps_free(ws);
     xTaskNotifyGive((TaskHandle_t)waiter);
     vTaskDelete(NULL);
 }

@@ -3,9 +3,21 @@
 #include "native.h"
 #include "ring.h"
 static int checked_window(ring_t *, uint8_t *, size_t, uint64_t, size_t, unsigned, unsigned, unsigned);
+static int checked_task(void (*)(void *), const char *, unsigned, void *, unsigned, TaskHandle_t *, int);
+#define xTaskCreatePinnedToCore checked_task
 #define ring_window checked_window
 #include "dvbtx.c"
 #undef ring_window
+#undef xTaskCreatePinnedToCore
+
+static int checked_task(void (*fn)(void *), const char *name, unsigned stack, void *arg,
+                        unsigned priority, TaskHandle_t *task, int core)
+{
+    // Cross the 32-bit sequence wrap in every native queue lifecycle. Physical
+    // page cursors and the 64-bit symbol timeline must remain continuous.
+    if (dvb.moon) dvb.produced = dvb.consumed = UINT32_MAX-15;
+    return xTaskCreatePinnedToCore(fn,name,stack,arg,priority,task,core);
+}
 
 static int checked_window(ring_t *r, uint8_t *dst, size_t room, uint64_t first,
                            size_t count, unsigned sps, unsigned history, unsigned bank)
@@ -113,7 +125,8 @@ static void bank_fill(radio_s3_fill_fn fn, void *ctx, unsigned b, uint64_t first
         const size_t needed = (end_symbol + dvb.ring.frame_symbols - 1) / dvb.ring.frame_symbols;
         // Host correctness test only: wait for the native encoder, with a deadlock timeout.
         unsigned tries = 0;
-        while (__atomic_load_n(&dvb.ring.published, __ATOMIC_ACQUIRE) < needed) {
+        while (dvb.moon ? __atomic_load_n(&dvb.producer_symbol,__ATOMIC_ACQUIRE)*12/5 < at+count :
+               __atomic_load_n(&dvb.ring.published, __ATOMIC_ACQUIRE) < needed) {
             assert(tries++ < 5000);
             vTaskDelay(1);
         }
@@ -246,7 +259,7 @@ int main(int argc, char **argv)
     assert(start_encoder("dvbdump", mc, 128, 0, sps, rate));
     const int allocations = allocation_count;
     const bool resident = sps != 40 && (moon || mc < 12 || sps == 4);
-    const bool borrowed_bch = native_input && mc >= 12 && sps == 4 &&
+    const bool borrowed_bch = mc >= 12 && sps == 4 &&
                               (short_pulse || mc == 13) && mode->t > 8;
     assert(enc.bch_borrowed == borrowed_bch);
     if (borrowed_bch) {
@@ -256,8 +269,8 @@ int main(int argc, char **argv)
             assert(native_buffers[i]+INGRESS_SLOT_BYTES <= enc.bch ||
                    native_buffers[i] >= enc.bch+DVBS2_BCH_CACHE_BYTES);
     }
-    if (!moon) assert(allocations == (sps == 40 ? 7 : 3 + (mc >= 12 && !short_pulse) +
-                          (resident && mode->t > 8 && !native_input) + !resident));
+    if (!moon) assert(allocations == (sps == 40 ? 7 : 3 - (quads && sps == 3) + (mc >= 12 && !short_pulse) +
+                          (resident && mode->t > 8 && !native_input && !borrowed_bch) + !resident));
     for (unsigned i = 0; i < 64; ++i) {
         if (native_blocks[i].p == enc.ws)
             assert(native_blocks[i].caps == ((resident ? MALLOC_CAP_INTERNAL : MALLOC_CAP_SPIRAM) | MALLOC_CAP_8BIT));
@@ -274,9 +287,9 @@ int main(int argc, char **argv)
         const size_t fast = dvbs2_fast_mode_size(mode);
         const size_t expected = mc >= 12 && sps == 8 ? 23936+2058 :
             sps == 40 ? fast+420 : quads && !moon && sps == 4 ? fast+25056 :
-            fast+12420+(mc >= 12 && !short_pulse ? 11120 : 0);
+            fast+(quads && sps == 3 ? 0 : 12420)+(mc >= 12 && !short_pulse ? 11120 : 0);
         assert(internal == expected);
-        assert((native_buffers[0] != NULL) == !(mc >= 12 && (sps == 8 || (mc == 13 && !short_pulse))));
+        assert((native_buffers[0] != NULL) == !((quads && sps == 3) || (mc >= 12 && (sps == 8 || (mc == 13 && !short_pulse)))));
     }
     if (quads && !moon && sps == 4) assert((uint32_t *)enc.ws == shaper_store+QPSK_TABLE_WORDS(4));
     assert(!((uintptr_t)enc.fast & 15) && !((uintptr_t)enc.ws & 15));
@@ -321,11 +334,9 @@ int main(int argc, char **argv)
         const bool heap_input = enc.input && !enc.input_borrowed;
         assert(pace_allocations == allocations+(int)heap_input);
         assert((enc.input != NULL) == moon);
-        assert(HELPER_PRIORITY < ENCODER_PRIORITY);
         if (moon) {
             if (quads) {
-                assert(enc.input_borrowed && enc.input >= dvb.win+dvb.win_bytes);
-                assert(enc.input+bytes <= (uint8_t *)(shaper_store+SHAPER_STORE_WORDS));
+                assert(!enc.input_borrowed);
             } else {
                 assert(!enc.input_borrowed);
                 for (unsigned i = 0; i < 64; ++i)

@@ -32,8 +32,8 @@ selected = ['4/40/40/16', '13/8/40/16', '13/4/40/40',
             '4/3/80/16', '11/3/80/16']
 main_selected = selected[:]
 if a.moonshot:
-    golden.update(json.loads(pathlib.Path('tests/data/moon_stream_crcs.json').read_text()))
-    selected += ['11/12/80/16','17/12/80/16','17/3/80/16']
+    golden['11/12/80/16'] = json.loads(pathlib.Path('tests/data/moon_stream_crcs.json').read_text())['11/12/80/16']
+    selected += ['11/12/80/16']
 if a.all_crcs: selected = list(golden)
 # Every modulation/rate path; 30 s for the four critical paths, 10 s for regressions.
 # Sources are immutable 30 s board measurements; their cycle ceilings are never relaxed.
@@ -90,7 +90,7 @@ main_wifi = wifi[:] if not a.encoder else [(17,'5m',22351,22351), (11,'26m667',4
 if a.moonshot:
     # Exact 240 MHz deadlines, 15% reserve. No host-clock timing thresholds.
     paces = [(mc,token,30,None,None) for mc,token in
-                                  ((11,'33m333'),(17,'33m333'),(17,'26m667'))]
+                                  ((11,'33m333'),)]
     limits = []
     for mc,token,_,_,_ in paces:
         num,den = (12,5) if token == '33m333' else (3,1)
@@ -99,7 +99,7 @@ if a.moonshot:
         limits.append(dict(max_fill_cycles=40137, encode_cycles_mean=ceiling,
                            encode_cycles_live_max=ceiling))
     wifi = [(mc,token,20000,20000) for mc,token in
-                                   ((11,'33m333'),(17,'33m333'),(17,'26m667'))]
+                                   ((11,'33m333'),)]
 
 # Baselines always run first, in this same session. Candidate checks add to them.
 extra_paces = [(p,l) for p,l in zip(paces,limits)
@@ -122,7 +122,7 @@ def dump_args(key):
 
 print(f'Pass criteria fixed before any command: firmware {firmware}, stored N0CALL; no NVS writes.')
 print('Host: all 57 retained waveform CRCs plus the encoder fixture; every filled word equals the plain encoder.')
-if a.moonshot: print('New modes: six split-kernel Python/C CRCs; fractional roll-off 0.20, 8PSK 3 sps 0.35; Wi-Fi-up paces; 40137 cycles/core/bank, 20000 B heap floor.')
+if a.moonshot: print('Queue: QPSK 9/10, 16 frames, fractional roll-off 0.20; Wi-Fi-up paces; 40137 cycles/core/bank, 20000 B heap floor.')
 print('FEC: 140 phase CRCs, 14 zero-mismatch PIE checks, all four stage bits active.')
 print('Every stream: ESP_OK, encoder timed/healthy, zero underruns/stalls, correct rate/pulse/ring/mapper.')
 print('Dumps: exact byte count, firmware/USB/file CRC equality, zero overlap errors; LeanDVB')
@@ -138,8 +138,8 @@ for (mc,token,seconds,topic,old),limit in zip(paces,limits):
 for mc,token,up,low in wifi: print(f'  wifimem {mc} {token}: up >= {up} B, minimum >= {low} B; no playback.')
 if a.moonshot:
     print(f'Copy planning floor: {copy_cycles} cycles/frame from main SPI GCS replay; actual new-mode payload is timed too.')
-    print('Core 0 capacity: helper bank maximum + 4792 scheduling + frame work (at least the measured SPI copy) * 47220/frame <= 40137 cycles.')
-    print('  Dispatch <=2396 cycles/job; join wait is included in the full-bank core 1 maximum. This is a capacity screen, not a latency proof.')
+    print('Core 0 capacity: 15 prepared and 8 raw page maxima + measured wake allowance + encoder work * 47220/frame <= 40137 cycles.')
+    print('  Core 1 includes local prepare, render, queue and cache in the full-bank maximum. Queue starvation fails; no dispatch/join.')
 if a.encoder:
     print(f'Encoder planning gate: same-frame post-payload mean AND live maximum + measured {copy_cycles:,} cycles/input copy')
     print('  <= 135,827 cycles/frame for internal 8PSK; <= 203,685 for QPSK 9/10 at 26m667.')
@@ -202,9 +202,9 @@ def stream(rows, mc, token):
     assert r['rolloff'] == (.2 if n == 12 else .35), r
     if moon:
         assert r['sps_num'] == n and r['sps_den'] == den, r
-        assert r['fill_kernel'] == 'moon-pie-split', r
+        assert r['fill_kernel'] == 'moon-queue', r
     assert r['pulse_symbols'] == (7 if n == 12 else 6 if mc >= 12 and n in (3,4) and rate == 80000000 else 9), r
-    assert r['ring_slots'] == (8 if n == 40 else 3 if n <= 4 or moon else 2), r
+    assert r['ring_slots'] == (8 if n == 40 else 2 if moon or (quads and n == 3) else 3 if n <= 4 else 2), r
     assert r['ring_format'] == ('raw' if n == 40 else 'quads' if quads else 'packed'), r
     assert r['workspace_memory'] == ('internal' if resident else 'psram'), r
     assert r['packed_mapper'] == ('none' if n == 40 else 'quads' if quads else 'direct' if resident else 'sparse'), r
@@ -250,29 +250,27 @@ def pace(mc,token,seconds,limit):
     moon = token == '33m333' or (mc >= 12 and token == '26m667')
     assert r['payload_source'] == ('internal-frame' if moon else 'xorshift32'), r
     assert r['input_frames'] == int(moon) and r['input_memory'] == ('internal' if moon else 'none'), r
-    if moon: assert r['helper_priority'] < r['encoder_priority'], r
+    assert r['encoder_stack_min_free'] >= 512, r
     assert r['encoder_pie'] == 15 and r['frames_encoded'] > r['prefill_frames'], r
     stages = r['profile']['encoder'].values()
-    assert all(0 <= p['helper_cycles'] <= p['cycles'] for p in stages), r
+    assert all(0 <= p['prepare_cycles'] <= p['cycles'] for p in stages), r
     if a.encoder and (token == '20m' or mc == 11):
         ceiling = 203685 if mc < 12 else 135827
         assert r['encode_kernel_cycles_mean'] + copy_cycles <= ceiling, r
         assert r['encode_kernel_cycles_live_max'] + copy_cycles <= ceiling, r
     if token == '33m333' or (mc >= 12 and token == '26m667'):
         assert r['paced_wifi_up'] and r['wifi_free_up'] >= 20000 and r['wifi_min_free'] >= 20000, r
-        assert r['helper_jobs'] > 0 and r['helper_bank_max_cycles'] > 0, r
+        assert r['prepare_pages'] > 0 and r['local_pages'] > 0, r
+        assert r['queue_pages'] == 48 and r['queue_low_pages'] > 0 and r['queue_empty'] == 0, r
         assert r['encode_kernel_cycles_mean']+copy_cycles <= limit['encode_cycles_mean'], r
         assert r['encode_kernel_cycles_live_max']+copy_cycles <= limit['encode_cycles_live_max'], r
-        # Capacity screen, not a WCET proof. Helper includes packing and kernel;
-        # 2,396 cycles/job covers scheduling, based on the prior notification max.
-        # Two physical pieces can dispatch twice. Never count helper time as encoder work.
-        n,rate,_ = mode(mc,token)
-        den = 5 if n == 12 else 1
-        frame = (33282 if mc < 12 else 22194)*240000000*n/(rate*den)
+        # Fresh bank: ceil(15740/768)+1 = 22 touched pages, at most 15 prepared,
+        # 8 raw (separate conservative maxima). Include all ring/copy/publication
+        # work in page timing. Encoder work excludes synchronous preparation.
+        frame = 33282*7.2
         encoder = max(r['encode_frame_work_cycles_mean'],r['encode_frame_work_cycles_live_max'],
                       r['encode_work_cycles_mean']+copy_cycles,r['encode_work_cycles_live_max']+copy_cycles)
-        assert r['helper_bank_max_cycles']+4792+encoder*47220/frame <= 40137, r
-        assert r['dispatch_max_cycles'] <= 2396, r
+        assert 15*r['prepare_max_cycles']+8*r['raw_max_cycles']+r['queue_wake_max_cycles']+encoder*47220/frame <= 40137, r
     assert r['prefill_frames'] == r['ring_slots'] and r['frames_played'] > 0, r
     f = r['profile']
     assert f['shaped_words'] + f['reused_words'] == f['fill_words'], r
@@ -297,7 +295,6 @@ except Exception as e:
     print('Board checks refused before reset/open. Records:',out)
     sys.exit(1)
 step('all host waveform CRCs', lambda:run([python,'tests/test_stream.py'],'host-crcs.log'))
-if a.moonshot: step('new host streams', lambda:run([python,'tests/test_rational.py'],'host-new.log'))
 step('info',info)
 step('fecbench pie',fec)
 def check_dumps(keys):
@@ -322,11 +319,12 @@ check_paces(main_paces,main_limits)
 check_memory(main_wifi)
 step('main regression gate',require_passes)
 main_labels = {label for label,_,_ in summary}
+if a.moonshot: step('new host streams', lambda:run([python,'tests/test_rational.py'],'host-new.log'))
 check_dumps([key for key in selected if key not in main_selected])
 check_paces([p for p,_ in extra_paces],[l for _,l in extra_paces])
 check_memory(extra_wifi)
 if a.moonshot:
-    qpsk = main_labels | {'dump 11/12/80/16','decode 11/12/80/16','pace 11 33m333','wifimem 11 33m333'}
+    qpsk = main_labels | {'new host streams','dump 11/12/80/16','decode 11/12/80/16','pace 11 33m333','wifimem 11 33m333'}
     step('QPSK admission',lambda:require_passes(qpsk))
 if a.moonshot or a.encoder: step('candidate admission',require_passes)
 print('\nEvery result:')

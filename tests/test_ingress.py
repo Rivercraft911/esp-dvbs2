@@ -59,6 +59,7 @@ class Native:
             "ingress_pattern": (None, [ct.c_void_p, ct.c_uint16, ct.c_uint]),
             "sim_type": (None, [ct.c_void_p, ct.c_uint]),
             "sim_wrong_type": (ct.c_uint, [ct.c_void_p]),
+            "pv_crc32_tables": (None, [ct.POINTER(ct.c_uint32)]),
             "pv_crc32": (ct.c_uint32, [ct.c_uint32, ct.c_char_p, ct.c_size_t]),
             "pv_seal": (None, [ct.c_char_p, ct.c_uint, ct.c_uint16, ct.c_size_t]),
             "pv_check": (ct.c_int, [ct.c_char_p, ct.c_size_t]),
@@ -133,7 +134,7 @@ def check(condition, message):
         raise AssertionError(message)
 
 
-def test_crc(lib):
+def crc_cases(lib):
     check(lib.pv_crc32(0, b"123456789", 9) == 0xCBF43926, "CRC-32 check value")
     rng = random.Random(1)
     data = bytes(rng.getrandbits(8) for _ in range(4096))
@@ -143,6 +144,15 @@ def test_crc(lib):
             check(got == zlib.crc32(data[start:start + n]), f"CRC start {start} length {n}")
     check(lib.pv_crc32(lib.pv_crc32(0, data, 100), data[100:], 900) == zlib.crc32(data[:1000]),
           "CRC continuation")
+
+
+def test_crc(lib):
+    crc_cases(lib)
+    table = (ct.c_uint32 * 1024)()
+    lib.pv_crc32_tables(table)
+    crc_cases(lib)
+    lib.pv_crc32_tables(None)
+    crc_cases(lib)
 
 
 def test_message(lib):

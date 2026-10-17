@@ -32,6 +32,7 @@ static struct {
     ingress_ring ring;               // descriptors must be in internal RAM: static .bss is
     ingress_hw hw;
     ingress_spi_config cfg;
+    uint32_t *crc;
     uint8_t *buffers;
     gdma_channel_handle_t rx;
     spi_dev_t *spi;
@@ -132,6 +133,9 @@ esp_err_t ingress_spi_start(const ingress_spi_config *cfg, ingress_ring **ring)
     if (!cfg->buffers[0] && !s.buffers) {
         return ESP_ERR_NO_MEM;
     }
+    s.crc = heap_caps_malloc(4096,MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!s.crc) { ingress_spi_stop(); return ESP_ERR_NO_MEM; }
+    pv_crc32_tables(s.crc);
     s.hw = (ingress_hw){.rearm = rearm, .ready = set_ready};
     ingress_init(&s.ring, s.buffers, &s.hw);
     if (cfg->buffers[0])
@@ -212,6 +216,8 @@ fail:
 
 void ingress_spi_stop(void)
 {
+    pv_crc32_tables(NULL);
+    heap_caps_free(s.crc); s.crc = NULL;
     if (!s.bus) {
         heap_caps_free(s.buffers); s.buffers = NULL;
         return;

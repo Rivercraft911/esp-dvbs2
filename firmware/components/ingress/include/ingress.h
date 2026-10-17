@@ -46,6 +46,9 @@ typedef enum {
 
 /* zlib-compatible: pv_crc32(0, p, n) == zlib.crc32(p[:n]); pass a previous result to continue. */
 uint32_t pv_crc32(uint32_t crc, const void *data, size_t n);
+/* Exclusive caller-owned 1024-word CRC table; NULL restores the table-free path.
+ * Set before starting input, release only after stopping all readers. */
+void pv_crc32_tables(uint32_t *table);
 /* Fill the header, zero the padding after the payload already at msg+12, append the CRC. */
 void pv_seal(uint8_t *msg, unsigned type, uint16_t seq, size_t payload_bytes);
 /* Check one received transaction of len bytes. */

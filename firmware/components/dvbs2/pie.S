@@ -151,13 +151,6 @@ dvbs2_pie_bch_pair:
     entry a1, 32
     ee.zero.q q0
     j .Lpair_begin
-    .global dvbs2_pie_bch_pair_update
-    .type dvbs2_pie_bch_pair_update, @function
-    .align 4
-// Same recurrence, starting from the caller's saved remainder.
-dvbs2_pie_bch_pair_update:
-    entry a1, 32
-    ee.vld.128.ip q0, a5, 0
 .Lpair_begin:
     addmi a9, a4, 4096
     ee.zero.q q1
@@ -285,13 +278,6 @@ dvbs2_pie_rows:
     entry a1, 32
     movi a10, 0                         /* no previous row */
     j .Lrows_begin
-    .global dvbs2_pie_rows_next
-    .type dvbs2_pie_rows_next, @function
-    .align 4
-// Continue at p with the previous accumulated row at p-48. q includes that row.
-dvbs2_pie_rows_next:
-    entry a1, 32
-    movi a10, 1
 .Lrows_begin:
     movi a9, 0x02020202
     ee.movi.32.q q7, a9, 0

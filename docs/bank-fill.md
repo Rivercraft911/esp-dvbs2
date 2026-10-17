@@ -84,15 +84,17 @@ allocations include 16 readable guard bytes and round up to 16 B.
 
 | Mode | Table, B | Rest of store | Separate internal ring allocation |
 |---|---:|---|---:|
-| QPSK 5m | 8,192 | 2 frames, dummy, payload | 0 B |
-| QPSK 10m | 4,096 | 3 frames, dummy, payload | 0 B |
-| 8PSK 5m | 65,536 | none | 2 frames + dummy + payload |
-| 8PSK 10m | 32,768 | 2 frames, dummy, payload | 11,120 B third frame |
-| 8PSK 20m | 16,384 | 3 frames, dummy, payload | 0 B |
+| QPSK 5m | 8,192 | 2 frames, dummy | 0 B |
+| QPSK 10m | 4,096 | 3 frames, dummy | 0 B |
+| 8PSK 5m | 65,536 | none | 23,936 B: 2 frames + dummy |
+| 8PSK 10m | 32,768 | 2 frames, dummy, BCH where it fits | 11,120 B third frame |
+| 8PSK 20m | 16,384 | 3 frames, dummy, resident BCH | 0 B |
 | QPSK 20m | 49,152 | 12,432 B workspace reservation + 864 B dummy | 25,056 B for 3 frames |
-| QPSK 26m667 | 36,864 | 25,056 B for 3 frames + 864 B dummy | 0 B |
+| QPSK 26m667 | 36,864 | 16,704 B for 2 frames + 864 B dummy + 8,144 B workspace + window | 0 B |
 
-Default QPSK keeps its original PSRAM allocation order. Internal workspaces
+All packed payloads borrow encoder scratch until BB consumes them. QPSK
+26m667 uses a fast-only workspace allocation; no plain stage may use it.
+[33m333 queue layout](moonshot.md). Default QPSK keeps its original PSRAM allocation order. Internal workspaces
 lend their unused tail to the fill window. Cleanup must free only separately
 allocated storage. Context/BCH policy is in [encoder.md](encoder.md). These
 are requested sizes, not free-heap predictions. Wi-Fi allocation/alignment and

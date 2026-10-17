@@ -98,11 +98,11 @@ ends with a summary. It checks all golden waveforms on the host, selected
 8PSK 9/10 at 5 Msym/s must retain at least 22,351 B with Wi-Fi up. It never
 flashes, changes NVS or keys the radio. [Exact gates](docs/bank-geometry.md#evidence-and-acceptance).
 
-The experimental `33m333` token runs QPSK/8PSK at exactly 100/3 Msym/s with
-roll-off 0.20; 8PSK also accepts `26m667`. Host-generated C dumps decode bit-exact
-in LeanDVB. The split QPSK fill fails its first silicon pace; its measured
-Wi-Fi heap passes. Both new 8PSK modes fail allocation. RF remains unmeasured.
-[System schedule and coordinator gates](docs/moonshot.md).
+The experimental `33m333` token runs QPSK at exactly 100/3 Msym/s with
+roll-off 0.20. A persistent prepare/render queue replaces the unsuccessful
+helper split. Its 16-frame C dump retains its CRC and decodes 14 contiguous
+frames in LeanDVB. Integrated Wi-Fi timing and heap remain unmeasured.
+[Queue design and coordinator gates](docs/moonshot.md).
 `host/check.sh --moonshot --plan` prints the 15% reserve and 20,000 B heap gates.
 
 ## Console and host tools

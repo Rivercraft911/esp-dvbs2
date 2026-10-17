@@ -173,7 +173,7 @@ def compile_stream(folder):
                     str(ROOT / "firmware/components/ingress/ingress_pattern.c"), str(ROOT / "firmware/main/ring.c"),
                     str(ROOT / "firmware/main/shaper.c"),
                     str(ROOT / "firmware/main/shaper_short.c"),
-                    str(ROOT / "firmware/main/shaper_moon.c"),
+                    str(ROOT / "firmware/main/machine.c"),
                     str(ROOT / "firmware/main/shaper_qpsk.c"),
                     str(ROOT / "firmware/components/dvbs2/dvbs2.c"),
                     str(ROOT / "firmware/components/dvbs2/fast.c"),
@@ -238,7 +238,7 @@ def test_stream(output=None, receiver=None, input_only=False):
                 profile = r["profile"]
                 assert profile["shaped_words"] + profile["reused_words"] == profile["fill_words"]
                 assert profile["reused_words"] > 0 if packed else profile["reused_words"] == 0
-                assert r["ring_slots"] == (3 if sps <= 4 else 2 if packed else 8)
+                assert r["ring_slots"] == (2 if quads and sps == 3 else 3 if sps <= 4 else 2 if packed else 8)
                 assert r["prefill_frames"] == r["ring_slots"]
                 assert 0 <= r["encode_cycles_live_max"] <= r["encode_cycles_max"]
                 assert 0 <= r["encode_kernel_cycles_mean"] <= r["encode_cycles_mean"]
@@ -247,12 +247,13 @@ def test_stream(output=None, receiver=None, input_only=False):
                 assert r["ring_format"] == ("quads" if quads else "packed" if packed else "raw")
                 assert r["workspace_memory"] == ("internal" if packed and (mc < 12 or sps == 4) else "psram")
                 assert r["workspace_bytes"] == 12420
-                assert r["workspace_heap_bytes"] == (0 if quads and sps == 4 else r["workspace_bytes"])
+                assert r["workspace_heap_bytes"] == (0 if quads else r["workspace_bytes"])
                 assert r["fast_heap_bytes"] == r["fast_bytes"]
                 cached = packed and (mc < 12 or sps == 4) and mc not in (10, 11, 16, 17)
                 assert r["bch_cache_bytes"] == (8192 if cached else 0)
-                assert r["bch_cache_heap_bytes"] == r["bch_cache_bytes"]
-                pair = packed and (mc < 12 or sps == 4) and mc in (10,11,16,17)
+                borrowed_bch = mc >= 12 and sps == 4 and (short or mc == 13) and cached
+                assert r["bch_cache_heap_bytes"] == (0 if borrowed_bch else r["bch_cache_bytes"])
+                pair = packed and (quads or mc >= 12 and sps == 4) and mc in (10,11,16,17)
                 assert r["bch_variant"] == ("resident-byte" if cached else "flash-pair" if pair else "nibble")
                 assert r["packed_mapper"] == ("none" if not packed else "quads" if quads else "direct" if mc < 12 or sps == 4 else "sparse")
                 assert bool(int(r["layout"]["bch"], 16)) == cached
@@ -264,12 +265,12 @@ def test_stream(output=None, receiver=None, input_only=False):
                     table = int(r['layout']['table'],16)
                     fast = int(r['layout']['fast'],16)
                     assert fast <= payload < payload + r['payload_bytes_per_frame'] <= fast+r['fast_bytes']
-                    stored = 3 if sps == 3 else 0
+                    stored = 2 if sps == 3 else 0
                     assert slots[:stored] == [table+12288*sps+i*8352 for i in range(stored)]
                     assert filler == table+12288*sps+(stored*8352 if sps == 3 else 12432)
                     if sps == 4: assert int(r['layout']['workspace'],16) == table+49152
                     assert filler+864 <= table+65536
-                    assert r['ring_heap_bytes'] == (3-stored)*8352
+                    assert r['ring_heap_bytes'] == (r['ring_slots']-stored)*8352
                     assert all(a%16 == 0 for a in slots)
                 elif packed:
                     # Two packed frames, the packed dummy, then the payload, each with the
@@ -278,8 +279,9 @@ def test_stream(output=None, receiver=None, input_only=False):
                     assert slots[:2] == [slots[0], slots[0] + frame]
                     assert all(a % 16 == 0 for a in slots)
                     assert filler == slots[0] + (r["ring_slots"] if mc < 12 else 2) * frame
-                    assert payload == filler + (3330 // 2 + 31) // 16 * 16
-                    need = payload - slots[0] + r["payload_bytes_per_frame"]
+                    fast = int(r["layout"]["fast"],16)
+                    assert fast <= payload < payload+r["payload_bytes_per_frame"] <= fast+r["fast_bytes"]
+                    need = filler-slots[0]+1696
                     if mc < 12:
                         used = 4096 if sps == 4 else 8192
                         assert slots[0] == int(r["layout"]["table"], 16) + used
@@ -287,7 +289,7 @@ def test_stream(output=None, receiver=None, input_only=False):
                         assert used + need <= 65536 and r["ring_heap_bytes"] == 0
                     elif short:
                         assert slots[0] == int(r["layout"]["table"], 16) + 16384
-                        assert slots[2] >= payload + r["payload_bytes_per_frame"]
+                        assert slots[2] >= filler+1696
                         assert slots[2] + frame <= int(r["layout"]["table"], 16) + 65536
                         assert r["ring_heap_bytes"] == 0
                     elif sps == 4:

@@ -140,7 +140,8 @@ static inline unsigned ulTaskNotifyTake(int clear, unsigned timeout)
                        "sdkconfig.h", "freertos/FreeRTOS.h", "freertos/task.h"):
             (folder / header).write_text('#include "native.h"\n')
         main = folder / "main.c"
-        main.write_text('#include "fecbench.h"\n'
+        main.write_text('#include "fecbench.h"\n#include <stdint.h>\n'
+                        'uint32_t shaper_store[16384] __attribute__((aligned(16)));\n'
                         'int main(int argc, char **argv) { (void)argc; '
                         'return fecbench_run(argv[1]) ? 1 : 0; }\n')
         executable = folder / "fecbench"

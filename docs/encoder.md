@@ -22,7 +22,8 @@ Portable C remains the host oracle and fallback for these data layouts.
   table CRC-8 and keeps packet state across frames.
 - BCH: use byte recurrence with an 8,192 B resident table for t=10/12 when the
   workspace is internal. Fold 16 input bytes into the remainder before reducing.
-  Internal t=8 uses two 4,096 B flash tables, reducing two bytes per step.
+  80 MS/s internal t=8 uses two 4,096 B flash tables, reducing two bytes per
+  step. Legacy QPSK 5m/10m uses register-nibble BCH to avoid their cache misses.
   PSRAM workspaces keep register-based nibble rows. Earlier t=10/12 flash byte
   tables lost in the live stream. [Cache effects](../results/2026-10-16-next/README.md).
 - LDPC: form doubled 360-bit information groups; XOR shifted byte windows into
@@ -38,7 +39,7 @@ Portable C remains the host oracle and fallback for these data layouts.
 
 Payload is a continuous xorshift32 stream, seed 2026. Each frame overwrites
 its first 40 payload bytes with the stored station ID. Dummy frames consume no
-payload. In the QPSK block modes, payload borrows encoder scratch until BB
+payload. In every packed mode, payload borrows encoder scratch until BB
 consumes it; BCH/LDPC/map can then reuse that scratch.
 
 A workspace is 12,420 B on this target. Fast stages use only the first 8,144 B;
@@ -116,7 +117,7 @@ PYTHON=/Library/Frameworks/Python.framework/Versions/3.13/bin/python3 \
 
 This keeps going through six decoded dumps, FEC CRCs, four 30 s fast paces,
 one 10 s PSRAM regression and three Wi-Fi probes. It prints every criterion
-first. Both post-payload mean and live maximum plus 10k must meet the ceilings
+first. Both post-payload mean and live maximum plus the measured 4,823-cycle SPI copy floor must meet the ceilings
 above. Wi-Fi up and low-water free RAM must each reach 20,480 B. The 9/10
 8PSK dump is 16 frames, CRC 3,782,178,445. Existing CRCs are unchanged. The
 real SPI stream must later meet the same total-cycle ceilings without substitution.
