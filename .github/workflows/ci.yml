@@ -23,6 +23,8 @@ jobs:
       - run: python tests/test_shaper.py
       - run: python tests/test_shaper_cycles.py
       - run: python tests/test_shaper_short.py
+      - run: python tests/test_radio_filter.py
+      - run: python tests/test_filter_response.py
       - run: python tests/test_radio.py
       - run: python tests/test_tx_command.py
       - run: python tests/test_tx_samples.py

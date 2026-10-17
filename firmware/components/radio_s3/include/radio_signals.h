@@ -8,8 +8,9 @@
 // Tag: seed 1, output state bit 0 as BPSK (+256 for 1), then right-shift Galois step
 // s = (s >> 1) ^ ((0 - (s & 1)) & 0x80200003). Period 2^32-1 DAC samples.
 typedef struct {
-    bool tag;
-    uint32_t tone[40];
+    bool tag, sweep;
+    uint32_t bandwidth_40m; /* total Hz at 40 MS/s, for automatic filter selection */
+    uint32_t tone[80];
     uint32_t rows[256][8];
     uint32_t advance[256];
     uint32_t jump[32][32];

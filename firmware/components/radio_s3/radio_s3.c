@@ -360,6 +360,9 @@ static esp_err_t IRAM_ATTR __attribute__((noinline)) stream(run_t *run)
     if (stats->fe_gain_index != 0) {
         return ESP_ERR_INVALID_STATE;
     }
+    if (!radio_filter_apply(&stats->filter)) {
+        return ESP_ERR_INVALID_STATE;
+    }
     REG_CLR_BIT(TONE_CTRL, 1U << 18);
     /* Keying can clear bank ownership, so grant only after keying. */
     REG_WRITE(BANK_USAGE, ownership | (1U << 2));
@@ -507,12 +510,9 @@ static void worker(void *arg)
     rom_pbus_xpd_tx_off();
     rom_pbus_xpd_rx_on(0);
     direct_lo();
-    set_chanfreq(2412, 2); /* Real Wi-Fi channel, fixed wide (40 MHz) filter mode. */
+    set_chanfreq(2412, 0); /* Real Wi-Fi channel. Final filter is applied after CW setup. */
     phy_set_freq(run->freq_mhz, 0);
-    /* No MAC frames are transmitted in NULL mode. Allow retune to settle while
-     * TX remains unkeyed. Mode2 passes more tag bandwidth; its image rejection
-     * and whether the 40 Mchip/s tag survives remain bench questions.
-     */
+    /* No MAC frames in NULL mode. Allow unkeyed retune to settle. */
     vTaskDelay(pdMS_TO_TICKS(3));
 
     error = watch_begin(run, &watch_idle, &watch_worker);
@@ -524,6 +524,9 @@ static void worker(void *arg)
 cleanup:
     if (started && !run->probe) {
         REG_WRITE(DAC_CTRL, 0);
+        if (run->stats->filter.applied && !radio_filter_finish(&run->stats->filter) && error == ESP_OK) {
+            error = ESP_ERR_INVALID_STATE;
+        }
         REG_WRITE(ADC_CTRL, 0);
         esp_phy_wifi_tx_tone(0, cw_channel(run->freq_mhz), cw_backoff(run->gain));
         force_txon_mode(0, 0, 0);
@@ -764,7 +767,14 @@ esp_err_t radio_s3_run(uint32_t freq_mhz, uint8_t gain, uint32_t seconds,
 esp_err_t radio_s3_run_rate(uint32_t freq_mhz, uint8_t gain, uint32_t seconds, uint32_t dac_rate,
                             radio_s3_fill_fn fill, void *ctx, radio_s3_stats_t *stats)
 {
-    if (!fill || !stats || freq_mhz < 2390 || freq_mhz > 2450 ||
+    return radio_s3_run_bandwidth(freq_mhz, gain, seconds, dac_rate, dac_rate, fill, ctx, stats);
+}
+
+esp_err_t radio_s3_run_bandwidth(uint32_t freq_mhz, uint8_t gain, uint32_t seconds,
+                                 uint32_t dac_rate, uint32_t occupied_hz, radio_s3_fill_fn fill,
+                                 void *ctx, radio_s3_stats_t *stats)
+{
+    if (!occupied_hz || occupied_hz > dac_rate || !fill || !stats || freq_mhz < 2390 || freq_mhz > 2450 ||
             gain > RADIO_S3_GAIN_MAX || seconds == 0 || seconds > 60 || !known_rate(dac_rate)) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -774,6 +784,8 @@ esp_err_t radio_s3_run_rate(uint32_t freq_mhz, uint8_t gain, uint32_t seconds, u
     }
     memset(stats, 0, sizeof *stats);
     stats->min_fill_slack_cycles = UINT32_MAX;
+    stats->filter.occupied_hz = occupied_hz;
+    stats->filter.requested = radio_filter_get();
     run_t run = {
         .samples = (uint64_t)seconds * dac_rate, .identify = true, .limit_duration = true,
         .freq_mhz = freq_mhz, .gain = gain, .seconds = seconds,

@@ -6,9 +6,10 @@
 //   callsign [CALL|clear]  read, store or erase the station callsign in NVS (station_commands.c)
 //   iddump [CALL] [40|80]  the CW ID's bank samples at 10 kS/s over USB at a 40 or 80 MS/s DAC, no radio
 //   membench   memory and bank-fill timing (membench.c)
+//   filter <auto|narrow|wide|analog>  later runs only; default auto
 //   tx <integer MHz> <tone|two|tag|...> <1..60 seconds> [0..17 gain, default 0] [40|80 MS/s]
 //              (gap: a 128 tone with every bank's lead and tail silenced, the switch probe;
-//              at 80 MS/s every test signal runs at twice its frequency)
+//              at 80 MS/s every test signal runs at twice its frequency; sweep requires 80 MS/s)
 //   dvb <MHz> <modcod> [5m|10m|20m|26m667] <1..60 seconds> [0..17 gain] [16..508 peak]  DVB-S2 on air (dvbtx.c)
 //   dvbdump <modcod> [5m|10m|20m|26m667] <frames> [peak] [decimation] [stall ms]  USB samples, no radio
 //   dvbpace <modcod> [5m|10m|20m|26m667] <seconds> [peak] [stall ms]  paced simulation, no radio
@@ -189,16 +190,18 @@ static void cmd_tx(char *args)
         !number(duration, 1, 60, &seconds) ||
         (level && !number(level, 0, RADIO_S3_GAIN_MAX, &gain)) ||
         (msps && (!number(msps, 40, 80, &rate) || (rate != 40 && rate != 80))) || extra ||
-        !radio_signal_init(tx_signal, name)) {
+        !radio_signal_init(tx_signal, name) || (!strcmp(name, "sweep") && rate != 80)) {
         printf("@{\"cmd\":\"tx\",\"error\":\"usage: tx <2390..2450 integer MHz> "
-               "<tone|tone<1..511>|two|tag|neg|low|ionly|qonly|zero|dci|dcq|gap> <1..60 seconds> [0..17 gain, default 0] "
+               "<tone|tone<1..511>|two|tag|neg|low|ionly|qonly|zero|dci|dcq|gap|sweep> <1..60 seconds> [0..17 gain, default 0] "
                "[40|80 MS/s]\"}\n");
         return;
     }
     rate *= 1000000;
     radio_s3_stats_t s = {0};
     radio_s3_set_gaps(!strcmp(name, "gap"));
-    const esp_err_t err = radio_s3_run_rate(freq, gain, seconds, rate, fill_signal, tx_signal, &s);
+    const uint32_t bandwidth = tx_signal->bandwidth_40m * (rate / RADIO_S3_DAC_RATE);
+    const esp_err_t err = radio_s3_run_bandwidth(freq, gain, seconds, rate, bandwidth,
+                                               fill_signal, tx_signal, &s);
     radio_s3_set_gaps(false);
     printf("@{\"cmd\":\"tx\",\"freq_mhz\":%lu,\"signal\":\"%s\",\"seconds\":%lu,"
            "\"gain\":%lu,\"dac_rate_nominal\":%u,\"bank_words\":%u,\"step_words\":%u,"
@@ -215,6 +218,7 @@ static void cmd_tx(char *args)
            (unsigned long)s.max_switch_late_cycles, (unsigned long)s.min_fill_slack_cycles,
            (unsigned long)s.fatal_late, (unsigned long)s.fe_base_index,
            (unsigned long)s.fe_gain_index, "cwgain", esp_err_to_name(err));
+    radio_filter_print(&s.filter);
     if (err != ESP_OK) {
         printf(",\"error\":\"%s\"", err == ESP_ERR_INVALID_ARG ?
                "duration too short for start/end ID" : "radio run failed");
@@ -334,6 +338,13 @@ void app_main(void)
         } else if (strncmp(line, "dvb ", 4) == 0) {
             cmd_dvb(line + 4);
             strcpy(line, "dvb");
+        } else if (strncmp(line, "filter ", 7) == 0) {
+            if (radio_filter_set(line + 7)) {
+                printf("@{\"cmd\":\"filter\",\"requested\":\"%s\"}\n", line + 7);
+            } else {
+                printf("@{\"cmd\":\"filter\",\"error\":\"usage: filter <auto|narrow|wide|analog>\"}\n");
+            }
+            strcpy(line, "filter");
         } else if (strcmp(line, "fecbench") == 0) {
             fecbench_run("pie");
         } else if (strncmp(line, "fecbench ", 9) == 0) {

@@ -24,7 +24,8 @@ STEP = N - LEAD - TAIL
 
 
 class Signal(ct.Structure):
-    _fields_ = [("tag", ct.c_bool), ("tone", ct.c_uint32 * 40),
+    _fields_ = [("tag", ct.c_bool), ("sweep", ct.c_bool),
+                ("bandwidth_40m", ct.c_uint32), ("tone", ct.c_uint32 * 80),
                 ("rows", (ct.c_uint32 * 8) * 256), ("advance", ct.c_uint32 * 256),
                 ("jump", (ct.c_uint32 * 32) * 32)]
 
@@ -119,6 +120,23 @@ def run_checks(lib):
     gap_words = fill(0, 40)
     assert np.max(np.abs(unpack(gap_words))) <= 128 * 2 ** .5
     assert np.argmax(np.abs(np.fft.fft(unpack(gap_words)))) == 1
+    assert lib.radio_signal_init(ct.byref(signal), b"sweep")
+    # Independent closed-form definition, including every dwell boundary, split fills,
+    # bank wraps and the repeated 10 s period. Nearest integer with ties away from zero.
+    for step_number in range(81):
+        for delta in (-83, -1, 0, 1, 39):
+            first = max(0, step_number * 20000000 + delta)
+            count = 257
+            t = np.arange(first, first + count, dtype=np.uint64)
+            segment = (t // 20000000) % 40
+            freq = np.where(segment < 20, segment.astype(int) + 1, 19 - segment.astype(int))
+            phase = 2 * np.pi * ((t % 80).astype(int) * freq % 80) / 80
+            def rnd(x):
+                return np.copysign(np.floor(abs(x) + .5), x).astype(np.int32)
+            i, q = rnd(64 * np.cos(phase)), rnd(64 * np.sin(phase))
+            expected = ((i & 1023) | ((q & 1023) << 10)).astype(np.uint32)
+            assert np.array_equal(fill(first, count), expected), (step_number, delta)
+    assert signal.bandwidth_40m == 20000000
     assert lib.radio_signal_init(ct.byref(signal), b"tag")
     for first in [0, 1, 7, 31, STEP - LEAD, 2 * STEP - LEAD,
                   2399999999, 0xFFFFFFFF - 9, 0xFFFFFFFF + 3]:

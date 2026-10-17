@@ -42,7 +42,14 @@ stage digests, numerical symbol comparisons and file-loopback evidence are docum
   Its reported response within about 3 dB through +/-18 MHz in bandwidth mode 2 is an
   end-to-end measurement between two S3s, including both filters
   ([hardware quirks, lines 56–65](https://github.com/cyber-murmel/esp-sdr-zephyr/blob/3214c16a7c9f136414cc5ae9d245ea290c98a6ce/doc/hardware-quirks.md#L56-L65)).
-  Our transmitter's cabled response remains unmeasured.
+  Our transmitter's cabled response remains unmeasured. The new
+  [filter experiment](wide-filter.md) applies the bandwidth selector after CW setup,
+  logs TX/RX capacitor readbacks, and gives the E200 qualification gates.
+- **Self capture:** ESPARGOS demonstrates raw RX I/Q. On the S3 the capture and playback
+  engines share the SRAM bank selector, so that alone does not establish capture of
+  our live DAC stream. The vendor calibration loopback tap and its RF coverage remain
+  unqualified; [the feasibility assessment](wide-filter.md#can-the-s3-measure-itself)
+  separates the controls found in ROM from a working spectrum self-test.
 - **Quality:** the measured 31.5 dB MER is far above what QPSK and 8PSK need, so the radio is not
   expected to limit this project's modulation.
 
