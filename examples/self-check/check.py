@@ -100,7 +100,9 @@ def main():
     golden = {}
     for name in ("waveform_crcs.json", "moon_stream_crcs.json"):
         golden.update(json.loads((ROOT/"tests/data"/name).read_text()))
-    revision = subprocess.check_output(["git", "describe", "--always", "--dirty"], cwd=ROOT, text=True).strip()
+    revision = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, text=True).strip()
+    if subprocess.run(["git", "diff", "--quiet", "HEAD"], cwd=ROOT).returncode:
+        revision += "-dirty"
     print(f"Pass criteria: flashed firmware {revision}, stored N0CALL, SPI input off after reset.")
     print("No flash, NVS writes or TX. Only info, dvbdump, dvbpace and wifimem are sent.")
     print("Every stream: ESP_OK, correct mode/pulse, healthy timed encoder, no underruns or injected stalls.")

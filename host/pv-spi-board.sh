@@ -32,7 +32,7 @@ step quad-receive board 'spirx 1000 gcs loop 46.6'
 step input-off board 'spiinput off'
 step regression-qpsk board 'dvbdump 11 26m667 16 128 1' --save "$OUT/reg-qpsk.iq"
 step regression-8psk board 'dvbdump 13 20m 40 128 1' --save "$OUT/reg-8psk.iq"
-step gates "$PY" host/spi_input.py check "$OUT/runs.jsonl" --folder "$OUT" --firmware "$(git describe --always --tags --dirty)"
+step gates "$PY" host/spi_input.py check "$OUT/runs.jsonl" --folder "$OUT" --firmware "$(git rev-parse --short HEAD)$(git diff --quiet HEAD || echo -dirty)"
 printf '\nSummary (%s)\n' "$OUT"
 cat "$OUT/summary.txt"
 exit "$failed"
