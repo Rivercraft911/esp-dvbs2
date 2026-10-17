@@ -48,6 +48,7 @@ typedef timer_tst *esp_timer_handle_t;
 static timer_tst timer;
 static int64_t now_us, ready_at, first_tx, last_tx;
 static unsigned alarms, delays, transfers;
+static unsigned tasks;
 static uint16_t sequence;
 static int allocations;
 static inline int64_t esp_timer_get_time(void) { return now_us++; }
@@ -67,7 +68,9 @@ static inline unsigned uxTaskGetStackHighWaterMark(TaskHandle_t t) { (void)t; re
 static inline void vTaskDelete(TaskHandle_t t) { (void)t; }
 static inline int xTaskCreatePinnedToCore(void (*fn)(void *),const char *n,unsigned s,void *a,
     unsigned priority,TaskHandle_t *t,int core) {
-    (void)fn;(void)n;(void)s;(void)a; assert(priority==(core?2:6)); *t=(void *)1; return pdPASS;
+    (void)fn;(void)n;(void)s;(void)a;(void)core;
+    assert(priority < 5); // never preempt an active encoder, including inside memcpy
+    ++tasks; *t=(void *)1; return pdPASS;
 }
 static inline int esp_timer_create(const esp_timer_create_args_t *a,esp_timer_handle_t *t) {
     timer.callback=a->callback; timer.due=0; *t=&timer; return 0;
@@ -107,7 +110,10 @@ int spi_device_polling_start(spi_device_handle_t d,spi_transaction_t *t,unsigned
     else assert(now_us-last_tx >= (tx.mbps ? 470 : 75)); // rate ceiling or CS gap
     last_tx=now_us; ++transfers; return 0;
 }
-esp_err_t ingress_spi_start(const ingress_spi_config *cfg,ingress_ring **ring) { (void)cfg;(void)ring; return 1; }
+static ingress_ring receiver;
+esp_err_t ingress_spi_start(const ingress_spi_config *cfg,ingress_ring **ring) {
+    assert(cfg->received && cfg->ctx); *ring=&receiver; return ESP_OK;
+}
 void ingress_spi_stop(void) {}
 void ingress_spi_get_stats(ingress_spi_stats *out) { memset(out,0,sizeof *out); }
 int main(void) {
@@ -119,6 +125,13 @@ int main(void) {
         assert(first_tx < ready_at+100 && delays==0); // READY resumes within a poll, no 1 ms sleep
         tx_free(); assert(allocations==0 && !tx.timer);
     }
+    input_type=PV_TS; loop=true;
+    for (sender_core=0;sender_core<2;++sender_core) {
+        assert(spi_input_start()==ESP_OK && tx.task);
+        tx.finished=true; spi_input_stop();
+        assert(!rx && !tx.task && allocations==0);
+    }
+    assert(tasks==2);
     puts("SPI sender: real scheduler, timer sleeps, 22 Mb/s pacing, fresh READY, CRC and cleanup: ok");
 }
 '''

@@ -42,6 +42,7 @@ static inline TickType_t xTaskGetTickCount(void) {
     return (uint32_t)((uint64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000);
 }
 static inline uint32_t esp_cpu_get_cycle_count(void) { return 17; }
+static inline unsigned uxTaskGetStackHighWaterMark(void *task) { (void)task; return 1024; }
 static int fail_after = -1, live_allocations, allocation_count;
 static struct { void *p; size_t n; unsigned caps; } native_blocks[64];
 static inline void *heap_caps_aligned_alloc(size_t a, size_t n, unsigned caps) {

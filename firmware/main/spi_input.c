@@ -16,7 +16,7 @@
 #include "freertos/task.h"
 
 #define CPU_MHZ CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ
-#define TX_PRIORITY 6
+#define TX_PRIORITY 2             // below the core-0 encoder (5); run while it waits for input/slots
 #define TX_BYTES (PV_MSG_BYTES + 64)
 #ifdef CONFIG_SPI_INPUT_XIAO
 static ingress_spi_config pins = {.sclk=7, .cs=1, .d0=2, .d1=4, .d2=5, .d3=6, .ready=8};
@@ -242,7 +242,7 @@ esp_err_t spi_input_start(void)
     if (err != ESP_OK) { tx_free(); return err; }
     rx->type=input_type;
     if (replay) ingress_replay_fill(rx);
-    if (loop && xTaskCreatePinnedToCore(tx_task, "spisend", 2048, NULL, sender_core ? 2 : TX_PRIORITY, &tx.task, sender_core)!=pdPASS) {
+    if (loop && xTaskCreatePinnedToCore(tx_task, "spisend", 2048, NULL, TX_PRIORITY, &tx.task, sender_core)!=pdPASS) {
         ingress_spi_stop(); rx=NULL; tx_free(); return ESP_ERR_NO_MEM;
     }
     return ESP_OK;
@@ -282,7 +282,7 @@ void spi_input_print(void)
                      "\"heap_bytes\":%u,\"stack_min_free\":%u,\"sent\":%u,\"errors\":%u,\"waits\":%u,"
                      "\"cpu_timed\":%s,\"cpu_us\":%"PRIu64",\"build_cycles\":%"PRIu64",\"poll_and_build_cycles\":%"PRIu64
                      ",\"diagnostic_crc_cycles\":%"PRIu64",\"us\":%lld}",
-                     tx.core,tx.core ? 2 : TX_PRIORITY,(unsigned)tx.heap_bytes,(unsigned)tx.stack_min_free,(unsigned)tx.sent,(unsigned)tx.errors,(unsigned)tx.waits,
+                     tx.core,TX_PRIORITY,(unsigned)tx.heap_bytes,(unsigned)tx.stack_min_free,(unsigned)tx.sent,(unsigned)tx.errors,(unsigned)tx.waits,
                      configGENERATE_RUN_TIME_STATS ? "true" : "false",tx.cpu_us,tx.build_cycles,tx.wire_cycles,tx.crc_cycles,(long long)tx.us);
     printf(",\"spi\":{\"msgs\":%"PRIu32",\"bytes\":%"PRIu32",\"nops\":%"PRIu32
            ",\"short\":%"PRIu32",\"long\":%"PRIu32",\"header\":%"PRIu32

@@ -35,6 +35,7 @@ def record_check(r):
     if 'sender' in r:
         assert r['sender']['cpu_timed'] and r['sender']['errors'] == 0, r
         assert r['sender']['stack_min_free'] >= 256, r
+        assert r['sender']['priority'] < 5, r
         assert r['sender']['core'] == (1 if r['cmd'] == 'spirx' else 0), r
     if r['cmd'] == 'spirx':
         f = int(command.split()[5]) if len(command.split()) > 5 else 0
@@ -66,6 +67,8 @@ def record_check(r):
             assert r['mbps'] >= .98*float(command.split()[4]), r
     if r['cmd'] in ('dvbdump', 'dvbpace', 'wifimem') and 'status' in r:
         assert r['status'] == 'ESP_OK' and not r['encoder_failed'], r
+        if 'encoder_stack_min_free' in r:
+            assert r['encoder_stack_min_free'] >= 256, r
         if r.get('input') in ('ts', 'gcs'):
             s = r['spi']
             assert all(s[k] == 0 for k in ('short','long','header','crc','sync','lost','back','overruns','wrong_type')), r
@@ -92,6 +95,29 @@ def record_check(r):
         if r['cmd'] == 'wifimem':
             assert r['frames_played'] == r['positions'] == r['max_fill_call_cycles'] == 0, r
             assert r['wifi_free_up'] >= 20000 and r['wifi_min_free'] >= 20000, r
+
+
+def encoder_check(rows):
+    """Full demo cost, including TS adaptation and receive CRC, against fresh synthetic input."""
+    demo = [r for r in rows if r.get('cmd') == 'dvbpace' and r.get('modcod') == 13
+            and r.get('symbol_rate') == 10000000 and r.get('status') == 'ESP_OK'
+            and not r.get('input_fault')]
+    baseline = [r for r in demo if r.get('input') == 'synthetic']
+    assert len(baseline) == 1, 'missing or duplicate no-input demo pace'
+    base = baseline[0]
+    inputs = [r for r in demo if r.get('input') in ('ts', 'gcs')]
+    assert len(inputs) == 4, 'need four input demo paces'
+    assert {(r['input'], r.get('input_loop'), r.get('input_replay')) for r in inputs} == {
+        (kind, loop, not loop) for kind in ('ts', 'gcs') for loop in (True, False)
+    }, 'need TS/GCS loopback and replay demo paces'
+    for r in inputs:
+        assert r['bch_variant'] == base['bch_variant'] == 'resident-byte', r
+        copy = r['input_copy_cycles']/r['frames_encoded']
+        limit = 1.05*base['encode_cycles_mean'] + copy
+        print(f"demo {r['input']} {'loop' if r['input_loop'] else 'replay'}: "
+              f"{r['encode_cycles_mean']} <= {limit:.0f} cycles/frame "
+              f"(1.05 * {base['encode_cycles_mean']} + {copy:.0f} copy)")
+        assert r['seconds'] == base['seconds'] and r['encode_cycles_mean'] <= limit, r
 
 
 def decode_dump(path, kind, mc, sps, rate, frames, receiver, replay=False):
@@ -129,6 +155,7 @@ def main():
     c.add_argument('records', type=Path)
     c.add_argument('--firmware')
     c.add_argument('--folder', type=Path)
+    c.add_argument('--encoder-5pct', action='store_true')
     d = sub.add_parser('decode')
     d.add_argument('iq', type=Path)
     d.add_argument('--kind', choices=('ts','gcs'), required=True)
@@ -161,6 +188,11 @@ def main():
                 failures.append(f"{r.get('command', r['cmd'])}: {type(e).__name__} {details}")
         if a.firmware and not any(r.get('firmware') == a.firmware for r in rows):
             failures.append('wrong or missing firmware')
+        if a.encoder_5pct:
+            try:
+                encoder_check(rows)
+            except (AssertionError, KeyError, ZeroDivisionError) as e:
+                failures.append(f'encoder 5%: {e}')
         if a.folder:
             for path in sorted(a.folder.glob('*.iq')):
                 data = path.read_bytes()

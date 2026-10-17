@@ -220,6 +220,16 @@ int main(int argc, char **argv)
     assert(start_encoder("dvbdump", mc, 128, 0, sps, rate));
     const int allocations = allocation_count;
     const bool resident = sps != 40 && (mc < 12 || sps == 4);
+    const bool borrowed_bch = native_input && mc >= 12 && sps == 4 &&
+                              (short_pulse || mc == 13) && mode->t > 8;
+    assert(enc.bch_borrowed == borrowed_bch);
+    if (borrowed_bch) {
+        assert(enc.bch >= enc.filler+packed_bytes(DVBS2_DUMMY_SYMBOLS));
+        assert(enc.bch+DVBS2_BCH_CACHE_BYTES <= (uint8_t *)(shaper_store+SHAPER_STORE_WORDS));
+        for (unsigned i=0; i<INGRESS_SLOTS && native_buffers[i]; ++i)
+            assert(native_buffers[i]+INGRESS_SLOT_BYTES <= enc.bch ||
+                   native_buffers[i] >= enc.bch+DVBS2_BCH_CACHE_BYTES);
+    }
     assert(allocations == (sps == 40 ? 7 : 3 + (mc >= 12 && !short_pulse) +
                           (resident && mode->t > 8 && !native_input) + !resident));
     for (unsigned i = 0; i < 64; ++i) {
@@ -240,7 +250,7 @@ int main(int argc, char **argv)
             sps == 40 ? fast+420 : quads && sps == 4 ? fast+25056 :
             fast+12420+(mc >= 12 && !short_pulse ? 11120 : 0);
         assert(internal == expected);
-        assert((native_buffers[0] != NULL) == !(mc >= 12 && sps == 8));
+        assert((native_buffers[0] != NULL) == !(mc >= 12 && (sps == 8 || (mc == 13 && !short_pulse))));
     }
     if (quads && sps == 4) assert((uint32_t *)enc.ws == shaper_store+QPSK_TABLE_WORDS(4));
     assert(!((uintptr_t)enc.fast & 15) && !((uintptr_t)enc.ws & 15));

@@ -4,7 +4,7 @@ import pathlib
 import sys
 import zlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / 'host'))
-from spi_input import pattern, record_check
+from spi_input import pattern, record_check, encoder_check
 
 
 def rejected(r):
@@ -60,6 +60,19 @@ def main():
     demo['encode_cycles_live_max'] += 1; rejected(demo)
     demo.update(encode_cycles_live_max=532656, input_copy_cycles=2, input_cycles=1)
     rejected(demo)
+    base = dict(cmd='dvbpace', modcod=13, symbol_rate=10000000, status='ESP_OK',
+                input='synthetic', seconds=30, encode_cycles_mean=167000, bch_variant='resident-byte')
+    rows = [base]
+    for kind in ('ts', 'gcs'):
+        for loop in (True, False):
+            rows.append(dict(base, input=kind, input_loop=loop, input_replay=not loop,
+                             frames_encoded=100, input_copy_cycles=400000, encode_cycles_mean=179350))
+    encoder_check(rows) # exact 1.05 * 167000 + 4000 boundary
+    for bad in (rows[:-1], [dict(r, encode_cycles_mean=179351) if i else r for i,r in enumerate(rows)],
+                [dict(r, bch_variant='nibble') if i else r for i,r in enumerate(rows)]):
+        try: encoder_check(bad)
+        except AssertionError: pass
+        else: raise AssertionError('bad encoder comparison passed')
     print('SPI run gates: corruption, CRC, loss, throughput, starvation and timing: ok')
 
 

@@ -305,7 +305,12 @@ int dvbs2_fast_bb_ts(const dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_state *s
         }
     }
     const unsigned syncd = ((188 - state->packet_pos) % 188) * 8;
-    bb_header(ws->bits, fast_crc8, 0xf0, (unsigned)(input_bytes * 8), 1504, 0x47, syncd);
+    /* LDPC parity scratch is idle until BB and BCH finish. Keep the four CRC-8
+     * tables here during TS adaptation, away from the flash mapper/PRBS lines.
+     * The borrowed payload occupies the start of scratch, before f->p. */
+    memcpy(f->p, fast_crc8, sizeof fast_crc8);
+    const uint8_t *crc8 = f->p;
+    bb_header(ws->bits, crc8, 0xf0, (unsigned)(input_bytes * 8), 1504, 0x47, syncd);
     bb_fill(f, ws->bits, input, input_bytes);
     /* CRC-8 of each packet's 187 bytes after sync; the sync byte position
      * carries the previous packet's CRC. */
@@ -326,7 +331,7 @@ int dvbs2_fast_bb_ts(const dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_state *s
         const uint8_t *p = input + k, *end = p + run;
         /* Four bytes per step: CRC-8 is linear, so
          * crc' = T3[crc ^ b0] ^ T2[b1] ^ T1[b2] ^ T0[b3], Tk = byte table^(k+1). */
-        const uint8_t *t0 = fast_crc8, *t1 = (fast_crc8 + 256), *t2 = (fast_crc8 + 512), *t3 = (fast_crc8 + 768);
+        const uint8_t *t0 = crc8, *t1 = crc8 + 256, *t2 = crc8 + 512, *t3 = crc8 + 768;
 #ifdef DVBS2_PIE
         if (f->pie & DVBS2_PIE_BB) {
             const unsigned quads = (unsigned)(end - p) / 4;

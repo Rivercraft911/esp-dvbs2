@@ -108,7 +108,7 @@ def run(port: str, command: str, timeout: float = 30.0, reset: bool = False,
         if data:
             time.sleep(0.05)
             link.write(data)
-        records, pending, deadline = [], b"", time.monotonic() + timeout
+        records, pending, device_text, deadline = [], b"", b"", time.monotonic() + timeout
         while time.monotonic() < deadline:
             chunk = link.read(65536)
             if chunk:
@@ -129,6 +129,7 @@ def run(port: str, command: str, timeout: float = 30.0, reset: bool = False,
                     break
                 line, pending = pending[:end].strip(), pending[end + 1:]
                 if not line.startswith(b"@"):
+                    device_text = (device_text + line + b"\n")[-4096:]
                     continue
                 record = json.loads(line[1:])
                 if record.get("done"):
@@ -138,7 +139,9 @@ def run(port: str, command: str, timeout: float = 30.0, reset: bool = False,
                     if save is None:
                         raise ValueError("the board sends binary data: pass --save FILE")
                     sink, left, received = open(save, "wb"), record["binary_bytes"], 0
-        raise TimeoutError(f"no 'done' from the board within {timeout} s for {command!r}")
+        raise TimeoutError(f"no 'done' from the board within {timeout} s for {command!r}; "
+                           f"records={records!r}; device text="
+                           f"{(device_text + pending)[-4096:].decode(errors='replace')!r}")
     finally:
         if sink and not sink.closed:
             sink.close()

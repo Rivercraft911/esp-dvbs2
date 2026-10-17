@@ -44,6 +44,7 @@
 #define WORST_PEAK 718.4            // conservative sqrt(2)*508 LSB axis bound, before rounding
 #define SEED 2026
 #define ENCODER_PRIORITY 5          // above the command loop, below the Wi-Fi and IPC tasks
+#define ENCODER_STACK 3072
 // Samples, including the first bank's extra lead. Later banks re-read 2112 words, or 640 on the
 // 80 MS/s geometry, which keeps only its 768 (dvb.cached_words).
 #define CACHED_FOR(rate) (RADIO_S3_BANK_WORDS - RADIO_S3_STEP_FOR(rate) + RADIO_S3_LEAD_FOR(rate))
@@ -82,6 +83,7 @@ typedef struct {
     dvbs2_fast *fast;               // fast encoder context for this mode, internal RAM
     dvbs2_workspace *ws;            // internal for fast QPSK / 4-sps 8PSK, otherwise PSRAM
     uint8_t *bch;                  // resident byte table with internal workspace, t = 10/12
+    bool bch_borrowed;
     bool quads;                     // four QPSK codes/byte, block shaper
     bool packed;                    // all fast rates: packed internal ring
     uint8_t *payload;               // one frame of payload: next to a packed ring, or PSRAM
@@ -101,6 +103,7 @@ typedef struct {
     uint32_t min_cycles, max_cycles, live_max_cycles; // live excludes the initial ring prefill
     stream_profile_t stage[6];      // payload, BB, BCH, LDPC, map, PL
     uint32_t slot_waits;
+    uint32_t stack_min_free;
 } encoder_t;
 
 static encoder_t enc;
@@ -353,6 +356,7 @@ static void encoder_task(void *arg)
     }
 done:
     spi_input_stop();
+    e->stack_min_free = uxTaskGetStackHighWaterMark(NULL);
     xSemaphoreGive(e->exited);
     // Keep the notification handle valid even if encoding failed. The command owns
     // deletion after taking exited; a fill may still notify this suspended task.
@@ -375,7 +379,7 @@ static void release(void)
     if (dvb.win && (!enc.packed || (enc.mode->bits_per_symbol == 3 && dvb.table.n != 4)))
         heap_caps_free(dvb.win);
     dvb.win = NULL;
-    heap_caps_free(enc.bch);
+    if (!enc.bch_borrowed) heap_caps_free(enc.bch);
     heap_caps_free(enc.block);
     if (!enc.packed) {
         heap_caps_free(enc.payload);
@@ -506,8 +510,16 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
             }
         }
     }
-    // Fast QPSK keeps its workspace internal. Synthetic input can also cache byte BCH.
+    // Fast QPSK keeps its workspace internal. The demo must retain byte BCH
+    // with input too: changing to nibble BCH is not an input-copy cost.
     const bool resident = enc.packed && (mode->bits_per_symbol == 2 || sps == 4);
+    const bool input_bch = input && mode->bits_per_symbol == 3 && sps == 4 &&
+                           (short_pulse || modcod == 13) && mode->t > 8;
+    if (input_bch) {
+        enc.bch = (uint8_t *)shaper_store + store_used;
+        enc.bch_borrowed = true;
+        store_used += DVBS2_BCH_CACHE_BYTES;
+    }
     // The slow 8-sps 8PSK path already uses cached PSRAM for its workspace.
     // Keep its context there too when SPI is selected, reserving internal RAM for Wi-Fi.
     enc.fast = heap_caps_aligned_alloc(16, dvbs2_fast_mode_size(mode),
@@ -539,7 +551,7 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
             (quads && !enc.slot[nslots-1]) ||
             dvbs2_fast_prepare(enc.fast, mode, PILOTS,
                               15 | (quads ? DVBS2_MAP_QUADS : 0) |
-                              (input ? DVBS2_BCH_NIBBLE : 0) |
+                              (input && !input_bch ? DVBS2_BCH_NIBBLE : 0) |
                               (resident ? 0 : DVBS2_BCH_NIBBLE | DVBS2_MAP_SPARSE)) ||
             (enc.bch && dvbs2_fast_cache_bch(enc.fast, enc.bch))) {
         printf("@{\"cmd\":\"%s\",\"error\":\"allocation failed\"}\n", cmd);
@@ -587,7 +599,7 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
                       resident && ws_used < sizeof *enc.ws ? sizeof *enc.ws-ws_used : 0);
 
     enc.exited = xSemaphoreCreateBinaryStatic(&exited_storage);
-    if (xTaskCreatePinnedToCore(encoder_task, "encoder", 4096, &enc, ENCODER_PRIORITY, &enc.task, 0)
+    if (xTaskCreatePinnedToCore(encoder_task, "encoder", ENCODER_STACK, &enc, ENCODER_PRIORITY, &enc.task, 0)
             != pdPASS) {
         printf("@{\"cmd\":\"%s\",\"error\":\"encoder task failed\"}\n", cmd);
         release();
@@ -660,10 +672,11 @@ static void stop_encoder(void)
            (unsigned)dvbs2_fast_mode_size(enc.mode),
            enc.quads && dvb.table.n == 4 ? 0 : (unsigned)heap_caps_get_allocated_size(enc.ws),
            (unsigned)heap_caps_get_allocated_size(enc.fast),
-           enc.bch ? (unsigned)heap_caps_get_allocated_size(enc.bch) : 0,
+           enc.bch && !enc.bch_borrowed ? (unsigned)heap_caps_get_allocated_size(enc.bch) : 0,
            enc.bch ? DVBS2_BCH_CACHE_BYTES : 0,
            enc.bch ? "resident-byte" : "nibble",
            !enc.packed ? "none" : enc.quads ? "quads" : enc.mode->bits_per_symbol == 2 || dvb.table.n == 4 ? "direct" : "sparse");
+    printf(",\"encoder_stack_bytes\":%u,\"encoder_stack_min_free\":%u", ENCODER_STACK, (unsigned)enc.stack_min_free);
     printf(",\"ring_memory\":\"%s\",\"ring_format\":\"%s\",\"ring_heap_bytes\":%u,"
            "\"payload_memory\":\"%s\",\"slot_waits\":%" PRIu32,
            enc.packed ? "internal" : "psram", enc.quads ? "quads" : enc.packed ? "packed" : "raw",

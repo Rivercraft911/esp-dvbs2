@@ -1,10 +1,11 @@
 # Payload over SPI
 
-The [second coordinator run](../results/2026-10-17-spi-in-second/README.md) verified
-46.768 Mb/s in standalone loopback, but the 30 s demo starved and some Wi-Fi
-heap probes fell below 20,000 B. Main's cleanup is now merged. The pacing fixes
-and memory estimates below need a fresh board run. No external-source rate is
-qualified yet.
+The [clean third run](../results/2026-10-17-spi-in-third/README.md), firmware 39d9c04,
+passed replay and standalone 46.6 Mb/s, but the demo loopback still inserted
+5,839 dummy frames in 30 s. Its sender preempted the encoder on core 0, and input
+also selected slower BCH. Round four removes those differences and stages TS
+CRC tables in existing encoder scratch. These changes need a fresh board run.
+No external-source rate is qualified yet.
 
 `spiinput ts` or `spiinput gcs` selects an external sender for the next `dvbdump`,
 `dvbpace`, `wifimem` or `dvb`. `spiinput off` restores synthetic payload. The sender
@@ -149,8 +150,9 @@ The encoder now drains partial reads immediately and waits only after zero bytes
 the sender polls READY with a 50 µs timer sleep. Host tests enforce both changes.
 Only a fresh paced board run can establish zero underruns.
 
-Loopback encoding uses a core-0 priority-6 sender above the priority-5 encoder.
-Standalone `spirx` uses core 1, priority 2. `spiinput ts loop 22` sets an offered
+Loopback encoding now uses a core-0 priority-2 sender below the priority-5 encoder.
+It runs while the encoder waits for input or a free frame slot. Standalone
+`spirx` uses core 1, priority 2. `spiinput ts loop 22` sets an offered
 ceiling, not a guaranteed delivered rate. Sender CPU, transmit DMA and pattern/CRC
 construction all consume resources absent with an external sender. At 40 MHz,
 one quad transaction takes `(24+1332*2+4)/40e6 = 67.3 µs`, including four configured
@@ -205,8 +207,9 @@ For QPSK 9/10, `B=7264 B`, `S=33282 symbols`, `R=8*B*(80e6/3)/S=46.56 Mb/s` and
 
 Requested sizes come from `start_encoder` and `dvbs2_fast_mode_size`, in bytes.
 The fixed shaper store is 65,536 B; two separate DAC banks reserve 131,072 B.
-Input uses nibble BCH and borrows context scratch for payload, so there is no
-8,192 B BCH allocation or separate packed-input payload. Target context size is
+Input borrows context scratch for payload, with no separate packed-input payload.
+The demo and 8PSK 20m now also borrow 8,192 B in the store for byte BCH. Other
+input modes retain nibble BCH. Target context size is
 `F=592+max(96*(nbch/360)+1536*ceil(q/32), bits==3 ? 10816 : 16224) B`;
 `nbch` and `q` come from the mode table, and 592 B is the aligned S3 context header.
 
@@ -218,8 +221,9 @@ Input uses nibble BCH and borrows context scratch for payload, so there is no
 | QPSK 20m | 49,152 | 864 dummy + 12,432 workspace | 0 | F + 25,056 ring | 2 store + 2 workspace |
 | QPSK 26m667 | 36,864 | 25,056 + 864 | 12,420 | F | 2 store + 2 workspace |
 | 8PSK 5m | 65,536 | none | 12,420 PSRAM | 23,936 ring/dummy + 2,058 window + 5,344 RX | heap |
-| 8PSK 10m | 32,768 | 22,240 + 1,696 | 12,420 | F + 11,120 ring | 4 in store |
-| 8PSK 20m | 16,384 | 33,360 + 1,696 | 12,420 | F | 4 in store |
+| 8PSK 10m, MODCOD 13 | 32,768 | 22,240 + 1,696 + 8,192 BCH | 12,420 | F + 11,120 ring + 5,344 RX | heap |
+| 8PSK 10m, other MODCODs | 32,768 | 22,240 + 1,696 | 12,420 | F + 11,120 ring | 4 in store |
+| 8PSK 20m, t > 8 | 16,384 | 33,360 + 1,696 + 8,192 BCH | 12,420 | F | 4 in store |
 
 8PSK 5m also puts F in PSRAM. Packed frames include 16 readable guard bytes and
 16-byte rounding. Four receive slots occupy `4*1336=5344 B`; descriptor storage
@@ -252,9 +256,50 @@ not measurements of this revision**. The odd first QPSK-5m minimum is retained.
 | 16 | 17,488 | n/a | 32,543 | 22,899 | 34,023 | n/a |
 | 17 | 17,680 | n/a | 32,543 | 22,707 | 33,831 | n/a |
 
-The tightest prediction is 21,195 B, only 1,195 B above the unchanged 20,000 B
-floor. Wi-Fi fragmentation, code placement and allocation behavior require the
-coordinator's all-mode receive-only sweep before declaring success.
+Those estimates describe the preceding nibble-BCH allocation policy. Round four
+reduces the encoder stack from 4,096 to 3,072 B, reclaiming 1,024 B per command,
+and reports `encoder_stack_min_free`; the new gate requires at least 256 B unused.
+For MODCOD 13/10m, the clean run's 25,131 B Wi-Fi minimum predicts approximately
+`25131 + 1024 - 5344 = 20811 B`, before allocator/code-placement changes. Its
+new receive slots are on the internal DMA heap because BCH occupies the store
+tail. Other 10m modes keep borrowed slots. At 20m the store fits BCH and all four
+slots. The all-mode sweep must confirm every minimum remains at least 20,000 B.
+
+## Round four: measured cause and proposed correction
+
+The clean run's TS loopback averaged 454,326 cycles/frame, versus 250,454 for TS
+replay and 181,925 for GCS replay. QPSK used replay, so it had no sender task.
+The old sender used 32.1% of scheduled core-0 CPU time. It could interrupt every
+encoder stage and even the measured input memcpy. The input layout was internal
+RAM, with the same addresses in replay. Reads already drained whole fragments;
+neither byte-sized copies nor PSRAM input slots explain this comparison.
+
+The new lower-priority sender cannot preempt active encoding. The 50 µs READY
+timer remains, with sleeping polls rather than a busy loop. Timer/DMA interrupts
+can still preempt. The demo retains byte BCH by borrowing the 8,192 B store tail;
+8PSK 20m has room for the same policy. The TS stage copies its 1,024 B CRC-8
+tables into idle LDPC parity scratch before use. The borrowed payload precedes
+that scratch; LDPC overwrites the tables only after TS/BCH finish. No context,
+workspace, DMA slot, shaper table or frame buffer overlaps another live user.
+
+An estimate using the [cleanup baseline](../results/2026-10-17-cleanup/runs.jsonl)
+is `167703 - 43528 synthetic payload + about 30000 receive + about 23000..27000
+TS adaptation = about 177000..181000 cycles/frame`, before additional interrupt
+cost. The TS estimate starts from 17 scalar instructions per four-byte CRC step
+in `dvbs2_pie_crc8`, plus packet edges/calls; it is not a measured cycle count.
+The prediction is close to the requested limit and must be measured.
+
+The script now records a fresh no-input demo pace, both TS/GCS loopback paces and
+both replay paces, with equal durations. For each input run it enforces
+`mean <= 1.05 * no_input_mean + input_copy_cycles / frames_encoded`.
+This includes receive parsing/CRC, TS adaptation and preemption. Copy is an
+allowance only once; it remains included in the measured input mean. Starvation
+is excluded from this comparison, but still has its original frame-deadline gate.
+
+The alleged GCS MODCOD-5/26m667 heap failure is a timeout in the supplied clean
+log, with no result or below-gate value. The TS counterpart had 34,635 B free.
+Its cause remains unknown. The board reader now retains partial records and the
+last 4 KiB of device diagnostics in timeout errors; it does not retry or reset.
 
 ## Coordinator checks, no RF
 
@@ -270,7 +315,7 @@ idf.py -B build-xiao -D SDKCONFIG=sdkconfig.xiao.local \
 
 `bash host/spi-in-board.sh [new-directory]` runs demo loopback first, receive-compute
 replay at 10m and 26m667, receive-only Wi-Fi probes, isolated throughput/faults, then synthetic
-CRCs. It continues after failures, writes `summary.txt`, exits nonzero if any gate
+CRCs and the fresh no-input demo baseline. It continues after failures, writes `summary.txt`, exits nonzero if any gate
 fails, and restores input off. Default paced windows are 10 s; set
 `SECONDS_PER_RUN=30` for acceptance. Set `WIFI_ALL=1` for receive-only Wi-Fi
 probes in every supported MODCOD/rate (TS and GCS), rather than the seven default

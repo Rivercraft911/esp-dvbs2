@@ -42,6 +42,11 @@ for kind in ts gcs; do
         step "$kind-compute-decode" "$PY" host/spi_input.py decode "$OUT/$kind.iq" --kind "$kind" --replay --receiver "$RX"
         step "$kind-compute-pace" board "dvbpace 11 26m667 ${SECONDS_PER_RUN:-10}"
     else printf 'FAIL %s-replay-setup\n' "$kind" >> "$OUT/summary.txt"; failed=1; fi
+    if [[ $kind == gcs ]]; then
+        if board 'spiinput gcs loop 22'; then
+            step gcs-demo-pace board "dvbpace 13 10m ${SECONDS_PER_RUN:-10}"
+        else printf 'FAIL gcs-loop-setup\n' >> "$OUT/summary.txt"; failed=1; fi
+    fi
     # Receive-only allocation, no sender buffers. No arriving bytes are required.
     if board "spiinput $kind"; then
         for mode in "${wifi_modes[@]}"; do
@@ -58,8 +63,9 @@ else printf 'FAIL starvation-setup\n' >> "$OUT/summary.txt"; failed=1; fi
 step input-off board 'spiinput off'
 step regression-qpsk board 'dvbdump 11 26m667 16 128 1' --save "$OUT/reg-qpsk.iq"
 step regression-8psk board 'dvbdump 13 20m 40 128 1' --save "$OUT/reg-8psk.iq"
+step baseline-demo-pace board "dvbpace 13 10m ${SECONDS_PER_RUN:-10}"
 step regression-pace board "dvbpace 11 26m667 ${SECONDS_PER_RUN:-10}"
-step gates "$PY" host/spi_input.py check "$OUT/runs.jsonl" --folder "$OUT" --firmware "$(git describe --always --dirty)"
+step gates "$PY" host/spi_input.py check "$OUT/runs.jsonl" --encoder-5pct --folder "$OUT" --firmware "$(git describe --always --dirty)"
 printf '\nSummary (%s)\n' "$OUT"
 cat "$OUT/summary.txt"
 printf 'External CM5/S3 DMA and cable timing still require a separate run.\n'
