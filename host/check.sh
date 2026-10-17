@@ -21,7 +21,8 @@ python = sys.executable
 receiver = os.getenv('RX', '/Users/river/Documents/stanford/SSI/esp-dvbs2/notes/leansdr/src/apps/leandvb')
 firmware = subprocess.check_output(['git','describe','--always','--dirty'], text=True).strip()
 golden = json.loads(pathlib.Path('tests/data/waveform_crcs.json').read_text())
-# mc/sps/DAC MHz/frames. Golden CRCs come from 46f90af, including its adopted opt-in pulses.
+# mc/sps/DAC MHz/frames. Original 57 CRCs: 46f90af with adopted opt-in pulses.
+# The extra 17/4/80/16 fixture is checked by the plain encoder and LeanDVB.
 selected = ['4/40/40/16', '13/8/40/16', '13/4/40/40',
             '4/4/80/16', '11/4/80/16', '13/4/80/16', '15/4/80/16',
             '4/3/80/16', '11/3/80/16']
