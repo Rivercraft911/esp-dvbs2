@@ -13,10 +13,11 @@ int lofty_build(uint32_t *table, unsigned peak)
     int32_t taps[15];
     for (unsigned i = 0; i < 15; ++i) taps[i] = (int32_t)((double)pulse[i]*(peak-2)/508.0);
     int bias[3][2][12] = {0};
+    // Preserve the original three independent roundings and offset biases.
     for (unsigned part = 0; part < 3; ++part) {
-        const unsigned count = part == 2 ? 2 : 3, rows = 1u<<(3*count);
-        for (unsigned axis = 0; axis < 2; ++axis)
-            for (unsigned w = 0; w < rows; ++w)
+        unsigned count = part == 2 ? 2 : 3;
+        for (unsigned w = 0; w < (1u<<(3*count)); ++w)
+            for (unsigned axis = 0; axis < 2; ++axis)
                 for (unsigned p = 0; p < 12; ++p) {
                     int64_t sum = 0;
                     for (unsigned j = 0; j < count; ++j) {
@@ -25,45 +26,39 @@ int lofty_build(uint32_t *table, unsigned peak)
                         if (h >= 0 && h < 15)
                             sum += (int64_t)(axis ? shaper_level_q[phase] : shaper_level_i[phase])*taps[h];
                     }
-                    int value = (int)(((sum < 0 ? -sum : sum)+(INT64_C(1)<<37))>>38);
-                    if (sum < 0) value = -value;
-                    if (-value > bias[part][axis][p]) bias[part][axis][p] = -value;
-                    // First pass stores signed contributions temporarily, axis separately.
-                    if (!axis) table[12*w+p] = (uint32_t)value;
-                    else table[12*w+p] = (table[12*w+p]&1023) | ((uint32_t)value&1023)<<10;
+                    int v = (int)(((sum < 0 ? -sum : sum)+(INT64_C(1)<<37))>>38);
+                    if (v > bias[part][axis][p]) bias[part][axis][p] = v;
                 }
-        table += 12*rows;
     }
-    table -= 12*(512+512+64);
     for (unsigned axis = 0; axis < 2; ++axis)
         for (unsigned p = 0; p < 12; ++p)
-            bias[0][axis][p] += 512-bias[0][axis][p]-bias[1][axis][p]-bias[2][axis][p];
-    for (unsigned part = 0; part < 3; ++part) {
-        unsigned rows = part == 2 ? 64 : 512;
-        for (unsigned w = 0; w < rows; ++w)
-            for (unsigned p = 0; p < 12; ++p) {
-                uint32_t packed = 0, v = table[12*w+p];
+            bias[0][axis][p] = 512-bias[1][axis][p]-bias[2][axis][p];
+    // A's first vector needs three symbols, its last two need only two.
+    // Keep those two vectors adjacent to save a renderer address calculation.
+    const unsigned parts[] = {0,0,1,2,2}, first[] = {0,4,0,4,8};
+    const unsigned counts[] = {3,2,3,2,2}, widths[] = {4,8,12,4,4};
+    for (unsigned v = 0; v < 5; ++v) {
+        unsigned part = parts[v], count = counts[v], width = widths[v];
+        for (unsigned w = 0; w < (1u<<(3*count)); ++w)
+            for (unsigned p = 0; p < width; ++p) {
+                uint32_t packed = 0;
                 for (unsigned axis = 0; axis < 2; ++axis) {
-                    int value = (int)((v>>(10*axis))&1023);
-                    if (value >= 512) value -= 1024;
-                    packed |= (uint32_t)(value+bias[part][axis][p])<<(10*axis);
+                    int64_t sum = 0;
+                    for (unsigned j = 0; j < count; ++j) {
+                        int position = part == 0 ? -1-(int)count+(int)j : -4+(int)(3*part+j);
+                        int h = (int)(first[v]+p)-3*position;
+                        unsigned phase = w>>(3*(count-1-j))&7;
+                        if (h >= 0 && h < 15)
+                            sum += (int64_t)(axis ? shaper_level_q[phase] : shaper_level_i[phase])*taps[h];
+                    }
+                    int value = (int)(((sum < 0 ? -sum : sum)+(INT64_C(1)<<37))>>38);
+                    if (sum < 0) value = -value;
+                    packed |= (uint32_t)(value+bias[part][axis][first[v]+p])<<(10*axis);
                 }
-                table[12*w+p] = packed;
+                table[width*w+p] = packed;
             }
-        table += 12*rows;
+        table += width*(1u<<(3*count));
     }
-    // Two copies of each newest-pair vector absorb the overlapping index bit.
-    // The first four samples have no contribution from this pair.
-    uint32_t tail[256];
-    table -= 12*64;
-    for (unsigned w = 0; w < 64; ++w)
-        for (unsigned p = 0; p < 4; ++p) tail[4*w+p] = table[12*w+8+p];
-    for (unsigned w = 0; w < 64; ++w)
-        for (unsigned p = 0; p < 4; ++p)
-            table[8*w+p] = table[8*w+4+p] = table[12*w+4+p];
-    for (unsigned w = 0; w < 64; ++w)
-        for (unsigned p = 0; p < 4; ++p)
-            table[512+8*w+p] = table[512+8*w+4+p] = tail[4*w+p];
     return 0;
 }
 
@@ -71,7 +66,7 @@ uint32_t lofty_prepare(uint32_t *dst, const uint16_t *src, unsigned n, uint32_t 
 {
     while (n && ((uintptr_t)dst&15)) {
         uint32_t h = previous<<12 | *src++;
-        *dst++ = (((h>>15)&511)*3<<4) | (((h>>6)&511)*3<<15) | ((h&63)<<26);
+        *dst++ = (((h>>15)&511)<<4) | (((h>>6)&511)*3<<13) | ((h&63)<<24);
         previous = h&4095;
         --n;
     }
@@ -82,7 +77,7 @@ uint32_t lofty_prepare(uint32_t *dst, const uint16_t *src, unsigned n, uint32_t 
 #endif
     while (n--) {
         uint32_t h = previous<<12 | *src++;
-        *dst++ = (((h>>15)&511)*3<<4) | (((h>>6)&511)*3<<15) | ((h&63)<<26);
+        *dst++ = (((h>>15)&511)<<4) | (((h>>6)&511)*3<<13) | ((h&63)<<24);
         previous = h&4095;
     }
     return previous;
@@ -95,11 +90,12 @@ IRAM_ATTR void lofty_render(uint32_t *dst, const uint32_t *src, unsigned n, cons
 #else
     while (n--) {
         uint32_t w = *src++;
-        const uint32_t *a = table+((w&32752)/4);
-        const uint32_t *b = table+6144+(((w>>11)&32752)/4);
-        const uint32_t *c = table+12288+(((w>>21)&2032)/4);
-        for (unsigned p = 0; p < 12; ++p)
-            *dst++ = (a[p]+b[p]+(p < 4 ? 0 : p < 8 ? c[p-4] : c[512+p-8]))^0x80200;
+        unsigned a = (w>>4)&511, b = (w>>13)&2047, c = (w>>24)&63;
+        for (unsigned p = 0; p < 12; ++p) {
+            uint32_t av = p < 4 ? table[4*a+p] : table[2048+8*(a&63)+p-4];
+            *dst++ = (av+table[2560+4*b+p]+(p < 4 ? 0 :
+                table[8704+256*(p/4-1)+4*c+(p&3)]))^0x80200;
+        }
     }
 #endif
 }

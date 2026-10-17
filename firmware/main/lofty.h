@@ -3,14 +3,14 @@
 #include <stdint.h>
 
 // Five-symbol .35 pulse, three samples/symbol, four symbols/block.
-#define LOFTY_TABLE_WORDS 13312
+#define LOFTY_TABLE_WORDS 9216
 #define LOFTY_BLOCKS 128
-#define LOFTY_PAGES 36
+#define LOFTY_STORED 38
+#define LOFTY_PAGES 43
 #define LOFTY_WAKE 2
 typedef struct {
     uint32_t words[LOFTY_BLOCKS+4]; // owned trailing prefetch guard
 } __attribute__((aligned(16))) lofty_page;
-#define LOFTY_STORED ((65536-4*LOFTY_TABLE_WORDS)/sizeof(lofty_page))
 // Four phases -> three scaled offsets. Previous is the preceding four phases.
 // Source has 16 readable guard bytes. Arbitrary destination word alignment.
 uint32_t lofty_prepare(uint32_t *, const uint16_t *, unsigned, uint32_t previous);

@@ -593,36 +593,70 @@ dvbs2_pie_index8:
     .type dvbs2_pie_signs,@function
 dvbs2_pie_signs:
     entry a1,32
-    movi a14,0x7ff07ff0
-    mov a11,a6
+    splat q7,0x7ff07ff0
+    ee.zero.q q4
+    ee.movi.32.q q4,a6,3
+    movi a12,12
+    wur.sar_byte a12
+    ssai 5
     .macro signbyte off
     l8ui a9,a3,\off
     slli a8,a8,8
     or a8,a8,a9
     .endm
-    .macro signword shift,off
+    .macro signindex shift,lane
     extui a10,a8,\shift,10
-    addx4 a10,a10,a5
-    l32i a10,a10,0
-    slli a11,a11,5
-    and a11,a11,a14
-    or a11,a11,a10
-    s32i a11,a2,\off
+    ee.movi.32.q q2,a10,\lane
     .endm
-    loopnez a4,.Lsigns_end
+    .macro sign_groups unaligned
     l8ui a8,a3,0
     signbyte 1
-    signword 6,0
+    signindex 6,0
     signbyte 2
-    signword 4,4
+    signindex 4,1
     signbyte 3
-    signword 2,8
+    signindex 2,2
     signbyte 4
-    signword 0,12
+    signindex 0,3
+    ee.ldxq.32 q0,q2,a5,0,0
+    ee.ldxq.32 q0,q2,a5,1,2
+    ee.ldxq.32 q0,q2,a5,2,4
+    ee.ldxq.32 q0,q2,a5,3,6
     addi a3,a3,5
-    addi a2,a2,16
+    .if \unaligned
+    wur.sar_byte a12
+    .endif
+    // Two prefix steps supply ten older signs; duplicate bits OR together.
+    .rept 2
+    ee.src.q q1,q4,q0
+    ee.vsl.32 q1,q1
+    ee.andq q1,q1,q7
+    ee.orq q0,q0,q1
+    .endr
+    .if \unaligned
+    wur.sar_byte a13
+    ee.srcq.128.st.incp q4,q0,a2
+    .else
+    ee.vst.128.ip q0,a2,16
+    .endif
+    ee.orq q4,q0,q0
+    .endm
+    extui a13,a2,0,4
+    bnez a13,.Lsigns_unaligned
+    loopnez a4,.Lsigns_end
+    sign_groups 0
 .Lsigns_end:
-    mov a2,a11
+    ee.movi.32.a q4,a2,3
+    retw
+.Lsigns_unaligned:
+    sub a2,a2,a13
+    neg a13,a13
+    extui a13,a13,0,4
+    loopnez a4,.Lsigns_unaligned_end
+    sign_groups 1
+.Lsigns_unaligned_end:
+    ee.srcq.128.st.incp q4,q4,a7
+    ee.movi.32.a q4,a2,3
     retw
     .size dvbs2_pie_signs,.-dvbs2_pie_signs
 
@@ -795,7 +829,7 @@ dvbs2_pie_run8_packed:
     .size dvbs2_pie_run8_packed, . - dvbs2_pie_run8_packed
 
 /* In-place four-phase words. Small cached instruction loops keep legacy heap floors. */
-    .section .text.lofty_mapper,"ax"
+    .section .iram1.lofty_mapper,"ax"
     .align 4
     .global dvbs2_pie_lofty
     .type dvbs2_pie_lofty,@function
@@ -878,6 +912,23 @@ dvbs2_pie_lofty_copy:
     l16ui a2,a3,0
     retw
     .size dvbs2_pie_lofty_copy,.-dvbs2_pie_lofty_copy
+
+// Aligned temporary -> unaligned framed run. Caller restores prefix and tail.
+    .align 4
+    .global dvbs2_pie_lofty_store
+    .type dvbs2_pie_lofty_store,@function
+dvbs2_pie_lofty_store:
+    entry a1,32
+    wur.sar_byte a5
+    ee.zero.q q4
+    loopnez a4,.Llofty_store_end
+    ee.vld.128.ip q0,a2,16
+    ee.srcq.128.st.incp q4,q0,a3
+    ee.orq q4,q0,q0
+.Llofty_store_end:
+    ee.srcq.128.st.incp q4,q0,a6
+    retw
+    .size dvbs2_pie_lofty_store,.-dvbs2_pie_lofty_store
 
     .section .iram1,"ax"
 

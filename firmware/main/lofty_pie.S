@@ -12,24 +12,27 @@ lofty_render_pie:
     ee.movi.32.q q7,a8,1
     ee.movi.32.q q7,a8,2
     ee.movi.32.q q7,a8,3
-    movi a6,24576
+    movi a6,10240
     add a6,a6,a5
-    movi a7,49152
+    movi a7,34816
     add a7,a7,a5
-    movi a15,2048
+    addmi a13,a5,8192
+    movi a15,1024
     l32i a8,a3,0
     loopnez a4,.Lend
-    extui a10,a8,0,15
-    extui a11,a8,11,15
-    extui a12,a8,21,11
+    extui a10,a8,0,13
+    extui a11,a8,9,15
+    extui a12,a8,20,10
     add a10,a10,a5
     add a11,a11,a6
     add a12,a12,a7
-    ee.vld.128.ip q0,a10,16
+    ee.vld.128.ip q0,a10,0
+    extui a9,a8,0,10
     ee.vld.128.ip q1,a11,16
-    ee.vld.128.ip q2,a10,16
-    ee.vadds.s32.ld.incp q3,a11,q0,q0,q1
-    ee.vld.128.ip q5,a10,16
+    addx2 a9,a9,a13
+    ee.vadds.s32.ld.incp q2,a9,q0,q0,q1
+    ee.vld.128.ip q3,a11,16
+    ee.vld.128.ip q5,a9,0
     ee.vld.128.xp q1,a12,a15
     ee.vadds.s32.ld.incp q3,a11,q6,q2,q3
     ee.xorq q4,q0,q7
@@ -47,7 +50,7 @@ lofty_render_pie:
     .size lofty_render_pie,.-lofty_render_pie
 
 // Eight four-symbol words -> eight offsets. Output aligned; source has 16 guard bytes.
-    .section .text.lofty_prepare,"ax"
+    .section .iram1.lofty_prepare,"ax"
     .global lofty_prepare_pie
     .type lofty_prepare_pie,@function
     .align 4
@@ -58,7 +61,7 @@ lofty_prepare_pie:
     ee.movi.32.q q5,a8,1
     ee.movi.32.q q5,a8,2
     ee.movi.32.q q5,a8,3
-    movi a8,0x3fe03fe0
+    movi a8,0xff80ff80
     ee.movi.32.q q6,a8,0
     ee.movi.32.q q6,a8,1
     ee.movi.32.q q6,a8,2
@@ -81,6 +84,7 @@ lofty_prepare_pie:
     wur.sar_byte a8
     ee.src.q q1,q4,q0
     ee.orq q4,q0,q0
+    ssai 4
     ee.vsl.32 q2,q1
     ee.andq q2,q2,q6
     ssai 6
@@ -89,18 +93,16 @@ lofty_prepare_pie:
     ee.vsl.32 q1,q1
     ee.andq q1,q1,q5
     ee.orq q3,q3,q1
-    ee.vzip.16 q2,q3
-    ee.vadds.s32 q1,q2,q2
-    ee.vadds.s32 q2,q2,q1
     ee.vadds.s32 q1,q3,q3
     ee.vadds.s32 q3,q3,q1
-    ssai 1
+    ee.vzip.16 q2,q3
+    ssai 3
     ee.vsr.32 q2,q2
     ee.vsr.32 q3,q3
     ee.andq q0,q0,q7
     ee.zero.q q1
     ee.vzip.16 q0,q1
-    ssai 26
+    ssai 24
     ee.vsl.32 q0,q0
     ee.vsl.32 q1,q1
     ee.orq q2,q2,q0

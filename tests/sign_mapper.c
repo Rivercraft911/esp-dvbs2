@@ -67,6 +67,9 @@ void sign_mapper_check(void)
                         for (unsigned j = 0; j < n; ++j) {
                             do { history = advance(history,raw[at++]); } while (++pending < 5);
                             pending = 0;
+                            if (out[offset+j] != history)
+                                printf("sign mc %u pilots %u pie %u frame %u at %u offset %u j %u: %08x != %08x\n",
+                                       mc,pilots,pie,frame,at,offset,j,(unsigned)out[offset+j],(unsigned)history);
                             assert(out[offset+j] == history);
                         }
                         for (unsigned j = 0; j < offset; ++j) assert(out[j] == 0xa5a5a5a5);

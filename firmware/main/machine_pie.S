@@ -29,22 +29,19 @@ machine_render_pie:
     ee.vld.128.ip q1,a13,0
     extui a15,a11,18,12
     add a14,a14,a6
-    ee.orq q0,q0,q1
+    ee.vadds.s32.ld.incp q2,a14,q0,q0,q1
     add a15,a15,a9
-    ee.vld.128.ip q2,a14,0
-    ee.vst.128.ip q0,a2,16
     ee.vld.128.ip q3,a15,0
     extui a12,a11,0,12
     extui a13,a11,16,12
     add a12,a12,a7
     add a13,a13,a10
-    ee.orq q2,q2,q3
-    ee.vld.128.ip q0,a12,0
-    ee.vst.128.ip q2,a2,16
-    ee.vld.128.ip q1,a13,0
+    ee.vld.128.ip q1,a12,0
+    ee.vadds.s32.st.incp q0,a2,q2,q2,q3
+    ee.vld.128.ip q3,a13,0
     addi a3,a3,4
-    l32i a11,a3,0 // one readable source-word guard; hides load-use latency
-    ee.orq q0,q0,q1
+    l32i a11,a3,0
+    ee.vadds.s32.st.incp q2,a2,q0,q1,q3
     ee.vst.128.ip q0,a2,16
 .Lend:
 .Ldone:

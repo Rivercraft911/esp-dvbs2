@@ -29,8 +29,9 @@ static void reference(uint32_t *dst, unsigned blocks)
     for (unsigned b = 0; b < blocks; ++b) {
         uint32_t h = (uint32_t)words[b]<<12 | words[b+1];
         for (unsigned p = 0; p < 12; ++p)
-            *dst++ = (table[12*((h>>15)&511)+p] + table[12*(512+((h>>6)&511))+p] +
-                      (p < 4 ? 0 : p < 8 ? table[12288+8*(h&63)+p-4] : table[12800+8*(h&63)+p-8]))^0x80200;
+            *dst++ = ((p < 4 ? table[4*((h>>15)&511)+p] : table[2048+8*((h>>15)&63)+p-4]) +
+                      table[2560+12*((h>>6)&511)+p] +
+                      (p < 4 ? 0 : table[8704+256*(p/4-1)+4*(h&63)+(p&3)]))^0x80200;
     }
 }
 
@@ -54,7 +55,7 @@ static void kernels(void)
                 assert(previous == words[source+1366]);
                 for (unsigned j = 0; j < 1367; ++j) {
                     uint32_t h = old<<12 | words[source+j];
-                    uint32_t expected = (((h>>15)&511)*3<<4) | (((h>>6)&511)*3<<15) | ((h&63)<<26);
+                    uint32_t expected = (((h>>15)&511)<<4) | (((h>>6)&511)*3<<13) | ((h&63)<<24);
                     assert(offsets[align+j] == expected);
                     old = words[source+j];
                 }
@@ -102,11 +103,12 @@ __attribute__((noinline)) void lofty_end(void)
 
 static void encoder(void)
 {
-    dvbs2_fast *f = aligned_alloc(16,(dvbs2_fast_size()+15)&~(size_t)15);
+    dvbs2_fast *f = aligned_alloc(16,(dvbs2_fast_size()+31)&~(size_t)15);
     dvbs2_workspace *ws = aligned_alloc(16,(sizeof *ws+15)&~(size_t)15);
     uint8_t *payload = aligned_alloc(16,8112), *raw = aligned_alloc(16,33312);
-    uint32_t *map = aligned_alloc(16,DVBS2_LOFTY_CACHE_BYTES), *bch = aligned_alloc(16,8192);
-    assert(f && ws && payload && raw && map && bch);
+    uint32_t *map = aligned_alloc(16,32768), *cache = aligned_alloc(16,32768);
+    uint8_t *bits = malloc(DVBS2_FEC_BYTES);
+    assert(f && ws && payload && raw && map && cache && bits);
     const unsigned sizes[] = {0,1,2,3,7,128,131};
     unsigned cases = 0;
     for (unsigned mc = LOFTY_TRACE ? 18 : 12; mc <= 17; ++mc)
@@ -118,55 +120,88 @@ static void encoder(void)
             unsigned pending = 0, call = 0;
             for (unsigned frame = 0; frame < 3; ++frame) {
                 for (unsigned j = 0; j < bytes; ++j) { x ^= x<<13; x ^= x>>17; x ^= x<<5; payload[j] = x; }
+                uint8_t *guard = (uint8_t *)f+dvbs2_fast_mode_size(m);
+                memset(guard,0xa5,16);
                 assert(!dvbs2_fast_prepare(f,m,pilots,15));
                 assert(!dvbs2_encode_frame(f,ws,NULL,payload,8*bytes,raw));
+                memcpy(bits,ws->bits,DVBS2_FEC_BYTES);
+                assert(dvbs2_fast_cache_size(f) <= 32768);
+                assert(!dvbs2_fast_cache_tables(f,(uint8_t *)cache));
+                assert(!dvbs2_fast_bb_gcs(f,ws,payload,8*bytes));
+                dvbs2_fast_bch(f,ws); dvbs2_fast_ldpc(f,ws);
+                assert(!memcmp(bits,ws->bits,DVBS2_FEC_BYTES));
                 assert(!dvbs2_fast_lofty_cache(f,map));
-                if (m->t > 8) assert(!dvbs2_fast_cache_bch(f,(uint8_t *)bch));
                 assert(!dvbs2_fast_lofty_start(f,ws,&state));
                 unsigned at = 0;
                 while (state.at < n) {
-                    uint16_t out[140];
-                    for (unsigned j = 0; j < 140; ++j) out[j] = 0xa5a5;
-                    unsigned room = sizes[call++%7], got_n = dvbs2_fast_lofty_read(f,&state,out+1,room);
+                    unsigned room = sizes[call++%7], got_n = room;
+                    const uint16_t *out = dvbs2_fast_lofty_read(f,&state,&got_n);
                     assert(got_n <= room);
                     for (unsigned j = 0; j < got_n; ++j) {
                         do { h = ((h<<3)|raw[at++])&4095; } while (++pending < 4);
                         pending = 0;
-                        assert(out[1+j] == h);
+                        if (out[j] != h)
+                            fprintf(stderr,"mapper %u pilots %u frame %u at %u: %03x != %03x\n",
+                                    mc,pilots,frame,at,out[j],(unsigned)h);
+                        assert(out[j] == h);
                     }
-                    assert(out[0] == 0xa5a5);
-                    for (unsigned j = 1+got_n; j < 140; ++j) assert(out[j] == 0xa5a5);
                 }
                 while (at < n) { h = ((h<<3)|raw[at++])&4095; ++pending; }
+                if (state.pending != pending || state.history != h)
+                    fprintf(stderr,"end %u pilots %u frame %u: %u/%03x != %u/%03x\n",
+                            mc,pilots,frame,state.pending,(unsigned)state.history,pending,(unsigned)h);
                 assert(state.pending == pending && state.history == h);
+                for (unsigned j = 0; j < 16; ++j) assert(guard[j] == 0xa5);
                 ++cases;
             }
         }
     printf("@{\"test\":\"lofty_mapper\",\"frames\":%u,\"errors\":0}\n",cases);
 #if LOFTY_TRACE
-    for (unsigned mc = 13; mc <= 17; mc += 2) {
+    for (unsigned mode = 0; mode < 4; ++mode) {
+        unsigned mc = (unsigned[]){13,15,17,11}[mode];
         const dvbs2_mode *m = dvbs2_find_mode(mc);
         unsigned bytes = (m->kbch-80)/8;
         uint32_t x = 2026;
         for (unsigned i = 0; i < bytes; ++i) { x ^= x<<13; x ^= x>>17; x ^= x<<5; payload[i] = x; }
-        assert(!dvbs2_fast_prepare(f,m,1,15));
-        if (m->t > 8) assert(!dvbs2_fast_cache_bch(f,(uint8_t *)bch));
-        assert(!dvbs2_fast_lofty_cache(f,map));
-        dvbs2_sign_state state = {0};
-        lofty_begin(); dvbs2_fast_bb_gcs(f,ws,payload,8*bytes); lofty_end();
-        lofty_begin(); dvbs2_fast_bch(f,ws); lofty_end();
-        lofty_begin(); dvbs2_fast_ldpc(f,ws); lofty_end();
-        lofty_begin(); dvbs2_fast_lofty_start(f,ws,&state); lofty_end();
-        lofty_begin();
-        uint32_t previous = 0;
-        while (state.at < dvbs2_frame_symbols(m,1)) {
-            unsigned count = dvbs2_fast_lofty_read(f,&state,words,128);
-            previous = lofty_prepare(offsets,words,count,previous);
+        assert(!dvbs2_fast_prepare(f,m,1,15 | (mc == 11 ? DVBS2_MAP_QUADS : 0)));
+        assert(!dvbs2_fast_cache_tables(f,(uint8_t *)cache));
+        if (mc != 11) assert(!dvbs2_fast_lofty_cache(f,map));
+        else for (unsigned w = 0; w < 1024; ++w) {
+            table[w] = 0;
+            for (unsigned j = 0; j < 5; ++j) {
+                unsigned c = w>>(2*j);
+                table[w] |= ((c^(c>>1))&1)<<(j+4) | ((c>>1)&1)<<(j+20);
+            }
         }
-        lofty_end();
-        printf("trace frame %u complete\n",mc);
-        printf("@{\"test\":\"lofty_allocation\",\"modcod\":%u,\"fast_bytes\":%u,\"payload_bytes\":%u,\"bch_bytes\":%u}\n",
-               mc,(unsigned)dvbs2_fast_mode_size(m),bytes,m->t > 8 ? DVBS2_BCH_CACHE_BYTES : 0);
+        dvbs2_sign_state state = {0};
+        unsigned page = 0;
+        uint32_t previous = 0;
+        for (unsigned frame = 0; frame < 2; ++frame) {
+            lofty_begin(); dvbs2_fast_bb_gcs(f,ws,payload,8*bytes); lofty_end();
+            lofty_begin(); dvbs2_fast_bch(f,ws); lofty_end();
+            lofty_begin(); dvbs2_fast_ldpc(f,ws); lofty_end();
+            lofty_begin();
+            if (mc == 11) dvbs2_fast_sign_start(f,ws,&state);
+            else dvbs2_fast_lofty_start(f,ws,&state);
+            lofty_end();
+            for (unsigned part = 0; part < 2; ++part) {
+                lofty_begin();
+                do {
+                    unsigned count;
+                    if (mc == 11) count = dvbs2_fast_sign_read(f,&state,offsets+page,128-page,table);
+                    else {
+                        count = 128-page;
+                        const uint16_t *src = dvbs2_fast_lofty_read(f,&state,&count);
+                        previous = lofty_prepare(offsets+page,src,count,previous);
+                    }
+                    page = (page+count)%128;
+                } while (part && state.at < dvbs2_frame_symbols(m,1));
+                lofty_end();
+            }
+            printf("trace frame %u/%u complete\n",mc,frame);
+        }
+        printf("@{\"test\":\"lofty_allocation\",\"modcod\":%u,\"fast_bytes\":%u,\"payload_bytes\":%u,\"cache_bytes\":%u}\n",
+               mc,(unsigned)dvbs2_fast_mode_size(m),bytes,(unsigned)dvbs2_fast_cache_size(f));
     }
     assert(!lofty_build(table,128));
     for (unsigned i = 0; i < 1380; ++i) words[i] &= 4095;
@@ -174,7 +209,7 @@ static void encoder(void)
     offsets[1365] = 0;
     lofty_begin(); lofty_render(got,offsets,1365,table); lofty_end();
 #endif
-    free(bch); free(map); free(raw); free(payload); free(ws); free(f);
+    free(bits); free(cache); free(map); free(raw); free(payload); free(ws); free(f);
 }
 
 #ifdef LOFTY_HOST

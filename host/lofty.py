@@ -33,8 +33,9 @@ def table(peak=128):
         bounds.append(-v.min(axis=1))
     bounds[0] += 512-sum(bounds)
     packed = [((p[0]+b[0]) | ((p[1]+b[1])<<10)).astype('<u4') for p,b in zip(parts,bounds)]
-    return np.r_[packed[0].ravel(),packed[1].ravel(),np.repeat(packed[2][:,4:8],2,axis=0).ravel(),
-                 np.repeat(packed[2][:,8:12],2,axis=0).ravel()]
+    return np.r_[packed[0][:,:4].ravel(),packed[0][:64,4:12].ravel(),packed[1].ravel(),
+                 packed[2][:,4:8].ravel(),packed[2][:,8:12].ravel()]
+
 
 
 def shape(phases, peak=128):

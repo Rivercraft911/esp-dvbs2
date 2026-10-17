@@ -102,8 +102,8 @@ void dvbs2_pack_quads(const uint8_t *phases, uint8_t *packed, size_t symbols);
 uint8_t *dvbs2_fast_payload(dvbs2_fast *f);
 enum { DVBS2_PIE_BB = 1, DVBS2_PIE_BCH = 2, DVBS2_PIE_LDPC = 4, DVBS2_PIE_MAP = 8 };
 size_t dvbs2_fast_size(void);
-/* Smaller allocation valid only for this mode (15184 bytes for 8PSK 2/3
- * on ESP32-S3). Allocate internal output first, then context, then payload to
+/* Smaller allocation valid only for this mode.
+ * Allocate internal output first, then context, then payload to
  * preserve a large free block in the transmitter build. Reprepare with the same mode
  * and either pilot setting; allocate fast_size() to switch freely. */
 size_t dvbs2_fast_mode_size(const dvbs2_mode *mode);
@@ -114,12 +114,17 @@ int dvbs2_fast_prepare(dvbs2_fast *f, const dvbs2_mode *mode, int pilots, unsign
  * Returns -1 for invalid context/alignment or t = 8. No allocation is hidden. */
 #define DVBS2_BCH_CACHE_BYTES 8192
 int dvbs2_fast_cache_bch(dvbs2_fast *f, uint8_t *table);
-/* Optional complete hot-data cache for MAP_QUADS (PRBS, Gold, BCH, LDPC
+/* Optional complete hot-data cache (PRBS, Gold, BCH, LDPC
  * program/columns and GCS header CRC). After prepare, allocate cache_size()
  * aligned internal bytes, then cache_tables(). Buffer remains owned by caller
  * until the context is released or prepared again. Size 0 means unsupported. */
 size_t dvbs2_fast_cache_size(const dvbs2_fast *f);
 int dvbs2_fast_cache_tables(dvbs2_fast *f, uint8_t *table);
+/* Optional disjoint tail for LDPC program, columns and header CRC. Allocate
+ * cache_size()-cache_tail_size() bytes at table and cache_tail_size() at tail.
+ * Both buffers have the same alignment/lifetime as cache_tables. */
+size_t dvbs2_fast_cache_tail_size(const dvbs2_fast *f);
+int dvbs2_fast_cache_split(dvbs2_fast *f, uint8_t *table, uint8_t *tail);
 unsigned dvbs2_fast_pie(const dvbs2_fast *f);
 int dvbs2_fast_ldxq_bias(const dvbs2_fast *f);
 int dvbs2_fast_bb_gcs(const dvbs2_fast *f, dvbs2_workspace *ws,
@@ -176,6 +181,8 @@ unsigned dvbs2_fast_sign_read(const dvbs2_fast *f, dvbs2_sign_state *s, uint32_t
 #define DVBS2_LOFTY_CACHE_BYTES 1088
 int dvbs2_fast_lofty_cache(dvbs2_fast *, uint32_t *table);
 int dvbs2_fast_lofty_start(dvbs2_fast *, const dvbs2_workspace *, dvbs2_sign_state *);
-unsigned dvbs2_fast_lofty_read(const dvbs2_fast *, dvbs2_sign_state *, uint16_t *, unsigned);
+// Borrow up to *blocks framed words, with 16 readable guard bytes; advance at.
+// Consume the view before the next read, encoder stage or prepare.
+const uint16_t *dvbs2_fast_lofty_read(dvbs2_fast *, dvbs2_sign_state *, unsigned *blocks);
 
 #endif

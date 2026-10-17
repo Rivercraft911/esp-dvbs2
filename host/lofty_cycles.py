@@ -95,21 +95,30 @@ def traces(path,disassembly):
             assert active is None
             active = []
         if active is not None: active.extend(blocks[pc])
-    assert len(rows) == 16,len(rows)
+    assert len(rows) == 49,len(rows)
     return rows
 
 
 def report(trace,disassembly):
     rows = traces(trace,disassembly)
-    for j,mc in enumerate((13,15,17)):
-        stages = {name:replay(row) for name,row in zip(('bb','bch','ldpc','map','frame'),rows[5*j:5*j+5])}
-        kernel = sum(r['cycles'] for r in stages.values())
-        core0 = math.ceil((kernel+4823)*47220/199746)+1000
-        yield dict(kind='encoder_model',modcod=mc,stages=stages,kernel_cycles=kernel,
-                   input_copy_planning_floor=4823,total_cycles=kernel+4823,
-                   sensitivity_25_percent=math.ceil(1.25*kernel)+4823,
-                   frame_cycles=199746,ceiling_cycles=169784,core0_bank_cycles=core0,
-                   publication_wake_allowance_per_bank=1000,reserve_15_percent=core0 <= 40137,measured=False)
+    for j,mc in enumerate((13,15,17,11)):
+        frames = []
+        for frame in range(2):
+            stages = {name:replay(row) for name,row in zip(('bb','bch','ldpc','map','first_page','frame'),
+                      rows[12*j+6*frame:12*j+6*frame+6])}
+            kernel = sum(r['cycles'] for r in stages.values())
+            frames.append(kernel)
+            duration = 33282*7.2 if mc == 11 else 199746
+            core0 = math.ceil((kernel+4823)*47220/duration)+1000
+            yield dict(kind='encoder_model',modcod=mc,frame=frame,stages=stages,kernel_cycles=kernel,
+                       input_copy_planning_floor=4823,total_cycles=kernel+4823,
+                       sensitivity_25_percent=math.ceil(1.25*kernel)+4823,
+                       frame_cycles=duration,ceiling_cycles=203685 if mc == 11 else 169784,
+                       core0_bank_cycles=core0,publication_wake_allowance_per_bank=1000,
+                       reserve_15_percent=core0 <= 40137,
+                       first_publication_cycles=kernel-stages['frame']['cycles']+4823,measured=False)
+        yield dict(kind='encoder_pair',modcod=mc,mean_cycles=sum(frames)/2+4823,
+                   max_cycles=max(frames)+4823,measured=False)
     r = replay(rows[-1])
     yield dict(kind='render_trace',blocks=1365,samples=16380,**r,measured=False)
     f = [(pc,ins.replace('ee.vld.128.xp','ee.vld.128.ip'))
@@ -117,10 +126,10 @@ def report(trace,disassembly):
     first = base.replay(base.loop_stream(f,1))['cycles']
     step = base.replay(base.loop_stream(f,2))['cycles']-first
     prologue = first-step
-    # Main QPSK sign path: 42,472 worst bank at 26 cycles/block. Charge the
-    # difference from ideal 15,740 fresh samples as an observed residual, then
-    # add 1,000 for the different wrapper. This is a prediction, not a bound.
-    residual = 42472-math.ceil(15740/12)*26
+    # Coordinator 3cbf37c: worst 8PSK bank 34,926 cycles, at 22 issue
+    # cycles/block. Charge the kernel delta and another 1,000 cycles. Internal
+    # RAM contention may change, so this is a prediction, never a bound.
+    residual = 34926-math.ceil(15740/12)*22
     predicted = math.ceil(15740/12)*step+residual+1000
     yield dict(kind='bank_prediction',cycles_per_block=step,cycles_per_sample=step/12,
                prologue_cycles=prologue,reference_residual_cycles=residual,

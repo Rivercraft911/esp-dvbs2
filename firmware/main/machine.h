@@ -6,8 +6,8 @@
 #define MACHINE_LUT_WORDS 1024
 #define MACHINE_PAGE_BLOCKS 128
 #define MACHINE_PAGE_SAMPLES (12*MACHINE_PAGE_BLOCKS)
-#define MACHINE_PAGES 54
-#define MACHINE_WAKE_PAGES 8
+#define MACHINE_PAGES 50
+#define MACHINE_WAKE_PAGES 4
 typedef struct {
     uint32_t signs[MACHINE_PAGE_BLOCKS+1]; // renderer's readable guard belongs to this page
 } __attribute__((aligned(16))) machine_page;

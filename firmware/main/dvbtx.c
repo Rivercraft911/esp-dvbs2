@@ -100,6 +100,10 @@ typedef struct {
 } dvb_t;
 
 static DRAM_ATTR dvb_t dvb;
+_Static_assert(LOFTY_BLOCKS == MACHINE_PAGE_BLOCKS && sizeof(lofty_page) == sizeof(machine_page),
+               "both queues use the same page geometry");
+_Static_assert(4*LOFTY_TABLE_WORDS+LOFTY_STORED*sizeof(lofty_page)+DVBS2_FAST_WORKSPACE_USED <= 65536,
+               "lofty tables, resident pages and workspace fit the store");
 _Static_assert(MACHINE_PAGE_BLOCKS%4 == 0 && sizeof(machine_page)%16 == 0,
                "queue pages retain prepare and render alignment");
 _Static_assert(sizeof(dvbs2_workspace) - DVBS2_FAST_WORKSPACE_USED >=
@@ -195,7 +199,6 @@ static void moon_wait(void)
 
 static IRAM_ATTR __attribute__((noinline)) int moon_map(void)
 {
-    uint16_t words[LOFTY_BLOCKS+8] __attribute__((aligned(16)));
     if ((dvb.lofty ? dvbs2_fast_lofty_start(enc.fast,enc.ws,&dvb.mapper) :
                      dvbs2_fast_sign_start(enc.fast,enc.ws,&dvb.mapper))) return -1;
     while (!enc.stop && dvb.mapper.at < dvb.ring.frame_symbols) {
@@ -207,10 +210,11 @@ static IRAM_ATTR __attribute__((noinline)) int moon_map(void)
         const TickType_t tick = xTaskGetTickCount();
         const uint32_t before = esp_cpu_get_cycle_count();
         const unsigned room = MACHINE_PAGE_BLOCKS-dvb.page_blocks;
-        const unsigned n = dvb.lofty ?
-            dvbs2_fast_lofty_read(enc.fast,&dvb.mapper,words,room) :
-            dvbs2_fast_sign_read(enc.fast,&dvb.mapper,page->signs+dvb.page_blocks,room,dvb.sign_lut);
-        if (lp && n) dvb.last_word = lofty_prepare(lp->words+dvb.page_blocks,words,n,dvb.last_word);
+        unsigned n = room;
+        if (lp) {
+            const uint16_t *words = dvbs2_fast_lofty_read(enc.fast,&dvb.mapper,&n);
+            if (n) dvb.last_word = lofty_prepare(lp->words+dvb.page_blocks,words,n,dvb.last_word);
+        } else n = dvbs2_fast_sign_read(enc.fast,&dvb.mapper,page->signs+dvb.page_blocks,room,dvb.sign_lut);
         const uint32_t cycles = esp_cpu_get_cycle_count()-before;
         if (cycles > dvb.prepare_max) {
             dvb.prepare_max = cycles;
@@ -619,7 +623,7 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
     dvb.dac_rate = dac_rate;
     dvb.moon = moon;
     dvb.lofty = lofty;
-    dvb.queue_pages = lofty ? LOFTY_PAGES : MACHINE_PAGES;
+    dvb.queue_pages = lofty ? (modcod == 17 ? 38 : modcod == 13 ? 42 : LOFTY_PAGES) : MACHINE_PAGES;
     dvb.wake_pages = lofty ? LOFTY_WAKE : MACHINE_WAKE_PAGES;
     dvb.pages = NULL;
     dvb.lofty_pages = NULL;
@@ -685,8 +689,12 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
         if (lofty) {
             dvb.lofty_pages = (lofty_page *)(shaper_store+LOFTY_TABLE_WORDS);
             tail = (uint8_t *)(dvb.lofty_pages+LOFTY_STORED);
-            enc.block = heap_caps_aligned_alloc(16,(LOFTY_PAGES-LOFTY_STORED)*sizeof(lofty_page),internal);
-            if (!enc.block) { release(); return 0; }
+            if (dvb.queue_pages > LOFTY_STORED) {
+                enc.block = heap_caps_aligned_alloc(16,(dvb.queue_pages-LOFTY_STORED)*sizeof(lofty_page),internal);
+                if (!enc.block) { release(); return 0; }
+            }
+            moon_ws = (dvbs2_workspace *)tail;
+            tail += DVBS2_FAST_WORKSPACE_USED;
         } else {
             dvb.pages = (machine_page *)(shaper_store+MACHINE_TABLE_WORDS);
             uint32_t *lut = (uint32_t *)(dvb.pages+MACHINE_PAGES);
@@ -778,8 +786,8 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
     // Keep its context there too when SPI is selected, reserving internal RAM for Wi-Fi.
     enc.fast = heap_caps_aligned_alloc(16, dvbs2_fast_mode_size(mode),
                                       input && enc.packed && !resident ? MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT : internal);
-    enc.ws_borrowed = quads;
-    enc.ws = lofty ? heap_caps_aligned_alloc(16,DVBS2_FAST_WORKSPACE_USED,internal) : moon ? moon_ws : enc.ws_borrowed && sps == 4 ? (dvbs2_workspace *)(shaper_store + QPSK_TABLE_WORDS(4)) :
+    enc.ws_borrowed = quads || moon;
+    enc.ws = moon ? moon_ws : enc.ws_borrowed && sps == 4 ? (dvbs2_workspace *)(shaper_store + QPSK_TABLE_WORDS(4)) :
         enc.ws_borrowed && sps == 3 ? (dvbs2_workspace *)((uint8_t *)shaper_store+store_used) :
         heap_caps_aligned_alloc(16, sizeof *enc.ws,
                                resident ? internal : MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -812,27 +820,23 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
                               15 | (fractional ? DVBS2_RO_20 : 0) | (quads ? DVBS2_MAP_QUADS : 0) |
                               (input && !input_bch && !lofty ? DVBS2_BCH_NIBBLE : 0) |
                               (!moon && mode->t == 8 && mode->bits_per_symbol == 2 && !quads ? DVBS2_BCH_NIBBLE : 0) |
-                              (resident ? 0 : DVBS2_BCH_NIBBLE | DVBS2_MAP_SPARSE)) ||
+                              (resident ? 0 : (mode->t == 8 && !input ? 0 : DVBS2_BCH_NIBBLE) | DVBS2_MAP_SPARSE)) ||
             (enc.bch && dvbs2_fast_cache_bch(enc.fast, enc.bch))) {
         printf("@{\"cmd\":\"%s\",\"error\":\"allocation failed\"}\n", cmd);
         heap_caps_free(taps);
         release();
         return 0;
     }
-    if (lofty) {
-        enc.tables = heap_caps_aligned_alloc(16,DVBS2_LOFTY_CACHE_BYTES,internal);
-        if (mode->t > 8) enc.bch = heap_caps_aligned_alloc(16,DVBS2_BCH_CACHE_BYTES,internal);
-        if (!enc.tables || (mode->t > 8 && (!enc.bch || dvbs2_fast_cache_bch(enc.fast,enc.bch))) ||
-            dvbs2_fast_lofty_cache(enc.fast,(uint32_t *)enc.tables)) {
+    if (moon) {
+        const size_t cache = dvbs2_fast_cache_size(enc.fast);
+        const size_t tail = dvbs2_fast_cache_tail_size(enc.fast);
+        uint8_t *shared = store_used+tail <= sizeof shaper_store ? (uint8_t *)shaper_store+store_used : NULL;
+        const size_t heap = cache-(shared ? tail : 0);
+        if (shared) store_used += tail;
+        enc.tables = heap_caps_aligned_alloc(16,heap+(lofty ? DVBS2_LOFTY_CACHE_BYTES : 0),internal);
+        if (!enc.tables || dvbs2_fast_cache_split(enc.fast,enc.tables,shared) ||
+            (lofty && dvbs2_fast_lofty_cache(enc.fast,(uint32_t *)(enc.tables+heap)))) {
             heap_caps_free(taps); release();
-            printf("@{\"cmd\":\"%s\",\"error\":\"lofty cache allocation failed\"}\n",cmd);
-            return 0;
-        }
-    } else if (moon) {
-        enc.tables = heap_caps_aligned_alloc(16,dvbs2_fast_cache_size(enc.fast),internal);
-        if (!enc.tables || dvbs2_fast_cache_tables(enc.fast,enc.tables)) {
-            heap_caps_free(taps);
-            release();
             printf("@{\"cmd\":\"%s\",\"error\":\"encoder cache allocation failed\"}\n",cmd);
             return 0;
         }
@@ -991,7 +995,13 @@ static void stop_encoder(void)
                          "\"table_bytes\":%u,\"table_heap_bytes\":0,\"encoder_cache_bytes\":%u",
                          dvb.queue_pages,(unsigned)dvb.queue_low,(unsigned)dvb.queue_empty,(unsigned)dvb.wake_max,(unsigned)dvb.queue_wakes,
                          (unsigned)dvb.prepare_pages,(unsigned)dvb.prepare_max,(unsigned)dvb.prepare_tail_max,dvb.prepare_cycles,(dvb.lofty ? LOFTY_TABLE_WORDS : MACHINE_TABLE_WORDS)*4,
-                         (unsigned)(dvb.lofty ? DVBS2_LOFTY_CACHE_BYTES : dvbs2_fast_cache_size(enc.fast)));
+                         (unsigned)(dvbs2_fast_cache_size(enc.fast)+(dvb.lofty ? DVBS2_LOFTY_CACHE_BYTES : 0)));
+    if (dvb.moon) {
+        const size_t total = dvbs2_fast_cache_size(enc.fast)+(dvb.lofty ? DVBS2_LOFTY_CACHE_BYTES : 0);
+        const size_t heap = heap_caps_get_allocated_size(enc.tables);
+        printf(",\"encoder_cache_heap_bytes\":%u,\"encoder_cache_store_bytes\":%u",
+               (unsigned)heap,(unsigned)(total-heap));
+    }
     printf(",\"workspace_memory\":\"%s\",\"workspace_bytes\":%u,\"fast_bytes\":%u,"
            "\"workspace_heap_bytes\":%u,\"fast_heap_bytes\":%u,\"bch_cache_heap_bytes\":%u,"
            "\"bch_cache_bytes\":%u,\"bch_variant\":\"%s\",\"packed_mapper\":\"%s\"",
@@ -1000,8 +1010,8 @@ static void stop_encoder(void)
            enc.ws_borrowed ? 0 : (unsigned)heap_caps_get_allocated_size(enc.ws),
            (unsigned)heap_caps_get_allocated_size(enc.fast),
            enc.bch && !enc.bch_borrowed ? (unsigned)heap_caps_get_allocated_size(enc.bch) : 0,
-           enc.bch || (enc.tables && !dvb.lofty) ? DVBS2_BCH_CACHE_BYTES : 0,
-           enc.tables && !dvb.lofty ? (enc.mode->t == 8 ? "resident-pair" : "resident-byte") : enc.bch ? "resident-byte" : enc.packed && (dvb.moon || enc.mode->bits_per_symbol == 2 || dvb.table.n == 4)
+           enc.bch || enc.tables ? DVBS2_BCH_CACHE_BYTES : 0,
+           enc.tables ? (enc.mode->t == 8 ? "resident-pair" : "resident-byte") : enc.bch ? "resident-byte" : enc.packed && (dvb.moon || enc.mode->bits_per_symbol == 2 || dvb.table.n == 4)
                                       && enc.mode->t == 8 && (enc.quads || enc.mode->bits_per_symbol == 3) && !spi_input_type() ? "flash-pair" : "nibble",
            !enc.packed ? "none" : dvb.lofty ? "words" : dvb.moon ? "signs" : enc.quads ? "quads" : enc.mode->bits_per_symbol == 2 || dvb.table.n == 4 ? "direct" : "sparse");
     printf(",\"encoder_stack_bytes\":%u,\"encoder_stack_min_free\":%u", ENCODER_STACK, (unsigned)enc.stack_min_free);

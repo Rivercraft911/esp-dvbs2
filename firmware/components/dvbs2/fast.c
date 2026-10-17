@@ -41,7 +41,7 @@ struct dvbs2_fast {
     uint8_t packed_header[48], packed_pilots[400];
     const uint8_t *header;
     const dvbs2_mode *mode;
-    unsigned pilots, pie, ldxq_bias;
+    unsigned pilots, pie, ldxq_bias, lofty_prefix, lofty_history, lofty_framed;
     unsigned bch_bytes, groups, q, data_symbols, pilot_blocks;
     uint8_t scratch[] __attribute__((aligned(16)));
 };
@@ -215,22 +215,36 @@ static size_t cache_prog_bytes(const dvbs2_fast *f)
 {
     const size_t bytes[] = {sizeof fast_prog_0, sizeof fast_prog_1, sizeof fast_prog_2,
         sizeof fast_prog_3, sizeof fast_prog_4, sizeof fast_prog_5, sizeof fast_prog_6, sizeof fast_prog_7};
-    return (bytes[f->mode->modcod-4]+15) & ~(size_t)15;
+    const unsigned rate = f->mode->bits_per_symbol == 2 ? f->mode->modcod-4 :
+        (unsigned[]){1,2,3,5,6,7}[f->mode->modcod-12];
+    return (bytes[rate]+15) & ~(size_t)15;
+}
+
+static size_t cache_prbs_bytes(const dvbs2_fast *f)
+{
+    return (f->mode->kbch/8+15)&~(size_t)15;
 }
 
 size_t dvbs2_fast_cache_size(const dvbs2_fast *f)
 {
-    if (!f || !f->mode || !(f->pie & DVBS2_MAP_QUADS)) return 0;
-    return 7280+sizeof fast_gold_2_1+DVBS2_BCH_CACHE_BYTES+cache_prog_bytes(f)+sizeof fast_cols+256;
+    if (!f || !f->mode) return 0;
+    return cache_prbs_bytes(f)+(f->mode->bits_per_symbol == 3 ? sizeof fast_gold_3_1 : sizeof fast_gold_2_1)+
+        DVBS2_BCH_CACHE_BYTES+cache_prog_bytes(f)+sizeof fast_cols+256;
 }
 
-int dvbs2_fast_cache_tables(dvbs2_fast *f, uint8_t *table)
+size_t dvbs2_fast_cache_tail_size(const dvbs2_fast *f)
 {
-    if (!dvbs2_fast_cache_size(f) || !table || ((uintptr_t)table & 15)) return -1;
-    memcpy(table,f->prbs,7274);
-    f->prbs = table; table += 7280;
-    memcpy(table,f->gold,sizeof fast_gold_2_1);
-    f->gold = table; table += sizeof fast_gold_2_1;
+    return f && f->mode ? cache_prog_bytes(f)+sizeof fast_cols+256 : 0;
+}
+
+int dvbs2_fast_cache_split(dvbs2_fast *f, uint8_t *table, uint8_t *tail)
+{
+    if (!dvbs2_fast_cache_size(f) || !table || ((uintptr_t)table & 15) || ((uintptr_t)tail & 15)) return -1;
+    memcpy(table,f->prbs,f->mode->kbch/8);
+    f->prbs = table; table += cache_prbs_bytes(f);
+    size_t gold = f->mode->bits_per_symbol == 3 ? sizeof fast_gold_3_1 : sizeof fast_gold_2_1;
+    memcpy(table,f->gold,gold);
+    f->gold = table; table += gold;
     if (f->pie & DVBS2_BCH_NIBBLE) {
         memcpy(table,f->bch,sizeof fast_bch_8);
         f->bch = table;
@@ -239,6 +253,7 @@ int dvbs2_fast_cache_tables(dvbs2_fast *f, uint8_t *table)
         f->byte_bch = table;
     }
     table += DVBS2_BCH_CACHE_BYTES;
+    if (tail) table = tail;
     size_t bytes = cache_prog_bytes(f);
     // Copy only the real program; its aligned slot may be longer.
     const uint16_t *end = f->prog;
@@ -253,6 +268,11 @@ int dvbs2_fast_cache_tables(dvbs2_fast *f, uint8_t *table)
     memcpy(table,f->crc8,256);
     f->crc8 = table;
     return 0;
+}
+
+int dvbs2_fast_cache_tables(dvbs2_fast *f, uint8_t *table)
+{
+    return dvbs2_fast_cache_split(f,table,NULL);
 }
 
 /* ---------------------------------------------------------------- BB */
@@ -968,6 +988,135 @@ int dvbs2_fast_lofty_cache(dvbs2_fast *f, uint32_t *table)
     return 0;
 }
 
+/* A run is staged beyond the framed words before expansion overwrites it.
+ * PIE stores may touch the two aligned boundary vectors, both context-owned;
+ * restore their unused bytes. The portable path uses memmove. */
+static void lofty_store(uint16_t *dst, const uint16_t *src, unsigned words)
+{
+#ifdef DVBS2_PIE
+    uint32_t dvbs2_pie_lofty_copy(uint16_t *, const uint16_t *, unsigned, unsigned, uint32_t);
+    void dvbs2_pie_lofty_store(const uint16_t *, uint8_t *, unsigned, unsigned, uint8_t *);
+    unsigned prefix = (uintptr_t)dst&15;
+    if (!prefix) dvbs2_pie_lofty_copy(dst,src,words/8,0,0);
+    else {
+        uint8_t keep[16], tail[16] __attribute__((aligned(16)));
+        uint8_t *block = (uint8_t *)dst-prefix;
+        memcpy(keep,block,prefix);
+        dvbs2_pie_lofty_store(src,block,words/8,16-prefix,tail);
+        memcpy(block,keep,prefix);
+        memcpy(block+2*words,tail,prefix);
+    }
+#else
+    memmove(dst,src,2*words);
+#endif
+}
+
+/* Insert a short four-phase PL run without touching either neighbouring half.
+ * The input and output are halfword aligned. The final source word is padded. */
+static void lofty_insert(uint16_t *dst, unsigned at, const uint16_t *src, unsigned symbols)
+{
+    if (!(at&2)) {
+        memcpy(dst+at/4,src,2*(symbols/4));
+        if (symbols&2) dst[(at+symbols)/4] = (dst[(at+symbols)/4]&63) | src[symbols/4];
+    } else {
+        unsigned words = symbols/4;
+        uint32_t h = dst[at/4]>>6;
+        for (unsigned j = 0; j < words; ++j) {
+            uint32_t w = src[j];
+            dst[at/4+j] = ((h&63)<<6) | (w>>6);
+            h = w;
+        }
+        unsigned last = at/4+words;
+        dst[last] = ((h&63)<<6) | ((symbols&2) ? src[words]>>6 : dst[last]&63);
+    }
+}
+
+static uint16_t *lofty_temp(dvbs2_fast *f)
+{
+    unsigned end = 90+f->data_symbols+36*f->pilot_blocks;
+    return (uint16_t *)(f->scratch+((2*((end+5)/4)+15)&~15u));
+}
+
+static void lofty_frame(dvbs2_fast *f)
+{
+    // Expand backwards so each source run is consumed before framing overwrites it.
+    // One 720 B run buffer fits after the framed words in every mode's scratch.
+    uint16_t *mapped = (uint16_t *)f->scratch;
+    uint16_t history = f->lofty_history;
+    unsigned offset = (f->lofty_prefix+90)&3;
+    uint16_t *temp = lofty_temp(f);
+    const unsigned runs = f->data_symbols/1440;
+    for (unsigned run = runs; run-- > 0;) {
+        unsigned k = 1440*run, n = 1440;
+        uint16_t *dst = mapped+(f->lofty_prefix+90+k+(f->pilots ? 36*run : 0))/4;
+        const uint16_t *src = mapped+k/4;
+        if (!offset) {
+#ifdef DVBS2_PIE
+            if (f->pie & DVBS2_PIE_MAP) {
+                uint32_t dvbs2_pie_lofty_copy(uint16_t *, const uint16_t *, unsigned, unsigned, uint32_t);
+                dvbs2_pie_lofty_copy(temp,src,n/32,0,0);
+                lofty_store(dst,temp,n/4);
+            } else
+#endif
+            memmove(dst,src,n/2);
+        } else {
+            uint16_t last = src[n/4-1];
+#ifdef DVBS2_PIE
+            if (f->pie & DVBS2_PIE_MAP) {
+                uint32_t dvbs2_pie_lofty_copy(uint16_t *, const uint16_t *, unsigned, unsigned, uint32_t);
+                dvbs2_pie_lofty_copy(temp,src,n/32,2,0);
+            } else
+#endif
+            {
+                uint32_t h = 0;
+                for (unsigned j = 0; j < n/4; ++j) {
+                    uint32_t w = src[j];
+                    temp[j] = ((h&63)<<6) | (w>>6);
+                    h = w;
+                }
+            }
+            // The first/last halfwords border framing, filled below.
+            lofty_store(dst,temp,n/4);
+            dst[n/4] = ((last&63)<<6) | (dst[n/4]&63);
+        }
+    }
+    if (f->lofty_prefix) mapped[0] = (history&63)<<6;
+    lofty_insert(mapped,f->lofty_prefix,(const uint16_t *)f->packed_header,90);
+    for (unsigned run = 0; run < f->pilot_blocks; ++run)
+        lofty_insert(mapped,f->lofty_prefix+90+1440*(run+1)+36*run,
+                     (const uint16_t *)f->packed_pilots+9*run,36);
+    f->lofty_framed = 2;
+}
+
+/* Publish a first page before the bulk expansion. The producer can replenish
+ * the queue after BCH/LDPC/indexing without adding the entire framing gap. */
+static const uint16_t *lofty_head(dvbs2_fast *f)
+{
+    uint16_t *temp = lofty_temp(f), *head = temp+360;
+    unsigned offset = (f->lofty_prefix+90)&3;
+    memset(head,0,320);
+#ifdef DVBS2_PIE
+    if (f->pie & DVBS2_PIE_MAP) {
+        uint32_t dvbs2_pie_lofty_copy(uint16_t *, const uint16_t *, unsigned, unsigned, uint32_t);
+        dvbs2_pie_lofty_copy(temp,(const uint16_t *)f->scratch,16,offset,0);
+    } else
+#endif
+    {
+        const uint16_t *src = (const uint16_t *)f->scratch;
+        uint32_t h = 0;
+        for (unsigned j = 0; j < 128; ++j) {
+            uint32_t w = src[j];
+            temp[j] = offset ? ((h&63)<<6) | (w>>6) : w;
+            h = w;
+        }
+    }
+    lofty_store(head+(f->lofty_prefix+90)/4,temp,128);
+    if (f->lofty_prefix) head[0] = (f->lofty_history&63)<<6;
+    lofty_insert(head,f->lofty_prefix,(const uint16_t *)f->packed_header,90);
+    f->lofty_framed = 1;
+    return head;
+}
+
 __attribute__((noinline)) int dvbs2_fast_lofty_start(dvbs2_fast *f, const dvbs2_workspace *ws, dvbs2_sign_state *s)
 {
     if (!f || !ws || !s || f->mode->bits_per_symbol != 3) return -1;
@@ -992,72 +1141,32 @@ __attribute__((noinline)) int dvbs2_fast_lofty_start(dvbs2_fast *f, const dvbs2_
             }
         }
     }
+    const unsigned end = 90+f->data_symbols+36*f->pilot_blocks;
+    f->lofty_prefix = s->pending;
+    f->lofty_history = s->history;
+    f->lofty_framed = 0;
+    s->history = ((const uint16_t *)f->scratch)[f->data_symbols/4-1];
+    s->pending = (s->pending+end)&3;
     s->at = 0;
     return 0;
 }
 
-__attribute__((noinline)) unsigned dvbs2_fast_lofty_read(const dvbs2_fast *f, dvbs2_sign_state *s,
-                                   uint16_t *dst, unsigned blocks)
+const uint16_t *dvbs2_fast_lofty_read(dvbs2_fast *f, dvbs2_sign_state *s, unsigned *blocks)
 {
-    unsigned done = 0, end = 90+f->data_symbols+36*f->pilot_blocks;
-    while (done < blocks && s->at < end) {
-        const uint16_t *mapped = (const uint16_t *)f->scratch;
-        unsigned at, n;
-        if (s->at < 90) { mapped = (const uint16_t *)f->packed_header; at = s->at; n = 90-at; }
-        else {
-            unsigned k = s->at-90, run = f->pilots ? k/1476 : 0, pos = k-1476*run;
-            if (pos >= 1440 && run < f->pilot_blocks) {
-                mapped = (const uint16_t *)f->packed_pilots; at = 36*run+pos-1440; n = 1476-pos;
-            } else {
-                at = k-36*run;
-                unsigned left = f->data_symbols-at;
-                n = f->pilots && left > 1440-pos ? 1440-pos : left;
-            }
-        }
-        unsigned room = 4*(blocks-done)-s->pending;
-        if (n > room) n = room;
-        unsigned used = 0, pending = s->pending;
-        uint32_t h = s->history;
-        // Framing leaves two pending symbols in the common data spans.
-        while (used < n) {
-            if ((at&3) == 0 && n-used >= 4) {
-                unsigned runs = (n-used)/4;
-                const uint16_t *src = mapped+at/4;
-                const unsigned shift = 3*pending;
-#ifdef DVBS2_PIE
-                if (f->pie & DVBS2_PIE_MAP) {
-                    // Peel at most seven words; vector stores never touch a prefix.
-                    while (runs && ((uintptr_t)(dst+done)&15)) {
-                        uint32_t w = *src++, joined = (h<<12)|w;
-                        dst[done++] = (joined>>shift)&4095;
-                        h = w; --runs; at += 4; used += 4;
-                    }
-                    unsigned vectors = runs/8;
-                    if (vectors) {
-                        uint32_t dvbs2_pie_lofty_copy(uint16_t *, const uint16_t *, unsigned, unsigned, uint32_t);
-                        h = dvbs2_pie_lofty_copy(dst+done,src,vectors,pending,h);
-                        unsigned words = 8*vectors;
-                        src += words; done += words; runs -= words;
-                        at += 4*words; used += 4*words;
-                    }
-                }
-#endif
-                for (unsigned j = 0; j < runs; ++j) {
-                    uint32_t w = src[j], joined = (h<<12)|w;
-                    dst[done++] = (joined>>shift)&4095;
-                    h = w;
-                }
-                at += 4*runs, used += 4*runs;
-                continue;
-            }
-            unsigned phase = (mapped[at/4]>>(9-3*(at&3)))&7;
-            h = ((h<<3)|phase)&4095;
-            ++at, ++used;
-            if (++pending == 4) { dst[done++] = h; pending = 0; }
-        }
-        s->history = h, s->pending = pending, s->at += used;
+    const unsigned end = 90+f->data_symbols+36*f->pilot_blocks;
+    unsigned at = (s->at+f->lofty_prefix)/4, words = (end+f->lofty_prefix)/4;
+    unsigned n = words-at < *blocks ? words-at : *blocks;
+    const uint16_t *src = (const uint16_t *)f->scratch+at;
+    if (n && !f->lofty_framed) {
+        if (n > 128) n = 128;
+        src = lofty_head(f);
+    } else if (n && f->lofty_framed == 1) lofty_frame(f);
+    *blocks = n;
+    if (n) {
+        at += n;
+        s->at = at == words ? end : 4*at-f->lofty_prefix;
     }
-    return done;
+    return src;
 }
 
 HOT unsigned dvbs2_fast_sign_read(const dvbs2_fast *f, dvbs2_sign_state *s, uint32_t *dst,
@@ -1097,11 +1206,20 @@ HOT unsigned dvbs2_fast_sign_read(const dvbs2_fast *f, dvbs2_sign_state *s, uint
         unsigned pending = s->pending, used = 0;
         while (used < n) {
 #ifdef DVBS2_PIE
-            if (packed && !pending && !(at&3) && n-used >= 20) {
+            if ((f->pie & DVBS2_PIE_MAP) && packed && !pending && !(at&3) && n-used >= 20) {
                 const unsigned runs = (n-used)/20;
                 uint32_t dvbs2_pie_signs(uint32_t *, const uint8_t *, unsigned,
-                                        const uint32_t *, uint32_t);
-                history = dvbs2_pie_signs(dst+done,src+at/4,runs,lut,history);
+                                        const uint32_t *, uint32_t, uint8_t *);
+                unsigned prefix = (uintptr_t)(dst+done)&15;
+                uint8_t *block = (uint8_t *)(dst+done)-prefix, keep[16];
+                uint8_t tail[16] __attribute__((aligned(16)));
+                memcpy(keep,block,prefix);
+                history = dvbs2_pie_signs(dst+done,src+at/4,runs,
+                    (const uint32_t *)((const uint8_t *)lut+f->ldxq_bias),history,tail);
+                if (prefix) {
+                    memcpy(block,keep,prefix);
+                    memcpy(block+16*runs,tail,prefix);
+                }
                 at += 20*runs;
                 used += 20*runs;
                 done += 4*runs;
