@@ -17,7 +17,7 @@ extern void sim_free(void *);
 extern ingress_ring *sim_ring(void *);
 extern uint32_t sim_transfer(void *, const uint8_t *, uint32_t);
 static void *input_sim;
-static unsigned native_input, input_seq, input_reads;
+static unsigned native_input, input_seq, input_reads, input_zero_reads;
 static volatile bool input_empty;
 static bool native_replay;
 static uint8_t *native_buffers[INGRESS_SLOTS];
@@ -44,12 +44,15 @@ esp_err_t spi_input_start(void) {
         if (native_buffers[0])
             for (unsigned i = 0; i < INGRESS_SLOTS; ++i) sim_set_buffer(input_sim, i, native_buffers[i]);
         if (native_replay) sim_replay(input_sim, native_input);
-        input_seq = input_reads = 0;
+        input_seq = input_reads = input_zero_reads = 0;
     }
     return ESP_OK;
 }
 size_t spi_input_read(uint8_t *dst, size_t n) {
-    if (input_empty || (++input_reads % 7) == 0) return 0; // starvation between partial reads
+    if (input_empty || (++input_reads % 7) == 0) {
+        ++input_zero_reads;
+        return 0; // starvation between partial reads
+    }
     ingress_ring *r = sim_ring(input_sim);
     uint8_t msg[PV_MSG_BYTES];
     while (!native_replay && r->ready) {
@@ -61,7 +64,11 @@ size_t spi_input_read(uint8_t *dst, size_t n) {
     return ingress_read(r, dst, n);
 }
 void spi_input_stop(void) {
-    if (input_sim) { sim_free(input_sim); input_sim = NULL; }
+    if (input_sim) {
+        // Partial reads must drain immediately. Only an empty read may sleep.
+        assert(enc.input_waits == input_zero_reads);
+        sim_free(input_sim); input_sim = NULL;
+    }
 }
 void spi_input_print(void) {
     printf(",\"input\":\"%s\"", native_input == PV_TS ? "ts" : native_input ? "gcs" : "synthetic");
@@ -169,6 +176,13 @@ esp_err_t radio_s3_wifi_probe(radio_s3_stats_t *stats)
 
 int main(int argc, char **argv)
 {
+    for (size_t n = 0; n < 18; ++n) {
+        uint8_t got[20]; memset(got, 0xa5, sizeof got);
+        uint32_t x = SEED, expected = SEED;
+        payload_fill(got+1, n, &x);
+        for (size_t i = 0; i < n; ++i) assert(got[i+1] == next_byte(&expected));
+        assert(x == expected && got[0] == 0xa5 && got[n+1] == 0xa5);
+    }
     assert(argc == 7 || argc == 8);
     callsign = argv[4];
     const uint32_t rate = (uint32_t)atol(argv[5]);
@@ -213,6 +227,20 @@ int main(int argc, char **argv)
             assert(native_blocks[i].caps == ((resident ? MALLOC_CAP_INTERNAL : MALLOC_CAP_SPIRAM) | MALLOC_CAP_8BIT));
         if (enc.bch && native_blocks[i].p == enc.bch)
             assert(native_blocks[i].n == DVBS2_BCH_CACHE_BYTES && (native_blocks[i].caps & MALLOC_CAP_INTERNAL));
+    }
+    if (native_input) {
+        // Match the input guide's requested SRAM for every supported mode.
+        // DMA/driver/task overhead is outside this host allocator, not measured here.
+        size_t internal = 0;
+        for (unsigned i = 0; i < 64; ++i)
+            if (native_blocks[i].p && (native_blocks[i].caps & MALLOC_CAP_INTERNAL))
+                internal += native_blocks[i].n;
+        const size_t fast = dvbs2_fast_mode_size(mode);
+        const size_t expected = mc >= 12 && sps == 8 ? 23936+2058 :
+            sps == 40 ? fast+420 : quads && sps == 4 ? fast+25056 :
+            fast+12420+(mc >= 12 && !short_pulse ? 11120 : 0);
+        assert(internal == expected);
+        assert((native_buffers[0] != NULL) == !(mc >= 12 && sps == 8));
     }
     if (quads && sps == 4) assert((uint32_t *)enc.ws == shaper_store+QPSK_TABLE_WORDS(4));
     assert(!((uintptr_t)enc.fast & 15) && !((uintptr_t)enc.ws & 15));

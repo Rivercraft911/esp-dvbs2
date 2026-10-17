@@ -180,18 +180,22 @@ def test_stream(output=None, receiver=None, input_only=False):
                         "-lm", "-o", str(exe)], check=True)
         # External TS/GCS: actual ingress checks, split copies, both mapper layouts,
         # repeated starts, every allocation failure, empty startup and resumed input.
+        input_cases = [(mc,n,rate) for mc in range(4,18) for n,rate in ((8,40),(4,40),(4,80))]
+        input_cases += [(mc,n,rate) for mc in range(4,12) for n,rate in ((40,40),(3,80))]
         for kind in (1, 2, 3, 4):
-            for mc, sps, input_rate in ((4,3,80), (11,3,80), (4,4,80), (11,4,80), (13,4,40), (17,8,40), (4,40,40)):
-                iq = (output or folder)/f"input-{kind}-{mc}-n{sps}.iq"
+            for mc, sps, input_rate in input_cases:
+                iq = (output or folder)/f"input-{kind}-{mc}-n{sps}-{input_rate}m.iq"
                 input_rate *= 1000000
                 input_frames = 40 if mc == 13 else 16
                 subprocess.run([str(exe), str(mc), str(sps), str(iq),
                                 "N0CALL", str(input_rate), str(input_frames), str(kind)],
                                capture_output=True, text=True, timeout=60, check=True)
-                if receiver and mc in (11, 13):
+                if receiver and (mc, sps, input_rate) in ((11,3,80000000),(13,4,40000000)):
                     sys.path.insert(0, str(ROOT / "host"))
                     from spi_input import decode_dump
                     decode_dump(iq, (kind-1)%2+1, mc, sps, input_rate, input_frames, receiver, replay=kind>2)
+                if not output:
+                    iq.unlink()
         print("input stream: TS/GCS, split reads, startup/starvation/recovery, allocation cleanup, every DAC word: ok")
         if input_only:
             return

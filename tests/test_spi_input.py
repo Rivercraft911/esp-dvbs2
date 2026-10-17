@@ -24,6 +24,11 @@ def main():
     record_check(r)
     for key, value in (('crc32', 0), ('bad_payload', 1), ('mbps', 80), ('verified_msgs', 0)):
         bad = copy.deepcopy(r); bad[key] = value; rejected(bad)
+    capacity = copy.deepcopy(r)
+    capacity.update(command='spirx 1000 gcs loop 0', mbps=57.65)
+    record_check(capacity) # saturation reports an achieved rate, without a target-rate claim
+    capacity.update(command='spirx 1000 gcs loop 46.6', mbps=45)
+    rejected(capacity)
     for key in ('short', 'crc', 'lost', 'overruns', 'back', 'wrong_type'):
         bad = copy.deepcopy(r); bad['spi'][key] = 1; rejected(bad)
     pace = dict(cmd='dvbpace', command='dvbpace 11 26m667 30', status='ESP_OK',

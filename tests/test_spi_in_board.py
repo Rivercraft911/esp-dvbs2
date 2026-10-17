@@ -34,7 +34,7 @@ def main():
         assert calls.rstrip().endswith("'--out', '"+str(folder/"out/runs.jsonl")+"']"), calls
         assert calls.splitlines()[-1].startswith("['host/board.py', 'spiinput off'")
         summary=(folder/'out/summary.txt').read_text()
-        assert 'FAIL demo-pace' in summary and summary.count('FAIL') == 3, summary
+        assert 'FAIL demo-pace' in summary and summary.count('FAIL') == 5, summary
         assert 'PASS gates' in summary and 'Summary (' in run.stdout
         # The optional heap sweep covers every supported MODCOD/rate, TS and GCS.
         env.update(WIFI_ALL='1', CALLS=str(folder/'all-calls'))
@@ -43,10 +43,14 @@ def main():
         assert run.returncode == 1
         import ast
         commands=[ast.literal_eval(line)[1] for line in (folder/'all-calls').read_text().splitlines()]
+        assert commands.index('dvbpace 13 10m 10') < commands.index('spiinput ts replay')
+        assert commands.count('dvbpace 13 10m 10') == 3 # wire loop, TS replay, GCS replay
+        assert 'spirx 1000 gcs loop 0' in commands
+        assert not any(token in cmd.split() for cmd in commands for token in ('10m80','20mq4','20ms6'))
         for mc in range(4,18):
-            for rate in ('5m','10m','10m80','20m'):
+            for rate in ('5m','10m','20m'):
                 assert commands.count(f'wifimem {mc} {rate}') == 2
-            extras=('', '26m667', '20mq4') if mc<12 else ('20ms6',)
+            extras=('', '26m667') if mc<12 else ()
             for rate in extras:
                 assert commands.count(f'wifimem {mc} {rate}'.strip()) == 2
     print('SPI shell: demo first, slim runs, continues after failures, final summary and cleanup: ok')

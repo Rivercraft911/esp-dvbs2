@@ -255,4 +255,5 @@ void ingress_spi_get_stats(ingress_spi_stats *out)
 {
     out->eof_irqs = s.stats.eof_irqs;
     out->isr_cycles = s.stats.isr_cycles;
+    out->isr_max = s.stats.isr_max;
 }

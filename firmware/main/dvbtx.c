@@ -131,6 +131,20 @@ static uint32_t next_byte(uint32_t *x)
     return *x & 0xff;
 }
 
+// Amortize loop control across four bytes of the same synthetic reference stream.
+static __attribute__((noinline)) void payload_fill(uint8_t *dst, size_t n, uint32_t *x)
+{
+    uint32_t state = *x;
+    for (; n >= 4; n -= 4, dst += 4) {
+        dst[0] = next_byte(&state);
+        dst[1] = next_byte(&state);
+        dst[2] = next_byte(&state);
+        dst[3] = next_byte(&state);
+    }
+    for (size_t i = 0; i < n; ++i) dst[i] = next_byte(&state);
+    *x = state;
+}
+
 // Legacy whole-symbol starts have n % sps == 0. Since sps = 4, 8 or 40 and
 // 16380 are multiples of four, (n % 16380)*4 bytes is 16-byte aligned.
 // At 8 sps 16380 % 8 == 4, so a bank wrap can split a symbol in half. The
@@ -269,14 +283,16 @@ static void encoder_task(void *arg)
                 e->input_pending = used;
                 if (used < bytes) {
                     if (got) e->input_partial++;
-                    e->input_waits++;
-                    ulTaskNotifyTake(pdTRUE, 1);
+                    else {
+                        e->input_waits++;
+                        ulTaskNotifyTake(pdTRUE, 1);
+                    }
                 }
             }
             if (e->stop) goto done;
             if (input_cycles > e->input_frame_cycles_max) e->input_frame_cycles_max = input_cycles;
         } else {
-            for (size_t i = 0; i < bytes; ++i) payload[i] = next_byte(&x);
+            payload_fill(payload, bytes, &x);
             station_payload_header(payload, bytes, station_store_get());
         }
         if (dvb.profile) {

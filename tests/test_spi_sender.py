@@ -104,19 +104,19 @@ int spi_device_polling_start(spi_device_handle_t d,spi_transaction_t *t,unsigned
     const uint8_t *m=t->tx_buffer;
     assert((m[4] | m[5]<<8)==sequence++);
     if (!transfers) first_tx=now_us;
-    else assert(now_us-last_tx>=470); // fixed 22 Mb/s ceiling: 478 us/message
+    else assert(now_us-last_tx >= (tx.mbps ? 470 : 75)); // rate ceiling or CS gap
     last_tx=now_us; ++transfers; return 0;
 }
 esp_err_t ingress_spi_start(const ingress_spi_config *cfg,ingress_ring **ring) { (void)cfg;(void)ring; return 1; }
 void ingress_spi_stop(void) {}
 void ingress_spi_get_stats(ingress_spi_stats *out) { memset(out,0,sizeof *out); }
 int main(void) {
-    for (unsigned held=0;held<2;++held) {
-        now_us=alarms=delays=transfers=sequence=0; ready_at=held?2000:0;
-        assert(tx_init(PV_TS,40,22,0,10)==ESP_OK);
+    for (unsigned test=0;test<3;++test) {
+        now_us=alarms=delays=transfers=sequence=0; ready_at=test?2000:0;
+        assert(tx_init(PV_TS,40,test==2?0:22,0,10)==ESP_OK);
         tx_run();
         assert(tx.errors==0 && transfers>14 && alarms>10 && first_tx>=ready_at);
-        assert(held ? delays>=2 : delays==0); // rate pacing sleeps, never spins for a tick
+        assert(first_tx < ready_at+100 && delays==0); // READY resumes within a poll, no 1 ms sleep
         tx_free(); assert(allocations==0 && !tx.timer);
     }
     puts("SPI sender: real scheduler, timer sleeps, 22 Mb/s pacing, fresh READY, CRC and cleanup: ok");

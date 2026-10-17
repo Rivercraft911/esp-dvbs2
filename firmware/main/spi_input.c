@@ -99,11 +99,9 @@ static esp_err_t tx_init(unsigned type, int mhz, double mbps, unsigned injected,
         tx.buf[i] = heap_caps_calloc(1, TX_BYTES, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
         if (!tx.buf[i]) { err = ESP_ERR_NO_MEM; goto fail; }
     }
-    if (mbps > 0) {
-        const esp_timer_create_args_t timer = {.callback=tx_wake,.name="spisend"};
-        err=esp_timer_create(&timer,&tx.timer);
-        if (err != ESP_OK) goto fail;
-    }
+    const esp_timer_create_args_t timer = {.callback=tx_wake,.name="spisend"};
+    err=esp_timer_create(&timer,&tx.timer);
+    if (err != ESP_OK) goto fail;
     spi_device_get_actual_freq(tx.dev, &tx.khz);
     tx.heap_bytes=free_before-heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     return ESP_OK;
@@ -125,6 +123,14 @@ static unsigned build(uint8_t *m, uint16_t seq)
     return PV_MSG_BYTES;
 }
 
+static bool tx_wait(int64_t us)
+{
+    ulTaskNotifyTake(pdTRUE,0);
+    if (esp_timer_start_once(tx.timer,us) != ESP_OK) { tx.errors++; return false; }
+    ulTaskNotifyTake(pdTRUE,portMAX_DELAY);
+    return true;
+}
+
 static void tx_run(void)
 {
     tx.core=xPortGetCoreID();
@@ -144,17 +150,15 @@ static void tx_run(void)
         }
         const int64_t due=next > end+10 ? next : end+10;
         if (now < due) {
-            if (tx.timer) {
-                ulTaskNotifyTake(pdTRUE,0);
-                const int64_t wait=due-now < 1000 ? due-now : 1000;
-                if (esp_timer_start_once(tx.timer,wait) != ESP_OK) { tx.errors++; break; }
-                ulTaskNotifyTake(pdTRUE,portMAX_DELAY);
-            }
+            if (!tx_wait(due-now < 1000 ? due-now : 1000)) break;
             continue;
         }
         if (!gpio_get_level(pins.ready) && tx.fault != 4) {
             tx.waits += !waiting; waiting=true;
-            vTaskDelay(1); next=esp_timer_get_time(); continue;
+            // READY can rise as soon as the encoder releases a slot. A whole
+            // tick here wastes almost half the demo's 2.2194 ms frame period.
+            if (!tx_wait(50)) break;
+            next=esp_timer_get_time(); continue;
         }
         waiting=false;
         tx.forced += !gpio_get_level(pins.ready);
