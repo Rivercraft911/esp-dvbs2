@@ -499,7 +499,7 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
     dvb.dac_rate = dac_rate;
     dvb.moon = moon;
     dvb.den = fractional ? 5 : 1;
-    dvb.span = 9;
+    dvb.span = moon ? (fractional ? 7 : 6) : 9;
     dvb.history = moon ? (fractional ? 10 : 8) : SHAPER_HISTORY;
     dvb.cached_words = CACHED_FOR(dac_rate);
     (void)heap_caps_monitor_local_minimum_free_size_start();   // low-water mark of this command
@@ -535,21 +535,20 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
     // as little as 244 symbols of lead there, three frames keep 18,871 even at 95% (test_ring).
     const unsigned nslots = !enc.packed ? RING_SLOTS : (sps <= 4 || moon) ? 3 : 2;
     if (moon) {
-        dvb.moon_mode = fractional ? (quads ? 1 : 2) : 3;
-        dvb.helper_num = dvb.moon_mode == 3 ? 2 : 1;
-        dvb.helper_den = dvb.moon_mode == 3 ? 7 : quads ? 3 : 5;
+        dvb.moon_mode = fractional ? (quads ? 3 : 2) : 0;
+        dvb.helper_num = 1;
+        dvb.helper_den = 3;
         dvb.pending = dvb.encoder_freed = 0;
         dvb.helper_stop = false;
         dvb.helper_cycles = dvb.helper_jobs = dvb.helper_max = 0;
         dvb.helper_bank = dvb.helper_bank_max = dvb.helper_bank_end = 0;
         dvb.dispatch_max = dvb.join_max = 0;
-        const unsigned parts = quads || !fractional ? 4 : 5;
-        const size_t row = quads ? 3072 : 6144;
+        const unsigned parts = shaper_moon_parts(dvb.moon_mode);
         const size_t words = shaper_moon_words(dvb.moon_mode);
         // Build off the hot path, then distribute whole parts between the
         // existing store and one internal allocation. No cached table reads.
         uint32_t *oracle = heap_caps_aligned_alloc(16,words*4,MALLOC_CAP_SPIRAM);
-        const size_t stored = quads ? words : 2*row;
+        const size_t stored = quads ? words : 12288;
         if (words > stored) dvb.moon_extra = heap_caps_aligned_alloc(16,(words-stored)*4,internal);
         if (!oracle || (words > stored && !dvb.moon_extra)) {
             heap_caps_free(oracle);
@@ -560,7 +559,7 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
         shaper_moon_build(oracle,dvb.moon_mode,level);
         size_t used = 0;
         for (unsigned j = 0; j < parts; ++j) {
-            const size_t n = fractional && j == parts-1 ? (quads ? 48 : 96) : row;
+            const size_t n = shaper_moon_part_words(dvb.moon_mode,j);
             uint32_t *part = used < stored ? shaper_store+used : dvb.moon_extra+used-stored;
             memcpy(part,oracle+used,n*4);
             dvb.moon_tables[j] = part;
@@ -684,7 +683,7 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
             (resident && mode->t > 8 && !enc.bch) || (!enc.packed && !enc.slots) ||
             (quads && !enc.slot[nslots-1]) ||
             dvbs2_fast_prepare(enc.fast, mode, PILOTS,
-                              15 | (moon ? DVBS2_RO_20 : 0) | (quads ? DVBS2_MAP_QUADS : 0) |
+                              15 | (fractional ? DVBS2_RO_20 : 0) | (quads ? DVBS2_MAP_QUADS : 0) |
                               (resident ? 0 : DVBS2_BCH_NIBBLE | DVBS2_MAP_SPARSE)) ||
             (enc.bch && dvbs2_fast_cache_bch(enc.fast, enc.bch))) {
         printf("@{\"cmd\":\"%s\",\"error\":\"allocation failed\"}\n", cmd);
@@ -870,7 +869,7 @@ static void print_mode(const char *cmd, unsigned modcod, size_t symbols, unsigne
     const dvbs2_mode *mode = dvbs2_find_mode(modcod);
     printf("@{\"cmd\":\"%s\",\"modcod\":%u,\"rate\":\"%s\",\"symbol_rate\":%u,\"rolloff\":%.2f,"
            "\"pilots\":%d,\"frame_symbols\":%u,\"payload_bytes_per_frame\":%u,\"peak_level\":%u",
-           cmd, modcod, mode->rate, (unsigned)((uint64_t)dvb.dac_rate*dvb.den / dvb.table.n), dvb.moon ? .20 : .35, PILOTS, (unsigned)symbols,
+           cmd, modcod, mode->rate, (unsigned)((uint64_t)dvb.dac_rate*dvb.den / dvb.table.n), dvb.moon && dvb.den == 5 ? .20 : .35, PILOTS, (unsigned)symbols,
            (unsigned)((mode->kbch - 80) / 8), level);
 }
 

@@ -59,6 +59,9 @@ LEVEL_Q = np.round(np.sin(np.arange(8) * np.pi / 4) * 2 ** LEVEL_FRAC).astype(np
 # Fs / 2, where the DAC images begin); there is no lower limit beyond M. For roll-off 0.35 the
 # annex refers to EN 300 421, whose template these points reproduce.
 MASK = {
+    0.25: dict(upper=[(0, .25), (.2, .25), (.4, .25), (.86, .15), (.93, -.5), (1, -2), (1.13, -8),
+                      (1.30, -16), (1.45, -24), (1.60, -35), (1.83, -40)],
+               lower=[(0, -.25), (.2, -.4), (.4, -.4), (.86, -1.1), (1, -4), (1.13, -11)]),
     0.20: dict(upper=[(0, .25), (.2, .25), (.4, .25), (.89, .15), (.94, -.5), (1, -2), (1.11, -8),
                       (1.23, -16), (1.4, -24), (1.5, -35), (1.7, -40)],
                lower=[(0, -.25), (.2, -.4), (.4, -.4), (.89, -1.1), (1, -4), (1.11, -11)]),

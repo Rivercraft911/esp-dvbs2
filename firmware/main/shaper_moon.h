@@ -2,11 +2,15 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// No allocation or radio access. The transmitter uses modes 1/2/3.
-// mode 0: legacy 8PSK 3 sps/.35; 1: QPSK 12/5; 2: 8PSK 12/5; 3: 8PSK 3 sps/.20.
+// Experimental block kernels. No allocation and no radio access.
+#define SHAPER_MOON_MODES 4
+
+// mode 0: 8PSK 3 sps, 1: QPSK 12/5 sps, 2: 8PSK 12/5 sps, 3: compact QPSK 12/5.
 // Inputs are chronological blocks of 4 (mode 0) or 5 symbols packed high first
 // in uint16_t words, 2 bits/symbol for QPSK phase>>1, 3 bits for 8PSK phase.
 // Keep two whole words of history before src[0]. Every group emits twelve samples.
+unsigned shaper_moon_parts(unsigned mode);
+size_t shaper_moon_part_words(unsigned mode, unsigned part);
 size_t shaper_moon_words(unsigned mode);
 int shaper_moon_build(uint32_t *table, unsigned mode, unsigned peak);
 void shaper_moon_c(uint32_t *dst, const uint16_t *src, unsigned groups,
@@ -14,6 +18,8 @@ void shaper_moon_c(uint32_t *dst, const uint16_t *src, unsigned groups,
 // Aligned table and output; positive or zero group count. Tables built above.
 void shaper_moon3_pie(uint32_t *, const uint16_t *, unsigned, const uint32_t *,
                       const uint32_t *, const uint32_t *);
+void shaper_moon24qc_pie(uint32_t *, const uint16_t *, unsigned, const uint32_t *,
+                        const uint32_t *, const uint32_t *);
 void shaper_moon24q_pie(uint32_t *, const uint16_t *, unsigned, const uint32_t *const *);
 void shaper_moon24p_pie(uint32_t *, const uint16_t *, unsigned, const uint32_t *const *);
 void shaper_moon_fill(uint32_t *dst, const uint16_t *src, unsigned groups,
@@ -23,7 +29,6 @@ void shaper_moon_fill(uint32_t *dst, const uint16_t *src, unsigned groups,
 void shaper_moon_samples(uint32_t *dst, const uint16_t *src, unsigned skip, size_t count,
                          const uint32_t *table, unsigned mode);
 
-void shaper_moon3a20_pie(uint32_t *, const uint16_t *, unsigned, const uint32_t *const *);
 void shaper_moon_fill_tables(uint32_t *, const uint16_t *, unsigned, const uint32_t *const *, unsigned);
 void shaper_moon_sample_tables(uint32_t *, const uint16_t *, unsigned, size_t,
                                const uint32_t *const *, unsigned);

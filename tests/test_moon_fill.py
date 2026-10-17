@@ -20,7 +20,7 @@ def check_records(text):
     for r in rows:
         name = tuple(m.MODES)[r['mode']]
         bits = m.MODES[name][4]
-        block = 4 if r['mode'] in (0,3) else 5
+        block = 4 if r['mode'] == 0 else 5
         x, src = r['seed'], []
         for _ in range(1367):
             x ^= x << 13 & 0xffffffff
@@ -31,7 +31,7 @@ def check_records(text):
         code = (src[:,None] >> (bits*np.arange(block-1,-1,-1))) & ((1 << bits)-1)
         phase = code.ravel() if bits == 3 else 2*code.ravel()+1
         assert not r['errors'] and r['guards'],r
-        assert r['table'] == s.checksum(np.concatenate(m.table(name,r['peak'])).ravel()),r
+        assert r['table'] == s.checksum(np.concatenate([t.ravel() for t in m.table(name,r['peak'])])),r
         assert r['check'] == s.checksum(m.shape(name,phase[:(2+r['groups'])*block],r['peak'])),r
         seen.add((name,r['peak'],r['seed'],r['groups']))
     assert len(seen) == 324
@@ -44,7 +44,7 @@ def test_model():
     assert m.HEADER.read_text() == m.header_text()
     rng = np.random.default_rng(2026)
     for name,(_,_,_,_,bits,groups) in m.MODES.items():
-        block = 4 if name in ('8psk3','8psk3a20') else 5
+        block = 4 if name == '8psk3' else 5
         phase = rng.integers(0,1 << bits,(257+2)*block,dtype=np.uint8)
         if bits == 2: phase = 2*phase+1
         for peak in (16,128,508):
@@ -55,7 +55,7 @@ def test_model():
             got, exact = s.iq(m.shape(name,phase,peak)),m.linear(name,phase,peak)
             error = max(abs(got.real-exact.real).max(),abs(got.imag-exact.imag).max())
             assert error <= len(groups)/2+1e-6,(name,peak,error)
-            assert sum(x.nbytes for x in tables) == {'8psk3':73728,'qpsk24':37056,'8psk24':98688,'8psk3a20':98304}[name]
+            assert sum(x.nbytes for x in tables) == {'8psk3':73728,'qpsk24':98368,'8psk24':76800,'qpsk24c':27648}[name]
         margin = m.mask(name)
         assert min(margin[k] for k in ('upper_db','lower_db','far_db')) > 0,(name,margin)
         margin = m.mask(name,quantized=True)
@@ -72,6 +72,36 @@ def test_model():
         assert m.symmetry(name) == sum(x.nbytes for x in m.table(name))//4
         assert m.half_symmetry(name) == sum(x.nbytes for x in m.table(name))//2
     print('moon model: rational convolution, bounds, quarter rotations, inverse-hold masks pass')
+
+
+def test_fallback():
+    # Check the rational geometry and compact-table account against independent
+    # convolution, including the longer 108-sample block's internal phases.
+    original = tuple(m.MODES)
+    rows = list(m.fallback_report())
+    assert tuple(m.MODES) == original
+    assert [r['trimmed_table_bytes'] for r in rows] == [49664,139264,249856,641024]
+    rng = np.random.default_rng(37)
+    for r in rows:
+        up,den = (5,2) if r['rolloff'] == .25 else (27,10)
+        bits = 2 if r['mode'] == 'QPSK' else 3
+        block, width = r['block_samples']*den//up, 4 if bits == 2 else 3
+        positions = tuple(range(1-r['pulse_symbols'],block))
+        groups = tuple(positions[j:j+width] for j in range(0,len(positions),width))
+        name = f'fallback-{bits}-{up}'
+        m.MODES[name] = (up,den,r['pulse_symbols'],r['rolloff'],bits,groups)
+        try:
+            phase = rng.integers(0,1 << bits,66*block,dtype=np.uint8)
+            if bits == 2: phase = 2*phase+1
+            actual,exact = s.iq(m.shape(name,phase)),m.linear(name,phase)
+            assert max(abs(actual.real-exact.real).max(),abs(actual.imag-exact.imag).max()) <= len(groups)/2+1e-6
+            fn = np.linspace(0,up/den,127)
+            a,b = m.table_power(name,fn,rounded=False),m.sampled_power(name,fn)
+            np.testing.assert_allclose(a/a[0],b/b[0],atol=1e-9,rtol=2e-8)
+            assert min(r['mask_quantized'][k] for k in ('upper_db','lower_db','far_db')) > 0
+            assert abs(r['symbol_rate']*(1+r['rolloff'])-40e6) < 1e-6
+        finally: del m.MODES[name]
+    print('fallback: four rational convolution/mask and compact-table accounts pass; timings unassembled')
 
 
 def test_native():
@@ -131,9 +161,9 @@ void shaper_short4_pie(uint32_t *d,const uint8_t *s,int n,const uint32_t *t) {
     shaper_fill_c(d,s,n,&table);
 }
 static void join(uint32_t *d,const uint16_t *s,unsigned n,const uint32_t *const *t,unsigned mode) {
-    static uint32_t all[24672]; unsigned at = 0, parts = mode == 0 ? 3 : mode == 1 ? 4 : 5;
+    static uint32_t all[24672]; unsigned at = 0, parts = shaper_moon_parts(mode);
     for (unsigned j = 0; j < parts; ++j) {
-        unsigned words = j == parts-1 && mode ? (mode == 1 ? 48 : 96) : mode == 1 ? 3072 : 6144;
+        unsigned words = shaper_moon_part_words(mode,j);
         memcpy(all+at,t[j],4*words); at += words;
     }
     shaper_moon_c(d,s,n,all,mode);
@@ -141,12 +171,15 @@ static void join(uint32_t *d,const uint16_t *s,unsigned n,const uint32_t *const 
 void shaper_moon3_pie(uint32_t *d,const uint16_t *s,unsigned n,const uint32_t *a,const uint32_t *b,const uint32_t *c) {
     const uint32_t *t[] = {a,b,c}; join(d,s,n,t,0);
 }
+void shaper_moon24qc_pie(uint32_t *d,const uint16_t *s,unsigned n,const uint32_t *a,const uint32_t *b,const uint32_t *c) {
+    const uint32_t *t[] = {a,b,c}; join(d,s,n,t,3);
+}
 void shaper_moon24q_pie(uint32_t *d,const uint16_t *s,unsigned n,const uint32_t *const *t) { join(d,s,n,t,1); }
 void shaper_moon24p_pie(uint32_t *d,const uint16_t *s,unsigned n,const uint32_t *const *t) { join(d,s,n,t,2); }
 int main(void) {
     membench_moon(); assert(live == 0);
     assert(freopen("/dev/null","w",stdout));
-    for (int i = 0; i < 6; ++i) { fail = i; membench_moon(); assert(live == 0); }
+    for (int i = 0; i < 7; ++i) { fail = i; membench_moon(); assert(live == 0); }
     return 0;
 }
 ''')
@@ -158,7 +191,7 @@ int main(void) {
         log = p/'bench.log'
         log.write_text(subprocess.check_output([str(exe)],text=True))
         m.check_membench(log)
-    print('moon benchmark: real driver checks/hashes, all six allocation failures clean up')
+    print('moon benchmark: real driver checks/hashes, all seven allocation failures clean up')
 
 
 def test_plan():
@@ -174,6 +207,7 @@ def test_plan():
 
 if __name__ == '__main__':
     test_model()
+    test_fallback()
     test_native()
     test_bench()
     test_plan()
