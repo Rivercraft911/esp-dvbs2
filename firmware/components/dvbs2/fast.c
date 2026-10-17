@@ -104,6 +104,7 @@ void dvbs2_pie_bswap(const uint32_t *src, uint8_t *block, unsigned vectors, unsi
                      uint8_t *tail);
 uint32_t dvbs2_pie_ldxq(const uint32_t *table);
 uint32_t dvbs2_pie_crc8(const uint8_t *p, unsigned quads, const uint8_t *tables, uint32_t crc);
+void dvbs2_pie_nibbles(const uint8_t *src, uint8_t *dst, unsigned vectors);
 #define PIE_MASK (DVBS2_PIE_BB | DVBS2_PIE_BCH | DVBS2_PIE_LDPC | DVBS2_PIE_MAP)
 #else
 #define PIE_MASK 0u
@@ -613,44 +614,52 @@ static inline void writer_end(writer *w, int last)
 /* Data symbol k goes to output 90 + k + 36 (k / 1440) with pilots. Runs of
  * 1440 symbols are whole groups of four, so a table word never straddles a
  * pilot block. */
+/* Data symbols [k0, k0 + n) to dst; n is a multiple of 8 (8PSK) or 4 (QPSK).
+ * last: the frame's final run, whose trailing bytes go one by one. */
+static HOT void map_c_run(const dvbs2_fast *f, const uint8_t *bits, unsigned k0, unsigned n,
+                          uint8_t *dst, int last)
+{
+    const uint32_t *map = f->map;
+    writer w = writer_start(dst);
+    if (f->mode->bits_per_symbol == 3) {
+        const uint8_t *a = bits, *b = bits + 2700, *c = bits + 5400;
+        if (f->mode->modcod == 12) {   /* 5.3.3: rate 3/5 reads the columns backwards */
+            a = bits + 5400;
+            c = bits;
+        }
+        for (unsigned j = k0 / 8; j < (k0 + n) / 8; ++j) {
+            const unsigned x = b[j] ^ c[j], z0 = f->gold[j], z1 = f->gold[GOLD + j];
+            const unsigned p0 = a[j] ^ x;                       /* inverted p0 */
+            const unsigned p1 = a[j] ^ z0;
+            const unsigned p2 = b[j] ^ (a[j] & x) ^ z1 ^ (a[j] & z0);
+            for (int shift = 6; shift >= 0; shift -= 4) {
+                const unsigned hi = ((p0 >> shift) & 3) | (((p2 >> shift) & 3) << 2) |
+                                    (((p1 >> shift) & 3) << 4);
+                const unsigned lo = ((p0 >> (shift - 2)) & 3) |
+                                    (((p2 >> (shift - 2)) & 3) << 2) |
+                                    (((p1 >> (shift - 2)) & 3) << 4);
+                writer_put(&w, map[hi] | (map[lo] << 16));
+            }
+        }
+    } else {
+        for (unsigned j = k0 / 4; j < (k0 + n) / 4; ++j) {
+            const unsigned x = bits[j], g = f->gold[j];
+            const unsigned dd = x ^ (x >> 1);
+            const unsigned p2 = x ^ (g >> 1) ^ (dd & g), p1 = dd ^ g;
+            writer_put(&w, map[(p1 & 0x55) | (p2 & 0x55) << 1]);
+        }
+    }
+    writer_end(&w, last);
+}
+
 static HOT void map_c(const dvbs2_fast *f, const uint8_t *bits, uint8_t *output)
 {
     const unsigned d = f->data_symbols, runs = f->pilots ? f->pilot_blocks + 1 : 1;
     const unsigned run_symbols = f->pilots ? 1440 : d;
-    const uint32_t *map = f->map;
-    const uint8_t *a = bits, *b = bits + 2700, *c = bits + 5400;
-    if (f->mode->modcod == 12) {   /* 5.3.3: rate 3/5 reads the columns backwards */
-        a = bits + 5400;
-        c = bits;
-    }
     for (unsigned r = 0; r < runs; ++r) {
         const unsigned k0 = r * run_symbols;
         const unsigned n = d - k0 < run_symbols ? d - k0 : run_symbols;
-        writer w = writer_start(output + 90 + k0 + 36 * r);
-        if (f->mode->bits_per_symbol == 3) {
-            for (unsigned j = k0 / 8; j < (k0 + n) / 8; ++j) {
-                const unsigned x = b[j] ^ c[j], z0 = f->gold[j], z1 = f->gold[GOLD + j];
-                const unsigned p0 = a[j] ^ x;                       /* inverted p0 */
-                const unsigned p1 = a[j] ^ z0;
-                const unsigned p2 = b[j] ^ (a[j] & x) ^ z1 ^ (a[j] & z0);
-                for (int shift = 6; shift >= 0; shift -= 4) {
-                    const unsigned hi = ((p0 >> shift) & 3) | (((p2 >> shift) & 3) << 2) |
-                                        (((p1 >> shift) & 3) << 4);
-                    const unsigned lo = ((p0 >> (shift - 2)) & 3) |
-                                        (((p2 >> (shift - 2)) & 3) << 2) |
-                                        (((p1 >> (shift - 2)) & 3) << 4);
-                    writer_put(&w, map[hi] | (map[lo] << 16));
-                }
-            }
-        } else {
-            for (unsigned j = k0 / 4; j < (k0 + n) / 4; ++j) {
-                const unsigned x = bits[j], g = f->gold[j];
-                const unsigned dd = x ^ (x >> 1);
-                const unsigned p2 = x ^ (g >> 1) ^ (dd & g), p1 = dd ^ g;
-                writer_put(&w, map[(p1 & 0x55) | (p2 & 0x55) << 1]);
-            }
-        }
-        writer_end(&w, r == runs - 1);
+        map_c_run(f, bits, k0, n, output + 90 + k0 + 36 * r, r == runs - 1);
     }
 }
 
@@ -708,6 +717,74 @@ HOT void dvbs2_fast_map(dvbs2_fast *f, const dvbs2_workspace *ws, uint8_t *outpu
     }
 }
 
+/* ---------------------------------------------------------------- packed */
+
+/* Two symbols per byte: byte i = phase[2i] | phase[2i + 1] << 4. Every PLFRAME
+ * part (90-symbol header, 1440-symbol data runs, 36-symbol pilot blocks) starts
+ * at an even symbol, so parts never share a byte. Each 1440-symbol data run is
+ * mapped by the normal stage into an aligned scratch area after the 8PSK index
+ * pass (scratch holds at least 14592 bytes in every 8PSK mode), packed there and
+ * copied out, so no full-frame phase buffer is needed. */
+#define PACK_RUN 1440
+#define PACK_TEMP (169 * 64 + 16)   /* after the index; run8 writes 16 bytes before dst */
+
+static HOT void pack_c(const uint8_t *raw, uint8_t *packed, unsigned symbols)
+{
+    for (unsigned i = 0; i < symbols / 2; ++i) {   /* forward: packed may equal raw */
+        packed[i] = (uint8_t)(raw[2 * i] | raw[2 * i + 1] << 4);
+    }
+}
+
+HOT int dvbs2_fast_map_packed(dvbs2_fast *f, const dvbs2_workspace *ws, uint8_t *packed)
+{
+    if (f->mode->bits_per_symbol != 3) {
+        return -1;
+    }
+    uint8_t *temp = f->scratch + PACK_TEMP;
+#ifdef DVBS2_PIE
+    const int pie = (f->pie & DVBS2_PIE_MAP) != 0;
+    uint16_t *index = (uint16_t *)f->scratch;
+    const uint32_t *table = (const uint32_t *)((const uint8_t *)f->map + f->ldxq_bias);
+    if (pie) {
+        const uint8_t *a = ws->bits, *c = ws->bits + 5400;
+        if (f->mode->modcod == 12) {
+            a = ws->bits + 5400;
+            c = ws->bits;
+        }
+        dvbs2_pie_index8(a, ws->bits + 2700, c, f->gold, index, (f->data_symbols + 127) / 128);
+    }
+#endif
+    for (unsigned k = 0; k < f->data_symbols; k += PACK_RUN) {
+#ifdef DVBS2_PIE
+        if (pie) {
+            dvbs2_pie_run8(index + k / 4, table, temp - 16, PACK_RUN / 16, 0, f->tail);
+            memcpy(temp + PACK_RUN - 16, f->tail, 16);
+            dvbs2_pie_nibbles(temp, temp, PACK_RUN / 32);
+        } else
+#endif
+        {
+            map_c_run(f, ws->bits, k, PACK_RUN, temp, 0);
+            pack_c(temp, temp, PACK_RUN);
+        }
+        const unsigned at = 90 + k + (f->pilots ? 36 * (k / 1440) : 0);
+        memcpy(packed + at / 2, temp, PACK_RUN / 2);
+    }
+    return 0;
+}
+
+HOT void dvbs2_fast_pl_packed(const dvbs2_fast *f, uint8_t *packed)
+{
+    pack_c(f->header, packed, 90);
+    for (unsigned b = 0; b < f->pilot_blocks; ++b) {
+        pack_c(fast_pilots + 36 * b, packed + (90 + 1440 * (b + 1) + 36 * b) / 2, 36);
+    }
+}
+
+void dvbs2_pack(const uint8_t *phases, uint8_t *packed, size_t symbols)
+{
+    pack_c(phases, packed, (unsigned)symbols);
+}
+
 /* Complete frames use the fast path; the original public stages remain the
  * portable reference. Each concurrent encoder owns its context and workspace. */
 HOT int dvbs2_encode_frame(dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_state *ts,
@@ -725,5 +802,23 @@ HOT int dvbs2_encode_frame(dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_state *t
     dvbs2_fast_ldpc(f, ws);
     dvbs2_fast_map(f, ws, output);
     dvbs2_fast_pl(f, output);
+    return 0;
+}
+
+HOT int dvbs2_encode_frame_packed(dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_state *ts,
+                                  const uint8_t *payload, size_t input_bits, uint8_t *packed)
+{
+    if (!f || !packed || f->mode->bits_per_symbol != 3 || (ts && (input_bits & 7))) {
+        return -1;
+    }
+    const int rc = ts ? dvbs2_fast_bb_ts(f, ws, ts, payload, input_bits / 8)
+                      : dvbs2_fast_bb_gcs(f, ws, payload, input_bits);
+    if (rc) {
+        return rc;
+    }
+    dvbs2_fast_bch(f, ws);
+    dvbs2_fast_ldpc(f, ws);
+    dvbs2_fast_map_packed(f, ws, packed);
+    dvbs2_fast_pl_packed(f, packed);
     return 0;
 }

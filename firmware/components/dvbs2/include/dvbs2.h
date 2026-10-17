@@ -106,4 +106,16 @@ void dvbs2_fast_pl(const dvbs2_fast *f, uint8_t *output);
 int dvbs2_encode_frame(dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_state *ts,
                        const uint8_t *payload, size_t input_bits, uint8_t *output);
 
+/* 8PSK frames packed two symbols per byte, for rings in internal RAM: byte i =
+ * phase[2i] | phase[2i + 1] << 4, dvbs2_frame_symbols(mode, pilots) / 2 bytes
+ * (every frame length is even). map_packed and pl_packed write the same symbols
+ * as map and pl without a full-frame phase buffer; they use the context's
+ * scratch and any output alignment. QPSK contexts return -1. dvbs2_pack packs
+ * an even count of canonical phases, for example a dummy PLFRAME. */
+int dvbs2_fast_map_packed(dvbs2_fast *f, const dvbs2_workspace *ws, uint8_t *packed);
+void dvbs2_fast_pl_packed(const dvbs2_fast *f, uint8_t *packed);
+int dvbs2_encode_frame_packed(dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_state *ts,
+                              const uint8_t *payload, size_t input_bits, uint8_t *packed);
+void dvbs2_pack(const uint8_t *phases, uint8_t *packed, size_t symbols);
+
 #endif

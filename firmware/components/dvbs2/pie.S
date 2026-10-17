@@ -724,3 +724,25 @@ dvbs2_pie_crc8:
     mov a2, a5
     retw
     .size dvbs2_pie_crc8, . - dvbs2_pie_crc8
+
+/* Nibble packing for internal-RAM rings: 32 phases (two aligned vectors, values
+ * 0..7) to 16 bytes, byte j = s[2j] | s[2j + 1] << 4. VUNZIP.8 splits even and
+ * odd symbols (TRM v1.8 1.8.209); the odd ones move up four bits within their
+ * byte, which cannot carry into the next byte. dst may equal src.
+ * void dvbs2_pie_nibbles(const uint8_t *src, uint8_t *dst, unsigned vectors) */
+    .align 4
+    .global dvbs2_pie_nibbles
+    .type dvbs2_pie_nibbles, @function
+dvbs2_pie_nibbles:
+    entry a1, 32
+    ssai 4
+    loopnez a4, 40f
+    ee.vld.128.ip q0, a2, 16
+    ee.vld.128.ip q1, a2, 16
+    ee.vunzip.8 q0, q1                  /* q0 even symbols, q1 odd */
+    ee.vsl.32 q1, q1
+    ee.orq q0, q0, q1
+    ee.vst.128.ip q0, a3, 16
+40:
+    retw
+    .size dvbs2_pie_nibbles, . - dvbs2_pie_nibbles

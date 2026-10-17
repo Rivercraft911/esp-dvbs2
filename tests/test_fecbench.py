@@ -206,7 +206,7 @@ def check_records(records, expected):
         elif event == "pie_check":
             assert active is not None and active["impl"] == "pie", "pie_check outside a pie run"
             assert record["mismatch"] == 0, ("PIE stage differs from C (1 bb, 2 bch, 4 ldpc, "
-                                             "8 map+pl)", record)
+                                             "8 map+pl, 16 packed 8PSK)", record)
             active.setdefault("checked", set()).add(record["modcod"])
         elif event == "end":
             assert active is not None, "end without begin"
