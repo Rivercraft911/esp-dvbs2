@@ -60,15 +60,20 @@ for name, (_, good) in dvbtx.items():
             else:
                 good.append((f"{mc} {rate} 60 128 25", (mc, 60, 128, 25, 40000000, sps)))
                 dvbtx[name][0].append(f"{mc} {rate} 601")
-    # 20m: the 4-sps samples on the 80 MS/s schedule, radio-off commands only.
-    if name == "dvb":
-        dvbtx[name][0].extend([f"2400 {mc} 20m 1" for mc in (12, 13, 17)])
-    elif name == "dvbdump":
-        good += [(f"{mc} 20m 40", (mc, 40, 128, 1, 0, 4, 80000000)) for mc in (12, 13, 17)]
-        dvbtx[name][0].extend(["13 20m 40 128 3", "4 20m 40", "13 20 40", "13 20M 40"])
-    else:
-        good += [(f"{mc} 20m 60 128 25", (mc, 60, 128, 25, 80000000, 4)) for mc in (12, 13, 17)]
-        dvbtx[name][0].extend(["13 20m 601", "4 20m 1", "13 40m 1"])
+    # 10m80 and 20m: the 8- and 4-sps samples on the 80 MS/s schedule, radio-off commands only.
+    for rate, sps in (("10m80", 8), ("20m", 4)):
+        if name == "dvb":
+            dvbtx[name][0].extend([f"2400 {mc} {rate} 1" for mc in (12, 13, 17)])
+        elif name == "dvbdump":
+            good += [(f"{mc} {rate} 40", (mc, 40, 128, sps // 4, 0, sps, 80000000))
+                     for mc in (12, 13, 17)]
+            dvbtx[name][0].extend([f"13 {rate} 40 128 3", f"4 {rate} 40"])
+        else:
+            good += [(f"{mc} {rate} 60 128 25", (mc, 60, 128, 25, 80000000, sps))
+                     for mc in (12, 13, 17)]
+            dvbtx[name][0].extend([f"13 {rate} 601", f"4 {rate} 1"])
+    if name != "dvb":
+        dvbtx[name][0].extend(["13 20 40", "13 20M 40", "13 40m 1", "13 10m40 1", "13 10m8 1"])
     dvbtx[name][0].extend(["4 5m 1", "18 5m 1", "13 5m", "13 10m 1 128 0 extra"])
 
 # wifimem: optional MODCOD (and rate for 8PSK); it reaches dvbtx_wifi(modcod, sps) only.
@@ -76,7 +81,7 @@ dvbtx["wifimem"] = (["x", "3", "18", "12", "12 1m", "4 5m", "13 5m extra", "4 ex
                      "13 10m 1", "13 5m 10m"],
                     [("", (0, 0)), ("4", (4, 40)), ("11", (11, 40)), ("13 5m", (13, 8)),
                      ("15 10m", (15, 4)), (" 17\t10m", (17, 4))])
-dvbtx["wifimem"][0].extend(["13 20m", "17 20m"])
+dvbtx["wifimem"][0].extend(["13 20m", "17 20m", "13 10m80"])
 
 prelude = r'''
 #include <assert.h>

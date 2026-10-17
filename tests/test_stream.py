@@ -171,7 +171,8 @@ def test_stream():
         for mc, sps, call, rate in ((13, 4, "", 40), (15, 4, "N0CALL", 40), (17, 4, "", 40),
                                     (12, 8, "", 40), (13, 8, "N0CALL", 40), (15, 8, "N0CALL", 40),
                                     (17, 8, "", 40), (4, 40, "N0CALL", 40), (13, 4, "", 80),
-                                    (15, 4, "N0CALL", 80), (17, 4, "", 80)):
+                                    (15, 4, "N0CALL", 80), (17, 4, "", 80), (12, 8, "", 80),
+                                    (13, 8, "N0CALL", 80)):
             iq = folder / "dump.iq"
             out = subprocess.run([str(exe), str(mc), str(sps), str(iq), call, str(rate * 1000000)],
                                  capture_output=True, text=True, timeout=60, check=True).stdout

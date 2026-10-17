@@ -1,6 +1,6 @@
 // Continuous QPSK at 1 Msym/s (40 sps), or 8PSK at 5/10 Msym/s (8/4 sps).
 // 8PSK requires an explicit 5m or 10m before duration/frame count in all commands.
-// dvbdump and dvbpace also take 20m: the 10m samples (4 sps) on the 80 MS/s bank schedule.
+// dvbdump and dvbpace also run the 8 and 4 sps samples on the 80 MS/s bank schedule (10m80, 20m).
 // 8PSK keeps its frames in internal RAM, packed two phases per byte (dvbs2.h), so neither core
 // touches PSRAM per symbol: at 4 sps three frames, two in the table store's unused half and one
 // on the heap; at 8 sps two frames in one heap block (docs/stream-profile.md). QPSK keeps eight
@@ -268,7 +268,7 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
 {
     const dvbs2_mode *mode = dvbs2_find_mode(modcod);
     if (!mode || (mode->bits_per_symbol == 2 ? sps != 40 : (sps != 8 && sps != 4)) ||
-            (dac_rate != RADIO_S3_DAC_RATE && (dac_rate != RADIO_S3_DAC_RATE_80M || sps != 4))) {
+            (dac_rate != RADIO_S3_DAC_RATE && (dac_rate != RADIO_S3_DAC_RATE_80M || sps == 40))) {
         printf("@{\"cmd\":\"%s\",\"error\":\"invalid MODCOD/sps\"}\n", cmd);
         return 0;
     }

@@ -8,7 +8,7 @@ void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, 
 
 // dvbdump command: the same encoder and fill sequence without the radio. Every decim-th played
 // sample goes out over USB as int16 I/Q after a record carrying binary_bytes. dac_rate picks the
-// bank geometry (radio_s3.h); 80 MS/s takes 4 sps only.
+// bank geometry (radio_s3.h); 80 MS/s takes 8PSK (4 or 8 sps) only.
 void dvbtx_dump(unsigned modcod, unsigned frames, unsigned level, unsigned decim,
                 unsigned stall_ms, unsigned sps, uint32_t dac_rate);
 
