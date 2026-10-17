@@ -10,6 +10,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "stream_profile.h"
 
 #define SHAPER_HISTORY 8
 #define SHAPER_XOR 0x80200u
@@ -58,3 +59,7 @@ void shaper_fill_raw(uint32_t *dst, const uint8_t *sym, int nsym, const shaper_t
 // Partial symbols use aligned scratch; all PIE calls produce whole symbols.
 void shaper_samples(uint32_t *dst, const uint8_t *sym, unsigned skip, size_t count,
                     const shaper_table_t *t);
+// Same output, optional whole/partial-symbol observations. No per-symbol clock reads.
+void shaper_samples_profile(uint32_t *dst, const uint8_t *sym, unsigned skip, size_t count,
+                            const shaper_table_t *t, stream_profile_t *whole,
+                            stream_profile_t *partial);

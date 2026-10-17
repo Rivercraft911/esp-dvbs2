@@ -41,6 +41,11 @@ typedef struct {
     shaper_table_t table;
     uint8_t win[SHAPER_HISTORY + BANK_SYMBOLS];
     uint32_t max_fill_cycles;       // one fill call
+    bool profile;                  // radio-off commands only
+    stream_profile_t copy, whole, partial;
+    uint64_t fill_words, fill_cycles;
+    uint32_t fill_calls;
+    uint32_t worst_copy, worst_whole, worst_partial; // components of the SAME slowest call
 } dvb_t;
 
 static DRAM_ATTR dvb_t dvb;
@@ -58,10 +63,28 @@ typedef struct {
     uint32_t frames;                // encoded and published
     uint64_t cycles;                // per frame: payload and encoding into PSRAM, raw
     uint32_t min_cycles, max_cycles;
+    stream_profile_t stage[6];      // payload, BB, BCH, LDPC, map, PL
 } encoder_t;
 
 static encoder_t enc;
 static StaticSemaphore_t exited_storage;
+static uint32_t cache_ranges[4];
+static bool cache_configured;
+
+static void cache_profile_start(void)
+{
+    // Count the actual cached address apertures (TRM v1.8 table 4.3-2, p405).
+    // Do not clear shared counters, touch cache contents or change cache policy.
+    const uint32_t regs[] = {EXTMEM_IBUS_TO_FLASH_START_VADDR_REG,
+        EXTMEM_IBUS_TO_FLASH_END_VADDR_REG, EXTMEM_DBUS_TO_FLASH_START_VADDR_REG,
+        EXTMEM_DBUS_TO_FLASH_END_VADDR_REG};
+    const uint32_t ranges[] = {0x42000000, 0x43ffffff, 0x3c000000, 0x3dffffff};
+    for (unsigned i = 0; i < 4; ++i) {
+        cache_ranges[i] = REG_READ(regs[i]);
+        REG_WRITE(regs[i], ranges[i]);
+    }
+    cache_configured = true;
+}
 
 static uint32_t next_byte(uint32_t *x)
 {
@@ -78,15 +101,27 @@ static IRAM_ATTR esp_err_t fill(uint32_t *dst, uint64_t first, size_t count, voi
 {
     (void)ctx;
     const uint32_t before = esp_cpu_get_cycle_count();
+    const stream_mark_t mark = dvb.profile ? stream_mark() : (stream_mark_t){0};
     const unsigned sps = dvb.table.n;
     if (ring_window(&dvb.ring, dvb.win, sizeof dvb.win, first, count, sps,
                     SHAPER_HISTORY, RADIO_S3_BANK_WORDS) < 0) {
         return ESP_FAIL;
     }
-    shaper_samples(dst, dvb.win + SHAPER_HISTORY, first % sps, count, &dvb.table);
+    const uint32_t copied = esp_cpu_get_cycle_count() - before;
+    const uint64_t w0 = dvb.whole.cycles, p0 = dvb.partial.cycles;
+    if (dvb.profile) stream_record(&dvb.copy, mark, stream_mark());
+    shaper_samples_profile(dst, dvb.win + SHAPER_HISTORY, first % sps, count, &dvb.table,
+                           dvb.profile ? &dvb.whole : NULL,
+                           dvb.profile ? &dvb.partial : NULL);
     const uint32_t cycles = esp_cpu_get_cycle_count() - before;
+    dvb.fill_words += count;
+    dvb.fill_cycles += cycles;
+    dvb.fill_calls++;
     if (cycles > dvb.max_fill_cycles) {
         dvb.max_fill_cycles = cycles;
+        dvb.worst_copy = copied;
+        dvb.worst_whole = dvb.whole.cycles - w0;
+        dvb.worst_partial = dvb.partial.cycles - p0;
     }
     return ESP_OK;
 }
@@ -106,10 +141,33 @@ static void encoder_task(void *arg)
             vTaskDelay(1);
         }
         const uint32_t start = esp_cpu_get_cycle_count();
+        stream_mark_t before = dvb.profile ? stream_mark() : (stream_mark_t){0}, after;
         for (size_t i = 0; i < bytes; ++i) {
             e->payload[i] = next_byte(&x);
         }
-        if (dvbs2_encode_frame(e->fast, e->ws, NULL, e->payload, bytes * 8, out)) {
+        if (dvb.profile) {
+            after = stream_mark();
+            stream_record(&e->stage[0], before, after);
+            before = after;
+        }
+        int rc;
+        if (dvb.profile) {
+            rc = dvbs2_fast_bb_gcs(e->fast, e->ws, e->payload, bytes * 8);
+            after = stream_mark(); stream_record(&e->stage[1], before, after); before = after;
+            if (!rc) {
+                dvbs2_fast_bch(e->fast, e->ws);
+                after = stream_mark(); stream_record(&e->stage[2], before, after); before = after;
+                dvbs2_fast_ldpc(e->fast, e->ws);
+                after = stream_mark(); stream_record(&e->stage[3], before, after); before = after;
+                dvbs2_fast_map(e->fast, e->ws, out);
+                after = stream_mark(); stream_record(&e->stage[4], before, after); before = after;
+                dvbs2_fast_pl(e->fast, out);
+                after = stream_mark(); stream_record(&e->stage[5], before, after);
+            }
+        } else {
+            rc = dvbs2_encode_frame(e->fast, e->ws, NULL, e->payload, bytes * 8, out);
+        }
+        if (rc) {
             e->failed = true;
             goto done;
         }
@@ -130,6 +188,13 @@ done:
 
 static void release(void)
 {
+    if (cache_configured) {
+        const uint32_t regs[] = {EXTMEM_IBUS_TO_FLASH_START_VADDR_REG,
+            EXTMEM_IBUS_TO_FLASH_END_VADDR_REG, EXTMEM_DBUS_TO_FLASH_START_VADDR_REG,
+            EXTMEM_DBUS_TO_FLASH_END_VADDR_REG};
+        for (unsigned i = 0; i < 4; ++i) REG_WRITE(regs[i], cache_ranges[i]);
+        cache_configured = false;
+    }
     (void)heap_caps_monitor_local_minimum_free_size_stop();
     heap_caps_free(enc.fast);
     heap_caps_free(enc.ws);
@@ -153,6 +218,13 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
     (void)heap_caps_monitor_local_minimum_free_size_start();   // low-water mark of this command
     memset(&enc, 0, sizeof enc);
     enc.mode = mode;
+    memset(&dvb.copy, 0, sizeof dvb.copy);
+    memset(&dvb.whole, 0, sizeof dvb.whole);
+    memset(&dvb.partial, 0, sizeof dvb.partial);
+    dvb.fill_words = dvb.fill_cycles = dvb.fill_calls = 0;
+    dvb.worst_copy = dvb.worst_whole = dvb.worst_partial = 0;
+    dvb.profile = strcmp(cmd, "dvb") != 0;
+    if (dvb.profile) cache_profile_start();
     enc.stall_ms = stall_ms;
     enc.min_cycles = UINT32_MAX;
     // Fast encoder: per-mode context in internal RAM, workspace in cached PSRAM
@@ -205,6 +277,15 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
 }
 
 // Stop the encoder after a run and print the stream part of the result record.
+static void print_profile(const char *name, const stream_profile_t *p)
+{
+    printf("\"%s\":{\"calls\":%" PRIu32 ",\"cycles\":%" PRIu64 ",\"max_cycles\":%" PRIu32
+           ",\"flash_miss\":%" PRIu64 ",\"psram_miss\":%" PRIu64
+           ",\"data_access\":%" PRIu64 ",\"instruction_miss\":%" PRIu64 "}",
+           name, p->calls, p->cycles, p->max_cycles, p->flash_miss, p->psram_miss,
+           p->data_access, p->instruction_miss);
+}
+
 static void stop_encoder(void)
 {
     const size_t internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
@@ -224,6 +305,23 @@ static void stop_encoder(void)
            enc.frames ? enc.cycles / enc.frames : 0, enc.frames ? enc.min_cycles : 0,
            enc.max_cycles, enc.failed ? "true" : "false", dvb.max_fill_cycles,
            (unsigned)internal, (unsigned)largest, (unsigned)lowest);
+    if (dvb.profile) {
+        printf(",\"profile\":{\"cache_scope\":\"both cores and interrupts; windows overlap\","
+               "\"fill_calls\":%" PRIu32 ",\"fill_words\":%" PRIu64 ",\"fill_cycles\":%" PRIu64
+               ",\"worst_call\":{\"copy\":%" PRIu32 ",\"whole\":%" PRIu32
+               ",\"partial\":%" PRIu32 "},\"fill\":{",
+               dvb.fill_calls, dvb.fill_words, dvb.fill_cycles, dvb.worst_copy,
+               dvb.worst_whole, dvb.worst_partial);
+        print_profile("copy", &dvb.copy); printf(",");
+        print_profile("whole", &dvb.whole); printf(",");
+        print_profile("partial", &dvb.partial); printf("},\"encoder\":{");
+        static const char *const names[] = {"payload", "bb", "bch", "ldpc", "map", "pl"};
+        for (unsigned i = 0; i < 6; ++i) {
+            if (i) printf(",");
+            print_profile(names[i], &enc.stage[i]);
+        }
+        printf("}}");
+    }
     release();
 }
 
