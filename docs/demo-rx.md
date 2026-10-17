@@ -5,6 +5,11 @@ Clean file playback works through LeanDVB, MPEG-TS and FFmpeg. The weak-signal
 See [measurements](../results/2026-10-17-demo-rx/README.md) for speed and failures.
 No E200, other lab device or serial port was accessed in developing this receiver.
 
+For Monday, first qualify 5 Msym/s QPSK 3/4 with a 10 MS/s E200 stream. The
+file decoder has substantially more margin in that mode under noise. Increase
+to 10 Msym/s or change to 8PSK only after the complete receive path holds for
+60 seconds. This is a proposed bring-up order, not an RF qualification result.
+
 ## Run from a file
 
 On macOS, from this checkout:
@@ -22,6 +27,12 @@ The last line is the single command for the demo. It generates a moving 960 × 4
 `http://127.0.0.1:8765` if the browser does not open automatically. Everything is
 local. FFmpeg is found through `FFMPEG`, PATH, or the `imageio-ffmpeg` package.
 LeanDVB is a separate executable; no LeanSDR code is incorporated here.
+Use the local patched build named above. Its `-d` output supplies the custom
+`S2FEC ... bch_errors=...` records used for frame counts, and `--fd-info 2`
+supplies `FRAMELOCK` and `MER`. An upstream build without those diagnostics
+cannot provide the same dashboard counters. The measured binary's SHA-256 is
+recorded with each benchmark; its upstream base is LeanSDR work revision
+`84c59e1c7a1a79338d5722d63f28640cc9d350f3`.
 
 The Flat button shows ordinary video. Select 360° for a 2:1 equirectangular input,
 then drag or use arrow keys to look around and scroll or use +/− to zoom. Reset

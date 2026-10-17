@@ -65,6 +65,7 @@ def main():
         p.error('output already exists')
     report=dict(measured_at=dt.datetime.now(dt.timezone.utc).isoformat(),continuity_proven=False)
     proc=None
+    a.out.parent.mkdir(parents=True,exist_ok=True)
     with a.out.open('x') as output, tempfile.TemporaryFile() as errors:
         try:
             if a.stdin:
