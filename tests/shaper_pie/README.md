@@ -32,11 +32,13 @@ is needed by this app.
 The checker requires all 324 cases, zero word mismatches, intact output guards, and table and
 output checksums equal to `host/shaper.py`. QEMU verifies instructions, not silicon timing.
 
-The same app now runs `tests/tx_samples.c`: 1,520 raw-phase sample-glue cases at
+The same app now runs `tests/tx_samples.c`: 2,560 raw/scaled-phase sample-glue cases at
 4/8/40 sps, every edge offset, short tail and 80 wrapping DAC-bank schedules per profile.
 Pass the same log to `python3 tests/test_tx_samples.py notes/shaper-pie.log` to require
 zero word mismatches, intact guards and hashes identical to the host legacy-C oracle.
 The 324 table/PIE cases still compare with the independent Python shaper model.
+It also checks 26,114 pack/unpack cases, including both unpack formats, and 864 word-copy
+cases with guards, all pointer alignments, short lengths, overlap-sized and bank-sized copies.
 
 For the instruction issue model and the quality/budget sweep, from the root:
 

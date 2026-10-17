@@ -10,12 +10,15 @@ Payload generation is included in `encode_cycles_mean`, but excluded from `fecbe
 Startup frames are included in both the stream's total and its stage profiles.
 `layout` records table, context, workspace, payload and slot addresses for placement checks.
 
-`profile.fill` separates symbol copying/ring management, whole-symbol shaping (including
-the C tail), and partial-symbol shaping/copying. `fill_words` includes every callback, so
+`profile.fill` separates symbol copying/ring management and sample reuse (`copy`),
+whole-symbol shaping, partial-symbol shaping/copying, sample-cache saving (`save`) and
+encoder notification (`notify`). `fill_words` includes every callback, so
 `stage.cycles * 16380 / fill_words` gives cycles per equivalent bank. `worst_call` holds the
 components of the **same** slowest callback. A physical bank wrap makes two callbacks;
 `max_fill_cycles` from the scheduler is the whole-bank maximum. Do not add independent
-phase maxima to estimate it. Remaining cycles include profiling, notification and glue.
+phase maxima to estimate it. Remaining cycles include profiling and glue. `shaped_words`
+plus `reused_words` equals `fill_words`. The [fill experiment](bank-fill.md) describes the
+new path and its unmeasured timing estimates.
 
 Both cores share the caches ([ESP32-S3 TRM v1.8](https://documentation.espressif.com/esp32-s3_technical_reference_manual_en.pdf),
 section 4.3.3.2, p405). Cache observation windows overlap between cores and include interrupts.
@@ -66,17 +69,18 @@ At 10 Msym/s the 5/6 encoder needs about 71% of a 532,656-cycle frame period. Th
 underruns at 90%; three frames keep 18,871 symbols at 95%. At 5 Msym/s the encoder needs at
 most 36% and two frames keep 11,213 symbols in the model.
 
-The fill unpacks the symbols it needs into its window (`ring_unpack`). When every symbol
-lands at an address of its own parity, `shaper_unpack_pie` turns 16 packed bytes into 32
-phases in about 11 cycles (AND, shift, AND, VZIP.8); odd heads and tails stay scalar. The
+The fill unpacks the symbols it needs into its window (`ring_unpack_codes`). When every symbol
+lands at an address of its own parity, `shaper_unpack_codes_pie` turns 16 packed bytes into 32
+codes `16*k` in nine loop instructions (shift, masks, VZIP.8 and stores); odd heads and tails
+stay scalar. This removes the raw kernel's shift per symbol. The
 fill shifts its window by the first symbol's parity to make that true: the history is eight
 symbols, and for sps = 4 or 8 the parity of `first / sps` is bit log2(sps) of `first`.
 
-An overlap cache keeps `8 + 2 + ceil(2176 / sps)` symbols: 554 at 4 sps and 282 at 8 sps. 2,176
-samples is the bank overlap (2,112) plus the first bank's extra lead (64). The extra two
-symbols cover a symbol cut at each end of a bank; 16380 % 8 = 4, so 8-sps banks cut symbols.
-The host ring model fails without them at 8 sps. Slots are released only below the cache's
-oldest symbol. A task notification wakes the encoder after each release instead of waiting
+A private cache keeps 2,176 finished sample words: the bank overlap (2,112) plus the first
+bank's extra lead (64). Fresh ring reads then move forwards, so its symbol cache only needs
+eight history symbols and two end-cut symbols, ten bytes. The previous implementation kept
+554 symbols at 4 sps and 282 at 8, and shaped their samples again. Slots are released only
+below the symbol cache's oldest symbol. A task notification wakes the encoder after release instead of waiting
 for a 1 ms polling tick. It costs the fill core up to 2,348 cycles (board, notification max),
 so only the packed rings use it; QPSK polls as before. The notification function is placed in
 IRAM with `stream.lf`, and a link assertion checks its address.
@@ -86,7 +90,7 @@ the bank-schedule model at 4, 8 and 40 sps. `tests/test_stream.py` runs the actu
 lifecycle for eight modes and compares every DAC word with the plain encoder, checks the ring
 layout, dump CRCs, repeated commands, notifications and every allocation failure.
 `tests/test_dvbs2_c.py` compares 60 packed frames with the model; `tests/tx_samples.c` checks
-the PIE packer and unpacker against C in 13,058 cases on the host and in QEMU, and `fecbench
+the PIE packer and both unpack formats against C in 26,114 cases on the host and in QEMU, and `fecbench
 pie` compares PIE and C packed frames on the board. These establish correctness, not speed.
 
 ## Profile cost
