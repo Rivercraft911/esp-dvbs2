@@ -1,153 +1,158 @@
 # esp-dvbs2
 
-What started as but one hack on the ESP32-C3 has snowballed into a plethora of ESP32 software
-defined radios. People have pulled raw I/Q samples out of the Wi-Fi receiver, sent FM and SSB by
-steering the radio's test tone, played arbitrary waveforms through the transmit DAC, and put
-DVB-S on the 13 cm band from a C3 with a PC doing the encoding.
+A complete DVB-S2 transmitter on one ESP32-S3. Framing, error correction,
+modulation and pulse shaping run on the chip; samples leave through its own
+Wi-Fi radio. No PC encoder or external DAC.
 
-Now... this repo goes for the whole thing: **a complete DVB-S2 transmitter running on one ESP32-S3**.
-Framing, error correction, modulation and pulse shaping all happen on the chip, and the signal
-leaves through the S3's own Wi-Fi radio.
+Main has keyed **QPSK 9/10 at 80/3 Msym/s (46.6 Mb/s)** and **8PSK 5/6 at
+20 Msym/s (48.4 Mb/s)** for 30 s each in a shielded box, with every bank deadline
+met. Those are measured playback results. A receiver has not yet decoded the
+signal over RF. [QPSK run](results/2026-10-17-keyed-qpsk/README.md),
+[8PSK run](results/2026-10-16-keyed-20m/README.md).
 
-**The goal is live video:** 8PSK rate 2/3 at 5 Msym/s carries 9.68 Mb/s in about 6 MHz of the
-13 cm amateur band. [How it got this far](docs/story.md), step by step.
+The goal is live video. 8PSK 2/3 at 5 Msym/s carries 9.68 Mb/s before application
+framing, with a nominal 6.75 MHz occupied bandwidth at roll-off 0.35.
+[How it got here](docs/story.md) follows the measurements and failed attempts.
 
-## Where it stands
+## What runs
 
-| | Best so far | Run |
-|---|---|---|
-| Continuous transmit | 8PSK 2/3 at 20 Msym/s (38.7 Mb/s) and 5/6 (48.4 Mb/s) from the 80 MS/s DAC, keyed for 30 s each in a shielded box, every bank deadline met, 4% slack | [keyed](results/2026-10-16-keyed-20m/README.md) |
-| Bit-exact from the chip | QPSK 1/2 to 9/10 at 1 Msym/s, 8PSK 2/3 and 5/6 at 5 and 10 Msym/s: the DAC samples decoded by LeanDVB, radio off | [QPSK](results/2026-10-16-dryrun/README.md), [8PSK](results/2026-10-16-8psk-board/README.md) |
-| MER of those samples | 47.0 dB QPSK at 1 Msym/s; 8PSK 43.3 dB at 5 and 41.6 dB at 10 Msym/s after a modelled DAC hold | [QPSK](results/2026-10-16-dryrun/README.md), [8PSK](results/2026-10-16-integrate/README.md) |
-| Fastest QPSK | QPSK 9/10 at 26.67 Msym/s (46.6 Mb/s, 36 MHz), keyed for 30 s in a shielded box, every bank deadline met, 17% slack | [keyed](results/2026-10-17-keyed-qpsk/README.md), [radio off](results/2026-10-17-qpsk-goal/README.md) |
-| Encoder | 166k cycles per 8PSK 2/3 frame in the live stream: 62% of one core at 20 Msym/s | [radio off](results/2026-10-16-next2/README.md), [keyed](results/2026-10-16-keyed-20m/README.md) |
-| Pulse shaping | 1.78 cycles per sample; a whole bank at 20 Msym/s in 45.1k of its 47.2k cycles | [shaper](results/2026-10-16-shaper/README.md), [20 Msym/s](results/2026-10-16-20msym/README.md) |
-| RF, test tone | image -35 dBc, carrier leak about -45 dBc | [first RF](results/2026-10-16-radio/README.md) |
-| Payload in | 4.6 Mb/s over USB | [usb](results/2026-10-16-usb/README.md) |
+| Modulation | MODCOD | Symbol rates | Evidence |
+|---|---|---|---|
+| QPSK | 4..11, rates 1/2 through 9/10 | 1, 5, 10, 20, 80/3 Msym/s | [Host/board CRCs and independent decode](results/2026-10-17-qpsk-goal/README.md) |
+| 8PSK | 12..17, rates 3/5 through 9/10 | 5, 10, 20 Msym/s | [5/10 Msym/s](results/2026-10-16-8psk-board/README.md), [20 Msym/s short pulse](results/2026-10-17-next4/README.md) |
 
-Not yet: a receiver decoding the signal over RF, 26.67 Msym/s (at 3 samples per symbol the best
-kernel so far needs 46.4k cycles for a bank due every 47.2k), and payload arriving over SPI.
+The encoder supports every listed MODCOD. Board and receiver checks cover
+representative rates, not every combination over RF. The Python reference also
+has 16APSK/32APSK; firmware does not.
+
+Cleanup selects the fastest measured 20 Msym/s kernel per modulation: QPSK's
+four-symbol block kernel and 8PSK's six-symbol pulse. These previously used
+`20mq4` and `20ms6`; both are now `20m`. The duplicate `10m80` token is removed.
+All other waveforms retain their CRCs. The new defaults match the old opt-in
+kernels bit for bit; this branch still needs the coordinator's board checks.
+The six-symbol 8PSK waveform has radio-off evidence, not keyed qualification.
+[Waveforms, CRCs and memory](docs/bank-fill.md).
 
 ## How it works
 
 ```
-payload ─▶ BB frame ─▶ BCH ─▶ LDPC ─▶ 8PSK map ─▶ PL frame ─▶ pulse shaping ─▶ DAC bank ─▶ radio
-           └────────────── one core ──────────────┘          └──────── other core ────────┘
+payload -> BB frame -> BCH -> LDPC -> map -> PL frame -> pulse shaping -> DAC bank -> radio
+           <-------------- core 0 --------------->    <--------- core 1 --------->
 ```
 
-The S3's radio contains an undocumented test engine that plays samples from internal RAM
-straight into its I/Q DAC. It loops over one bank of 16380 samples at 40 MS/s (409.5 µs per
-pass) with no CPU help, while the CPU fills a second bank and switches them on time. That refill
-is the budget that decides everything: at 40 MS/s a fresh bank is due every 357 µs.
+The radio's test engine loops over 16,380 complex samples in internal SRAM.
+Core 1 fills the other bank and switches it on time. At 80 MS/s a fresh bank
+is due every 196.75 us, or 47,220 cycles at 240 MHz. Core 0 continuously encodes
+frames into a small ring. Underruns insert valid dummy frames without skipping
+payload. Lookup tables replace per-sample filter multiplication; finished
+overlap samples are reused.
+[Fill](docs/bank-fill.md), [encoder](docs/encoder.md),
+[radio and bank geometry](docs/bank-geometry.md).
 
-To pulse shape with such speed and tenacity I went a similar path to my [RP2350 version](https://github.com/Rivercraft911/RP2350_IQ_Benchmark):
-every possible output of the shaping filter is computed once into a table, so producing
-samples is copying table rows instead of doing filter math. At 5 Msym/s one symbol is one row of
-8 samples. There are a bunch of ways you can play with this idea as you try more complex waveforms.
+Measured limits remain: USB payload input reached 4.6 Mb/s; SPI input is not
+implemented. The test-tone image was -35 dBc and carrier leakage about -45 dBc.
+The RF passband, DAC continuity and receiver decode still need cabled
+measurements. Host models, instruction models and QEMU are correctness or
+planning tools, not silicon timing measurements.
+[USB](results/2026-10-16-usb/README.md), [RF](results/2026-10-16-radio/README.md).
 
-## Encoding a frame in 213k cycles
+## Build and check
 
-![8PSK 2/3 encoder cycles per frame: plain C, portable fast C and PIE](docs/img/encoder.png)
-
-Tables, whole-word operations and PIE vector kernels encode an 8PSK 2/3 normal frame in 213k
-cycles, 12 times fewer than the plain C encoder in the same build: 20% of one core at 5 Msym/s,
-enough on its own for about 25 Msym/s. Every output matches the Python reference. In the live
-stream a frame still costs about 700k cycles, because the stream also makes the payload and
-writes each frame to PSRAM. A frame lasts 533k cycles at 10 Msym/s, so that is the next cut.
-[Run details](results/2026-10-16-fec-limit/README.md).
-
-## Pulse shaping at 1.78 cycles per sample
-
-![Time to shape one DAC bank with plain C and with the PIE vector unit](docs/img/shaper.png)
-
-Real 8PSK samples, a 9-symbol root-raised-cosine pulse, go into a DAC bank at 1.78 cycles per
-sample using the S3's 128-bit vector instructions. Each sample is the sum of three table words,
-so the whole 8PSK table fits in 64 KiB. That is 34% of one core at 40 MS/s, and 68% at 80 MS/s,
-the rate that would allow 20 Msym/s. [Run details](results/2026-10-16-shaper/README.md).
-
-Unlike the RP2350's external DAC, whose clock followed the symbol rate (4 samples per symbol),
-the S3's DAC engine only runs at 40 or 80 MS/s. Samples per symbol therefore follow from the
-symbol rate: 40 at 1 Msym/s, 8 at 5, 4 at 10, 3 at 13.33. The shaping work per second depends
-only on the DAC rate, so a higher symbol rate costs no extra shaping, only encoder time.
-
-## Next
-
-- A wider transmit filter for 20 Msym/s, and more fill margin than 4%.
-- 26.67 Msym/s at 3 samples per symbol.
-- A 6-symbol pulse: two table lookups per sample instead of three.
-- A receiver decoding the signal over RF, starting with a cabled path.
-- Payload over SPI from a second board, APSK in firmware.
-
-QPSK `26m667` now connects the live encoder, three-frame ring and block fill at
-80/3 Msym/s. Offline dumps are bit-exact; integrated silicon timing and Wi-Fi heap
-remain pending. `20mq4` opts into the new four-sample waveform while `20m` keeps
-its existing CRCs. [Integration, RAM account and radio-off board gates](docs/qpsk-goal.md).
-
-## Build and run
-
-Needs ESP-IDF v6.1, an ESP32-S3 with 8 MB of PSRAM, Python 3 with numpy, pyserial and matplotlib.
-The host IQ tools also need scipy. Independent loopback needs a separate local LeanDVB build.
-The [local receive dashboard](docs/demo-rx.md) plays reference-generated H.264 through
-LeanDVB and provides coordinator commands for the E200. It includes a spectrum,
-waterfall and interactive 360° video view. Live RF and browser interaction still
-need qualification; the [file benchmarks](results/2026-10-17-demo-rx/README.md)
-show the decoder's limits under noise.
+Needs ESP-IDF v6.1, ESP32-S3 with 8 MB PSRAM, Python 3 with numpy, scipy,
+pyserial and matplotlib. Independent decode also needs a local LeanDVB build.
+The [local receive dashboard](docs/demo-rx.md) plays reference H.264 through
+LeanDVB and has a spectrum, waterfall and 360° video view.
+[File measurements](results/2026-10-17-demo-rx/README.md) document decoder speed
+and noise limits. Live RF still needs coordinator qualification.
 
 ```sh
-python3 tests/test_dvbs2.py                     # reference encoder checks, no hardware
-python3 tests/test_dvbs2_8psk.py                # independent 8PSK standard-formula checks
-python3 tests/test_dvbs2_apsk.py                # normal 16APSK/32APSK formulas and stage digests
-python3 tests/test_dvbs2_c.py                   # compile with cc, compare every C stage
-python3 tests/test_fecbench.py                  # seeded benchmark frames and output CRCs
-python3 tests/test_iq.py                        # RRC waveform and capture formats, no hardware
-python3 tests/test_decode.py                    # receiver output parsing and failure checks
-python3 tests/test_ring.py                      # encoder-to-fill frame ring against the bank schedule
-cd firmware && idf.py build flash && cd ..      # after sourcing ESP-IDF
-python3 host/board.py info --reset              # talk to the board
-python3 host/board.py membench --out results/<date>-<topic>/runs.jsonl
-python3 host/board.py fecbench --reset --timeout 120 --out results/<date>-encoder/runs.jsonl
-python3 host/board.py "fecbench pie" --timeout 120 --out results/<date>-encoder/runs.jsonl  # or c
-python3 tests/test_fecbench.py results/<date>-encoder/runs.jsonl
-python3 host/board.py "dvbdump 4 40" --save dump.iq   # the transmit samples over USB, radio off
-python3 host/onair.py dump.iq --rate 4000000 --scale 512 --stream 40   # LeanDVB decode, payload check
-python3 host/board.py "dvbdump 13 5m 40 128 1" --save dump8.iq   # 8PSK 2/3, 5 Msym/s, every sample
-python3 host/onair.py dump8.iq --rate 40000000 --stream 40 --mer --shift 0
-python3 host/board.py "dvbpace 4 60" --timeout 120  # encoder and timed bank fills, radio off
-python3 host/board.py "dvbpace 13 5m 60" --timeout 120  # the same for 8PSK 2/3 at 5 Msym/s
-python3 host/plots.py                           # redraw the figures from results/
+python3 tests/test_dvbs2.py            # Python reference and standard checks
+python3 tests/test_dvbs2_c.py          # every C encoder stage against Python
+python3 tests/test_fecbench.py         # actual benchmark command, all 140 CRCs
+python3 tests/test_stream.py           # actual stream, every DAC word and 57 golden CRCs
+. ~/.espressif/tools/activate_idf_v6.1.sh >/dev/null 2>&1
+(cd firmware && idf.py build)
+host/check.sh --plan                  # pass criteria only; opens no devices
 ```
 
-## Where things are
+CI runs the remaining host tests and builds firmware plus the shaper, encoder
+and radio QEMU harnesses. In a sandbox that denies the unused component
+manager's process discovery, use `IDF_COMPONENT_MANAGER=0 idf.py build`.
+No managed dependencies are required.
 
-| Path | What |
+The coordinator owns flashing and board checks. After building/flashing the
+committed revision, with N0CALL already stored, choose a Python with the host
+dependencies (the example uses the local macOS installation):
+
+```sh
+PYTHON=/Library/Frameworks/Python.framework/Versions/3.13/bin/python3 \
+  RX=/path/to/leandvb host/check.sh notes/cleanup-board
+# Add --all-crcs for an exhaustive board CRC/decode sweep (much slower).
+```
+
+The slim check takes about five minutes, depending on USB and decode speed.
+It prints gates first, keeps going after failures, records each outcome and
+ends with a summary. It checks all golden waveforms on the host, selected
+16-frame board dumps plus regressions, LeanDVB, four key 30 s paces and four
+10 s regressions covering every modulation/rate path, and Wi-Fi startup heap. Timing ceilings are 102% of recorded main values;
+8PSK 9/10 at 5 Msym/s must retain at least 22,351 B with Wi-Fi up. It never
+flashes, changes NVS or keys the radio. [Exact gates](docs/bank-geometry.md#evidence-and-acceptance).
+
+## Console and host tools
+
+QPSK defaults to 1 Msym/s. Both modulations accept `5m`, `10m`, `20m`;
+`26m667` is QPSK only. Rate tokens precede the frame count or duration.
+Dumps emit little-endian int16 I/Q; full scale for analysis is 512.
+
+```sh
+python3 host/board.py info --reset
+python3 host/board.py membench                      # shipped shapers and C oracles
+python3 host/board.py fecbench --timeout 120         # shipped encoder; or "fecbench plain"
+python3 host/board.py "dvbdump 4 40" --save qpsk.iq   # legacy 1 Msym/s, 4 MS/s dump
+python3 host/board.py "dvbdump 15 20m 16 128 1" --save fast.iq
+python3 host/onair.py fast.iq --rate 80000000 --symbol-rate 20000000 \
+  --modcod 15 --scale 512 --stream 16 --callsign N0CALL --shift 0 --receiver /path/to/leandvb
+python3 host/board.py "dvbpace 11 26m667 30" --timeout 120
+python3 host/board.py "wifimem 17 5m"                 # Wi-Fi start/stop only
+python3 host/plots.py                               # historical figures from results/
+```
+
+Use the board's actual stored callsign when decoding; golden CRCs use N0CALL.
+`dvbpace` exercises the live encoder and bank deadlines without radio playback.
+`wifimem` measures startup next to the selected transmitter allocations.
+`host/stream_profile.py` summarizes saved cycle/cache records.
+
+## Files
+
+| Path | Purpose |
 |---|---|
-| `firmware/` | ESP-IDF application |
-| `host/` | Python reference encoder, board tool, figures |
-| `tests/` | Bit-exact checks of the reference |
-| `results/` | One folder per measurement run, with its raw records |
-| `docs/` | [The story so far](docs/story.md), [prior art](docs/prior-art.md), [bench setup](docs/hardware.md), [files over the link](docs/file-link.md), [APSK shaping](docs/apsk-shaping.md), [bank geometry at 80 MS/s](docs/bank-geometry.md), figures |
+| `firmware/main/` | Console, transmitter lifecycle, frame ring, shaping kernels and two benchmarks |
+| `firmware/components/` | DVB-S2 encoder, S3 radio/bank scheduler, station ID and storage |
+| `host/dvbs2.py`, `host/shaper.py`, `host/qpsk_fill.py` | Independent encoder and waveform models, table generation |
+| `host/check.sh`, `host/board.py`, `host/onair.py` | Coordinator gates, board protocol, decode/MER analysis |
+| `host/bench.py`, `host/sdr.py`, `host/capture.py` | Authorized RF capture and offline diagnostics |
+| `tests/` | Host checks, golden digests/CRCs and peripheral-free QEMU harnesses |
+| `results/` | Immutable measured evidence, raw records and firmware versions |
+| `docs/` | [Story](docs/story.md), [fill](docs/bank-fill.md), [encoder](docs/encoder.md), [radio](docs/bank-geometry.md), [bench setup](docs/hardware.md), [prior art](docs/prior-art.md), [file link](docs/file-link.md), generated figures |
+
+`host/filelink.py` remains a tested host-only erasure-coded file transport.
+Historical experiment kernels and merge diaries live in git history; results
+remain unchanged. README/story figures are generated by `host/plots.py`.
 
 ## Transmitting
 
-Operating outside the Wi-Fi channels needs an amateur radio licence, and the firmware is meant
-for licensed use in the 13 cm band. Bench tests go into a dummy load or through at least 30 dB
-of attenuation into a receiver. Set `callsign <assigned CALL>` over `host/board.py` first;
-`callsign` reads it, `callsign clear` removes it, and `info` reports it. The setting survives
-reset. Without it, `tx` and `dvb` refuse before radio startup; radio-off commands still work.
+Only a licensed operator should key the radio on an authorized amateur
+frequency, into a dummy load or through at least 30 dB attenuation into a
+receiver. Set the assigned callsign with `callsign <CALL>` first. `tx` and `dvb`
+refuse without it. The keyed syntax is
+`dvb <MHz> <MODCOD> [5m|10m|20m|26m667] <seconds> [gain] [peak]`.
 
-The transmit command is `dvb <MHz> <MODCOD> [5m|10m for 8PSK] <seconds> [gain] [peak]`.
-
-Each keyed run includes 20 WPM Morse at +1 MHz before and after its payload, with periodic
-ID every nine minutes. Requested seconds include both IDs and remain limited to 60 s; too-short runs refuse before RF.
-DVB payload frames also carry the callsign; add `--callsign CALL` to `host/onair.py` when checking
-them. `iddump CALL` and `host/morse.py` verify the CW samples without radio access.
-A keyed 30 s run held every bank deadline with both IDs; the radiated Morse has not been received yet.
-See [docs/hardware.md](docs/hardware.md#station-identification) for the rule, limitations and
-radio-off coordinator commands.
+Runs include 20 WPM Morse at the start/end and periodic ID every nine minutes;
+requested RF duration includes both IDs and is limited to 60 s. Payload frames
+also carry the callsign. `iddump CALL` and `host/morse.py` check ID samples
+without RF. [Setup, limitations and capture commands](docs/hardware.md).
 
 ## Licence
 
-Apache-2.0. Everything here is written from scratch; the projects that showed the way are
-credited in [docs/prior-art.md](docs/prior-art.md).
-
-DVB-S2 has left the chip, so far into a shielded box. A receiver decoding it is next. Coming soon to a repo near you!
+Apache-2.0. Independently written; findings from other projects are credited in
+[prior-art.md](docs/prior-art.md).

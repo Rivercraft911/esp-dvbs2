@@ -112,7 +112,7 @@ def test_hold_correction():
         g = np.fft.ifft(h).real[:len(p.taps)] * p.n * np.kaiser(len(p.taps), s.KAISER_BETA)
         assert np.max(np.abs(g - s.corrected_rrc(p.alpha, p.n))) < 2e-7, p.name
     for span in (11, 13):
-        p = replace(s.PROFILES['8psk-n4-a20'], span=span)
+        p = replace(s.PROFILES['8psk-n4-a35'], span=span)
         sym = s.cyclic(p, 2048, 3)
         y = s.iq(s.shape(p, sym))
         assert len(y) == 2048*p.n
@@ -154,14 +154,9 @@ def test_firmware_c():
 def check_qemu(path):
     records = [json.loads(line[1:]) for line in pathlib.Path(path).read_text().splitlines()
                if line.startswith('@{"test":"shape')]
-    want_cases = {(test, name, count, seed)
-                  for test, names, counts in (
-                      ('shape4_pie', ('8psk-n4-a20', '8psk-n4-a35'), (0,1,2,3,4,5,6,7,13,4093,4094,4095)),
-                      ('shape4_rows', ('8psk-n4-a20', '8psk-n4-a35'), (0,1,2,3,4,5,6,7,13,4093,4094,4095)),
-                      ('shape4_all', ('8psk-n4-a20', '8psk-n4-a35'), (0,1,2,3,4,5,6,7,13,4093,4094,4095)),
-                      ('shape4_rows_all', ('8psk-n4-a20', '8psk-n4-a35'), (0,1,2,3,4,5,6,7,13,4093,4094,4095)),
-                      ('shape5_pie', ('8psk-n5-a20', '8psk-n5-a35'), (0,4,8,12,16,3276)))
-                  for name in names for count in counts for seed in (2026,7,0xffffffff)}
+    want_cases = {('shape4_all', '8psk-n4-a35', count, seed)
+                  for count in (0,1,2,3,4,5,6,7,13,4093,4094,4095)
+                  for seed in (2026,7,0xffffffff)}
     assert len(records) == len(want_cases), len(records)
     for r in records:
         want_cases.remove((r['test'], r["profile"], r["symbols"], r["seed"]))

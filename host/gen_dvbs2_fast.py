@@ -115,14 +115,6 @@ def generate():
                 else:
                     gold[k // 4] |= ((r >> 1) << (7 - 2 * (k % 4))) | ((r & 1) << (6 - 2 * (k % 4)))
             out.append(array(f"fast_gold_{bps}_{pilots}", "uint8_t", gold))
-    compact = []
-    for v in range(64):
-        word = 0
-        for i in range(2):
-            phase = (((v >> (1-i)) & 1) ^ 1) | (((v >> (5-i)) & 1) << 1) | (((v >> (3-i)) & 1) << 2)
-            word |= phase << (8*i)
-        compact.append(word)
-    out.append(array("fast_map_3_compact", "uint32_t", compact, 8))
     # Four symbols straight to two packed bytes. The index is the existing
     # P0'/P2/P1 nibble triple, first symbol in each nibble's high bit.
     packed = []

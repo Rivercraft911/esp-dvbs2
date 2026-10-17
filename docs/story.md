@@ -171,7 +171,7 @@ for 30 s each with every deadline met.
 
 - **APSK.** The Python reference does 16APSK and 32APSK, and 56 host loopbacks through LeanDVB
   recovered every file. Not in firmware yet.
-  ([APSK decode](../results/2026-10-16-apsk-decode/README.md), [shaping notes](apsk-shaping.md))
+  ([APSK decode](../results/2026-10-16-apsk-decode/README.md), [reference encoder](encoder.md))
 - **Files over a one-way link.** `host/filelink.py` splits a file into packets with a
   Reed-Solomon erasure code, so any 4 lost frames in 20 still recover the file. Host
   simulation only. ([file link](file-link.md), [run](../results/2026-10-16-filelink/README.md))
@@ -180,7 +180,18 @@ for 30 s each with every deadline met.
   bank overlap while the CPU shaped the rest was slower in every case than the CPU alone. The
   CPU with PIE stays the sample engine. ([DMA](../results/2026-10-16-dma-offload/README.md))
 
+## 13. QPSK at 26.67 Msym/s
+
+Four-symbol QPSK tables and a packed ring brought the complete 9/10 stream to
+80/3 Msym/s. The radio-off run's worst bank was 39,139 cycles against 47,220;
+all samples decoded bit for bit. Keyed in the box for 30 s, every deadline held,
+carrying 46.6 Mb/s. This still does not establish receiver decoding over RF.
+([radio off](../results/2026-10-17-qpsk-goal/README.md),
+[keyed](../results/2026-10-17-keyed-qpsk/README.md))
+
 ## Now
 
-The fill has 4% slack at 20 Msym/s and the transmit filter is narrower than the signal, so
-those come next, with 26.67 Msym/s after them. Then a receiver decoding the signal over RF.
+The next measurement is a receiver decoding the signal over a cabled RF path.
+Payload over SPI and more fill margin remain. The current implementation and
+its checks are in [fill](bank-fill.md), [encoder](encoder.md) and
+[radio/bank geometry](bank-geometry.md).

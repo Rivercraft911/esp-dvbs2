@@ -112,12 +112,11 @@ esp_err_t radio_s3_wifi_probe(radio_s3_stats_t *stats)
 
 int main(int argc, char **argv)
 {
-    assert(argc == 4 || argc == 5 || argc == 6 || argc == 7 || argc == 8);
+    assert(argc == 7);
     if (argc >= 5) callsign = argv[4];
     const uint32_t rate = argc >= 6 ? (uint32_t)atol(argv[5]) : RADIO_S3_DAC_RATE;
-    const unsigned mc = (unsigned)atoi(argv[1]), sps = (unsigned)atoi(argv[2]), frames = argc == 8 ? (unsigned)atoi(argv[7]) : 40;
-    const unsigned pulse = argc >= 7 ? atoi(argv[6]) : 0;
-    const bool quads = pulse == 2 || sps == 3, short_pulse = pulse == 1;
+    const unsigned mc = (unsigned)atoi(argv[1]), sps = (unsigned)atoi(argv[2]), frames = (unsigned)atoi(argv[6]);
+    const bool quads = mc < 12 && rate == 80000000, short_pulse = mc >= 12 && rate == 80000000;
     const dvbs2_mode *mode = dvbs2_find_mode(mc);
     const size_t length = dvbs2_frame_symbols(mode, 1), bytes = (mode->kbch - 80) / 8;
     phase_count = (frames + 2) * length;
@@ -136,7 +135,7 @@ int main(int argc, char **argv)
     // Every command-owned allocation can fail: count them on a good start, then fail each.
     // Cleanup must leave no live allocations.
     allocation_count = 0;
-    assert(start_encoder("dvbdump", mc, 128, 0, sps, rate, pulse));
+    assert(start_encoder("dvbdump", mc, 128, 0, sps, rate));
     const int allocations = allocation_count;
     const bool resident = sps != 40 && (mc < 12 || sps == 4);
     assert(allocations == (sps == 40 ? 7 : 3 + (mc >= 12 && !short_pulse) +
@@ -156,18 +155,18 @@ int main(int argc, char **argv)
     assert(live_allocations == 0);
     for (int i = 0; i < allocations; ++i) {
         fail_after = i;
-        assert(!start_encoder("dvbdump", mc, 128, 0, sps, rate, pulse));
+        assert(!start_encoder("dvbdump", mc, 128, 0, sps, rate));
         assert(live_allocations == 0);
     }
     fail_after = -1;
     if (*callsign) {
-        dvbtx_wifi(mc, sps, rate, pulse);
+        dvbtx_wifi(mc, sps, rate);
         assert(wifi_probes == 1 && live_allocations == 0);
         assert((dvb.table.parts == 2) == short_pulse);
     }
     for (unsigned repeat = 0; repeat < 2; ++repeat) {
         capture = fopen(argv[3], "wb"); assert(capture);
-        dvbtx_dump(mc, frames, 128, sps == 40 ? 10 : mc < 12 && sps == 8 ? 2 : 1, 0, sps, rate, pulse);
+        dvbtx_dump(mc, frames, 128, sps == 40 ? 10 : mc < 12 && sps == 8 ? 2 : 1, 0, sps, rate);
         fclose(capture);
         assert(live_allocations == 0);
         for (unsigned i = 0; i < 4; ++i) assert(native_ranges[i] == 0);

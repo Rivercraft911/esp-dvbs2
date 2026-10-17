@@ -83,16 +83,11 @@ void dvbs2_plframe(const dvbs2_mode *mode, int pilots, uint8_t *output);
  * header and pilots. output: dvbs2_frame_symbols(mode, pilots) bytes, any
  * alignment. */
 typedef struct dvbs2_fast dvbs2_fast;
-/* Optional BCH A/B controls. The default uses byte rows for t > 8 and
- * register-based nibble rows for t = 8. NIBBLE selects register-based rows
- * for all modes, LEGACY the original nibble kernel. SRAM copies the default
- * byte table into existing scratch each frame, including the copy in timing.
- * MAP_COMPACT selects the former 256-byte mapping table for A/B timing.
- * MAP_SPARSE uses the sparse mapper then packs each run, keeping only 512 B
- * of mapping cache lines hot. Use it with a PSRAM FEC workspace.
- * dvbs2_fast_pie() still reports only the four active stage bits. */
-enum { DVBS2_BCH_NIBBLE = 16, DVBS2_BCH_LEGACY = 32, DVBS2_BCH_SRAM = 64,
-       DVBS2_MAP_COMPACT = 128, DVBS2_MAP_SPARSE = 256, DVBS2_MAP_QUADS = 512 };
+/* NIBBLE uses register-based BCH rows for PSRAM workspaces; the default byte
+ * rows are cached in internal RAM by the fast stream. MAP_SPARSE keeps the
+ * 8PSK mapper's hot cache footprint at 512 B beside a PSRAM workspace.
+ * MAP_QUADS selects the QPSK block shaper's four-symbol bytes. */
+enum { DVBS2_BCH_NIBBLE = 16, DVBS2_MAP_SPARSE = 256, DVBS2_MAP_QUADS = 512 };
 /* QPSK only: MAP_QUADS makes the packed APIs emit four phase>>1 codes per byte,
  * oldest in bits 7:6. The last byte's unused low bits are zero. */
 void dvbs2_pack_quads(const uint8_t *phases, uint8_t *packed, size_t symbols);
@@ -141,7 +136,7 @@ int dvbs2_encode_frame(dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_state *ts,
  * (every frame length is even). map_packed and pl_packed write the same symbols
  * as map and pl without a full-frame phase buffer; they use the context's
  * scratch and any output alignment. PIE maps directly to packed bytes unless
- * MAP_SPARSE is selected for 8PSK (MAP_COMPACT only affects unpacked output).
+ * MAP_SPARSE is selected for 8PSK.
  * QPSK always uses its direct packed mapper. The fixed header and pilots are
  * packed once by prepare. dvbs2_pack packs
  * an even count of canonical phases, for example a dummy PLFRAME. */

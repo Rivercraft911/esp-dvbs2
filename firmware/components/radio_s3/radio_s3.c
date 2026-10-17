@@ -93,9 +93,7 @@ SOC_RESERVE_MEMORY_REGION(0x3fcc0000, 0x3fce0000, radio_dac_banks);
 /* Undocumented vendor ABIs, checked against the installed S3 archives and the
  * pinned register document:1377-1386. Public Wi-Fi APIs own PHY lifetime.
  */
-extern void rom_pbus_workmode(void);
 extern void rom_pbus_xpd_rx_on(unsigned int en);
-extern void rom_pbus_xpd_tx_on(unsigned int en);
 extern void rom_pbus_xpd_tx_off(void);
 extern void set_chanfreq(uint16_t mhz, uint8_t bandwidth);
 extern void phy_set_freq(uint16_t mhz, int16_t khz);
@@ -118,13 +116,7 @@ static uint16_t gain_baseband(unsigned gain)
 
 static portMUX_TYPE state_lock = portMUX_INITIALIZER_UNLOCKED;
 static bool running;
-static radio_s3_chain_t chain = RADIO_S3_CHAIN_CW_GAIN;
 static bool gaps;
-
-void radio_s3_set_chain(radio_s3_chain_t mode)
-{
-    chain = mode;
-}
 
 void radio_s3_set_gaps(bool on)
 {
@@ -155,7 +147,6 @@ typedef struct {
     SemaphoreHandle_t done;
     esp_err_t error;
     bool watch_worker;
-    radio_s3_chain_t chain;
     uint64_t samples;               /* exact sample count, including IDs */
     bool identify;
     bool limit_duration;
@@ -356,40 +347,19 @@ static esp_err_t IRAM_ATTR __attribute__((noinline)) stream(run_t *run)
      */
     const uint32_t base = (REG_READ(FE_CTRL) >> 18) & 0xffU;
     stats->fe_base_index = base;
-    stats->chain = run->chain;
-    if (run->chain != RADIO_S3_CHAIN_FORCED) {
-        /* The vendor CW turns the whole chain on with its calibrated settings.
-         * Stopping the tone hands the DAC to the data path and keeps the chain
-         * keyed (esp-sdr-zephyr 3214c16 lib/esp_sdr/src/esp_sdr_paced.c:203-232).
-         * Only the PLL moves afterwards; another channel setup would undo it.
-         */
-        esp_phy_cbw40m_en(run->chain == RADIO_S3_CHAIN_CW40);
-        esp_phy_wifi_tx_tone(1, cw_channel(run->freq_mhz), cw_backoff(run->gain));
-        stop_tx_tone(1);
-        phy_set_freq(run->freq_mhz, 0);
-        direct_lo();
-        if (run->chain != RADIO_S3_CHAIN_CW_GAIN) {
-            stats->fe_gain_index = (REG_READ(FE_CTRL) >> 10) & 0xffU;
-            goto keyed;
-        }
-        /* Then pin the gain as the forced path does: fixed slot 0, vendor power
-         * tracking off. */
-        force_tx_gain(gain_codes[run->gain], gain_baseband(run->gain), 0);
-        force_txon_mode(1, 0, (uint8_t)(-base & 0xffU));
-        goto check_slot;
-    }
-    rom_pbus_workmode();
-    rom_pbus_xpd_rx_on(0);
-    rom_pbus_xpd_tx_on(1);
-    force_tx_gain(gain_codes[run->gain], gain_baseband(run->gain), 0);
+    /* CW bring-up enables both I/Q branches with calibrated PHY settings.
+     * Stop its tone, move only the PLL, then pin gain slot zero. */
+    esp_phy_cbw40m_en(false);
+    esp_phy_wifi_tx_tone(1, cw_channel(run->freq_mhz), cw_backoff(run->gain));
+    stop_tx_tone(1);
+    phy_set_freq(run->freq_mhz, 0);
     direct_lo();
+    force_tx_gain(gain_codes[run->gain], gain_baseband(run->gain), 0);
     force_txon_mode(1, 0, (uint8_t)(-base & 0xffU));
-check_slot:
     stats->fe_gain_index = (REG_READ(FE_CTRL) >> 10) & 0xffU;
     if (stats->fe_gain_index != 0) {
         return ESP_ERR_INVALID_STATE;
     }
-keyed:
     REG_CLR_BIT(TONE_CTRL, 1U << 18);
     /* Keying can clear bank ownership, so grant only after keying. */
     REG_WRITE(BANK_USAGE, ownership | (1U << 2));
@@ -555,9 +525,7 @@ cleanup:
     if (started && !run->probe) {
         REG_WRITE(DAC_CTRL, 0);
         REG_WRITE(ADC_CTRL, 0);
-        if (run->chain != RADIO_S3_CHAIN_FORCED) {
-            esp_phy_wifi_tx_tone(0, cw_channel(run->freq_mhz), cw_backoff(run->gain));
-        }
+        esp_phy_wifi_tx_tone(0, cw_channel(run->freq_mhz), cw_backoff(run->gain));
         force_txon_mode(0, 0, 0);
         REG_CLR_BIT(FE_CTRL, 1U << 1);
         REG_CLR_BIT(TONE_CTRL, 1U << 18);
@@ -781,7 +749,7 @@ esp_err_t radio_s3_wifi_probe(radio_s3_stats_t *stats)
     memset(stats, 0, sizeof *stats);
     run_t run = {
         .samples = 30ULL * RADIO_S3_DAC_RATE, .identify = true, .limit_duration = true,
-        .probe = true, .seconds = 30, .fill = no_fill, .stats = stats, .chain = chain,
+        .probe = true, .seconds = 30, .fill = no_fill, .stats = stats,
         .geo = geometry(RADIO_S3_DAC_RATE),
     };
     return on_core1(worker, &run);
@@ -809,7 +777,7 @@ esp_err_t radio_s3_run_rate(uint32_t freq_mhz, uint8_t gain, uint32_t seconds, u
     run_t run = {
         .samples = (uint64_t)seconds * dac_rate, .identify = true, .limit_duration = true,
         .freq_mhz = freq_mhz, .gain = gain, .seconds = seconds,
-        .fill = fill, .ctx = ctx, .stats = stats, .chain = chain, .gaps = gaps,
+        .fill = fill, .ctx = ctx, .stats = stats, .gaps = gaps,
         .geo = geometry(dac_rate),
     };
     esp_err_t error = on_core1(worker, &run);

@@ -6,7 +6,7 @@
 #include "esp_err.h"
 
 #define RADIO_S3_DAC_RATE 40000000U      /* DAC_CTRL bit 15 clear; keyed on air */
-#define RADIO_S3_DAC_RATE_80M 80000000U  /* bit 15 set; not yet keyed on silicon */
+#define RADIO_S3_DAC_RATE_80M 80000000U  /* bit 15 set; keyed at 20 and 80/3 Msym/s */
 #define RADIO_S3_BANK_WORDS 16380U
 
 /* Bank geometry (docs/bank-geometry.md). Bank k plays samples [k*STEP, (k+1)*STEP) and also
@@ -73,7 +73,6 @@ typedef struct {
     uint32_t fatal_late;      /* Stopped after observing a missed safe-tail deadline. */
     uint32_t fe_base_index;   /* Front-end gain base index found before keying. */
     uint32_t fe_gain_index;   /* Gain slot selected after keying; must be 0 when forced. */
-    uint32_t chain;           /* radio_s3_chain_t used for this run. */
     uint32_t id_samples;      /* one CW segment at the nominal DAC rate */
     uint32_t id_count;        /* planned start, periodic and end segments */
     uint64_t planned_samples; /* payload + all IDs */
@@ -91,20 +90,6 @@ typedef struct {
  * runs fail before worker creation. On a fatal fill/deadline fault, abort immediately: a final ID
  * cannot be guaranteed. No flash write is permitted during a run.
  */
-/* How later runs turn the transmit chain on (results/2026-10-16-radio).
- * CW_GAIN (default): start and stop the vendor CW tone, which brings up both DAC
- * branches with the PHY's calibrated settings, then pin gain slot 0 as FORCED does.
- * CW: the CW bring-up alone, backoff (17 - gain) * 2 dB; the vendor power control
- * stays on and the level varies between runs. CW40: CW in the vendor's 40 MHz
- * channel mode. FORCED: front end and gain slot 0 forced directly; on the bench
- * only the I branch reached the mixer and the carrier leak exceeded the signal.
- */
-typedef enum {
-    RADIO_S3_CHAIN_FORCED, RADIO_S3_CHAIN_CW, RADIO_S3_CHAIN_CW40, RADIO_S3_CHAIN_CW_GAIN
-} radio_s3_chain_t;
-
-void radio_s3_set_chain(radio_s3_chain_t mode);
-
 /* Switch probe for later radio_s3_run calls (`tx ... gap`), never for DVB. After each fill,
  * silence the bank's own lead and tail, where both banks normally agree. Every switch then
  * plays |switch sample - k*STEP| silent samples, the bank's aim plus the DAC's lag, which an
@@ -137,7 +122,7 @@ esp_err_t radio_s3_dry_run_rate(radio_s3_fill_fn fill, void *ctx, uint64_t sampl
 /* Radio off: radio_s3_run's bank schedule on core 1 for 1..600 seconds, the same fills into
  * the same bank memory against the same cycle-counter deadlines, with no Wi-Fi, PHY, DAC or
  * bank-ownership register access. Nothing is transmitted, so the DAC's own reads of the bank
- * memory are absent. Stats as for radio_s3_run; the fe_* fields and chain stay 0.
+ * memory are absent. Stats as for radio_s3_run; the fe_* fields stay 0.
  * With a configured callsign, inserts the same start/periodic/end IDs as RF;
  * otherwise keeps the original unwrapped run. seconds counts payload time. */
 esp_err_t radio_s3_paced_run(uint32_t seconds, radio_s3_fill_fn fill, void *ctx,
