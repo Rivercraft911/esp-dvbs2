@@ -1,43 +1,31 @@
-# QPSK encoder integrated with next4, radio off
+# QPSK at 5, 10 and 20 Msym/s on main, radio off
 
-Merge `a11b7b5` has parents main `4f926aa` and QPSK encoder `8437931`.
-All eighteen requested dump CRCs pass. All 31 host test programs pass, including
-the board-script test. No serial port was opened, firmware flashed or RF transmitted.
+exp/next5 (main `4f926aa` + exp/qpsk-enc `8437931`) passes 55 of 56 board checks. QPSK now runs
+at 5, 10 and 20 Msym/s (MODCOD 4-11) with an encoder of 156k-185k cycles per frame, and all
+eighteen dump CRCs match: main's ten and the eight QPSK ones. The one failure is internal RAM:
+8PSK 9/10 at 5 Msym/s leaves 19,043 B free with Wi-Fi up, below the 20,000 B floor (predicted
+19,019 B; the QPSK code costs every mode 2,560 B of instruction RAM). Wi-Fi starts normally
+(`ESP_OK`); the floor is a margin, and recovering those bytes is part of the next step. No RF.
 
-[runs.jsonl](runs.jsonl) contains 72 records with source revisions, log hashes,
-individual host outcomes, all eighteen dump checks, QEMU summaries, linked RAM,
-clearly labelled supplied board measurements and the Wi-Fi heap estimate.
-The integration was checked before its handoff documentation commit; firmware
-source is the merge's `firmware` tree recorded in the first row.
+Firmware `298235f`, ESP32-S3 at 240 MHz. `board.log` is the full output of `host/next5-board.sh`
+(fecbench, eighteen dumps, six 30 s paced runs, three `wifimem` probes that start and stop
+Wi-Fi without keying).
 
-The real host stream harness compares every DAC word with the portable encoder,
-checks repeated commands and all allocation failures, and completes the physical
-wrap schedule at both 40 and 80 MS/s. Optional LeanDVB checks also pass all
-32 fast-QPSK configurations (MODCOD 4–11, both samples/symbol, both DAC rates):
-38 contiguous bit-exact frames each, no LDPC/BCH corrections or payload errors.
-These are host-generated samples, not captures from the integrated board.
+| `dvbpace`, 30 s | Longest fill | Bank period | Smallest slack | Encoder mean / live max |
+|---|---:|---:|---:|---:|
+| 8PSK 2/3, 5 Msym/s | 38,017 | 85,608 | 46,429 | 215,228 / 221,949 |
+| 8PSK 2/3, 20 Msym/s (`20m`) | 45,550 | 47,220 | 1,404 | 167,798 / 171,096 |
+| 8PSK 2/3, 20 Msym/s (`20ms6`) | 40,492 | 47,220 | 6,458 | 169,296 / 171,068 |
+| QPSK 1/2, 20 Msym/s | 45,986 | 47,220 | 962 | 156,529 / 159,164 |
+| QPSK 9/10, 20 Msym/s (34.9 Mb/s) | 45,944 | 47,220 | 1,007 | 184,782 / 185,384 |
+| QPSK 1/2, 1 Msym/s | 41,565 | 85,608 | 43,299 | 682,449 / 688,475 |
 
-ESP32-S3 QEMU passes all four harnesses: encoder (140 FEC CRCs, 14 PIE checks,
-896 guarded packed frames and workspace-tail checks); shaper (324 kernels,
-3,360 sample glue, 39,170 pack/unpack, 864 copies, 24 block-pulse and 162
-short-pulse cases); radio (2,031,488 samples across both geometries); APSK
-(1,760 checks, zero failures). QEMU cycle counts are not silicon timing.
+Every run `ESP_OK`, zero late fills, late switches and underruns. QPSK at 20 Msym/s uses the
+existing 9-symbol fill with 2% slack; the measured QPSK kernels (exp/qpsk-fill, 32.2k at
+4 samples/symbol) are not in this build yet.
 
-The requested plain IDF v6.1 build was attempted and blocked by the sandbox's
-denial of the unused component manager's `psutil`/`sysctl` process lookup.
-The firmware and every harness build successfully with `IDF_COMPONENT_MANAGER=0`.
-No SDK or project configuration was changed.
-
-Linked internal RAM grows 2,560 B relative to main, with unchanged DRAM data/BSS.
-All per-mode allocations preserve their mapper, workspace and ring policy.
-QPSK gains 2,576 B of linked capacity relative to its branch, and the QPSK fast
-windows share the internal workspace tail. See [RAM derivations](../../docs/next5.md).
-The tightest old Wi-Fi mode, `17 5m`, is estimated at 19,019 B versus its
-20,000 B script gate. That is a predicted failure, pending a board measurement.
-
-The script is [host/next5-board.sh](../../host/next5-board.sh), about 12 minutes.
-It lists criteria before issuing commands, saves every IQ dump, checks all three
-CRCs and file sizes, runs the exact six paces and three Wi-Fi probes, and reports
-all 29 outcomes. Its fake-board test verifies successful operation and continued
-execution after a command error, a corrupt saved CRC and insufficient heap.
-The real board script has not been run during this integration.
+| `wifimem` | Free with Wi-Fi up | Floor |
+|---|---:|---:|
+| QPSK MODCOD 8, 10 Msym/s | 31,879 B (min 29,955) | pass |
+| 8PSK 2/3, `20ms6` | 34,187 B | pass |
+| 8PSK 9/10, 5 Msym/s | **19,043 B** (largest block 7,680) | **fail, 20,000** |
