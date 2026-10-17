@@ -57,6 +57,8 @@ The 0.5 cycles/word copies and 500-cycle control allowance are assumptions, not
 measurements. No full-bank implementation is claimed by that equation. Multiplying
 the whole estimate by 1.25 gives 53,856 cycles; this is a sensitivity case based on
 past model error, not a guaranteed upper bound.
+It also assumes rd-short's 8,704 B private overlap cache, which this isolated
+benchmark does not allocate. A future stream layout must budget that buffer too.
 
 The bank/frame geometry comes from `radio_s3.h`, and DVB-S2 normal-frame geometry
 from EN 302 307-1 clauses 5.3 and 5.5.2-3:
@@ -92,6 +94,8 @@ The free-scheduling break-even rate is 23.001 Msym/s, or 19.551 Msym/s with 15%
 reserve, but neither is an available n3 rate at the specified 40/80 MS/s clocks.
 At 13.333 Msym/s the 25%-guard fill and measured encoder separately leave 37.1%
 and 34.4% of their respective deadlines.
+The encoder number is a mean, not a worst-case guarantee. Its observed cold-frame
+spikes and any new ring/layout costs still need a complete paced run.
 
 Shrinking overlap cannot supply the missing 15% margin. Even with no overlap,
 the kernel alone needs `34/12 = 2.833 cycles/sample`, above the 80 MS/s target
