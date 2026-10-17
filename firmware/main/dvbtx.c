@@ -46,7 +46,7 @@
 #define SEED 2026
 #define ENCODER_PRIORITY 5          // above the command loop, below the Wi-Fi and IPC tasks
 // Samples, including the first bank's extra lead. Later banks re-read 2112 words, or 640 on the
-// 80 MS/s geometry, which keeps only its 768 (dvb.cached).
+// 80 MS/s geometry, which keeps only its 768 (dvb.cached_words).
 #define CACHED_FOR(rate) (RADIO_S3_BANK_WORDS - RADIO_S3_STEP_FOR(rate) + RADIO_S3_LEAD_FOR(rate))
 #define CACHED_WORDS CACHED_FOR(RADIO_S3_DAC_RATE)
 _Static_assert(CACHED_FOR(RADIO_S3_DAC_RATE_80M) <= CACHED_WORDS, "sample cache too small");
@@ -57,15 +57,16 @@ _Static_assert(CACHED_FOR(RADIO_S3_DAC_RATE_80M) <= CACHED_WORDS, "sample cache 
 typedef struct {
     ring_t ring;
     shaper_table_t table;
-    uint8_t win[SHAPER_HISTORY + BANK_SYMBOLS + 1] __attribute__((aligned(16)));  // +1: parity
+    uint8_t *win;                  // internal; borrows unused fast workspace at 4 sps
+    size_t win_bytes;
     uint8_t overlap[OVERLAP_SYMBOLS];
     uint32_t samples[CACHED_WORDS] __attribute__((aligned(16)));
     uint64_t sample_end;            // cached samples end here; only advances on fresh samples
     size_t sample_at;               // circular cache index of sample_end
-    size_t cached;                  // cache length for the run's geometry, at most CACHED_WORDS
     uint32_t max_fill_cycles;       // one fill call
     bool profile;                  // radio-off commands only
-    uint32_t dac_rate;             // the run's bank geometry (radio_s3.h)
+    uint32_t dac_rate;             // the run's bank geometry
+    size_t cached_words;           // active sample cache, within samples[]
     stream_profile_t copy, whole, partial, save, notify;
     uint64_t fill_words, fill_cycles;
     uint32_t fill_calls;
@@ -74,6 +75,8 @@ typedef struct {
 } dvb_t;
 
 static DRAM_ATTR dvb_t dvb;
+_Static_assert(sizeof(dvbs2_workspace) - DVBS2_FAST_WORKSPACE_USED >=
+               SHAPER_HISTORY + BANK_SYMBOLS + 1, "fast workspace tail holds n4 window");
 
 typedef struct {
     const dvbs2_mode *mode;
@@ -134,16 +137,22 @@ static IRAM_ATTR esp_err_t fill(uint32_t *dst, uint64_t first, size_t count, voi
     const uint32_t before = esp_cpu_get_cycle_count();
     const stream_mark_t mark = dvb.profile ? stream_mark_for(&dvb.copy) : (stream_mark_t){0};
     const size_t requested = count;
+    const size_t cache_words = dvb.cached_words;
+    // radio_s3 calls this once to the physical bank end, then for the wrapped
+    // prefix. Save only the suffix that survives that second callback.
+    const size_t offset = first % RADIO_S3_BANK_WORDS;
+    const size_t save_words = offset && requested == RADIO_S3_BANK_WORDS - offset ?
+        (offset < cache_words ? cache_words - offset : 0) : cache_words;
     // Copy any re-read samples before touching the ring. Fresh reads then move strictly
     // forwards, so a short second callback at the physical output wrap cannot shift hundreds
     // of cached symbols. Never read the other physical DAC bank: it may belong to the radio.
     if (enc.packed && first < dvb.sample_end) {
         const uint64_t back = dvb.sample_end - first;
-        if (back > dvb.cached) return ESP_FAIL;
-        size_t at = dvb.sample_at + dvb.cached - (size_t)back;
-        if (at >= dvb.cached) at -= dvb.cached;
+        if (back > cache_words) return ESP_FAIL;
+        size_t at = dvb.sample_at + cache_words - (size_t)back;
+        if (at >= cache_words) at -= cache_words;
         const size_t cached = back < count ? (size_t)back : count;
-        const size_t head = cached < dvb.cached - at ? cached : dvb.cached - at;
+        const size_t head = cached < cache_words - at ? cached : cache_words - at;
         shaper_copy_words(dst, dvb.samples + at, head);
         shaper_copy_words(dst + head, dvb.samples, cached - head);
         dst += cached, first += cached, count -= cached;
@@ -154,7 +163,7 @@ static IRAM_ATTR esp_err_t fill(uint32_t *dst, uint64_t first, size_t count, voi
     // parity (ring.h); the history is even, so shift the window by the first symbol's parity.
     // sps is 4 or 8 there, so that parity is bit log2(sps) of first. QPSK keeps the window.
     uint8_t *const win = dvb.win + (enc.packed && (first & sps));
-    if (count && ring_window(&dvb.ring, win, sizeof dvb.win - 1, first, count, sps,
+    if (count && ring_window(&dvb.ring, win, dvb.win_bytes - 1, first, count, sps,
                     SHAPER_HISTORY, RADIO_S3_BANK_WORDS) < 0) {
         return ESP_FAIL;
     }
@@ -178,19 +187,22 @@ static IRAM_ATTR esp_err_t fill(uint32_t *dst, uint64_t first, size_t count, voi
         win + SHAPER_HISTORY, first % sps, count, &dvb.table,
         dvb.profile ? &dvb.whole : NULL, dvb.profile ? &dvb.partial : NULL);
     if (enc.packed && count) {
-        // Save only new samples; a short callback appends without moving the preceding tail.
-        // A long callback replaces the cache with its last dvb.cached samples.
+        // The completed bank retains exactly cache_words fresh samples in total.
+        // Between callbacks the cache may be incomplete; the second is contiguous
+        // and cannot re-read any sample after a first callback that shaped words.
         const stream_mark_t save = dvb.profile ? stream_mark_for(&dvb.save) : (stream_mark_t){0};
-        if (count >= dvb.cached) {
-            shaper_copy_words(dvb.samples, dst + count - dvb.cached, dvb.cached);
+        const size_t keep = count < save_words ? count : save_words;
+        const uint32_t *suffix = dst + count - keep;
+        if (keep == cache_words) {
+            shaper_copy_words(dvb.samples, suffix, keep);
             dvb.sample_at = 0;
         } else {
-            const size_t head = count < dvb.cached - dvb.sample_at ? count :
-                                dvb.cached - dvb.sample_at;
-            shaper_copy_words(dvb.samples + dvb.sample_at, dst, head);
-            shaper_copy_words(dvb.samples, dst + head, count - head);
-            dvb.sample_at += count;
-            if (dvb.sample_at >= dvb.cached) dvb.sample_at -= dvb.cached;
+            const size_t head = keep < cache_words - dvb.sample_at ? keep :
+                                cache_words - dvb.sample_at;
+            shaper_copy_words(dvb.samples + dvb.sample_at, suffix, head);
+            shaper_copy_words(dvb.samples, suffix + head, keep - head);
+            dvb.sample_at += keep;
+            if (dvb.sample_at >= cache_words) dvb.sample_at -= cache_words;
         }
         dvb.sample_end = first + count;
         if (dvb.profile) {
@@ -304,6 +316,8 @@ static void release(void)
     (void)heap_caps_monitor_local_minimum_free_size_stop();
     heap_caps_free(enc.fast);
     heap_caps_free(enc.ws);
+    if (dvb.win && (!enc.packed || dvb.table.n != 4)) heap_caps_free(dvb.win);
+    dvb.win = NULL;
     heap_caps_free(enc.bch);
     heap_caps_free(enc.block);
     if (!enc.packed) {
@@ -323,16 +337,19 @@ static size_t packed_bytes(size_t symbols)
 // Build the scaled table and the dummy frame, start the encoder on core 0 and wait until it has
 // filled every slot. Returns the frame length in symbols, or 0 after printing an error for `cmd`.
 static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, unsigned stall_ms,
-                            unsigned sps, uint32_t dac_rate)
+                            unsigned sps, uint32_t dac_rate, bool short_pulse)
 {
     const dvbs2_mode *mode = dvbs2_find_mode(modcod);
-    if (!mode || (mode->bits_per_symbol == 2 ? sps != 40 : (sps != 8 && sps != 4)) ||
+    if ((short_pulse && (sps != 4 || dac_rate != RADIO_S3_DAC_RATE_80M ||
+                        (strcmp(cmd, "dvbdump") && strcmp(cmd, "dvbpace")))) ||
+        !mode || (mode->bits_per_symbol == 2 ? sps != 40 : (sps != 8 && sps != 4)) ||
             (dac_rate != RADIO_S3_DAC_RATE && (dac_rate != RADIO_S3_DAC_RATE_80M || sps == 40))) {
         printf("@{\"cmd\":\"%s\",\"error\":\"invalid MODCOD/sps\"}\n", cmd);
         return 0;
     }
     const size_t symbols = dvbs2_frame_symbols(mode, PILOTS);
     dvb.dac_rate = dac_rate;
+    dvb.cached_words = CACHED_FOR(dac_rate);
     (void)heap_caps_monitor_local_minimum_free_size_start();   // low-water mark of this command
     memset(&enc, 0, sizeof enc);
     enc.mode = mode;
@@ -346,7 +363,6 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
     dvb.worst_save = dvb.worst_notify = 0;
     dvb.shaped_words = dvb.reused_words = 0;
     dvb.sample_end = dvb.sample_at = 0;
-    dvb.cached = CACHED_FOR(dac_rate);
     dvb.profile = !strcmp(cmd, "dvbpace") || !strcmp(cmd, "dvbdump");
     // The fill phases of a timed run record cycles only; an untimed dump also reads the
     // shared cache counters. Encoder stages always read them.
@@ -361,30 +377,36 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
     const uint32_t internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     const size_t payload_bytes = (mode->kbch - 80) / 8;
     enc.packed = mode->bits_per_symbol == 3;
+    dvb.table.n = sps;
     // At 10 Msym/s the 5/6 encoder needs about 69% of a frame period; a two-frame model keeps
     // as little as 244 symbols of lead there, three frames keep 18,871 even at 95% (test_ring).
     const unsigned nslots = !enc.packed ? RING_SLOTS : sps == 4 ? 3 : 2;
     if (enc.packed) {
         // Two packed frames, the packed dummy and the payload, 16-byte aligned (31,200 B at
         // most, for MODCOD 17). The 4-sps table uses the store's first 32 KiB, so they go in the
-        // rest and the third frame on the heap. At 8 sps the table fills the store, so all of
-        // it is one heap block. Heap parts are made before the context.
+        // rest and the third frame on the heap. The six-symbol 16 KiB table leaves
+        // room for all three frames. At 8 sps the table fills the store and the ring
+        // needs a heap block. Heap parts are made before the context.
         const size_t frame = packed_bytes(symbols), dummy = packed_bytes(DVBS2_DUMMY_SYMBOLS);
         const size_t need = 2 * frame + dummy + payload_bytes;
         uint8_t *base;
         if (sps == 4) {
-            const size_t used = shaper_table_words(sps, mode->bits_per_symbol) * 4;
-            if (used + need > sizeof shaper_store) {
+            const size_t used = short_pulse ? 16384 : shaper_table_words(sps, mode->bits_per_symbol) * 4;
+            if (used + ((need + 15) & ~(size_t)15) + (short_pulse ? frame : 0) > sizeof shaper_store) {
                 printf("@{\"cmd\":\"%s\",\"error\":\"internal ring does not fit\"}\n", cmd);
                 release();
                 return 0;
             }
             base = (uint8_t *)shaper_store + used;
-            enc.slot[2] = enc.block = heap_caps_aligned_alloc(16, frame, internal);
+            if (short_pulse) enc.slot[2] = base + ((need + 15) & ~(size_t)15);
+            else {
+                enc.slot[2] = enc.block = heap_caps_aligned_alloc(16, frame, internal);
+                if (!enc.block) base = NULL;
+            }
         } else {
             base = enc.block = heap_caps_aligned_alloc(16, need, internal);
         }
-        if (enc.block) {
+        if (base) {
             enc.slot[0] = base;
             enc.slot[1] = base + frame;
             enc.filler = base + 2 * frame;
@@ -397,6 +419,9 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
     enc.fast = heap_caps_aligned_alloc(16, dvbs2_fast_mode_size(mode), internal);
     enc.ws = heap_caps_aligned_alloc(16, sizeof *enc.ws,
                                     resident ? internal : MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    dvb.win_bytes = SHAPER_HISTORY + (RADIO_S3_BANK_WORDS + sps - 1) / sps + 2;
+    dvb.win = resident ? (enc.ws ? (uint8_t *)enc.ws + DVBS2_FAST_WORKSPACE_USED : NULL) :
+                        heap_caps_aligned_alloc(16, dvb.win_bytes, internal);
     if (resident && mode->t > 8)
         enc.bch = heap_caps_aligned_alloc(16, DVBS2_BCH_CACHE_BYTES, internal);
     if (!enc.packed) {
@@ -411,7 +436,7 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
     // (results/2026-10-16-next); the other modes keep register-nibble BCH.
     // At 8 sps the PSRAM workspace also needs the sparse mapper's smaller
     // cache footprint. Its temporary phases reuse the existing context scratch.
-    if (!enc.fast || !enc.ws || !enc.payload || !enc.filler || !taps ||
+    if (!dvb.win || !enc.fast || !enc.ws || !enc.payload || !enc.filler || !taps ||
             (resident && mode->t > 8 && !enc.bch) || (!enc.packed && !enc.slots) ||
             dvbs2_fast_prepare(enc.fast, mode, PILOTS,
                               15 | (resident ? 0 : DVBS2_BCH_NIBBLE | DVBS2_MAP_SPARSE)) ||
@@ -434,7 +459,8 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
     for (unsigned i = 0; i < 9 * sps; ++i) {
         taps[i] = (int32_t)((double)source[i] * level / WORST_PEAK);
     }
-    shaper_build(&dvb.table, shaper_store, taps, sps, mode->bits_per_symbol);
+    if (short_pulse) shaper_short_build(&dvb.table, shaper_store, level);
+    else shaper_build(&dvb.table, shaper_store, taps, sps, mode->bits_per_symbol);
     heap_caps_free(taps);
     dvb.max_fill_cycles = 0;
     if (enc.packed) {
@@ -591,7 +617,7 @@ void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, 
     if (!station_require("dvb")) {
         return;
     }
-    const size_t symbols = start_encoder("dvb", modcod, level, 0, sps, dac_rate);
+    const size_t symbols = start_encoder("dvb", modcod, level, 0, sps, dac_rate, false);
     if (!symbols) {
         return;
     }
@@ -600,6 +626,7 @@ void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, 
     print_mode("dvb", modcod, symbols, level);
     printf(",\"freq_mhz\":%" PRIu32 ",\"seconds\":%" PRIu32 ",\"gain\":%u,\"dac_rate\":%" PRIu32
            ",\"step_words\":%u", freq, seconds, gain, dac_rate, RADIO_S3_STEP_FOR(dac_rate));
+    printf(",\"pulse_symbols\":%u", dvb.table.parts == 2 ? 6 : 9);
     print_timing(&s);
     printf(",\"fe_gain_index\":%" PRIu32, s.fe_gain_index);
     print_wifi(&s.wifi);
@@ -610,9 +637,9 @@ void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, 
 }
 
 void dvbtx_pace(unsigned modcod, uint32_t seconds, unsigned level, unsigned stall_ms,
-                 unsigned sps, uint32_t dac_rate)
+                 unsigned sps, uint32_t dac_rate, bool short_pulse)
 {
-    const size_t symbols = start_encoder("dvbpace", modcod, level, stall_ms, sps, dac_rate);
+    const size_t symbols = start_encoder("dvbpace", modcod, level, stall_ms, sps, dac_rate, short_pulse);
     if (!symbols) {
         return;
     }
@@ -621,6 +648,7 @@ void dvbtx_pace(unsigned modcod, uint32_t seconds, unsigned level, unsigned stal
     print_mode("dvbpace", modcod, symbols, level);
     printf(",\"seconds\":%" PRIu32 ",\"dac_rate\":%" PRIu32 ",\"step_words\":%u", seconds,
            dac_rate, RADIO_S3_STEP_FOR(dac_rate));
+    printf(",\"pulse_symbols\":%u", dvb.table.parts == 2 ? 6 : 9);
     print_timing(&s);
     stop_encoder();
     printf(",\"status\":\"%s\"%s}\n", esp_err_to_name(err),
@@ -660,9 +688,9 @@ static esp_err_t sink(const uint32_t *bank, uint64_t first, size_t count, void *
 }
 
 void dvbtx_dump(unsigned modcod, unsigned frames, unsigned level, unsigned decim,
-                unsigned stall_ms, unsigned sps, uint32_t dac_rate)
+                unsigned stall_ms, unsigned sps, uint32_t dac_rate, bool short_pulse)
 {
-    const size_t symbols = start_encoder("dvbdump", modcod, level, stall_ms, sps, dac_rate);
+    const size_t symbols = start_encoder("dvbdump", modcod, level, stall_ms, sps, dac_rate, short_pulse);
     if (!symbols) {
         return;
     }
@@ -688,6 +716,7 @@ void dvbtx_dump(unsigned modcod, unsigned frames, unsigned level, unsigned decim
     const uint32_t crc = d->crc;
     heap_caps_free(d);
     print_mode("dvbdump", modcod, symbols, level);
+    printf(",\"pulse_symbols\":%u", dvb.table.parts == 2 ? 6 : 9);
     printf(",\"frames\":%u,\"decimation\":%u,\"samples\":%" PRIu64 ",\"crc32\":%" PRIu32 ","
            "\"fills\":%" PRIu32 ",\"max_fill_cycles\":%" PRIu32 ",\"overlap_words\":%" PRIu32 ","
            "\"overlap_mismatches\":%" PRIu32,
@@ -704,7 +733,7 @@ void dvbtx_wifi(unsigned modcod, unsigned sps)
     }
     size_t symbols = 0;
     if (modcod) {
-        symbols = start_encoder("wifimem", modcod, 128, 0, sps, RADIO_S3_DAC_RATE);
+        symbols = start_encoder("wifimem", modcod, 128, 0, sps, RADIO_S3_DAC_RATE, false);
         if (!symbols) {
             return;
         }

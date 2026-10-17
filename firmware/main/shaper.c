@@ -110,19 +110,21 @@ IRAM_ATTR void shaper_fill_c(uint32_t *dst, const uint8_t *sym, int nsym, const 
         h = h << b | sym[s] >> shift;
         const uint32_t *p0 = t->blocks + (h & wmask) * bw;
         const uint32_t *p1 = t->blocks + (h >> (SPAN * b) & wmask) * bw + row;
-        const uint32_t *p2 = t->blocks + (h >> (2 * SPAN * b) & wmask) * bw + 2 * row;
+        const uint32_t *p2 = t->parts == 2 ? NULL :
+            t->blocks + (h >> (2 * SPAN * b) & wmask) * bw + 2 * row;
         if (n & 3) {  // 5 samples/symbol, rows padded to eight words
             for (int i = 0; i < n; ++i) {
-                *dst++ = (p0[i] + p1[i] + p2[i]) ^ SHAPER_XOR;
+                *dst++ = (p0[i] + p1[i] + (p2 ? p2[i] : 0)) ^ SHAPER_XOR;
             }
             continue;
         }
         for (int i = 0; i < n; i += 4) {
-            dst[0] = (p0[0] + p1[0] + p2[0]) ^ SHAPER_XOR;
-            dst[1] = (p0[1] + p1[1] + p2[1]) ^ SHAPER_XOR;
-            dst[2] = (p0[2] + p1[2] + p2[2]) ^ SHAPER_XOR;
-            dst[3] = (p0[3] + p1[3] + p2[3]) ^ SHAPER_XOR;
-            dst += 4, p0 += 4, p1 += 4, p2 += 4;
+            dst[0] = (p0[0] + p1[0] + (p2 ? p2[0] : 0)) ^ SHAPER_XOR;
+            dst[1] = (p0[1] + p1[1] + (p2 ? p2[1] : 0)) ^ SHAPER_XOR;
+            dst[2] = (p0[2] + p1[2] + (p2 ? p2[2] : 0)) ^ SHAPER_XOR;
+            dst[3] = (p0[3] + p1[3] + (p2 ? p2[3] : 0)) ^ SHAPER_XOR;
+            dst += 4, p0 += 4, p1 += 4;
+            if (p2) p2 += 4;
         }
     }
 }
@@ -142,6 +144,11 @@ IRAM_ATTR void shaper_fill_raw(uint32_t *dst, const uint8_t *sym, int nsym,
                               const shaper_table_t *t)
 {
     if (!nsym) {
+        return;
+    }
+    if (t->parts == 2) {
+        // The stream consumes scaled codes. Keep raw-phase callers correct too.
+        for (int i = 0; i < nsym; ++i) raw_c(dst + 4 * i, sym + i, 1, t);
         return;
     }
 #ifdef __XTENSA__
@@ -171,7 +178,9 @@ static IRAM_ATTR void fill_codes(uint32_t *dst, const uint8_t *sym, int nsym,
 {
 #ifdef __XTENSA__
     if (!nsym) return;
-    if (t->n == 4) {
+    if (t->parts == 2) {
+        shaper_short4_pie(dst, sym, nsym, t->blocks);
+    } else if (t->n == 4) {
         shaper_fill4_all_pie(dst, sym, nsym, t->blocks);
     } else if (t->n == 8) {
         const int groups = (nsym - 1) / 6, bulk = 6 * groups + 1;

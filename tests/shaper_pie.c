@@ -26,6 +26,7 @@ static uint32_t checksum(const uint32_t *p, size_t words)
 }
 
 int tx_samples_check(void);
+int maxrate_check(void);
 
 void app_main(void)
 {
@@ -88,5 +89,8 @@ void app_main(void)
         }
     }
     if (tx_samples_check()) { puts("TX-SAMPLES-FAIL"); }
+    if (maxrate_check()) { puts("MAXRATE-FAIL"); }
+    int round2_check(void);
+    if (round2_check()) { puts("ROUND2-FAIL"); }
     puts("QEMU-END");
 }

@@ -38,9 +38,15 @@ static void packed_check(void)
                     assert(!dvbs2_fast_prepare(f, mode, pilots, 15 | flags));
                     if (!sparse && mode->t > 8) assert(!dvbs2_fast_cache_bch(f, cache));
                     memset(out, 0xa5, 11168);
+                    uint8_t *tail = (uint8_t *)ws + DVBS2_FAST_WORKSPACE_USED;
+                    const size_t tail_bytes = sizeof *ws - DVBS2_FAST_WORKSPACE_USED;
+                    // The fill window may change while fast stages use bits[].
+                    memset(tail, 13 * offset + mc, tail_bytes);
                     uint8_t *dst = out + 16 + offset;
                     assert(!dvbs2_encode_frame_packed(f, ws, NULL, payload, bytes * 8, dst));
                     assert(!memcmp(dst, raw, n));
+                    for (size_t i = 0; i < tail_bytes; ++i)
+                        assert(tail[i] == (uint8_t)(13 * offset + mc));
                     for (unsigned i = 0; i < 16 + offset; ++i) assert(out[i] == 0xa5);
                     for (unsigned i = 16 + offset + n; i < 11168; ++i) assert(out[i] == 0xa5);
                     ++cases;

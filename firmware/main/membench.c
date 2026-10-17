@@ -20,6 +20,7 @@
 #include "radio_s3.h"
 #include "sdkconfig.h"
 #include "shaper.h"
+#include "shaper_block.h"
 #include "shaper_taps.h"
 
 #define BANK_WORDS 16380                  // one DAC bank
@@ -210,6 +211,60 @@ done:
     heap_caps_free(rows);
 }
 
+static void short_bench(void)
+{
+    const unsigned internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    uint8_t *sym = heap_caps_malloc(4104, internal);
+    if (!sym) { printf("@{\"cmd\":\"membench\",\"error\":\"short allocation failed\"}\n"); return; }
+    uint32_t x = 2026, cycles[REPEATS], *bank = radio_s3_bank(0);
+    for (unsigned i = 0; i < 4104; ++i) {
+        x ^= x << 13, x ^= x >> 17, x ^= x << 5;
+        sym[i] = ((x >> 16) & 7) << 4;
+    }
+    shaper_table_t t;
+    shaper_short_build(&t, shaper_store, 128);
+    TIME(cycles, shaper_fill_c(bank, sym+8, 4095, &t));
+    report("short4_c", cycles, 16380, 0, checksum(bank,16380));
+    TIME(cycles, shaper_short4_pie(bank, sym+8, 4095, t.blocks));
+    report("short4_pie", cycles, 16380, 0, checksum(bank,16380));
+    heap_caps_free(sym);
+}
+
+// Isolated n3 experiment. It never enters the streaming or transmit paths.
+static void block_bench(void)
+{
+    const unsigned internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    uint32_t *extra = heap_caps_aligned_alloc(16, SHAPER_BLOCK_WORDS * 4, internal);
+    uint16_t *input = heap_caps_malloc(1367 * sizeof *input, internal);
+    if (!extra || !input) {
+        printf("@{\"cmd\":\"membench\",\"error\":\"block4 allocation failed\"}\n");
+        goto done;
+    }
+    uint32_t *table[] = {shaper_store, shaper_store + SHAPER_BLOCK_WORDS, extra};
+    uint32_t cycles[REPEATS], *bank = radio_s3_bank(0), x = 2026;
+    for (unsigned i = 0; i < 1367; ++i) {
+        unsigned w = 0;
+        for (unsigned k = 0; k < 4; ++k) {
+            x ^= x << 13, x ^= x >> 17, x ^= x << 5;
+            w = (w << 3) | ((x >> 16) & 7);
+        }
+        input[i] = w;
+    }
+    TIME(cycles, shaper_block_build(table));
+    for (unsigned i = 0; i < 3; ++i) {
+        char name[24];
+        snprintf(name, sizeof name, "block4_table%u", i);
+        report(name, cycles, 0, 0, checksum(table[i], SHAPER_BLOCK_WORDS));
+    }
+    TIME(cycles, shaper_block_c(bank, input+2, 1365, table[0], table[1], table[2]));
+    report("block4_c", cycles, 16380, 0, checksum(bank, 16380));
+    TIME(cycles, shaper_block_pie(bank, input+2, 1365, table[0], table[1], table[2]));
+    report("block4_pie", cycles, 16380, 0, checksum(bank, 16380));
+done:
+    heap_caps_free(extra);
+    heap_caps_free(input);
+}
+
 void membench_run(void)
 {
     const uint32_t internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
@@ -265,4 +320,6 @@ done:
     heap_caps_free(ti), heap_caps_free(tq), heap_caps_free(ii);
     heap_caps_free(iq), heap_caps_free(big);
     shaper_bench();
+    block_bench();
+    short_bench();
 }
