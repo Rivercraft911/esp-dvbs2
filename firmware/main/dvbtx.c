@@ -308,19 +308,7 @@ static IRAM_ATTR esp_err_t fill(uint32_t *dst, uint64_t first, size_t count, voi
     const uint32_t copied = esp_cpu_get_cycle_count() - before;
     const uint64_t w0 = dvb.whole.cycles, p0 = dvb.partial.cycles;
     if (dvb.profile) stream_record(&dvb.copy, mark, stream_mark_for(&dvb.copy));
-    // A two-frame ring cannot afford a 1 ms polling delay on core 0. Notify only on
-    // release, after ring_window's last slot read and release-store of freed. The notification
-    // costs this core up to 2.3k cycles, so QPSK's eight-frame ring polls instead, as before.
     uint32_t notified = 0, saved = 0;
-    if (dvb.ring.freed != freed && enc.packed && !dvb.moon) {
-        const stream_mark_t wake = dvb.profile ? stream_mark_for(&dvb.notify) : (stream_mark_t){0};
-        xTaskNotifyGive(enc.task);
-        if (dvb.profile) {
-            const stream_mark_t after = stream_mark_for(&dvb.notify);
-            stream_record(&dvb.notify, wake, after);
-            notified = after.cycles - wake.cycles;
-        }
-    }
     if (dvb.moon) {
         const stream_mark_t whole = dvb.profile ? stream_mark_for(&dvb.whole) : (stream_mark_t){0};
         // History is exactly two input blocks; quad rounding adds a prefix.
@@ -356,6 +344,18 @@ static IRAM_ATTR esp_err_t fill(uint32_t *dst, uint64_t first, size_t count, voi
             const stream_mark_t after = stream_mark_for(&dvb.save);
             stream_record(&dvb.save, save, after);
             saved = after.cycles - save.cycles;
+        }
+    }
+    // Wake after shaping and saving: the encoder reuses the same SRAM banks.
+    // Its next frame can wait for this callback; notifying before the table
+    // loads needlessly makes those loads compete with BCH/LDPC traffic.
+    if (dvb.ring.freed != freed && enc.packed && !dvb.moon) {
+        const stream_mark_t wake = dvb.profile ? stream_mark_for(&dvb.notify) : (stream_mark_t){0};
+        xTaskNotifyGive(enc.task);
+        if (dvb.profile) {
+            const stream_mark_t after = stream_mark_for(&dvb.notify);
+            stream_record(&dvb.notify, wake, after);
+            notified = after.cycles - wake.cycles;
         }
     }
     if (dvb.moon && first+count >= dvb.bank_end) {
