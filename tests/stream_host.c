@@ -1,7 +1,21 @@
 // Actual dvbtx.c lifecycle with pthread task/notification stubs, no peripherals.
 // Timing is synthetic. Compare every filled DAC word against the plain encoder.
 #include "native.h"
+#include "ring.h"
+static int checked_window(ring_t *, uint8_t *, size_t, uint64_t, size_t, unsigned, unsigned, unsigned);
+#define ring_window checked_window
 #include "dvbtx.c"
+#undef ring_window
+
+static int checked_window(ring_t *r, uint8_t *dst, size_t room, uint64_t first,
+                           size_t count, unsigned sps, unsigned history, unsigned bank)
+{
+    // The nibble unpacker can reach its aligned PIE loop only when output
+    // address and source symbol have equal parity. CRCs alone miss this fallback.
+    if (r->packed && r->packed != 4)
+        assert(!(((uintptr_t)dst ^ (first/sps-history)) & 1));
+    return ring_window(r,dst,room,first,count,sps,history,bank);
+}
 
 static uint32_t banks[2][RADIO_S3_BANK_WORDS] __attribute__((aligned(16)));
 static uint32_t reference[16440] __attribute__((aligned(16)));

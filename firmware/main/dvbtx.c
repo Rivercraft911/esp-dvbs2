@@ -278,7 +278,7 @@ static IRAM_ATTR esp_err_t fill(uint32_t *dst, uint64_t first, size_t count, voi
     // Packed reads unpack whole vectors when every symbol lands at an address of its own
     // parity (ring.h); the history is even, so shift the window by the first symbol's parity.
     // sps is 4 or 8 there, so that parity is bit log2(sps) of first. Legacy n40 keeps the window.
-    uint8_t *win = dvb.win + (!enc.quads && enc.packed && !dvb.moon ? (first & sps) : 0);
+    uint8_t *win = dvb.win + (!enc.quads && enc.packed && !dvb.moon && (first & sps));
     uint64_t read_first = first*dvb.den, read_count = count*dvb.den;
     unsigned moon_offset = 0;
     if (dvb.moon && count) {
