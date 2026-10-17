@@ -72,6 +72,12 @@ class ReceiverTests(unittest.TestCase):
         self.assertAlmostEqual(float(np.mean(abs(y-z)**2)), .2, places=2)
         np.testing.assert_array_equal(rxbench.add_noise(z,20e6,10e6,None,0),z)
 
+    def test_wire_conversion_handles_noise_promoted_to_complex128(self):
+        z = np.array([.5+.25j, -1-2j], dtype=np.complex128)
+        np.testing.assert_array_equal(np.frombuffer(rxbench.wire_bytes(z,'s16'),'<i2'),
+                                      [1024,512,-2048,-4096])
+        np.testing.assert_array_equal(np.frombuffer(rxbench.wire_bytes(z,'f32'),'<c8'),z)
+
     def test_jpeg_fragmentation(self):
         frames = [b'\xff\xd8hello\xff\xd9', b'\xff\xd8world\xff\xd9']
         class Fragmented(io.BytesIO):
@@ -133,6 +139,16 @@ class ReceiverTests(unittest.TestCase):
         self.assertFalse(report['delivery_pass'])
         self.assertFalse(report['continuity_proven'])
 
+    def test_rate_rejects_burst_followed_by_silence(self):
+        r,w=os.pipe()
+        os.write(w,b'\0'*1600)
+        with os.fdopen(r,'rb') as source:
+            report=rx_rate.drain(source,100,2.1)
+        os.close(w)
+        self.assertGreater(report['delivery_ratio'],1)
+        self.assertFalse(report['delivery_pass'])
+        self.assertEqual(report['windows'][-1]['samples_per_second'],0)
+
 
 @unittest.skipUnless(os.environ.get('RX_INTEGRATION'), 'set RX_INTEGRATION=1 for reference IQ integration')
 class IntegrationTests(unittest.TestCase):
@@ -172,9 +188,13 @@ class IntegrationTests(unittest.TestCase):
             received=(Path(tmp)/'received.ts').read_bytes()
             self.assertEqual(len(received)%188,0)
             self.assertTrue(all(received[n]==0x47 for n in range(0,len(received),188)))
-            # Ignore acquisition and a leading PAT. Several actual video packets must match.
+            # Compare video PID 0x100, excluding the plentiful null packets in a CBR mux.
             original=(directory/'video.ts').read_bytes()
-            self.assertIn(original[188*100:188*120],received)
+            packets=[original[n:n+188] for n in range(0,len(original),188)
+                     if ((original[n+1]&31)<<8 | original[n+2]) == 0x100]
+            recovered={received[n:n+188] for n in range(0,len(received),188)}
+            self.assertGreater(len(packets),20)
+            self.assertGreater(sum(p in recovered for p in packets),len(packets)//3)
 
 
 if __name__ == '__main__':

@@ -87,6 +87,11 @@ its existing CRCs. [Integration, RAM account and radio-off board gates](docs/qps
 
 Needs ESP-IDF v6.1, an ESP32-S3 with 8 MB of PSRAM, Python 3 with numpy, pyserial and matplotlib.
 The host IQ tools also need scipy. Independent loopback needs a separate local LeanDVB build.
+The [local receive dashboard](docs/demo-rx.md) plays reference-generated H.264 through
+LeanDVB and provides coordinator commands for the E200. It includes a spectrum,
+waterfall and interactive 360° video view. Live RF and browser interaction still
+need qualification; the [file benchmarks](results/2026-10-17-demo-rx/README.md)
+show the decoder's limits under noise.
 
 ```sh
 python3 tests/test_dvbs2.py                     # reference encoder checks, no hardware

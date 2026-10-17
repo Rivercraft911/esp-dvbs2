@@ -148,6 +148,7 @@ class Receiver:
         self.spectra = queue.Queue(maxsize=1)
         self.processes, self.threads = [], []
         self.log = None
+        self.source_log = deque(maxlen=10)
 
     def thread(self, fn):
         def guarded():
@@ -263,6 +264,8 @@ class Receiver:
                 radio = sdr.SDR(sdr.Settings(uri=a.uri, lo_hz=int(a.center), rate_hz=a.sample_rate,
                                             bandwidth_hz=a.bandwidth, gain_db=a.gain), a.libiio)
                 metadata = radio.configure()
+                if self.stop.is_set():
+                    return
                 # One and only one RX process. Both I and Q, single RF channel, no -s limit.
                 cmd = stream_command(radio)
                 if a.log:
@@ -310,7 +313,7 @@ class Receiver:
             self.decoder.stdin.close()
             if not self.stop.is_set():
                 if a.e200 and self.source_process.wait(timeout=6):
-                    raise RuntimeError("E200 stream exited with an error; inspect receiver log")
+                    raise RuntimeError("E200 reader failed: " + " ".join(self.source_log))
                 code = self.decoder.wait(timeout=30)
                 if code:
                     raise RuntimeError(f"LeanDVB exited {code}")
@@ -323,6 +326,7 @@ class Receiver:
 
     def source_errors(self):
         for line in self.source_process.stderr:
+            self.source_log.append(line.decode(errors="replace").strip())
             if self.log:
                 self.log.write("E200 " + line.decode(errors="replace"))
 
@@ -462,6 +466,7 @@ def main():
         report.pop("spectrum")
         report["status"] = "stopped" if report["status"] == "running" else report["status"]
         report["healthy"] = False
+        report["frame_lock"] = False
         rx.close()
         server.shutdown()
         server.server_close()

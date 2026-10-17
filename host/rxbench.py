@@ -41,6 +41,15 @@ def add_noise(z, fs, rs, esn0, seed):
     return z + noise.view(np.complex64).ravel() * np.sqrt(variance / 2)
 
 
+def wire_bytes(z, fmt):
+    values = np.asarray(z, dtype="<c8")
+    if not np.all(np.isfinite(values)):
+        raise ValueError("nonfinite IQ samples")
+    if fmt == "s16":
+        return np.rint(values.view("<f4")*2048).clip(-32768,32767).astype("<i2").tobytes()
+    return values.tobytes()
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("capture", type=Path)
@@ -91,10 +100,7 @@ def main():
             noisy = add_noise(z, fs, args.symbol_rate, esn0, 20261017)
             source.seek(0)
             source.truncate()
-            if args.wire_format == "s16":
-                block = np.rint(noisy.view(np.float32)*2048).clip(-32768,32767).astype("<i2").tobytes()
-            else:
-                block = noisy.astype("<c8").tobytes()
+            block = wire_bytes(noisy, args.wire_format)
             for _ in range(loops):
                 source.write(block)
             source.flush()

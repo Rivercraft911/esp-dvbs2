@@ -26,13 +26,13 @@ def drain(source, sample_rate, seconds):
     windows = []
     ended = False
     while time.monotonic()-start < seconds:
-        if not select.select([source], [], [], min(.2, max(0,seconds-(time.monotonic()-start))))[0]:
-            continue
-        raw = os.read(source.fileno(), 4*262144)
-        if not raw:
-            ended = True
-            break
-        total += len(raw)
+        ready = select.select([source], [], [], min(.2, max(0,seconds-(time.monotonic()-start))))[0]
+        if ready:
+            raw = os.read(source.fileno(), 4*262144)
+            if not raw:
+                ended = True
+                break
+            total += len(raw)
         now = time.monotonic()
         if now-last >= 1:
             windows.append(dict(elapsed_s=now-start, samples_per_second=(total-previous)/4/(now-last)))

@@ -87,6 +87,8 @@ Success: readbacks equal requested LO/rate/bandwidth, correct
 `le:S12/16>>0` scan format, TX LO powered down, no reader errors, and at least
 20 MS/s with no increasing input deficit. A drain test only measures delivery
 rate. It cannot prove that a driver/FPGA did not silently drop ADC samples.
+The tool's `delivery_pass` allows a 2% timing tolerance on the full run and
+one-second windows after startup. Inspect the actual rates as well as that flag.
 For continuity, the coordinator must also make a known counter/tag capture
 and use the existing `host/capture.py` analysis, or inspect receiver overflow
 counters. A DVB signal with uninterrupted TS continuity counters provides a
@@ -97,6 +99,13 @@ Repeat at 10 MS/s if 20 MS/s fails. Use 30 MS/s only as an extra qualification
 point; do not infer it from the Ethernet link speed. If libiio only sustains
 10 MS/s, the available LeanDVB path is at most **5 Msym/s** at two samples per
 symbol. A clean 10 Msym/s file benchmark does not remove this input limit.
+
+```sh
+python3 host/rx_rate.py --uri ip:192.168.1.10 --sample-rate 10000000 \
+  --bandwidth 6750000 --seconds 60 --out notes/e200-10m-rate.json
+python3 host/rx_rate.py --uri ip:192.168.1.10 --sample-rate 30000000 \
+  --seconds 60 --out notes/e200-30m-rate.json
+```
 
 ## Coordinator: live dashboard
 
