@@ -54,7 +54,24 @@ def test_sparse_pairs():
         assert seen == expected
 
 
+def test_packed_four():
+    # Independent phase formula for every possible index, including the
+    # removed P1 high bit. Inspect the actual generated words too.
+    import re
+    text = gen.generate().split("fast_map_3_packed[2048]", 1)[1].split("};", 1)[0]
+    table = [int(v, 16) for v in re.findall(r"0x[0-9a-f]+", text)]
+    assert len(table) == 2048
+    for v in range(4096):
+        expected = 0
+        for i in range(4):
+            bit = 3 - i
+            phase = (((v >> bit) & 1) ^ 1) | (((v >> (8 + bit)) & 1) << 1) | (((v >> (4 + bit)) & 1) << 2)
+            expected |= phase << (4 * i)
+        assert table[v & 2047] ^ ((v >> 10) & 2) == expected
+
+
 if __name__ == "__main__":
     test_byte_bch()
     test_sparse_pairs()
+    test_packed_four()
     print("encoder tables: all byte remainders, full BCH tails and 4096 sparse map indices match")

@@ -119,6 +119,19 @@ def generate():
             word |= phase << (8*i)
         compact.append(word)
     out.append(array("fast_map_3_compact", "uint32_t", compact, 8))
+    # Four symbols straight to two packed bytes. The index is the existing
+    # P0'/P2/P1 nibble triple, first symbol in each nibble's high bit.
+    packed = []
+    # P1's high bit toggles only bit 1 of the result. The runner applies that
+    # XOR, halving the table to 8 KiB without another lookup.
+    for v in range(2048):
+        word = 0
+        for i in range(4):
+            bit = 3 - i
+            phase = (((v >> bit) & 1) ^ 1) | (((v >> (8 + bit)) & 1) << 1) | (((v >> (4 + bit)) & 1) << 2)
+            word |= phase << (4 * i)
+        packed.append(word)
+    out.append(array("fast_map_3_packed", "uint32_t", packed, 8))
     # Header and pilot phases depend only on MODCOD/pilots and code 0.
     generators = (0x55555555, 0x33333333, 0x0f0f0f0f, 0x00ff00ff, 0x0000ffff)
     headers = []
