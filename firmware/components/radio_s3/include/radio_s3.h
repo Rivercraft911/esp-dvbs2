@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include "esp_err.h"
@@ -103,6 +104,12 @@ typedef enum {
 } radio_s3_chain_t;
 
 void radio_s3_set_chain(radio_s3_chain_t mode);
+
+/* Switch probe for later radio_s3_run calls (`tx ... gap`), never for DVB. After each fill,
+ * silence the bank's own lead and tail, where both banks normally agree. Every switch then
+ * plays |switch sample - k*STEP| silent samples, the bank's aim plus the DAC's lag, which an
+ * RF capture measures (host/capture.py --signal gap). */
+void radio_s3_set_gaps(bool on);
 
 /* Receives the samples the DAC would play, [first, first + count), from a bank that holds
  * sample n at word n % RADIO_S3_BANK_WORDS. */

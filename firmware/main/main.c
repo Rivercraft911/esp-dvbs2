@@ -8,6 +8,7 @@
 //   membench   memory and bank-fill timing (membench.c)
 //   chain <forced|cw|cw40|cwgain>  how tx turns the transmit chain on (default cwgain)
 //   tx <integer MHz> <tone|two|tag|...> <1..60 seconds> [0..17 gain, default 0]
+//              (gap: a 128 tone with every bank's lead and tail silenced, the switch probe)
 //   dvb <MHz> <modcod> [5m|10m for 8PSK] <1..60 seconds> [0..17 gain] [16..508 peak]  DVB-S2 on air (dvbtx.c)
 //   dvbdump <modcod> [5m|10m|10m80|20m for 8PSK] <frames> [peak] [decimation] [stall ms]  the same samples over USB, no radio
 //   dvbpace <modcod> [5m|10m|10m80|20m for 8PSK] <seconds> [peak] [stall ms]  the same encoder, fills and deadlines, no radio
@@ -196,11 +197,13 @@ static void cmd_tx(char *args)
         (level && !number(level, 0, RADIO_S3_GAIN_MAX, &gain)) || extra ||
         !radio_signal_init(tx_signal, name)) {
         printf("@{\"cmd\":\"tx\",\"error\":\"usage: tx <2390..2450 integer MHz> "
-               "<tone|tone<1..511>|two|tag|neg|low|ionly|qonly|zero|dci|dcq> <1..60 seconds> [0..17 gain, default 0]\"}\n");
+               "<tone|tone<1..511>|two|tag|neg|low|ionly|qonly|zero|dci|dcq|gap> <1..60 seconds> [0..17 gain, default 0]\"}\n");
         return;
     }
     radio_s3_stats_t s = {0};
+    radio_s3_set_gaps(!strcmp(name, "gap"));
     const esp_err_t err = radio_s3_run(freq, gain, seconds, fill_signal, tx_signal, &s);
+    radio_s3_set_gaps(false);
     printf("@{\"cmd\":\"tx\",\"freq_mhz\":%lu,\"signal\":\"%s\",\"seconds\":%lu,"
            "\"gain\":%lu,\"dac_rate_nominal\":%u,\"bank_words\":%u,\"step_words\":%u,"
            "\"elapsed_samples\":%llu,\"elapsed_cycles\":%llu,\"fills\":%lu,"

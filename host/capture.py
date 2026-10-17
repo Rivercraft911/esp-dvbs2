@@ -4,6 +4,7 @@
     python3 host/capture.py tone.iq --format i16 --rate 61440000 --signal tone
     python3 host/capture.py tag.iq --format f32 --rate 61440000 --signal tag
     python3 host/capture.py zero.iq --format i16 --rate 4000000 --signal lines
+    python3 host/capture.py gap.iq --format i16 --rate 61440000 --signal gap --scale 2048
 
 Tone offsets are relative to the SDR capture center; tune it to the requested
 TX frequency. The tone search allows +/-100 kHz of carrier error. The board's
@@ -312,6 +313,45 @@ def lines(capture, rate: float, block: float = 0.01) -> dict:
     return out
 
 
+def gaps(capture, rate: float, dac_rate: float = DAC_RATE, step: int = 14268,
+         lead: int = 64, tail: int = 2048) -> dict:
+    """The switch probe (`tx ... gap`, radio_s3_set_gaps): a steady tone whose banks are silent
+    in their own lead and tail, so each bank switch leaves |switch - handoff| silent DAC samples.
+    The firmware aims each switch lead/2 early, so a gap of lead/2 + d says the DAC switched d
+    samples after the CPU's model; any long gap is a late switch. Gaps are runs below half the
+    median envelope, in DAC samples; runs longer than the overlap (CW ID spaces) are skipped.
+    Defaults: the 40 MS/s geometry (radio_s3.h)."""
+    z = capture.read(0, len(capture))
+    envelope = np.abs(z)
+    level = float(np.median(envelope))
+    if level <= 0:
+        raise ValueError("capture has no tone")
+    low = np.concatenate(([False], envelope < level / 2, [False]))
+    edges = np.flatnonzero(np.diff(low.astype(np.int8)))
+    starts, ends = edges[::2], edges[1::2]
+    scale = dac_rate / rate
+    lengths = (ends - starts) * scale
+    keep = lengths <= lead + tail
+    lengths, centers = lengths[keep], (starts[keep] + ends[keep]) / 2 * scale
+    if len(lengths) < 2:
+        raise ValueError("fewer than two switch gaps found")
+    spacing = np.diff(centers)
+    # Switches inside one tone segment are STEP apart; an ID space can hide some.
+    banks = np.rint(spacing / step)
+    regular = spacing[banks == 1]
+    pct = lambda x, q: float(np.percentile(x, q))
+    return {"signal": "gap", "sample_rate_hz": rate, "dac_rate_hz": dac_rate,
+            "step_samples": step, "aim_samples": lead / 2, "gaps": int(len(lengths)),
+            "gap_samples": {"min": float(lengths.min()), "p1": pct(lengths, 1),
+                            "median": float(np.median(lengths)), "p99": pct(lengths, 99),
+                            "max": float(lengths.max())},
+            "lag_samples_median": float(np.median(lengths)) - lead / 2,
+            "spacing_samples": {"count": int(len(regular)),
+                                "min": float(regular.min()) if len(regular) else None,
+                                "max": float(regular.max()) if len(regular) else None},
+            "off_grid": int(np.count_nonzero(abs(spacing - banks * step) > 4))}
+
+
 def _carrier(z: np.ndarray) -> tuple[float, float]:
     """BPSK squaring removes the phase bits; fit the remaining carrier line."""
     squared = z * z
@@ -535,7 +575,9 @@ def main() -> int:
     parser.add_argument("capture", type=pathlib.Path)
     parser.add_argument("--format", choices=("i16", "f32"), required=True)
     parser.add_argument("--rate", type=float, required=True, help="calibrated complex sample rate in samples/s")
-    parser.add_argument("--signal", choices=("tone", "two", "tag", "lines"), required=True)
+    parser.add_argument("--signal", choices=("tone", "two", "tag", "lines", "gap"), required=True)
+    parser.add_argument("--dac-rate", type=float, default=DAC_RATE,
+                        help="gap: the DAC rate of the run (40e6; 80e6 uses lead 128, tail 512)")
     parser.add_argument("--scale", type=float, help="full scale, e.g. 2048 for E200 int16 captures")
     args = parser.parse_args()
     try:
@@ -546,6 +588,9 @@ def main() -> int:
             result = analyze_tag(capture, args.rate)
         elif args.signal == "lines":
             result = lines(capture, args.rate)
+        elif args.signal == "gap":
+            lead, tail = (128, 512) if args.dac_rate == 80e6 else (64, 2048)
+            result = gaps(capture, args.rate, args.dac_rate, 16380 - lead - tail, lead, tail)
         else:
             result = spectrum(capture, args.rate, args.signal)
             result["modulation"] = modulation(capture, args.rate, result["tones"][0]["offset_hz"])

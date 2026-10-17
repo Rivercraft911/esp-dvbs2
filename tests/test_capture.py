@@ -186,6 +186,33 @@ def test_spectrum():
     print("capture spectrum: fractional-bin tone offset, dBFS, image and LO around the carrier, AM/PM, line amplitudes, DC, strongest spur and two tones")
 
 
+def test_gaps():
+    # The switch probe at 40 MS/s: a +1 MHz tone, gaps of 37 DAC samples (aim 32, lag 5) at
+    # every 14,268-sample handoff, one 300-sample late switch, a CW ID space, a 61.44 MS/s
+    # capture with a 3-sample smoothing as the analog filter, and noise.
+    rate, step = 61_440_000, 14268
+    dac = np.ones(40 * step)
+    for k in range(1, 40):
+        h = k * step
+        if 20 <= k < 24:
+            continue                      # an ID space instead of switches
+        width = 300 if k == 30 else 37
+        dac[h - width:h] = 0
+    dac[20 * step + 500:24 * step - 500] = 0
+    t = np.arange(int(len(dac) * rate / c.DAC_RATE))
+    held = dac[np.minimum((t * c.DAC_RATE / rate).astype(int), len(dac) - 1)]
+    smooth = np.convolve(held, np.ones(3) / 3, mode="same")
+    rng = np.random.default_rng(5)
+    z = .2 * smooth * np.exp(2j * np.pi * 1.05e6 * t / rate) + .004 * (
+        rng.standard_normal(len(t)) + 1j * rng.standard_normal(len(t)))
+    r = c.gaps(ArrayCapture(z), rate)
+    assert r["gaps"] == 35, r
+    assert abs(r["gap_samples"]["median"] - 37) <= 1 and abs(r["lag_samples_median"] - 5) <= 1, r
+    assert abs(r["gap_samples"]["max"] - 300) <= 2 and r["gap_samples"]["min"] >= 35, r
+    assert abs(r["spacing_samples"]["min"] - step) <= 140 and r["off_grid"] > 0, r
+    print("capture gaps: switch-probe gap lengths and lag within 1 DAC sample, late switch and ID space found")
+
+
 def test_files():
     with tempfile.TemporaryDirectory() as tmp:
         path = pathlib.Path(tmp) / "capture.iq"
@@ -215,4 +242,5 @@ if __name__ == "__main__":
     test_bit_faults()
     test_rf_tag()
     test_spectrum()
+    test_gaps()
     test_files()

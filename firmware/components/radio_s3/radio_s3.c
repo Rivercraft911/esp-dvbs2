@@ -117,10 +117,16 @@ static uint16_t gain_baseband(unsigned gain)
 static portMUX_TYPE state_lock = portMUX_INITIALIZER_UNLOCKED;
 static bool running;
 static radio_s3_chain_t chain = RADIO_S3_CHAIN_CW_GAIN;
+static bool gaps;
 
 void radio_s3_set_chain(radio_s3_chain_t mode)
 {
     chain = mode;
+}
+
+void radio_s3_set_gaps(bool on)
+{
+    gaps = on;
 }
 
 /* Nearest 2.4 GHz Wi-Fi channel, for the vendor CW call (channels 1..13). */
@@ -156,6 +162,7 @@ typedef struct {
     void *sink_ctx;
     radio_s3_dry_stats_t *dry;
     geometry_t geo;
+    bool gaps;                      /* switch probe, radio_s3_set_gaps */
 } run_t;
 
 static inline uint32_t IRAM_ATTR cycles(void)
@@ -181,6 +188,20 @@ uint32_t *radio_s3_bank(unsigned n)
     return (uint32_t *)(n == 0 ? 0x3fcd0000 : 0x3fcc0000);
 }
 
+/* The switch probe: zero the samples before this bank's handoff and after the next one. */
+static void IRAM_ATTR silence(const run_t *run, uint32_t *base, uint64_t start)
+{
+    const uint32_t lead = start ? run->geo.lead : 0;
+    uint32_t at = start % RADIO_S3_BANK_WORDS;
+    for (uint32_t n = 0; n < lead + run->geo.tail; ++n) {
+        if (n == lead) {        /* skip the samples this bank plays */
+            at = (at + run->geo.step) % RADIO_S3_BANK_WORDS;
+        }
+        base[at] = 0;
+        at = at + 1 == RADIO_S3_BANK_WORDS ? 0 : at + 1;
+    }
+}
+
 static esp_err_t IRAM_ATTR fill_bank(run_t *run, unsigned bank, uint64_t start)
 {
     uint32_t *base = radio_s3_bank(bank);
@@ -190,6 +211,9 @@ static esp_err_t IRAM_ATTR fill_bank(run_t *run, unsigned bank, uint64_t start)
     esp_err_t error = run->fill(base + offset, start, first_count, run->ctx);
     if (error == ESP_OK && offset) {
         error = run->fill(base, start + first_count, offset, run->ctx);
+    }
+    if (run->gaps) {
+        silence(run, base, start);
     }
     __asm__ volatile ("memw" ::: "memory");
     uint32_t elapsed = cycles() - before;
@@ -776,7 +800,7 @@ esp_err_t radio_s3_run(uint32_t freq_mhz, uint8_t gain, uint32_t seconds,
     run_t run = {
         .samples = (uint64_t)seconds * RADIO_S3_DAC_RATE, .identify = true, .limit_duration = true,
         .freq_mhz = freq_mhz, .gain = gain, .seconds = seconds,
-        .fill = fill, .ctx = ctx, .stats = stats, .chain = chain,
+        .fill = fill, .ctx = ctx, .stats = stats, .chain = chain, .gaps = gaps,
         .geo = geometry(RADIO_S3_DAC_RATE), /* the ID generator is 40 MS/s only */
     };
     esp_err_t error = on_core1(worker, &run);

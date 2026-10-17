@@ -115,6 +115,10 @@ def run_checks(lib):
         for first, count in [(0, 0), (1, 1), (39, 81), (14204, N), (2399999999, 83)]:
             got = fill(first, count)
             assert np.array_equal(got, words[(np.arange(count) + first) % 40])
+    assert lib.radio_signal_init(ct.byref(signal), b"gap")
+    gap_words = fill(0, 40)
+    assert np.max(np.abs(unpack(gap_words))) <= 128 * 2 ** .5
+    assert np.argmax(np.abs(np.fft.fft(unpack(gap_words)))) == 1
     assert lib.radio_signal_init(ct.byref(signal), b"tag")
     for first in [0, 1, 7, 31, STEP - LEAD, 2 * STEP - LEAD,
                   2399999999, 0xFFFFFFFF - 9, 0xFFFFFFFF + 3]:
@@ -137,6 +141,65 @@ def run_checks(lib):
         assert np.array_equal(bank[shared], previous[shared]), k
         previous = bank
     print("radio: C tone sign/levels, two-tone offsets, PRBS seeks, guard words, 40 bank seams pass")
+
+
+def check_gaps():
+    """radio_s3.c's switch probe (silence) compiled from the source: at every switch the DAC
+    plays |switch sample - handoff| silent samples, for any switch inside the overlap."""
+    source = (COMPONENT / "radio_s3.c").read_text()
+    start = source.index("static void IRAM_ATTR silence(")
+    body = source[start:source.index("\n}\n", start) + 3]
+    harness = r"""
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "radio_s3.h"
+#define IRAM_ATTR
+typedef struct { uint32_t rate_bit, cycles, lead, tail, step; } geometry_t;
+typedef struct { geometry_t geo; } run_t;
+""" + body + r"""
+static uint32_t banks[2][RADIO_S3_BANK_WORDS];
+int main(int argc, char **argv)
+{
+    if (argc != 3) return 2;
+    run_t run = {{0, 0, (uint32_t)atoi(argv[1]), (uint32_t)atoi(argv[2]), 0}};
+    run.geo.step = RADIO_S3_BANK_WORDS - run.geo.lead - run.geo.tail;
+    const uint64_t step = run.geo.step, lead = run.geo.lead, tail = run.geo.tail;
+    unsigned checked = 0;
+    for (uint64_t k = 1; k < 4; ++k) {
+        // Banks for handoffs k-1 and k, every word the tone (1), then the probe.
+        const uint64_t old_start = k == 1 ? 0 : (k - 1) * step - lead, new_start = k * step - lead;
+        for (unsigned i = 0; i < RADIO_S3_BANK_WORDS; ++i) banks[0][i] = banks[1][i] = 1;
+        silence(&run, banks[0], old_start);
+        silence(&run, banks[1], new_start);
+        const int64_t h = (int64_t)(k * step);
+        for (int64_t s = h - (int64_t)lead; s < h + (int64_t)tail; ++s) {
+            unsigned zeros = 0;
+            for (int64_t n = h - (int64_t)lead - 8; n < h + (int64_t)tail + 8; ++n)
+                zeros += banks[n < s ? 0 : 1][n % RADIO_S3_BANK_WORDS] == 0;
+            if (zeros != (unsigned)llabs(s - h)) { printf("FAIL k %llu s-h %lld zeros %u\n",
+                (unsigned long long)k, (long long)(s - h), zeros); return 1; }
+            ++checked;
+        }
+    }
+    printf("ok %u\n", checked);
+    return 0;
+}
+"""
+    with tempfile.TemporaryDirectory() as tmp:
+        c_file, exe = pathlib.Path(tmp) / "gaps.c", pathlib.Path(tmp) / "gaps"
+        c_file.write_text(harness)
+        (pathlib.Path(tmp) / "esp_err.h").write_text("typedef int esp_err_t;\n")
+        subprocess.run(["cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-I",
+                        str(COMPONENT / "include"), "-I", tmp, str(c_file), "-o", str(exe)],
+                       check=True)
+        for lead, tail in ((64, 2048), (128, 512)):
+            out = subprocess.run([str(exe), str(lead), str(tail)], capture_output=True,
+                                 text=True, check=True).stdout
+            assert out == f"ok {3 * (lead + tail)}\n", out
+    print("gap probe: the DAC plays |switch - handoff| silent samples for every switch in the "
+          "overlap, both geometries")
 
 
 def check_qemu(path):
@@ -168,3 +231,4 @@ if __name__ == "__main__":
                         "-fPIC", "-I", str(COMPONENT / "include"),
                         str(COMPONENT / "radio_signals.c"), "-lm", "-o", str(library)], check=True)
         run_checks(ct.CDLL(str(library)))
+    check_gaps()

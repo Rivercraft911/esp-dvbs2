@@ -64,6 +64,7 @@ static const struct {
     {"zero", 0, 0, 0, 0},       // carrier leak only
     {"dci", 0, 0, 200, 0},
     {"dcq", 0, 0, 0, 200},
+    {"gap", 128, 128, 0, 0},    // +1 MHz in the chain's linear range; main.c sets radio_s3_set_gaps
 };
 
 bool radio_signal_init(radio_signal_t *signal, const char *name)

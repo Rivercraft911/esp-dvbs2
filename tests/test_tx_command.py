@@ -27,6 +27,7 @@ valid = [
     (" 2390 tone 1", 2390, 1, 0),
     ("2450 two 60 17", 2450, 60, 17),
     ("\t2400\ttag\t2\t3\t", 2400, 2, 3),
+    ("2420 gap 2", 2420, 2, 0),
 ]
 # Commands handled by dvbtx.c: invalid arguments, then valid ones with the values each stub
 # must receive (freq, modcod, seconds, gain, level, sps) for dvb, (modcod, frames, level, decim,
@@ -101,8 +102,11 @@ static unsigned calls, got_freq, got_seconds, got_gain;
 static bool radio_signal_init(void *ctx, const char *name)
 {
     (void)ctx;
-    return !strcmp(name, "tone") || !strcmp(name, "two") || !strcmp(name, "tag");
+    return !strcmp(name, "tone") || !strcmp(name, "two") || !strcmp(name, "tag") ||
+           !strcmp(name, "gap");
 }
+static bool gaps, gaps_seen;
+void radio_s3_set_gaps(bool on) { gaps = on; gaps_seen |= on; }
 static esp_err_t fill_signal(uint32_t *dst, uint64_t first, size_t count, void *ctx)
 {
     (void)dst; (void)first; (void)count; (void)ctx;
@@ -113,6 +117,7 @@ esp_err_t radio_s3_run(uint32_t freq, uint8_t gain, uint32_t seconds,
 {
     assert(fill == fill_signal && ctx == tx_signal);
     calls++; got_freq = freq; got_seconds = seconds; got_gain = gain;
+    assert(gaps == (calls == 4));  // only the "gap" request below probes the switches
     memset(stats, 0, sizeof *stats);
     return ESP_OK;
 }
@@ -174,7 +179,7 @@ with tempfile.TemporaryDirectory() as directory:
             checks.append("{ char args[] = " + json.dumps(command) + f"; cmd_{name}(args); " +
                           f"assert({counters[name]} == {index} && {others} && {expect}); }}")
         checks.append(f"{counters[name]} = 0;")
-    checks.append("assert(RF_CALLS == " + str(len(valid)) + "); return 0; }")
+    checks.append("assert(RF_CALLS == " + str(len(valid)) + " && gaps_seen && !gaps); return 0; }")
     harness = tmp / "parser.c"
     # Missing ID rejects both keyed parsers before waveform init or encoder/radio
     # entry. The radio-off parser requests still reach their counted stubs.
@@ -230,6 +235,7 @@ with tempfile.TemporaryDirectory() as directory:
 #include <string.h>
 #include "radio_s3.h"
 typedef struct { unsigned cycles; } geometry_t;
+static bool gaps;
 static geometry_t geometry(uint32_t rate) { return (geometry_t){240000000U / rate}; }
 typedef struct {
     uint64_t samples;
@@ -240,6 +246,7 @@ typedef struct {
     radio_s3_stats_t *stats;
     radio_s3_chain_t chain;
     geometry_t geo;
+    bool gaps;
 } run_t;
 static radio_s3_chain_t chain;
 static bool configured;
