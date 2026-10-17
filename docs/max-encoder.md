@@ -1,10 +1,68 @@
 # Packed encoder and cache placement
 
-The candidate projects **191k cycles/frame for 8PSK 2/3 and 214k for 5/6**, including
-payload generation, against the measured 262k and 291k stream baselines. These are
-model-assisted estimates, not board results. No serial port or board was used.
-The fill code is unchanged; its measured 57.2k-cycle maximum remains the baseline.
-[Offline checks and model records](../results/2026-10-16-max-encoder/README.md).
+The coordinator measured **167,053/185,000 cycles/frame at four samples/symbol**
+on 603833c, with live maxima of 170,026/187,413 cycles for 8PSK 2/3 and 5/6.
+At eight samples/symbol (5 Msym/s), it regressed to 301,060/423,382 cycles/frame.
+The follow-up restores main's sparse mapping path at 5 Msym/s and retains direct
+packed mapping at four samples/symbol. Its timing is awaiting a coordinator run.
+No board, serial port or radio was accessed during this follow-up.
+
+The original projection below predates those measurements.
+[Original offline checks and model records](../results/2026-10-16-max-encoder/README.md).
+
+## 5 Msym/s follow-up
+
+`55b868b` replaced main's sparse mapping/packing loop with the direct packed
+mapper in every 8PSK stream. Its new table touches 8,192 B of data-cache lines;
+the old sparse table touches only 512 B. The ring destination and mapping scratch
+are internal, so these are not cold PSRAM output writes. The 603833c layout puts
+the FEC workspace at `0x3c0c09b0`, with nibble BCH and no resident BCH table.
+`24c7412` only changes that placement at four samples/symbol. The later commits
+add allocation reporting and a live maximum, not new 5 Msym/s stage algorithms.
+
+The linked line inventory, including that PSRAM address, gives:
+
+| Known hot data-cache union | 2/3 | 5/6 |
+|---|---:|---:|
+| Direct packed mapper | 34,208 B | 35,360 B |
+| Restored sparse mapper, fixed PL symbols still internal | 26,528 B | 27,680 B |
+
+The difference is exactly `8192 - 512 = 7680 B`; the configured cache is 32,768 B.
+The model's maximum set occupancy falls from 10/11 to 8/9 lines in an eight-way
+cache. Measured 5 Msym/s BB/BCH/map flash misses rise to 121/61/106 per frame
+for 2/3 and 213/66/208 for 5/6. Instruction misses total at most 19 per stage
+over 6,760 frames. These observations support data-cache pressure as the cause,
+rather than instruction fetches. This is source attribution and a working-set
+model, not a silicon bisect. Data placement can still change conflicts.
+Source: coordinator-supplied `notes/board-runs-603833c.jsonl`; main's reference
+is [the nibble stream run](../results/2026-10-16-next/pace-nibble.jsonl).
+
+`DVBS2_MAP_SPARSE` restores the former index, sparse lookup, in-place packing
+and copy sequence using existing scratch. Packed PL framing remains prepared
+once. No new heap, workspace, table or ring allocation is made. Context sizes
+stay 15,184/16,528 B; the 12,420 B workspace stays in PSRAM at 5 Msym/s, and
+the BCH cache stays at 0 B. The fallback control loop lives in flash: versus
+603833c, linked internal code shrinks 64 B, static RAM is unchanged, flash code
+grows 276 B and flash data grows 48 B. The direct PIE kernel is unchanged.
+
+Using the coordinator's rounded main totals, the prediction is
+`[262000, 290000] - 9800 + 1500 = [253700, 281700] cycles/frame`, about 254k/282k.
+It restores main's measured mapping cost and substitutes the measured prepared
+PL cost. Dispatch, instruction-cache and data-placement changes are not modelled;
+only the board can establish the 2% requirement. Internal FEC plus the new table
+at 5 Msym/s was rejected because of the Wi-Fi heap limit. There is no table
+redesign or cache-size change. Reproduce the sparse inventory with:
+
+```sh
+python3 host/encoder_memory.py firmware/build/esp_dvbs2.elf \
+  --workspace 0x3c0c09b0 --sparse-packed
+```
+
+Offline verification: 27 host scripts pass, including every C encoder stage
+against Python, actual stream lifecycle/DAC words and allocation failure cleanup.
+QEMU passes all 140 FEC CRCs, 14 PIE checks and 384 guarded complete packed frames
+across both mapper/BCH selections, all six modes, both pilot settings and every
+output alignment. QEMU timing is not used. ESP-IDF v6.1 builds cleanly.
 
 ## Working set
 
@@ -51,7 +109,8 @@ holds byte BCH rows, copied once after prepare. It survives every frame. The
 scratch-copy BCH experiment had copied those rows every frame.
 
 Eight-sample and QPSK streams retain their former workspace allocation and nibble
-BCH selection. The new packed mapper applies to every 8PSK stream. A four-symbol
+BCH selection. Direct packed mapping now applies only to four-sample streams;
+eight-sample streams select the restored sparse path. A four-symbol
 index has three bit planes, `P0' | P2<<4 | P1<<8`, where the first symbol is the
 high bit of each nibble. A lookup returns four phase nibbles in a halfword:
 
@@ -110,7 +169,8 @@ requested and allocated sizes, addresses, free heap and largest block so the
 board can account for those too. Expected internal contexts: 15,184 B for 2/3,
 16,528 B for 5/6. Ring slots, payload, dummy and shaping table costs are unchanged.
 The reference workspace remains PSRAM in other modes. Read-only data grows by
-8,448 B and flash code by 436 B in the final ELF comparison.
+8,448 B and flash code by 436 B in the original ELF comparison. Apply the
+follow-up deltas above for the current build.
 
 Subtracting requested bytes and code from the earlier Wi-Fi-up free heap predicts
 about 34.0/32.7 KB free for four-sample 2/3 and 5/6, and about 32.1 KB in the
@@ -140,49 +200,58 @@ buffer handling and bus contention must be measured. That is the next experiment
 
 ## Coordinator runs, radio off
 
-Build/flash through the usual coordinator workflow. Use a fresh output folder.
-All commands below leave RF off. Each paced run is 30 s plus any CW samples.
+Build/flash through the coordinator's normal workflow. Keep the archived
+`N0CALL` settings. Run these in order, using a fresh output directory. None is
+executed by this agent. Each pace is 30 s plus identification samples.
 
 ```sh
-PY=/Library/Frameworks/Python.framework/Versions/3.13/bin/python3
-OUT=notes/max-encoder-board
+OUT=notes/max-encoder-5m-check
 mkdir "$OUT"
-"$PY" host/board.py info --reset --out "$OUT/runs.jsonl"
-"$PY" host/board.py membench --timeout 60 --out "$OUT/runs.jsonl"
-"$PY" host/shaper.py verify "$OUT/runs.jsonl"
-"$PY" host/board.py 'fecbench pie' --timeout 60 --out "$OUT/fec.jsonl"
-"$PY" tests/test_fecbench.py "$OUT/fec.jsonl" --correctness-only
-"$PY" host/board.py 'dvbpace 13 10m 30' --timeout 60 --out "$OUT/runs.jsonl"
-"$PY" host/board.py 'dvbpace 15 10m 30' --timeout 60 --out "$OUT/runs.jsonl"
-"$PY" host/board.py 'dvbpace 13 5m 30' --timeout 60 --out "$OUT/runs.jsonl"
-"$PY" host/board.py 'dvbpace 15 5m 30' --timeout 60 --out "$OUT/runs.jsonl"
-"$PY" host/board.py 'dvbpace 4 30' --timeout 60 --out "$OUT/runs.jsonl"
-"$PY" host/board.py 'dvbdump 4 40' --timeout 90 --save "$OUT/4.iq" --out "$OUT/runs.jsonl"
-for mode in 13 15; do
-    for rate in 5m 10m; do
-        "$PY" host/board.py "dvbdump $mode $rate 40 128 1" --timeout 90 \
-          --save "$OUT/$mode-$rate.iq" --out "$OUT/runs.jsonl"
-    done
-done
+python3 host/board.py 'dvbpace 13 5m 30' --timeout 60 --out "$OUT/runs.jsonl"
+python3 host/board.py 'dvbpace 15 5m 30' --timeout 60 --out "$OUT/runs.jsonl"
+python3 host/board.py 'dvbpace 13 10m 30' --timeout 60 --out "$OUT/runs.jsonl"
+python3 host/board.py 'dvbpace 15 10m 30' --timeout 60 --out "$OUT/runs.jsonl"
+python3 host/board.py 'dvbpace 4 30' --timeout 60 --out "$OUT/runs.jsonl"
+python3 host/board.py 'fecbench pie' --timeout 60 --out "$OUT/fec.jsonl"
+python3 tests/test_fecbench.py "$OUT/fec.jsonl" --correctness-only
+python3 host/board.py 'dvbdump 4 40' --timeout 90 --save "$OUT/4.iq" --out "$OUT/runs.jsonl"                    # CRC 1435641601
+python3 host/board.py 'dvbdump 13 5m 40 128 1' --timeout 90 --save "$OUT/13-5m.iq" --out "$OUT/runs.jsonl"    # CRC 1937985440
+python3 host/board.py 'dvbdump 15 5m 40 128 1' --timeout 90 --save "$OUT/15-5m.iq" --out "$OUT/runs.jsonl"    # CRC 1163322913
+python3 host/board.py 'dvbdump 13 10m 40 128 1' --timeout 90 --save "$OUT/13-10m.iq" --out "$OUT/runs.jsonl"  # CRC 474263962
+python3 host/board.py 'dvbdump 15 10m 40 128 1' --timeout 90 --save "$OUT/15-10m.iq" --out "$OUT/runs.jsonl"  # CRC 1757765864
 ```
 
-Correctness: every `membench` sample check matches, all 140 FEC CRCs match and
-14 PIE checks have zero mismatch. Dump CRCs, with the archived callsign/settings:
-QPSK 1435641601; 13 5m 1937985440; 15 5m 1163322913; 13 10m 474263962;
-15 10m 1757765864. All overlap comparisons must match. Decode all five with
-`host/onair.py`, the supplied LeanDVB executable, `--stream 40 --callsign N0CALL
---mer --shift 0`; use `--rate 4000000` for QPSK, `--rate 40000000` for 8PSK.
-Require at least 30 contiguous bit-exact frames and zero LDPC flips/BCH failures.
+Pass criteria, fixed before the run:
 
-Performance: both four-sample modes must have mean and `encode_cycles_live_max`
-at most 226,000 cycles/frame. The live maximum excludes only the initial
-`prefill_frames`, not interrupts. Keep the all-frame maximum too. Require ESP_OK,
-no encoder failure, zero underruns/late/fatal fills and positive slack. At the
-existing 40 MS/s cadence, require fill maximum below 60k cycles for 10m and
-45.2k for 5m, approximately a 5% regression limit. Expect BB flash misses below
-16/frame and PL below 2/frame; failure challenges the placement explanation.
-Require successful allocations and internal FEC/BCH addresses with 8,192 B BCH
-cache for 13/15 10m. Other-mode regressions above 5% in encoder timing
-should be investigated. No 80 MS/s rate selector exists on this branch. Repeat
-the encoder criteria under the real 80 MS/s load after integrating that front;
-these 10m commands cannot establish its contention or fill deadline.
+| Pace | Maximum mean, cycles/frame | Maximum live, cycles/frame |
+|---|---:|---:|
+| 13 5m | 267,240 | 267,240 |
+| 15 5m | 295,800 | 295,800 |
+| 13 10m | 170,394 | 173,426 |
+| 15 10m | 188,700 | 191,161 |
+| 4 | 699,685 | record |
+
+The 5m mean ceilings are `1.02 * [262000, 290000]`, the coordinator's rounded
+main baselines. The live ceilings also reject occasional live regressions;
+main did not record a separate live maximum. The 10m ceilings are 2% above
+603833c's measured means/live maxima, rounded down. Keep the all-frame maximum
+and prefill count in the record.
+
+Require `ESP_OK`, no encoder failure, zero underruns, zero `late_fills`, zero
+`fatal_late` and positive fill slack. Fill maximum must stay below 45,200 cycles
+at 5m, 60,000 at 10m and 43,457 for QPSK. Small nonfatal `late_switches` are
+present in the baseline and are not fill failures.
+
+At 5m require `packed_mapper=sparse`, PSRAM workspace, nibble BCH, 0 B BCH cache,
+and unchanged requested/allocated context, workspace and ring sizes versus
+603833c. No additional internal heap is allowed. At 10m require
+`packed_mapper=direct`, internal workspace and an 8,192 B resident BCH table.
+Expect BB/BCH/map misses to return toward main's 63/28/35 per frame for 2/3;
+record stage means and misses for both rates even if timing passes. A timing
+failure or persistently elevated misses leaves the fix unqualified.
+
+Require all 140 FEC CRCs, all 14 zero-mismatch PIE checks, all five dump CRCs
+above and matching overlap comparisons. Decode all five with `host/onair.py`,
+the supplied LeanDVB executable, `--stream 40 --callsign N0CALL --mer --shift 0`;
+use `--rate 4000000` for QPSK and `--rate 40000000` for 8PSK. Require at least
+30 contiguous bit-exact frames, zero LDPC flips and zero BCH failures.
