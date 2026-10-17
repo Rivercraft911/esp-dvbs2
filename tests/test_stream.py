@@ -168,6 +168,7 @@ def test_stream(output=None, receiver=None):
                         str(ROOT / "tests/stream_host.c"), str(ROOT / "firmware/main/ring.c"),
                         str(ROOT / "firmware/main/shaper.c"),
                         str(ROOT / "firmware/main/shaper_short.c"),
+                        str(ROOT / "firmware/main/shaper_qpsk.c"),
                         str(ROOT / "firmware/components/dvbs2/dvbs2.c"),
                         str(ROOT / "firmware/components/dvbs2/fast.c"),
                         str(ROOT / "firmware/components/station_id/station_id.c"),
@@ -181,9 +182,12 @@ def test_stream(output=None, receiver=None):
                                     (15, 4, "N0CALL", 80, 1), (17, 4, "", 80, 1),
                                     (15, 8, "N0CALL", 80, 0),
                                     *[(mc, n, "N0CALL", rate, 0) for mc in range(4, 12)
-                                      for n, rate in ((8, 40), (4, 40), (8, 80), (4, 80))]):
-            iq = output / f'{mc}-n{sps}-{rate}m-s{6 if short else 9}.iq' if output else folder / "dump.iq"
-            out = subprocess.run([str(exe), str(mc), str(sps), str(iq), call, str(rate * 1000000), str(short)],
+                                      for n, rate in ((8, 40), (4, 40), (8, 80), (4, 80))],
+                                    *[(mc, n, "N0CALL", 80, 2) for mc in range(4,12) for n in (3,4)]):
+            quads = short == 2
+            frames = 16 if quads else 40
+            iq = output / f'{mc}-n{sps}-{rate}m-s{6 if short == 1 else 9}-q{int(quads)}.iq' if output else folder / "dump.iq"
+            out = subprocess.run([str(exe), str(mc), str(sps), str(iq), call, str(rate * 1000000), str(short), str(frames)],
                                  capture_output=True, text=True, timeout=60, check=True).stdout
             records = [json.loads(line[1:]) for line in out.splitlines() if line.startswith("@")]
             dumps = [r for r in records if "crc32" in r]
@@ -197,34 +201,48 @@ def test_stream(output=None, receiver=None):
                 assert r["crc32"] == zlib.crc32(iq.read_bytes())
                 if not short and (mc, sps) in expected:
                     assert r["crc32"] == expected[mc, sps], (mc, sps, rate, r["crc32"])
-                if short and mc in (13, 15):
+                if short == 1 and mc in (13, 15):
                     assert r["crc32"] == {13: 3178964763, 15: 4256019779}[mc]
+                if quads and mc in (4,11):
+                    assert r['crc32'] == {(3,4):3388792897, (3,11):1271511239,
+                                          (4,4):3789273049, (4,11):2081653259}[sps,mc]
                 assert r["status"] == "ESP_OK" and not r["encoder_failed"]
                 assert r["callsign"] == call
                 packed = sps != 40
                 profile = r["profile"]
                 assert profile["shaped_words"] + profile["reused_words"] == profile["fill_words"]
                 assert profile["reused_words"] > 0 if packed else profile["reused_words"] == 0
-                assert r["ring_slots"] == (3 if sps == 4 else 2 if packed else 8)
+                assert r["ring_slots"] == (3 if sps <= 4 else 2 if packed else 8)
                 assert r["prefill_frames"] == r["ring_slots"]
                 assert 0 <= r["encode_cycles_live_max"] <= r["encode_cycles_max"]
                 assert r["ring_memory"] == ("internal" if packed else "psram")
-                assert r["ring_format"] == ("packed" if packed else "raw")
+                assert r["ring_format"] == ("quads" if quads else "packed" if packed else "raw")
                 assert r["workspace_memory"] == ("internal" if packed and (mc < 12 or sps == 4) else "psram")
                 assert r["workspace_bytes"] == 12420
-                assert r["workspace_heap_bytes"] == r["workspace_bytes"]
+                assert r["workspace_heap_bytes"] == (0 if quads and sps == 4 else r["workspace_bytes"])
                 assert r["fast_heap_bytes"] == r["fast_bytes"]
                 cached = packed and (mc < 12 or sps == 4) and mc not in (10, 11, 16, 17)
                 assert r["bch_cache_bytes"] == (8192 if cached else 0)
                 assert r["bch_cache_heap_bytes"] == r["bch_cache_bytes"]
                 assert r["bch_variant"] == ("resident-byte" if cached else "nibble")
-                assert r["packed_mapper"] == ("none" if not packed else "direct" if mc < 12 or sps == 4 else "sparse")
+                assert r["packed_mapper"] == ("none" if not packed else "quads" if quads else "direct" if mc < 12 or sps == 4 else "sparse")
                 assert bool(int(r["layout"]["bch"], 16)) == cached
                 slots = [int(a, 16) for a in r["layout"]["slots"]]
                 assert len(set(slots)) == r["ring_slots"]
                 payload = int(r["layout"]["payload"], 16)
                 filler = int(r["layout"]["filler"], 16)
-                if packed:
+                if quads:
+                    table = int(r['layout']['table'],16)
+                    fast = int(r['layout']['fast'],16)
+                    assert fast <= payload < payload + r['payload_bytes_per_frame'] <= fast+r['fast_bytes']
+                    stored = 3 if sps == 3 else 0
+                    assert slots[:stored] == [table+12288*sps+i*8352 for i in range(stored)]
+                    assert filler == table+12288*sps+(stored*8352 if sps == 3 else 12432)
+                    if sps == 4: assert int(r['layout']['workspace'],16) == table+49152
+                    assert filler+864 <= table+65536
+                    assert r['ring_heap_bytes'] == (3-stored)*8352
+                    assert all(a%16 == 0 for a in slots)
+                elif packed:
                     # Two packed frames, the packed dummy, then the payload, each with the
                     # 16 bytes the vector unpack may read past its end.
                     frame = ((33282 if mc < 12 else 22194) // 2 + 31) // 16 * 16
@@ -254,13 +272,13 @@ def test_stream(output=None, receiver=None):
                 assert r["symbol_rate"] == rate * 1000000 // sps
             if receiver and mc < 12 and sps != 40:
                 cmd = [sys.executable, str(ROOT / "host/onair.py"), str(iq),
-                       "--rate", str(rate * 1000000 // (2 if sps == 8 else 1)), "--symbol-rate", str(rate * 1000000 // sps),
-                       "--scale", "512", "--modcod", str(mc), "--stream", "40",
+                       "--rate", str(rate * 1000000 // (2 if sps == 8 else 1)), "--symbol-rate", str(rate * 1000000 / sps),
+                       "--scale", "512", "--modcod", str(mc), "--stream", str(frames),
                        "--callsign", call, "--receiver", str(receiver)]
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
                 assert result.returncode == 0, (cmd, result.stdout, result.stderr)
                 decoded = json.loads(result.stdout)
-                assert decoded["payload_match"] and decoded["payload_frames"] >= 30, decoded
+                assert decoded["payload_match"] and decoded["payload_frames"] >= frames-2, decoded
                 assert all(decoded[k] == 0 for k in ("bch_failed_frames", "bch_corrected_bits",
                            "ldpc_checks_before", "ldpc_bit_flips", "payload_bit_errors")), decoded
                 print(f"LeanDVB: MODCOD {mc}, {sps} sps at {rate} MS/s, "
@@ -271,14 +289,14 @@ def test_stream(output=None, receiver=None):
             if rate == 80 and not short:
                 assert crcs[mc, sps, call, 80, 0] == crcs[mc, sps, call, 40, 0]
             print(f"stream host: MODCOD {mc}, {sps} sps at {rate} MS/s, {dumps[0]['ring_format']} ring, "
-                  f"callsign {call or 'none'}, 2 x 40 frames, "
+                  f"callsign {call or 'none'}, 2 x {frames} frames, "
                   f"CRC {dumps[0]['crc32']}, "
                   "all DAC words match plain encoder; cleanup and notifications pass")
 
         # More than one complete physical-wrap cycle for both geometries. Every
         # word is still checked by the plain encoder oracle inside the C harness.
-        for rate, short, frames in ((40000000, 0, 256), (80000000, 1, 160)):
-            subprocess.run([str(exe), "13", "4", str(folder / "wrap.iq"), "N0CALL",
+        for rate, short, frames in ((40000000, 0, 256), (80000000, 1, 160), (80000000, 2, 200)):
+            subprocess.run([str(exe), "11" if short == 2 else "13", "3" if short == 2 else "4", str(folder / "wrap.iq"), "N0CALL",
                             str(rate), str(short), str(frames)], capture_output=True,
                            text=True, timeout=120, check=True)
         print("stream host: complete 1365/819-bank wrap cycles, sample reuse matches the oracle")

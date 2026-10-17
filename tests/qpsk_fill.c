@@ -3,6 +3,8 @@
 #include <stdio.h>
 #include <string.h>
 #include "shaper_qpsk.h"
+#include "ring.h"
+#include <assert.h>
 
 #ifdef QPSK_HOST
 static uint32_t table[QPSK_TABLE_WORDS(4)] __attribute__((aligned(16)));
@@ -27,6 +29,27 @@ static uint32_t hash(const uint32_t *p, unsigned n)
 int qpsk_fill_check(void)
 {
     unsigned cases = 0, errors = 0;
+    uint8_t source[400] __attribute__((aligned(16))), out[400] __attribute__((aligned(16)));
+    unsigned copies = 0;
+    for (unsigned i = 0; i < sizeof source; ++i) source[i] = i*37+13;
+    const unsigned lengths[] = {0,1,2,3,4,7,15,31,63,64,65,127,128,129,255,1023};
+    for (unsigned a = 0; a < 16; ++a)
+        for (unsigned at = 0; at < 64; ++at)
+            for (unsigned to = 0; to < 4; ++to)
+                for (unsigned c = 0; c < sizeof lengths/sizeof *lengths; ++c) {
+                    const unsigned n = lengths[c];
+                    memset(out, 0xa5, sizeof out);
+                    ring_copy_quads(out+a, to, source, at, n);
+                    for (unsigned i = 0; i < sizeof out*4; ++i) {
+                        const unsigned start = a*4+to;
+                        const unsigned expected = i < start || i >= start+n ?
+                            (0xa5 >> (6-2*(i&3))) & 3 :
+                            (source[(at+i-start)/4] >> (6-2*((at+i-start)&3))) & 3;
+                        assert(((out[i/4] >> (6-2*(i&3))) & 3) == expected);
+                    }
+                    ++copies;
+                }
+    printf("quad copies: %u guarded slices\n", copies);
     shaper_qpsk_samples(NULL,NULL,0,0,NULL,3);
     shaper_qpsk_samples(NULL,NULL,0,0,NULL,4);
 #ifdef __XTENSA__

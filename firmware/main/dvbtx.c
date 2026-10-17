@@ -1,6 +1,7 @@
 // QPSK defaults to 1 Msym/s; both modulations accept 5m/10m at 40 MS/s and
 // 10m80/20m at 80 MS/s. Fast rates use packed internal rings and cached samples.
-// QPSK n4/n8 tables leave enough of shaper_store for three/two frames and payload.
+// Legacy QPSK n4/n8 tables share the store with ring and payload. The block
+// kernels use four codes per byte; n3 shares with its ring, n4 with its workspace.
 // Payload: xorshift32 seed 2026, one contiguous byte stream across data frames.
 // On underrun the ring inserts a 3330-symbol dummy PLFRAME (EN 302 307-1 5.1.5,
 // 5.5.1), preserving each choice for overlapping bank reads. No payload is skipped.
@@ -31,6 +32,7 @@
 #include "station_store.h"
 #include "station_commands.h"
 #include "shaper.h"
+#include "shaper_qpsk.h"
 #include "shaper_taps.h"
 
 #define RING_SLOTS 8                // legacy QPSK frames ahead: 233 ms at 1 Msym/s
@@ -79,6 +81,7 @@ typedef struct {
     dvbs2_fast *fast;               // fast encoder context for this mode, internal RAM
     dvbs2_workspace *ws;            // internal for fast QPSK / 4-sps 8PSK, otherwise PSRAM
     uint8_t *bch;                  // resident byte table with internal workspace, t = 10/12
+    bool quads;                     // four QPSK codes/byte, block shaper
     bool packed;                    // all fast rates: packed internal ring
     uint8_t *payload;               // one frame of payload: next to a packed ring, or PSRAM
     uint8_t *slot[PACKED_SLOTS];    // packed frames, internal
@@ -124,9 +127,10 @@ static uint32_t next_byte(uint32_t *x)
     return *x & 0xff;
 }
 
-// A whole-symbol start n has n % sps == 0. Since sps = 4, 8 or 40 and
+// Legacy whole-symbol starts have n % sps == 0. Since sps = 4, 8 or 40 and
 // 16380 are multiples of four, (n % 16380)*4 bytes is 16-byte aligned.
-// At 8 sps 16380 % 8 == 4, so a bank wrap can split a symbol in half.
+// At 8 sps 16380 % 8 == 4, so a bank wrap can split a symbol in half. The
+// QPSK block wrapper uses aligned four-symbol boundaries (12/16 samples).
 static IRAM_ATTR esp_err_t fill(uint32_t *dst, uint64_t first, size_t count, void *ctx)
 {
     (void)ctx;
@@ -158,7 +162,7 @@ static IRAM_ATTR esp_err_t fill(uint32_t *dst, uint64_t first, size_t count, voi
     // Packed reads unpack whole vectors when every symbol lands at an address of its own
     // parity (ring.h); the history is even, so shift the window by the first symbol's parity.
     // sps is 4 or 8 there, so that parity is bit log2(sps) of first. Legacy n40 keeps the window.
-    uint8_t *const win = dvb.win + (enc.packed && (first & sps));
+    uint8_t *const win = dvb.win + (!enc.quads && enc.packed && (first & sps));
     if (count && ring_window(&dvb.ring, win, dvb.win_bytes - 1, first, count, sps,
                     SHAPER_HISTORY, RADIO_S3_BANK_WORDS) < 0) {
         return ESP_FAIL;
@@ -179,7 +183,11 @@ static IRAM_ATTR esp_err_t fill(uint32_t *dst, uint64_t first, size_t count, voi
             notified = after.cycles - wake.cycles;
         }
     }
-    (enc.packed ? shaper_samples_codes_profile : shaper_samples_profile)(dst,
+    if (enc.quads) {
+        const stream_mark_t whole = dvb.profile ? stream_mark_for(&dvb.whole) : (stream_mark_t){0};
+        shaper_qpsk_samples(dst, win + 2, first % (4*sps), count, dvb.table.blocks, sps);
+        if (dvb.profile) stream_record(&dvb.whole, whole, stream_mark_for(&dvb.whole));
+    } else (enc.packed ? shaper_samples_codes_profile : shaper_samples_profile)(dst,
         win + SHAPER_HISTORY, first % sps, count, &dvb.table,
         dvb.profile ? &dvb.whole : NULL, dvb.profile ? &dvb.partial : NULL);
     if (enc.packed && count) {
@@ -311,7 +319,7 @@ static void release(void)
     }
     (void)heap_caps_monitor_local_minimum_free_size_stop();
     heap_caps_free(enc.fast);
-    heap_caps_free(enc.ws);
+    if (!(enc.quads && dvb.table.n == 4)) heap_caps_free(enc.ws);
     if (dvb.win && (!enc.packed || (enc.mode->bits_per_symbol == 3 && dvb.table.n != 4)))
         heap_caps_free(dvb.win);
     dvb.win = NULL;
@@ -334,14 +342,18 @@ static size_t packed_bytes(size_t symbols)
 // Build the scaled table and the dummy frame, start the encoder on core 0 and wait until it has
 // filled every slot. Returns the frame length in symbols, or 0 after printing an error for `cmd`.
 static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, unsigned stall_ms,
-                            unsigned sps, uint32_t dac_rate, bool short_pulse)
+                            unsigned sps, uint32_t dac_rate, unsigned pulse)
 {
     const dvbs2_mode *mode = dvbs2_find_mode(modcod);
-    if ((short_pulse && (sps != 4 || dac_rate != RADIO_S3_DAC_RATE_80M ||
+    const bool short_pulse = pulse == DVB_PULSE_SHORT;
+    const bool quads = sps == 3 || pulse == DVB_PULSE_QUADS;
+    if (pulse > DVB_PULSE_QUADS || (quads && (!mode || mode->bits_per_symbol != 2 ||
+                (sps != 3 && sps != 4) || dac_rate != RADIO_S3_DAC_RATE_80M)) ||
+        (short_pulse && (sps != 4 || dac_rate != RADIO_S3_DAC_RATE_80M ||
                         !mode || mode->bits_per_symbol != 3 ||
                         (strcmp(cmd, "dvbdump") && strcmp(cmd, "dvbpace") &&
                          strcmp(cmd, "wifimem")))) ||
-        !mode || (sps != 8 && sps != 4 && !(mode->bits_per_symbol == 2 && sps == 40)) ||
+        !mode || (sps != 3 && sps != 8 && sps != 4 && !(mode->bits_per_symbol == 2 && sps == 40)) ||
             (dac_rate != RADIO_S3_DAC_RATE && (dac_rate != RADIO_S3_DAC_RATE_80M || sps == 40))) {
         printf("@{\"cmd\":\"%s\",\"error\":\"invalid MODCOD/sps\"}\n", cmd);
         return 0;
@@ -376,11 +388,29 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
     const uint32_t internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     const size_t payload_bytes = (mode->kbch - 80) / 8;
     enc.packed = sps != 40;
+    enc.quads = quads;
     dvb.table.n = sps;
     // At 10 Msym/s the 5/6 encoder needs about 69% of a frame period; a two-frame model keeps
     // as little as 244 symbols of lead there, three frames keep 18,871 even at 95% (test_ring).
-    const unsigned nslots = !enc.packed ? RING_SLOTS : sps == 4 ? 3 : 2;
-    if (enc.packed) {
+    const unsigned nslots = !enc.packed ? RING_SLOTS : sps <= 4 ? 3 : 2;
+    if (quads) {
+        const size_t frame = ((symbols+3)/4 + 31) & ~(size_t)15;
+        const size_t dummy = ((DVBS2_DUMMY_SYMBOLS+3)/4 + 31) & ~(size_t)15;
+        const size_t used = QPSK_TABLE_WORDS(sps)*4;
+        const unsigned stored = sps == 3 ? 3 : 0;
+        uint8_t *base = (uint8_t *)shaper_store + used;
+        if (stored < nslots) enc.block = heap_caps_aligned_alloc(16, (nslots-stored)*frame, internal);
+        for (unsigned i = 0; i < nslots; ++i)
+            enc.slot[i] = i < stored ? base+i*frame : enc.block ? enc.block+(i-stored)*frame : NULL;
+        // n4 lends the table tail to the workspace instead of one frame:
+        // 12,420 B reclaimed rather than 8,352 B, saving another 4,068 heap bytes.
+        const size_t extra = sps == 4 ? (sizeof *enc.ws+15) & ~(size_t)15 : stored*frame;
+        enc.filler = base+extra;
+        if (used+extra+dummy > sizeof shaper_store) {
+            release();
+            return 0;
+        }
+    } else if (enc.packed) {
         const size_t frame = packed_bytes(symbols), dummy = packed_bytes(DVBS2_DUMMY_SYMBOLS);
         const size_t used = short_pulse ? 16384 : shaper_table_words(sps, mode->bits_per_symbol) * 4;
         const size_t need = 2 * frame + dummy + payload_bytes;
@@ -426,9 +456,12 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
     // Both fast QPSK rates keep workspace and byte BCH off the shared cache.
     const bool resident = enc.packed && (mode->bits_per_symbol == 2 || sps == 4);
     enc.fast = heap_caps_aligned_alloc(16, dvbs2_fast_mode_size(mode), internal);
-    enc.ws = heap_caps_aligned_alloc(16, sizeof *enc.ws,
-                                    resident ? internal : MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    dvb.win_bytes = SHAPER_HISTORY + (RADIO_S3_BANK_WORDS + sps - 1) / sps + 2;
+    enc.ws = quads && sps == 4 ? (dvbs2_workspace *)(shaper_store + QPSK_TABLE_WORDS(4)) :
+        heap_caps_aligned_alloc(16, sizeof *enc.ws,
+                               resident ? internal : MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    dvb.win_bytes = quads ? 2 + (RADIO_S3_BANK_WORDS + 8*sps-2)/(4*sps) + 1 :
+                           SHAPER_HISTORY + (RADIO_S3_BANK_WORDS + sps - 1) / sps + 2;
+    if (quads) enc.payload = dvbs2_fast_payload(enc.fast);
     dvb.win = resident ? (enc.ws ? (uint8_t *)enc.ws + DVBS2_FAST_WORKSPACE_USED : NULL) :
                         heap_caps_aligned_alloc(16, dvb.win_bytes, internal);
     if (resident && mode->t > 8)
@@ -447,8 +480,10 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
     // cache footprint. Its temporary phases reuse the existing context scratch.
     if (!dvb.win || !enc.fast || !enc.ws || !enc.payload || !enc.filler || !taps ||
             (resident && mode->t > 8 && !enc.bch) || (!enc.packed && !enc.slots) ||
+            (quads && !enc.slot[nslots-1]) ||
             dvbs2_fast_prepare(enc.fast, mode, PILOTS,
-                              15 | (resident ? 0 : DVBS2_BCH_NIBBLE | DVBS2_MAP_SPARSE)) ||
+                              15 | (quads ? DVBS2_MAP_QUADS : 0) |
+                              (resident ? 0 : DVBS2_BCH_NIBBLE | DVBS2_MAP_SPARSE)) ||
             (enc.bch && dvbs2_fast_cache_bch(enc.fast, enc.bch))) {
         printf("@{\"cmd\":\"%s\",\"error\":\"allocation failed\"}\n", cmd);
         heap_caps_free(taps);
@@ -458,24 +493,29 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
     if (enc.packed) {
         // Pack the dummy PLFRAME through the second slot, before the encoder owns it.
         dvbs2_dummy(enc.slot[1]);
-        dvbs2_pack(enc.slot[1], enc.filler, DVBS2_DUMMY_SYMBOLS);
+        if (quads) dvbs2_pack_quads(enc.slot[1], enc.filler, DVBS2_DUMMY_SYMBOLS);
+        else dvbs2_pack(enc.slot[1], enc.filler, DVBS2_DUMMY_SYMBOLS);
     } else {
         dvbs2_dummy(enc.filler);
     }
     // Scale the conservative envelope to level; table rounding adds at most 1.5 LSB/axis.
     const int32_t *source = sps == 40 ? shaper_taps_qpsk_n40_a35 :
                             sps == 8 ? shaper_taps_8psk_n8_a35 : shaper_taps_8psk_n4_a35;
-    for (unsigned i = 0; i < 9 * sps; ++i) {
+    for (unsigned i = 0; !quads && i < 9 * sps; ++i) {
         taps[i] = (int32_t)((double)source[i] * level / WORST_PEAK);
     }
-    if (short_pulse) shaper_short_build(&dvb.table, shaper_store, level);
+    if (quads) {
+        shaper_qpsk_build(shaper_store, sps, level);
+        dvb.table = (shaper_table_t){.blocks=shaper_store, .n=sps, .bits=2};
+    } else if (short_pulse) shaper_short_build(&dvb.table, shaper_store, level);
     else shaper_build(&dvb.table, shaper_store, taps, sps, mode->bits_per_symbol);
     heap_caps_free(taps);
     dvb.max_fill_cycles = 0;
     if (enc.packed) {
         ring_init_slots(&dvb.ring, enc.slot, nslots, enc.filler, symbols);
         ring_cache(&dvb.ring, dvb.overlap, OVERLAP_SYMBOLS);
-        if (mode->bits_per_symbol == 2) ring_packed_qpsk(&dvb.ring);
+        if (quads) dvb.ring.packed = 4;
+        else if (mode->bits_per_symbol == 2) ring_packed_qpsk(&dvb.ring);
         else ring_packed_codes(&dvb.ring);
     } else {
         ring_init(&dvb.ring, enc.slots, RING_SLOTS, enc.filler, symbols);
@@ -539,21 +579,21 @@ static void stop_encoder(void)
            enc.max_cycles, enc.live_max_cycles, (unsigned)r->nslots,
            enc.failed ? "true" : "false", dvb.max_fill_cycles,
            (unsigned)internal, (unsigned)largest, (unsigned)lowest);
-    printf(",\"callsign\":\"%s\"", station_store_get());
+    printf(",\"callsign\":\"%s\",\"encoder_timed\":true,\"sps\":%u", station_store_get(), dvb.table.n);
     printf(",\"workspace_memory\":\"%s\",\"workspace_bytes\":%u,\"fast_bytes\":%u,"
            "\"workspace_heap_bytes\":%u,\"fast_heap_bytes\":%u,\"bch_cache_heap_bytes\":%u,"
            "\"bch_cache_bytes\":%u,\"bch_variant\":\"%s\",\"packed_mapper\":\"%s\"",
            enc.packed && (enc.mode->bits_per_symbol == 2 || dvb.table.n == 4) ? "internal" : "psram", (unsigned)sizeof *enc.ws,
            (unsigned)dvbs2_fast_mode_size(enc.mode),
-           (unsigned)heap_caps_get_allocated_size(enc.ws),
+           enc.quads && dvb.table.n == 4 ? 0 : (unsigned)heap_caps_get_allocated_size(enc.ws),
            (unsigned)heap_caps_get_allocated_size(enc.fast),
            enc.bch ? (unsigned)heap_caps_get_allocated_size(enc.bch) : 0,
            enc.bch ? DVBS2_BCH_CACHE_BYTES : 0,
            enc.bch ? "resident-byte" : "nibble",
-           !enc.packed ? "none" : enc.mode->bits_per_symbol == 2 || dvb.table.n == 4 ? "direct" : "sparse");
+           !enc.packed ? "none" : enc.quads ? "quads" : enc.mode->bits_per_symbol == 2 || dvb.table.n == 4 ? "direct" : "sparse");
     printf(",\"ring_memory\":\"%s\",\"ring_format\":\"%s\",\"ring_heap_bytes\":%u,"
            "\"payload_memory\":\"%s\",\"slot_waits\":%" PRIu32,
-           enc.packed ? "internal" : "psram", enc.packed ? "packed" : "raw",
+           enc.packed ? "internal" : "psram", enc.quads ? "quads" : enc.packed ? "packed" : "raw",
            enc.block ? (unsigned)heap_caps_get_allocated_size(enc.block) : 0,
            enc.packed ? "internal" : "psram", enc.slot_waits);
     printf(",\"layout\":{\"table\":\"0x%" PRIxPTR "\",\"fast\":\"0x%" PRIxPTR
@@ -622,12 +662,12 @@ static void print_wifi(const radio_s3_wifi_heap_t *w)
 }
 
 void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, unsigned level,
-                unsigned sps, uint32_t dac_rate)
+                unsigned sps, uint32_t dac_rate, unsigned pulse)
 {
     if (!station_require("dvb")) {
         return;
     }
-    const size_t symbols = start_encoder("dvb", modcod, level, 0, sps, dac_rate, false);
+    const size_t symbols = start_encoder("dvb", modcod, level, 0, sps, dac_rate, pulse);
     if (!symbols) {
         return;
     }
@@ -647,9 +687,9 @@ void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, 
 }
 
 void dvbtx_pace(unsigned modcod, uint32_t seconds, unsigned level, unsigned stall_ms,
-                 unsigned sps, uint32_t dac_rate, bool short_pulse)
+                 unsigned sps, uint32_t dac_rate, unsigned pulse)
 {
-    const size_t symbols = start_encoder("dvbpace", modcod, level, stall_ms, sps, dac_rate, short_pulse);
+    const size_t symbols = start_encoder("dvbpace", modcod, level, stall_ms, sps, dac_rate, pulse);
     if (!symbols) {
         return;
     }
@@ -698,9 +738,9 @@ static esp_err_t sink(const uint32_t *bank, uint64_t first, size_t count, void *
 }
 
 void dvbtx_dump(unsigned modcod, unsigned frames, unsigned level, unsigned decim,
-                unsigned stall_ms, unsigned sps, uint32_t dac_rate, bool short_pulse)
+                unsigned stall_ms, unsigned sps, uint32_t dac_rate, unsigned pulse)
 {
-    const size_t symbols = start_encoder("dvbdump", modcod, level, stall_ms, sps, dac_rate, short_pulse);
+    const size_t symbols = start_encoder("dvbdump", modcod, level, stall_ms, sps, dac_rate, pulse);
     if (!symbols) {
         return;
     }
@@ -736,14 +776,14 @@ void dvbtx_dump(unsigned modcod, unsigned frames, unsigned level, unsigned decim
     printf(",\"status\":\"%s\"}\n", esp_err_to_name(err));
 }
 
-void dvbtx_wifi(unsigned modcod, unsigned sps, uint32_t dac_rate, bool short_pulse)
+void dvbtx_wifi(unsigned modcod, unsigned sps, uint32_t dac_rate, unsigned pulse)
 {
     if (!station_require("wifimem")) {
         return;
     }
     size_t symbols = 0;
     if (modcod) {
-        symbols = start_encoder("wifimem", modcod, 128, 0, sps, dac_rate, short_pulse);
+        symbols = start_encoder("wifimem", modcod, 128, 0, sps, dac_rate, pulse);
         if (!symbols) {
             return;
         }

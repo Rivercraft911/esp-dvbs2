@@ -258,7 +258,7 @@ IRAM_ATTR void shaper_samples_codes_profile(uint32_t *dst, const uint8_t *sym, u
 
 // Stage row addresses on the producer core. The consumer needs rows[-6..nsym], one pointer
 // per three-symbol window. Supply legacy codes 16*k, sym[-8..nsym). No per-sample work here.
-IRAM_ATTR void shaper_rows4(const uint32_t **rows, const uint8_t *sym, int nsym,
+void shaper_rows4(const uint32_t **rows, const uint8_t *sym, int nsym,
                             const uint32_t *blocks)
 {
     uint32_t h = (uint32_t)sym[-8] * 8 + sym[-7];
@@ -285,7 +285,7 @@ IRAM_ATTR void shaper_fill4_all_pie(uint32_t *dst, const uint8_t *sym, int nsym,
     }
 }
 
-IRAM_ATTR void shaper_fill4_rows_all_pie(uint32_t *dst, const uint32_t *const *rows, int nsym)
+void shaper_fill4_rows_all_pie(uint32_t *dst, const uint32_t *const *rows, int nsym)
 {
     if (!nsym) {
         return;

@@ -83,3 +83,51 @@
     .endm
     kernel shaper_qpsk3_pie,3
     kernel shaper_qpsk4_pie,4
+
+// Copy sixteen chronological quad bytes, with a 0/2/4/6-bit left shift in each
+// byte and the following byte supplying its low bits. Unaligned source, aligned
+// destination, sixteen readable source guards. TRM v1.8 1.8.17 / 1.8.49.
+    .global ring_copy_quads_pie
+    .type ring_copy_quads_pie,@function
+    .align 4
+ring_copy_quads_pie:
+    entry a1,32
+    beqz a4,.Lcopy_done
+    movi a6,8
+    sub a6,a6,a5
+    movi a8,255
+    ssl a5
+    sll a8,a8
+    extui a8,a8,0,8
+    movi a9,0x01010101
+    mull a8,a8,a9
+    ee.movi.32.q q7,a8,0
+    ee.movi.32.q q7,a8,1
+    ee.movi.32.q q7,a8,2
+    ee.movi.32.q q7,a8,3
+    movi a9,-1
+    xor a8,a8,a9
+    ee.movi.32.q q6,a8,0
+    ee.movi.32.q q6,a8,1
+    ee.movi.32.q q6,a8,2
+    ee.movi.32.q q6,a8,3
+    loopnez a4,.Lcopy_end
+    ee.ld.128.usar.ip q0,a3,16
+    ee.vld.128.ip q1,a3,0
+    ee.src.q q0,q0,q1
+    addi a8,a3,-15
+    ee.ld.128.usar.ip q1,a8,16
+    ee.vld.128.ip q2,a8,0
+    ee.src.q q1,q1,q2
+    ssr a5
+    ee.vsl.32 q0,q0
+    ssr a6
+    ee.vsr.32 q1,q1
+    ee.andq q0,q0,q7
+    ee.andq q1,q1,q6
+    ee.orq q0,q0,q1
+    ee.vst.128.ip q0,a2,16
+.Lcopy_end:
+.Lcopy_done:
+    retw
+    .size ring_copy_quads_pie,.-ring_copy_quads_pie

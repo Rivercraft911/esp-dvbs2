@@ -42,7 +42,7 @@ typedef struct {
     uint8_t *cache;               // optional copied overlap, owned by fill side
     size_t cache_symbols;
     int64_t cache_first, cache_end;
-    uint8_t packed;               // 1: unpack raw phases, 2: codes 16*k, 3: QPSK 16*(k>>1)
+    uint8_t packed;               // 1: unpack raw phases, 2: codes 16*k, 3: QPSK 16*(k>>1), 4: four codes/byte
 } ring_t;
 
 void ring_init(ring_t *r, uint8_t *slots, uint32_t nslots, const uint8_t *filler,
@@ -84,3 +84,9 @@ int ring_window(ring_t *r, uint8_t *dst, size_t room, uint64_t first, size_t cou
 // Compact two-bit QPSK codes for the 4/8-sps shaper, with the same source/guard contract.
 void ring_packed_qpsk(ring_t *r);
 void ring_unpack_qpsk(uint8_t *dst, const uint8_t *packed, size_t at, size_t n);
+
+// Four QPSK codes/byte (phase>>1, high pair first), including frame-boundary
+// nibble shifts. Set r->packed=4 before reads. ring_window uses byte room, rounds
+// its first symbol down to a four-symbol boundary and retains 12..15 history
+// symbols in four cache bytes. Source buffers need sixteen readable guard bytes.
+void ring_copy_quads(uint8_t *dst, size_t to, const uint8_t *src, size_t at, size_t n);

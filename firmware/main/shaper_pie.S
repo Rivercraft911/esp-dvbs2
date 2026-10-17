@@ -368,7 +368,7 @@
     kernel40 shaper_fill40_pie, 0
     kernel40 shaper_fill40_raw_pie, 1
 
-    .section .iram1.shaper4rows, "ax"
+    .section .text.shaper4rows, "ax"
     .global shaper_fill4_rows_pie
     .type   shaper_fill4_rows_pie, @function
     .align  4
@@ -436,7 +436,7 @@ shaper_fill4_rows_pie:
 // Five samples/symbol prototype. Each part row is padded to eight words. Compute two
 // vectors, retain five lanes, and pack four symbols into five aligned stores. SAR_BYTE
 // selects bytes from the concatenation (TRM v1.8 1.8.49 p125, 1.8.56 p132). No unaligned memory access.
-    .section .iram1.shaper5, "ax"
+    .section .text.shaper5, "ax"
     .global shaper_fill5_pie
     .type shaper_fill5_pie, @function
     .align 4

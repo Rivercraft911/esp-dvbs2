@@ -38,7 +38,7 @@
 static unsigned sps = 40;
 #define SPS sps
 #define HISTORY 8
-#define WINDOW (HISTORY + 4096)
+#define WINDOW (HISTORY + 5464)
 #define POISON 0xEE
 #define FILLER 0xFA
 #define UNSEEN 0xFFFF
@@ -50,7 +50,7 @@ static uint16_t *seen;
 static uint64_t seen_symbols;
 static uint8_t *separate[RING_MAX_SLOTS];
 static uint8_t overlap[HISTORY + 2 + (BANK - STEP + LEAD + 3) / 4];
-static int packed;
+static int packed, quads;
 static int codes, reuse;
 static uint64_t read_end;
 
@@ -58,12 +58,12 @@ static uint8_t frame_byte(uint32_t e, uint32_t i)
 {
     uint32_t h = e * 2654435761u ^ (i * 40503u + 0x9e3779b9u);
     h ^= h >> 15, h *= 0x2c1b3c6du, h ^= h >> 12;
-    return (uint8_t)(1 + h % (packed ? 12 : 200));   // never POISON, FILLER or 0
+    return (uint8_t)(1 + h % (quads ? 2 : packed ? 12 : 200));   // never POISON, FILLER or 0
 }
 
-static uint8_t poison(void) { return packed ? 0xE : POISON; }
-static uint8_t filler_value(void) { return packed ? 0xF : FILLER; }
-static size_t bytes(uint32_t symbols) { return packed ? symbols / 2 : symbols; }
+static uint8_t poison(void) { return quads ? 4 : packed ? 0xE : POISON; }
+static uint8_t filler_value(void) { return quads ? 3 : packed ? 0xF : FILLER; }
+static size_t bytes(uint32_t symbols) { return quads ? (symbols+3)/4 : packed ? symbols / 2 : symbols; }
 
 static void fail(const char *what, long long a, long long b)
 {
@@ -90,10 +90,15 @@ static void fill(uint64_t first, size_t count)
         const unsigned i = recorded % RING_CHOICES;
         events[recorded++] = (struct position){ring.start[i], ring.end[i], ring.choice[i]};
     }
-    const int64_t s0 = (int64_t)(first / SPS) - HISTORY;
+    if (quads) {
+        uint8_t copy[WINDOW+1];
+        memcpy(copy, win, (HISTORY+nsym+3)/4);
+        for (int j = 0; j < HISTORY+nsym; ++j) win[j] = copy[j/4] >> (6-2*(j&3)) & 3;
+    }
+    const int64_t s0 = (int64_t)(quads ? first / SPS & ~(uint64_t)3 : first / SPS) - HISTORY;
     for (int j = 0; j < HISTORY + nsym; ++j) {
         const int64_t i = s0 + j;
-        if (codes) {
+        if (codes && !quads) {
             if (win[j] & 15) fail("unshifted code", i, win[j]);
             win[j] >>= 4;
         }
@@ -141,7 +146,10 @@ static uint64_t banks_for(uint32_t positions)
 static void write_frame(uint8_t *slot, uint32_t e)
 {
     for (uint32_t i = 0; i < length; ++i) {
-        if (!packed) {
+        if (quads) {
+            const unsigned shift = 6-2*(i&3);
+            slot[i/4] = (slot[i/4] & ~(3u << shift)) | (frame_byte(e,i) << shift);
+        } else if (!packed) {
             slot[i] = frame_byte(e, i);
         } else if (i & 1) {
             slot[i / 2] = (uint8_t)(frame_byte(e, i - 1) | frame_byte(e, i) << 4);
@@ -190,6 +198,7 @@ static void setup(uint32_t l, uint32_t s, uint32_t positions)
     dummy = getenv("RING_DUMMY") ? (unsigned)atoi(getenv("RING_DUMMY")) : l;
     sps = getenv("RING_SPS") ? (unsigned)atoi(getenv("RING_SPS")) : 40;
     packed = getenv("RING_PACKED") != NULL;
+    quads = getenv("RING_QUADS") != NULL;
     codes = getenv("RING_CODES") != NULL;
     reuse = getenv("RING_REUSE") != NULL;
     uint8_t *slots = malloc((size_t)s * l), *filler = malloc(dummy + 16);
@@ -212,7 +221,8 @@ static void setup(uint32_t l, uint32_t s, uint32_t positions)
                        HISTORY + margin + (BANK - STEP + LEAD + SPS - 1) / SPS);
     }
     if (packed) {
-        if (codes) ring_packed_codes(&ring);
+        if (quads) ring.packed = 4;
+        else if (codes) ring_packed_codes(&ring);
         else ring_packed(&ring);
     }
     ring_filler_length(&ring, dummy);
@@ -298,7 +308,10 @@ static void *encoder(void *arg)
         }
         memset(slot, POISON, bytes(length));
         for (uint32_t i = 0; i < length; ++i) {
-            if (!packed) {
+            if (quads) {
+                const unsigned shift = 6-2*(i&3);
+                slot[i/4] = (slot[i/4] & ~(3u << shift)) | (frame_byte(e,i) << shift);
+            } else if (!packed) {
                 slot[i] = frame_byte(e, i);
             } else if (i & 1) {
                 slot[i / 2] = (uint8_t)(frame_byte(e, i - 1) | frame_byte(e, i) << 4);

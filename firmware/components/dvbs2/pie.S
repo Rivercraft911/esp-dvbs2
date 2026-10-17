@@ -562,10 +562,11 @@ dvbs2_pie_index8:
  * positions (mask 0x55); index byte = p1 | p2 << 1, widened to 16 bits.
  * void dvbs2_pie_index4(const uint8_t *x, const uint8_t *gold, uint16_t *index,
  *                       unsigned chunks) */
+    .macro qpsk_codes name,widen
     .align 4
-    .global dvbs2_pie_index4
-    .type dvbs2_pie_index4, @function
-dvbs2_pie_index4:
+    .global \name
+    .type \name, @function
+\name:
     entry a1, 32
     splat q7, 0x55555555
     ssai 1
@@ -583,13 +584,20 @@ dvbs2_pie_index4:
     ee.andq q0, q0, q7
     ee.vsl.32 q0, q0
     ee.orq q2, q2, q0
+    .if \widen
     ee.zero.q q3
     ee.vzip.8 q2, q3
     ee.vst.128.ip q2, a4, 16
     ee.vst.128.ip q3, a4, 16
+    .else
+    ee.vst.128.ip q2, a4, 16
+    .endif
 17:
     retw
-    .size dvbs2_pie_index4, . - dvbs2_pie_index4
+    .size \name, . - \name
+    .endm
+    qpsk_codes dvbs2_pie_index4,1
+    qpsk_codes dvbs2_pie_quads,0
 
 /* One data run: table lookups, four groups (16 phase bytes) per vector,
  * stored through EE.SRCQ.128.ST.INCP so the run may start at any address.

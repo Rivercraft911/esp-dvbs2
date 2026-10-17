@@ -81,7 +81,7 @@ def test_native():
         exe = folder/'qpsk'
         subprocess.run(['cc','-O2','-Wall','-Wextra','-Werror','-DQPSK_HOST',f'-I{tmp}',
                         f'-I{ROOT}/firmware/main',str(ROOT/'tests/qpsk_fill.c'),
-                        str(ROOT/'firmware/main/shaper_qpsk.c'),'-o',str(exe)],check=True)
+                        str(ROOT/'firmware/main/shaper_qpsk.c'),str(ROOT/'firmware/main/ring.c'),'-o',str(exe)],check=True)
         check_records(subprocess.check_output([str(exe)],text=True))
 
 

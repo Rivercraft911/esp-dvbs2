@@ -18,7 +18,9 @@ static void packed_check(void)
     uint8_t *out = heap_caps_aligned_alloc(16, 16704, caps);
     uint8_t *cache = heap_caps_aligned_alloc(16, DVBS2_BCH_CACHE_BYTES, caps);
     assert(ws && f && payload && raw && out && cache);
-    unsigned cases = 0;
+    unsigned cases = 0, quads = 0;
+    uint8_t *quad = heap_caps_malloc(8352, caps);
+    assert(quad);
     for (unsigned mc = 4; mc <= 17; ++mc) {
         const dvbs2_mode *mode = dvbs2_find_mode(mc);
         const unsigned bytes = (mode->kbch - 80) / 8;
@@ -31,6 +33,7 @@ static void packed_check(void)
             const unsigned symbols = dvbs2_frame_symbols(mode, pilots), n = symbols / 2;
             assert(!dvbs2_fast_prepare(f, mode, pilots, 0));
             assert(!dvbs2_encode_frame(f, ws, NULL, payload, bytes * 8, raw));
+            if (mc < 12) dvbs2_pack_quads(raw, quad, symbols);
             dvbs2_pack(raw, raw, symbols);
             for (unsigned sparse = 0; sparse < 2; ++sparse) {
                 for (unsigned offset = 0; offset < 16; ++offset) {
@@ -50,11 +53,28 @@ static void packed_check(void)
                     for (unsigned i = 0; i < 16 + offset; ++i) assert(out[i] == 0xa5);
                     for (unsigned i = 16 + offset + n; i < 16704; ++i) assert(out[i] == 0xa5);
                     ++cases;
+                    if (mc < 12) {
+                        assert(!dvbs2_fast_prepare(f, mode, pilots, 15 | flags | DVBS2_MAP_QUADS));
+                        if (!sparse && mode->t > 8) assert(!dvbs2_fast_cache_bch(f, cache));
+                        uint8_t *borrowed = dvbs2_fast_payload(f);
+                        memcpy(borrowed, payload, bytes);
+                        memset(out, 0xa5, 16704);
+                        assert(!dvbs2_encode_frame_packed(f, ws, NULL, borrowed, bytes*8, dst));
+                        const unsigned qn = (symbols+3)/4;
+                        assert(!memcmp(dst, quad, qn));
+                        for (size_t i = 0; i < tail_bytes; ++i)
+                            assert(tail[i] == (uint8_t)(13 * offset + mc));
+                        for (unsigned i = 0; i < 16+offset; ++i) assert(out[i] == 0xa5);
+                        for (unsigned i = 16+offset+qn; i < 16704; ++i) assert(out[i] == 0xa5);
+                        ++quads;
+                    }
                 }
             }
         }
     }
     printf("packed PIE: %u cases, direct/resident BCH and sparse/nibble BCH, all 14 modes, both pilots, all 16 alignments, guards intact\n", cases);
+    printf("quad mapper: %u cases, borrowed payload, all alignments and guards intact\n", quads);
+    heap_caps_free(quad);
     heap_caps_free(cache); heap_caps_free(out); heap_caps_free(raw);
     heap_caps_free(payload); heap_caps_free(f); heap_caps_free(ws);
 }
