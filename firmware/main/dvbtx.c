@@ -623,7 +623,7 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
     dvb.dac_rate = dac_rate;
     dvb.moon = moon;
     dvb.lofty = lofty;
-    dvb.queue_pages = lofty ? (modcod == 17 ? 38 : modcod == 13 ? 42 : LOFTY_PAGES) : MACHINE_PAGES;
+    dvb.queue_pages = lofty ? (modcod == 17 ? 44 : modcod == 13 ? 48 : LOFTY_PAGES) : MACHINE_PAGES;
     dvb.wake_pages = lofty ? LOFTY_WAKE : MACHINE_WAKE_PAGES;
     dvb.pages = NULL;
     dvb.lofty_pages = NULL;

@@ -6,7 +6,7 @@
 #define LOFTY_TABLE_WORDS 9216
 #define LOFTY_BLOCKS 128
 #define LOFTY_STORED 38
-#define LOFTY_PAGES 43
+#define LOFTY_PAGES 49
 #define LOFTY_WAKE 2
 typedef struct {
     uint32_t words[LOFTY_BLOCKS+4]; // owned trailing prefetch guard

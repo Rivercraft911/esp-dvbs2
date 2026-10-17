@@ -66,7 +66,7 @@ def check(out, receiver=None):
         assert r['fill_kernel'] == 'lofty-queue' and r['ring_format'] == 'words'
         assert r['sps_num'] == 3 and r['sps_den'] == 1 and r['rolloff'] == .35
         assert r['pulse_symbols'] == 5 and r['table_bytes'] == 36864
-        assert r['queue_pages'] == {13:42,15:43,17:38}[mc] and r['queue_empty'] == r['underruns'] == r['overlap_mismatches'] == 0
+        assert r['queue_pages'] == {13:48,15:49,17:44}[mc] and r['queue_empty'] == r['underruns'] == r['overlap_mismatches'] == 0
         symbols = onair.symbols(mc,17,callsign='N0CALL')
         phases = np.rint(np.angle(symbols)*4/np.pi).astype(int)%8
         count = 16*onair.frame_symbols(mc)
