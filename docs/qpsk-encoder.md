@@ -256,3 +256,19 @@ Require CRCs 1435641601 (old QPSK), 1937985440/1163322913 (13/15 at 5m), and
 474263962/1757765864 (13/15 at 10m). Before adoption,
 extend the new QPSK dump/pace matrix to MODCODs 5–10, particularly 8 and 9.
 Host loopback covers them; silicon has not yet done so.
+
+## Files changed
+
+Encoder: `firmware/components/dvbs2/fast.c`, `fast_tables.h`, `pie.S`,
+`include/dvbs2.h`; `host/gen_dvbs2_fast.py`.
+
+Stream and console: `firmware/main/dvbtx.c`, `main.c`, `fecbench.c`, `ring.c`,
+`ring.h`, `shaper.c`, `shaper.h`, `shaper_pie.S`.
+
+Tests: `tests/test_dvbs2_c.py`, `test_encoder_tables.py`, `test_stream.py`,
+`test_tx_command.py`, `stream_host.c`, `tx_samples.c`,
+`encoder_pie/main/app.c`, `encoder_pie/README.md`, `shaper_pie/README.md`.
+
+Documentation/evidence: this file and
+`results/2026-10-17-qpsk-encoder/{README.md,runs.jsonl}`.
+The `docs/hardware.md` change came from the required main merge.
