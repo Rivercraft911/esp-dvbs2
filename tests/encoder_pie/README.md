@@ -5,7 +5,8 @@ frames: all 14 QPSK/8PSK MODCODs, pilots on/off, all 16 output alignments, both 
 mapper with resident byte BCH (t = 10/12) and sparse mapper with nibble BCH,
 and guarded output buffers. Its oracle is the portable C
 encoder, whose stages are checked against Python by `tests/test_dvbs2_c.py`.
-No radio or peripheral is initialized. QEMU establishes correctness, not timing.
+It also checks 512 four-code QPSK frames with borrowed context payload, both BCH
+policies, all alignments and guarded workspace tails. No radio or peripheral is initialized. QEMU establishes correctness, not timing.
 QEMU has no PSRAM, so `bench.c` redirects its allocation capability to internal
 RAM. The command's printed PSRAM metadata does not describe these emulated buffers.
 

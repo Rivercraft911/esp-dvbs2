@@ -40,6 +40,22 @@ static void bank_fill(radio_s3_fill_fn fn, void *ctx, unsigned b, uint64_t first
             vTaskDelay(1);
         }
         assert(fn(banks[b] + at % RADIO_S3_BANK_WORDS, at, count, ctx) == ESP_OK);
+        if (enc.quads) {
+            uint8_t blocks[1400] = {0};
+            const unsigned row = 4*sps, skip = at % row;
+            const int64_t first_symbol = (int64_t)(at/row)*4 - 8;
+            const size_t need = 8 + 4*((skip+count+row-1)/row);
+            for (size_t i = 0; i < need; ++i) {
+                const int64_t k = first_symbol+i;
+                unsigned code = k < 0 ? 0 : phases[k] >> 1;
+                blocks[i/4] |= code << (6-2*(i&3));
+            }
+            shaper_qpsk_c(reference, blocks+2, (skip+count+row-1)/row, dvb.table.blocks, sps);
+            for (size_t i = 0; i < count; ++i)
+                assert(banks[b][(at+i)%RADIO_S3_BANK_WORDS] == reference[skip+i]);
+            at += count;
+            continue;
+        }
         uint8_t shifted[SHAPER_HISTORY + BANK_SYMBOLS];
         const int64_t s0 = (int64_t)(at / sps) - SHAPER_HISTORY;
         const size_t symbols = SHAPER_HISTORY + end_symbol - at / sps;
@@ -100,7 +116,8 @@ int main(int argc, char **argv)
     if (argc >= 5) callsign = argv[4];
     const uint32_t rate = argc >= 6 ? (uint32_t)atol(argv[5]) : RADIO_S3_DAC_RATE;
     const unsigned mc = (unsigned)atoi(argv[1]), sps = (unsigned)atoi(argv[2]), frames = argc == 8 ? (unsigned)atoi(argv[7]) : 40;
-    const bool short_pulse = argc >= 7 && atoi(argv[6]);
+    const unsigned pulse = argc >= 7 ? atoi(argv[6]) : 0;
+    const bool quads = pulse == 2 || sps == 3, short_pulse = pulse == 1;
     const dvbs2_mode *mode = dvbs2_find_mode(mc);
     const size_t length = dvbs2_frame_symbols(mode, 1), bytes = (mode->kbch - 80) / 8;
     phase_count = (frames + 2) * length;
@@ -119,7 +136,7 @@ int main(int argc, char **argv)
     // Every command-owned allocation can fail: count them on a good start, then fail each.
     // Cleanup must leave no live allocations.
     allocation_count = 0;
-    assert(start_encoder("dvbdump", mc, 128, 0, sps, rate, short_pulse));
+    assert(start_encoder("dvbdump", mc, 128, 0, sps, rate, pulse));
     const int allocations = allocation_count;
     const bool resident = sps != 40 && (mc < 12 || sps == 4);
     assert(allocations == (sps == 40 ? 7 : 3 + (mc >= 12 && !short_pulse) +
@@ -130,25 +147,27 @@ int main(int argc, char **argv)
         if (enc.bch && native_blocks[i].p == enc.bch)
             assert(native_blocks[i].n == DVBS2_BCH_CACHE_BYTES && (native_blocks[i].caps & MALLOC_CAP_INTERNAL));
     }
+    if (quads && sps == 4) assert((uint32_t *)enc.ws == shaper_store+QPSK_TABLE_WORDS(4));
+    assert(!((uintptr_t)enc.fast & 15) && !((uintptr_t)enc.ws & 15));
     if (resident) assert(dvb.win == (uint8_t *)enc.ws + DVBS2_FAST_WORKSPACE_USED);
-    assert(dvb.win_bytes <= (sps == 4 ? 4105u : sps == 8 ? 2058u : 420u));
+    assert(dvb.win_bytes <= (sps == 3 ? 1370u : sps == 4 ? 4105u : sps == 8 ? 2058u : 420u));
     stop_encoder();
     printf("}\n");
     assert(live_allocations == 0);
     for (int i = 0; i < allocations; ++i) {
         fail_after = i;
-        assert(!start_encoder("dvbdump", mc, 128, 0, sps, rate, short_pulse));
+        assert(!start_encoder("dvbdump", mc, 128, 0, sps, rate, pulse));
         assert(live_allocations == 0);
     }
     fail_after = -1;
-    if (*callsign && (rate == RADIO_S3_DAC_RATE || short_pulse)) {
-        dvbtx_wifi(mc, sps, rate, short_pulse);
+    if (*callsign) {
+        dvbtx_wifi(mc, sps, rate, pulse);
         assert(wifi_probes == 1 && live_allocations == 0);
         assert((dvb.table.parts == 2) == short_pulse);
     }
     for (unsigned repeat = 0; repeat < 2; ++repeat) {
         capture = fopen(argv[3], "wb"); assert(capture);
-        dvbtx_dump(mc, frames, 128, sps == 40 ? 10 : mc < 12 && sps == 8 ? 2 : 1, 0, sps, rate, short_pulse);
+        dvbtx_dump(mc, frames, 128, sps == 40 ? 10 : mc < 12 && sps == 8 ? 2 : 1, 0, sps, rate, pulse);
         fclose(capture);
         assert(live_allocations == 0);
         for (unsigned i = 0; i < 4; ++i) assert(native_ranges[i] == 0);

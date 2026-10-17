@@ -92,7 +92,13 @@ typedef struct dvbs2_fast dvbs2_fast;
  * of mapping cache lines hot. Use it with a PSRAM FEC workspace.
  * dvbs2_fast_pie() still reports only the four active stage bits. */
 enum { DVBS2_BCH_NIBBLE = 16, DVBS2_BCH_LEGACY = 32, DVBS2_BCH_SRAM = 64,
-       DVBS2_MAP_COMPACT = 128, DVBS2_MAP_SPARSE = 256 };
+       DVBS2_MAP_COMPACT = 128, DVBS2_MAP_SPARSE = 256, DVBS2_MAP_QUADS = 512 };
+/* QPSK only: MAP_QUADS makes the packed APIs emit four phase>>1 codes per byte,
+ * oldest in bits 7:6. The last byte's unused low bits are zero. */
+void dvbs2_pack_quads(const uint8_t *phases, uint8_t *packed, size_t symbols);
+/* Borrow (kbch-80)/8 bytes of encoder scratch for GCS payload generation. BB
+ * consumes it before BCH/LDPC overwrite it. Never use concurrently with a stage. */
+uint8_t *dvbs2_fast_payload(dvbs2_fast *f);
 enum { DVBS2_PIE_BB = 1, DVBS2_PIE_BCH = 2, DVBS2_PIE_LDPC = 4, DVBS2_PIE_MAP = 8 };
 size_t dvbs2_fast_size(void);
 /* Smaller allocation valid only for this mode (15184 bytes for 8PSK 2/3

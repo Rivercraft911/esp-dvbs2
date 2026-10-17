@@ -18,12 +18,13 @@ SLOTS = 8        # RING_SLOTS in dvbtx.c
 
 
 def run(exe, *args, sps=40, dummy=None, split=False, cache=False, packed=False, margin=None,
-        fails=False, reuse=False):
+        fails=False, reuse=False, quads=False):
     out = subprocess.run([str(exe), *map(str, args)], capture_output=True, text=True, env=dict(os.environ, RING_SPS=str(sps),
                          **({"RING_DUMMY": str(dummy)} if dummy else {}),
                          **({"RING_SPLIT": "1"} if split else {}),
                          **({"RING_CACHE": "1"} if cache else {}),
                          **({"RING_PACKED": "1"} if packed else {}),
+                         **({"RING_QUADS": "1"} if quads else {}),
                          **({"RING_REUSE": "1", "RING_CODES": "1"} if reuse else {}),
                          **({"RING_CACHE_MARGIN": str(margin)} if margin is not None else {})))
     if fails:
@@ -47,6 +48,14 @@ def test_ring():
                         f"-I{tmp}", f"-I{main}", str(main / "ring.c"),
                         str(ROOT / "tests" / "ring_host.c"), "-o", str(exe)], check=True)
 
+        for sps in (3,4):
+            for load in (400,700,1250):
+                r = run(exe,"sim",L,3,400,load,17,3000,1,sps=sps,dummy=3330,
+                        split=True,cache=True,packed=True,reuse=True,quads=True)
+                assert r['underruns'] > 0
+            run(exe,"threads",L,3,80,31,sps=sps,dummy=3330,
+                split=True,cache=True,packed=True,reuse=True,quads=True)
+        # The existing geometry below also exercises variable dummy choices.
         # The board's encoder: 2.97 M of 7.99 M cycles per frame at 1 Msym/s, 37 %.
         fast = run(exe, "sim", L, SLOTS, 120, 370, 0, 0, 1)
         assert fast["underruns"] == 0 and fast["frames"] == 120
@@ -126,6 +135,13 @@ def test_ring():
         subprocess.run([cc, "-O2", "-std=c11", "-Wall", "-Wextra", "-Werror", "-pthread",
                         "-DLEAD=128", "-DTAIL=512", f"-I{tmp}", f"-I{main}", str(main / "ring.c"),
                         str(ROOT / "tests" / "ring_host.c"), "-o", str(exe80)], check=True)
+        for sps in (3,4):
+            for load,burst in ((400,0),(800,0),(950,0),(700,17),(1250,0)):
+                r = run(exe80,"sim",L,3,400,load,burst,3000,1,sps=sps,dummy=3330,
+                        split=True,cache=True,packed=True,reuse=True,quads=True)
+                assert (r['underruns'] == 0) if load <= 950 and not burst else r['underruns'] > 0
+            run(exe80,"threads",L,3,80,31,sps=sps,dummy=3330,
+                split=True,cache=True,packed=True,reuse=True,quads=True)
         for sps in (4, 8):
             for load in (400, 800, 950):
                 r = run(exe80, "sim", 22194, 3, 300, load, 0, 0, 1, sps=sps, dummy=3330,

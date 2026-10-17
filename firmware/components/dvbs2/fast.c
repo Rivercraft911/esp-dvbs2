@@ -122,6 +122,19 @@ void dvbs2_pie_nibbles(const uint8_t *src, uint8_t *dst, unsigned vectors);
 #define PIE_MASK 0u
 #endif
 
+/* Four chronological phase>>1 codes, high pair first. Used only at setup. */
+void dvbs2_pack_quads(const uint8_t *phases, uint8_t *packed, size_t symbols)
+{
+    for (size_t i = 0; i < symbols; i += 4) {
+        unsigned v = 0;
+        for (unsigned j = 0; j < 4 && i + j < symbols; ++j)
+            v |= (phases[i + j] >> 1) << (6 - 2*j);
+        packed[i / 4] = v;
+    }
+}
+
+uint8_t *dvbs2_fast_payload(dvbs2_fast *f) { return f ? f->scratch : NULL; }
+
 /* ---------------------------------------------------------------- prepare */
 
 static void pack_c(const uint8_t *raw, uint8_t *packed, unsigned symbols);
@@ -133,13 +146,19 @@ static void prepare_map(dvbs2_fast *f)
                   ? (f->pilots ? fast_gold_3_1 : fast_gold_3_0)
                   : (f->pilots ? fast_gold_2_1 : fast_gold_2_0);
     f->header = fast_headers + 90 * (2 * (f->mode->modcod - 4) + f->pilots);
+    if (f->pie & DVBS2_MAP_QUADS) {
+        dvbs2_pack_quads(f->header, f->packed_header, 90);
+        dvbs2_pack_quads(fast_pilots, f->packed_pilots, 36 * f->pilot_blocks);
+        return;
+    }
     pack_c(f->header, f->packed_header, 90);
     pack_c(fast_pilots, f->packed_pilots, 36 * f->pilot_blocks);
 }
 
 int dvbs2_fast_prepare(dvbs2_fast *f, const dvbs2_mode *mode, int pilots, unsigned pie)
 {
-    if (!f || !mode || dvbs2_find_mode(mode->modcod) != mode) {
+    if (!f || !mode || dvbs2_find_mode(mode->modcod) != mode ||
+        ((pie & DVBS2_MAP_QUADS) && mode->bits_per_symbol != 2)) {
         return -1;
     }
     f->mode = mode;
@@ -150,7 +169,7 @@ int dvbs2_fast_prepare(dvbs2_fast *f, const dvbs2_mode *mode, int pilots, unsign
     f->data_symbols = 64800 / mode->bits_per_symbol;
     f->pilot_blocks = pilots ? (f->data_symbols / 90 - 1) / 16 : 0;
     f->pie = pie & (PIE_MASK | DVBS2_BCH_NIBBLE | DVBS2_BCH_LEGACY |
-                    DVBS2_BCH_SRAM | DVBS2_MAP_COMPACT | DVBS2_MAP_SPARSE);
+                    DVBS2_BCH_SRAM | DVBS2_MAP_COMPACT | DVBS2_MAP_SPARSE | DVBS2_MAP_QUADS);
     f->ldxq_bias = 0;
 #ifdef DVBS2_PIE
     if (f->pie & DVBS2_PIE_MAP) {
@@ -278,7 +297,7 @@ HOT int dvbs2_fast_bb_gcs(const dvbs2_fast *f, dvbs2_workspace *ws,
     return 0;
 }
 
-HOT int dvbs2_fast_bb_ts(const dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_state *state,
+int dvbs2_fast_bb_ts(const dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_state *state,
                          const uint8_t *input, size_t input_bytes)
 {
     if (!f || !ws || !state || !input || state->packet_pos >= 188 ||
@@ -348,7 +367,7 @@ HOT int dvbs2_fast_bb_ts(const dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_stat
     w4 ^= W(row + 256); w5 ^= W(row + 260); \
 } while (0)
 
-static HOT void bch_c(const dvbs2_fast *f, const uint8_t *bits, unsigned words, uint32_t r[8])
+static __attribute__((noinline)) void bch_c(const dvbs2_fast *f, const uint8_t *bits, unsigned words, uint32_t r[8])
 {
     const uint8_t *t = f->bch;
     uint32_t w0 = 0, w1 = 0, w2 = 0, w3 = 0, w4 = 0, w5 = 0;
@@ -419,7 +438,7 @@ static inline void shift_1(uint32_t h[12])
     }
 }
 
-static HOT void rows_c(dvbs2_fast *f)
+static __attribute__((noinline)) void rows_c(dvbs2_fast *f)
 {
     const uint16_t *prog = f->prog;
     uint8_t *p = f->p;
@@ -472,7 +491,7 @@ static inline void transpose32(uint32_t a[32])
     transpose_stage(a, 1, 0x55555555u);
 }
 
-static HOT void transpose_c(dvbs2_fast *f, unsigned blocks)
+static __attribute__((noinline)) void transpose_c(dvbs2_fast *f, unsigned blocks)
 {
     uint8_t *p = f->p;
     uint32_t a[32];
@@ -503,7 +522,7 @@ static inline uint32_t src32(uint32_t hi, uint32_t lo, unsigned s)
 
 /* Exclusive prefix parity along the last row: carry[t] = XOR of row bits
  * 0 .. t - 1 (the accumulator continues across columns). */
-static HOT void carry_row(dvbs2_fast *f)
+static __attribute__((noinline)) void carry_row(dvbs2_fast *f)
 {
     const uint8_t *last = f->p + ROW * (f->q - 1);
     uint32_t parity = 0;
@@ -540,7 +559,7 @@ static unsigned pack_start(const uint8_t *bits, unsigned start, uint32_t *pendin
     return 8 * (start % 4);
 }
 
-static HOT void pack(dvbs2_fast *f, uint8_t *bits)
+static __attribute__((noinline)) void pack(dvbs2_fast *f, uint8_t *bits)
 {
     const unsigned q = f->q, start = f->mode->nbch / 8, full = q / 32, part = q % 32;
     const uint8_t *p = f->p;
@@ -659,7 +678,7 @@ static inline void writer_end(writer *w, int last)
  * pilot block. */
 /* Data symbols [k0, k0 + n) to dst; n is a multiple of 8 (8PSK) or 4 (QPSK).
  * last: the frame's final run, whose trailing bytes go one by one. */
-static HOT void map_c_run(const dvbs2_fast *f, const uint8_t *bits, unsigned k0, unsigned n,
+static __attribute__((noinline)) void map_c_run(const dvbs2_fast *f, const uint8_t *bits, unsigned k0, unsigned n,
                           uint8_t *dst, int last)
 {
     const uint32_t *map = f->map;
@@ -695,7 +714,7 @@ static HOT void map_c_run(const dvbs2_fast *f, const uint8_t *bits, unsigned k0,
     writer_end(&w, last);
 }
 
-static HOT void map_c(const dvbs2_fast *f, const uint8_t *bits, uint8_t *output)
+static __attribute__((noinline)) void map_c(const dvbs2_fast *f, const uint8_t *bits, uint8_t *output)
 {
     const unsigned d = f->data_symbols, runs = f->pilots ? f->pilot_blocks + 1 : 1;
     const unsigned run_symbols = f->pilots ? 1440 : d;
@@ -811,9 +830,49 @@ static __attribute__((noinline)) int map_packed_runs(dvbs2_fast *f,
     return 0;
 }
 
+/* Four input bytes make sixteen QPSK symbols. The bit-plane logic already
+ * gives chronological two-bit codes: no index array, lookup or repacking pass.
+ * Every data run begins halfway through an output byte (90 + 1440r + 36r).
+ * Shift by a nibble and let PL framing replace the header/pilot halves. */
+static HOT int map_quads(dvbs2_fast *f, const uint8_t *bits, uint8_t *packed)
+{
+    const uint8_t *mapped = NULL;
+#ifdef DVBS2_PIE
+    if (f->pie & DVBS2_PIE_MAP) {
+        void dvbs2_pie_quads(const uint8_t *, const uint8_t *, uint8_t *, unsigned);
+        dvbs2_pie_quads(bits, f->gold, f->scratch, (f->data_symbols+63)/64);
+        mapped = f->scratch;
+    }
+#endif
+    const unsigned runs = f->pilots ? f->pilot_blocks + 1 : 1;
+    for (unsigned r = 0; r < runs; ++r) {
+        const unsigned k = f->pilots ? r * PACK_RUN : 0;
+        const unsigned left = f->data_symbols - k;
+        const unsigned n = f->pilots && left > PACK_RUN ? PACK_RUN : left;
+        uint8_t *dst = packed + (90 + k + 36*r) / 4;
+        writer w = writer_start(dst);
+        uint32_t previous = 0;
+        for (unsigned j = k/4; j < (k+n)/4; j += 4) {
+            uint32_t v;
+            if (mapped) v = W(mapped+j);
+            else {
+                const uint32_t x = W(bits+j), g = W(f->gold+j), dd = x ^ (x >> 1);
+                const uint32_t p2 = x ^ (g >> 1) ^ (dd & g), p1 = dd ^ g;
+                v = (p1 & 0x55555555) | ((p2 & 0x55555555) << 1);
+            }
+            writer_put(&w, ((v >> 4) & 0x0f0f0f0f) | ((v & 0x000f0f0f) << 12) | previous);
+            previous = (v >> 20) & 0xf0;
+        }
+        writer_end(&w, 1);
+        dst[n/4] = previous;
+    }
+    return 0;
+}
+
 HOT int dvbs2_fast_map_packed(dvbs2_fast *f, const dvbs2_workspace *ws, uint8_t *packed)
 {
     if (!f || !ws || !packed) return -1;
+    if (f->pie & DVBS2_MAP_QUADS) return map_quads(f, ws->bits, packed);
 #ifdef DVBS2_PIE
     const int pie = (f->pie & DVBS2_PIE_MAP) != 0;
     uint16_t *index = (uint16_t *)f->scratch;
@@ -860,6 +919,18 @@ HOT int dvbs2_fast_map_packed(dvbs2_fast *f, const dvbs2_workspace *ws, uint8_t 
 
 HOT void dvbs2_fast_pl_packed(const dvbs2_fast *f, uint8_t *packed)
 {
+    if (f->pie & DVBS2_MAP_QUADS) {
+        memcpy(packed, f->packed_header, 22);
+        packed[22] = f->packed_header[22] | (packed[22] & 15);
+        for (unsigned b = 0; b < f->pilot_blocks; ++b) {
+            uint8_t *dst = packed + (90 + 1440*(b+1) + 36*b)/4;
+            const uint8_t *src = f->packed_pilots + 9*b;
+            dst[0] = (dst[0] & 0xf0) | (src[0] >> 4);
+            for (unsigned j = 1; j < 9; ++j) dst[j] = (src[j-1] << 4) | (src[j] >> 4);
+            dst[9] = (src[8] << 4) | (dst[9] & 15);
+        }
+        return;
+    }
     memcpy(packed, f->packed_header, 45);
     for (unsigned b = 0; b < f->pilot_blocks; ++b) {
         memcpy(packed + (90 + 1440 * (b + 1) + 36 * b) / 2, f->packed_pilots + 18 * b, 18);

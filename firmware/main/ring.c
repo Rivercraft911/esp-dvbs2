@@ -128,15 +128,54 @@ IRAM_ATTR void ring_unpack_qpsk(uint8_t *dst, const uint8_t *packed, size_t at, 
     unpack(dst, packed, at, n, 4, 1);
 }
 
+// Four two-bit codes per byte, high pair first. Byte/vector copies dominate;
+// only the two edges use per-symbol insertion. Source has sixteen guard bytes.
+IRAM_ATTR void ring_copy_quads(uint8_t *dst, size_t to, const uint8_t *src, size_t at, size_t n)
+{
+    while (n && (to & 3)) {
+        unsigned shift = 6 - 2*(to & 3), v = (src[at/4] >> (6 - 2*(at & 3))) & 3;
+        dst[to/4] = (dst[to/4] & ~(3u << shift)) | (v << shift);
+        ++to, ++at, --n;
+    }
+    uint8_t *d = dst + to/4;
+    const uint8_t *p = src + at/4;
+    size_t bytes = n/4;
+    const unsigned shift = 2*(at & 3);
+#ifdef __XTENSA__
+    while (bytes && ((uintptr_t)d & 15)) {
+        *d++ = shift ? (p[0] << shift) | (p[1] >> (8-shift)) : p[0];
+        ++p, --bytes;
+    }
+    if (bytes >= 16) {
+        void ring_copy_quads_pie(uint8_t *, const uint8_t *, unsigned, unsigned);
+        const unsigned blocks = bytes/16;
+        ring_copy_quads_pie(d, p, blocks, shift);
+        d += 16*blocks, p += 16*blocks, bytes -= 16*blocks;
+    }
+#endif
+    while (bytes--) {
+        *d++ = shift ? (p[0] << shift) | (p[1] >> (8-shift)) : p[0];
+        ++p;
+    }
+    at += n & ~(size_t)3;
+    for (unsigned i = 0; i < (n & 3); ++i) {
+        unsigned v = (src[(at+i)/4] >> (6 - 2*((at+i) & 3))) & 3;
+        *d = (*d & ~(3u << (6-2*i))) | (v << (6-2*i));
+    }
+}
+
 // Copy absolute symbols, retaining choices until no future overlap can read them.
-static IRAM_ATTR int ring_read(ring_t *r, uint8_t *dst, int64_t first, size_t count)
+static IRAM_ATTR int ring_read(ring_t *r, uint8_t *dst, size_t to, int64_t first, size_t count)
 {
     const uint32_t published = __atomic_load_n(&r->published, __ATOMIC_ACQUIRE);
     const int64_t end = first + (int64_t)count;
     if (first < 0) {
         const size_t zeros = end < 0 ? count : (size_t)-first;
-        memset(dst, 0, zeros);
-        dst += zeros, count -= zeros, first = 0;
+        // Before symbol zero, quad code zero is phase 1, as in the legacy shaper.
+        memset(dst, 0, r->packed == 4 ? (zeros+3)/4 : zeros);
+        if (r->packed == 4) to += zeros;
+        else dst += zeros;
+        count -= zeros, first = 0;
     }
     if (!count) {
         return 0;
@@ -178,7 +217,9 @@ static IRAM_ATTR int ring_read(ring_t *r, uint8_t *dst, int64_t first, size_t co
         const size_t at = (uint64_t)first - r->start[i];
         const size_t avail = r->end[i] - (uint64_t)first;
         const size_t part = avail < count ? avail : count;
-        if (r->packed == 3) {
+        if (r->packed == 4) {
+            ring_copy_quads(dst, to, src, at, part);
+        } else if (r->packed == 3) {
             ring_unpack_qpsk(dst, src, at, part);
         } else if (r->packed == 2) {
             ring_unpack_codes(dst, src, at, part);
@@ -187,7 +228,9 @@ static IRAM_ATTR int ring_read(ring_t *r, uint8_t *dst, int64_t first, size_t co
         } else {
             memcpy(dst, src + at, part);
         }
-        dst += part, count -= part, first += part;
+        if (r->packed == 4) to += part;
+        else dst += part;
+        count -= part, first += part;
     }
     return 0;
 }
@@ -210,23 +253,32 @@ static IRAM_ATTR void ring_release(ring_t *r, int64_t oldest)
 IRAM_ATTR int ring_window(ring_t *r, uint8_t *dst, size_t room, uint64_t first, size_t count,
                           unsigned sps, unsigned history, unsigned bank_words)
 {
-    const uint64_t s0 = first / sps;
+    const uint64_t s0 = r->packed == 4 ? first / sps & ~(uint64_t)3 : first / sps;
     const size_t nsym = (size_t)((first + count + sps - 1) / sps - s0);
     const int64_t begin = (int64_t)s0 - history, end = (int64_t)s0 + nsym;
-    if (history + nsym > room) {
+    const size_t need = r->packed == 4 ? (history + nsym + 3)/4 : history + nsym;
+    if (need > room) {
         return -1;
     }
     size_t cached = 0;
     if (r->cache && r->cache_first != r->cache_end && begin < r->cache_end) {
         if (begin < r->cache_first) return -1;
         cached = (size_t)((end < r->cache_end ? end : r->cache_end) - begin);
-        memcpy(dst, r->cache + (begin - r->cache_first), cached);
+        if (r->packed == 4) ring_copy_quads(dst, 0, r->cache, begin - r->cache_first, cached);
+        else memcpy(dst, r->cache + (begin - r->cache_first), cached);
     }
-    if (ring_read(r, dst + cached, begin + cached, history + nsym - cached)) return -1;
+    if (ring_read(r, r->packed == 4 ? dst : dst + cached, r->packed == 4 ? cached : 0,
+                  begin + cached, history + nsym - cached)) return -1;
     if (r->cache) {
         if (end > r->cache_end) {
             int64_t keep = end - (int64_t)r->cache_symbols;
-            if (keep < begin) {
+            if (r->packed == 4) {
+                // Retain up to three full blocks plus the current partial block. A
+                // later fill may start earlier within this same four-symbol block.
+                keep = (end - 12) & ~(int64_t)3;
+                if (keep < begin) keep = begin;
+                ring_copy_quads(r->cache, 0, dst, keep - begin, end - keep);
+            } else if (keep < begin) {
                 // A short second piece at the physical bank wrap must retain the
                 // preceding piece's overlap too. Do not replace it with only this piece.
                 if (keep < r->cache_first || begin > r->cache_end) keep = begin;
