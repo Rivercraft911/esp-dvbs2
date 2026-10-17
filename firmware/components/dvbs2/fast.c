@@ -3,8 +3,8 @@
  * (ws->bits, MSB first), so each one can be checked and timed on its own.
  *
  *   BB      payload copy, header and scrambling in one pass; TS CRC-8 by table.
- *   BCH     byte recurrence in PIE for t > 8 (8 KiB table); register-based
- *           32-bit slicing for t = 8 (4 KiB). C retains the nibble reference.
+ *   BCH     fold 16 input bytes into the vector remainder, then reduce by
+ *           bytes (t > 8) or pairs (t = 8). C/PSRAM retain nibble rows.
  *   LDPC    whole 360-bit rows: each parity row r of the q x 360 group form is
  *           a sum of byte-aligned windows of the doubled information group,
  *           shifted by 0..7 bits with a Horner scheme; then a 32x32 bit
@@ -91,6 +91,7 @@ void dvbs2_pie_xor(uint8_t *dst, const uint8_t *src, const uint8_t *prbs, unsign
 void dvbs2_pie_bch_regs16(const uint8_t *msg, unsigned words, const uint8_t *tables, uint8_t *r);
 void dvbs2_pie_bch_regs32(const uint8_t *msg, unsigned words, const uint8_t *tables, uint8_t *r);
 void dvbs2_pie_bch_byte(const uint8_t *msg, unsigned bytes, const uint8_t *tables, uint8_t *r);
+void dvbs2_pie_bch_pair(const uint8_t *msg, unsigned pairs, const uint8_t *tables, uint8_t *r);
 void dvbs2_pie_u2(const uint8_t *bits, uint8_t *u2, unsigned groups);
 void dvbs2_pie_rows(const uint8_t *u2, const uint16_t *prog, uint8_t *p, unsigned q);
 void dvbs2_pie_transpose(uint8_t *p, unsigned blocks, const uint8_t *carry);
@@ -384,7 +385,10 @@ HOT void dvbs2_fast_bch(dvbs2_fast *f, dvbs2_workspace *ws)
     uint32_t w[8] __attribute__((aligned(16))) = {0};
 #ifdef DVBS2_PIE
     if (f->pie & DVBS2_PIE_BCH) {
-        if (f->bch_bytes > 16 && !(f->pie & DVBS2_BCH_NIBBLE)) {
+        if (f->bch_bytes == 16 && !(f->pie & DVBS2_BCH_NIBBLE)) {
+            dvbs2_pie_bch_pair(ws->bits, bytes/2, fast_bch_pair_8, (uint8_t *)w);
+            words = (bytes + 3) / 4;
+        } else if (f->bch_bytes > 16 && !(f->pie & DVBS2_BCH_NIBBLE)) {
             dvbs2_pie_bch_byte(ws->bits, bytes, f->byte_bch, (uint8_t *)w);
             words = (bytes + 3) / 4; /* byte kernel already consumed the tail */
         } else {
@@ -818,8 +822,8 @@ static __attribute__((noinline)) int map_packed_runs(dvbs2_fast *f,
  * Shift by a nibble and let PL framing replace the header/pilot halves. */
 static HOT int map_quads(dvbs2_fast *f, const uint8_t *bits, uint8_t *packed)
 {
-    const uint8_t *mapped = NULL;
 #ifdef DVBS2_PIE
+    const uint8_t *mapped = NULL;
     if (f->pie & DVBS2_PIE_MAP) {
         void dvbs2_pie_quads(const uint8_t *, const uint8_t *, uint8_t *, unsigned);
         dvbs2_pie_quads(bits, f->gold, f->scratch, (f->data_symbols+63)/64);
@@ -832,16 +836,31 @@ static HOT int map_quads(dvbs2_fast *f, const uint8_t *bits, uint8_t *packed)
         const unsigned left = f->data_symbols - k;
         const unsigned n = f->pilots && left > PACK_RUN ? PACK_RUN : left;
         uint8_t *dst = packed + (90 + k + 36*r) / 4;
-        writer w = writer_start(dst);
+        unsigned first = k/4;
         uint32_t previous = 0;
-        for (unsigned j = k/4; j < (k+n)/4; j += 4) {
-            uint32_t v;
-            if (mapped) v = W(mapped+j);
-            else {
-                const uint32_t x = W(bits+j), g = W(f->gold+j), dd = x ^ (x >> 1);
-                const uint32_t p2 = x ^ (g >> 1) ^ (dd & g), p1 = dd ^ g;
-                v = (p1 & 0x55555555) | ((p2 & 0x55555555) << 1);
+#ifdef DVBS2_PIE
+        if (mapped) {
+            void dvbs2_pie_quad_run(const uint8_t *, uint8_t *, unsigned, unsigned, uint8_t *);
+            const unsigned vectors = n/64;
+            const uintptr_t at = (uintptr_t)dst;
+            uint8_t *block = (uint8_t *)((at - 1) & ~(uintptr_t)15);
+            dvbs2_pie_quad_run(mapped + first, block, vectors, (unsigned)(-at & 15), f->tail);
+            memcpy(block + 16*vectors, f->tail, (at & 15) ? (at & 15) : 16);
+            first += 16*vectors;
+            previous = (mapped[first-1] & 15) << 4;
+            for (unsigned j = first; j < (k+n)/4; ++j) {
+                dst[j-k/4] = previous | (mapped[j] >> 4);
+                previous = (mapped[j] & 15) << 4;
             }
+            dst[n/4] = previous;
+            continue;
+        }
+#endif
+        writer w = writer_start(dst);
+        for (unsigned j = first; j < (k+n)/4; j += 4) {
+            const uint32_t x = W(bits+j), g = W(f->gold+j), dd = x ^ (x >> 1);
+            const uint32_t p2 = x ^ (g >> 1) ^ (dd & g), p1 = dd ^ g;
+            const uint32_t v = (p1 & 0x55555555) | ((p2 & 0x55555555) << 1);
             writer_put(&w, ((v >> 4) & 0x0f0f0f0f) | ((v & 0x000f0f0f) << 12) | previous);
             previous = (v >> 20) & 0xf0;
         }

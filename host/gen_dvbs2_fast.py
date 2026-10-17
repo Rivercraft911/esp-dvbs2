@@ -54,6 +54,22 @@ def bch_byte(t):
     return table
 
 
+def bch_pair():
+    # t=8 has a 128-bit remainder. Two byte tables advance it by 16 bits:
+    # R' = (R << 16) XOR T0[head0 ^ b0] XOR T1[head1 ^ b1].
+    g = 1
+    for powers in BCH_POLYS["normal"][:8]:
+        g = multiply(g, sum(1 << k for k in powers))
+    table = bytearray()
+    for shift in (136, 128):
+        for v in range(256):
+            rem = v << shift
+            while rem.bit_length() > 128:
+                rem ^= g << (rem.bit_length() - 129)
+            table.extend(rem.to_bytes(16, "big"))
+    return table
+
+
 def program(rate):
     q = Q["normal"][rate]
     rows = [[] for _ in range(q)]
@@ -88,6 +104,7 @@ def generate():
         out.append(array(f"fast_bch_{t}", "uint8_t", bch(t)))
     for t in (10, 12):
         out.append(array(f"fast_bch_byte_{t}", "uint8_t", bch_byte(t)))
+    out.append(array("fast_bch_pair_8", "uint8_t", bch_pair()))
     rot = rotations()
     for bps in (2, 3):
         words = []

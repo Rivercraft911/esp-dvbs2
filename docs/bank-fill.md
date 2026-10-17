@@ -103,7 +103,7 @@ every allocation is failed in turn, and repeated commands must leave no leaks.
 It checks complete physical-wrap cycles at both geometries. Host clocks and
 heap counters are synthetic and provide no performance evidence.
 
-`tests/data/waveform_crcs.json` pins 57 host-generated dumps to main `46f90af`,
+`tests/data/waveform_crcs.json` retains 57 host-generated dumps from main `46f90af`,
 using its opt-in kernels for the adopted 20m waveforms. Keys are
 `MODCOD/sps/DAC-MHz/frames`, stored callsign N0CALL, peak 128. Decimation is
 10 for default QPSK, 2 for QPSK at 8 sps, otherwise 1. All original surviving
@@ -119,6 +119,9 @@ waveform CRCs remain exact. Changed `20m` examples:
 For 16-frame QPSK 20m dumps, CRCs are 3,789,273,049 (4) and 2,081,653,259
 (11). For 16-frame short 8PSK they are 3,479,114,506 (13) and 68,643,998 (15).
 These are host checks against the old source, not new board measurements.
+
+The 58th fixture is a 16-frame 8PSK 9/10 `20m` dump, CRC 3,782,178,445,
+checked on the host with independent decode. Its board check is pending.
 
 `profile.encoder` reports payload/BB/BCH/LDPC/map/PL calls, cycles and cache
 requests/misses. `profile.fill` reports copy/whole/partial/save/notify.

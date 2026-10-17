@@ -65,7 +65,7 @@ pyserial and matplotlib. Independent decode also needs a local LeanDVB build.
 python3 tests/test_dvbs2.py            # Python reference and standard checks
 python3 tests/test_dvbs2_c.py          # every C encoder stage against Python
 python3 tests/test_fecbench.py         # actual benchmark command, all 140 CRCs
-python3 tests/test_stream.py           # actual stream, every DAC word and 57 golden CRCs
+python3 tests/test_stream.py           # actual stream, every DAC word and 58 golden CRCs
 . ~/.espressif/tools/activate_idf_v6.1.sh >/dev/null 2>&1
 (cd firmware && idf.py build)
 host/check.sh --plan                  # pass criteria only; opens no devices

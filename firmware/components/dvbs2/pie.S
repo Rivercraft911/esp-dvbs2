@@ -122,14 +122,67 @@ dvbs2_pie_xor:
     bch_regs dvbs2_pie_bch_regs32, 1
     bch_regs dvbs2_pie_bch_regs16, 0
 
+/* t=8: two byte slices per halfword, one 128-bit remainder. The two 4 KiB
+ * flash tables are T0[v] = v*x^136 mod g and T1[v] = v*x^128 mod g.
+ * XOR whole message vectors into R before reducing, removing scalar input
+ * loads/XORs from the recurrence. All t=8 lengths are even. PSRAM uses nibble BCH.
+ * void dvbs2_pie_bch_pair(msg, pairs, tables, remainder) */
+    .align 4
+    .global dvbs2_pie_bch_pair
+    .type dvbs2_pie_bch_pair, @function
+    .macro bch_pair_step input=0
+    ee.movi.32.a q0, a6, 0
+    .if \input
+    l16ui a7, a2, 0
+    xor a6, a6, a7
+    .endif
+    extui a8, a6, 0, 8
+    extui a10, a6, 4, 12                /* low address nibble is ignored by VLD */
+    slli a8, a8, 4
+    add a8, a8, a4
+    add a10, a10, a9
+    ee.srci.2q q1, q0, 1
+    ee.vld.128.ip q2, a8, 0
+    ee.vld.128.ip q3, a10, 0
+    ee.xorq q0, q0, q2
+    ee.xorq q0, q0, q3
+    .endm
+dvbs2_pie_bch_pair:
+    entry a1, 32
+    addmi a9, a4, 4096
+    ee.zero.q q0
+    ee.zero.q q1
+    srli a11, a3, 3
+    extui a3, a3, 0, 3
+    beqz a11, 93f
+92:
+    ee.vld.128.ip q4, a2, 16
+    ee.xorq q0, q0, q4
+    .rept 8
+    bch_pair_step
+    .endr
+    addi a11, a11, -1
+    bnez a11, 92b
+93:
+    loopnez a3, 94f
+    bch_pair_step 1
+    addi a2, a2, 2
+94:
+    ee.vst.128.ip q0, a5, 16
+    ee.vst.128.ip q1, a5, 16
+    retw
+    .size dvbs2_pie_bch_pair, . - dvbs2_pie_bch_pair
+
 /* Byte recurrence R' = (R << 8) XOR T[(R >> (r-8)) XOR byte],
  * with the canonical MSB-first byte string in q0:q1. T[v] = v*x^r mod g.
  * One 8 KiB table, low halves then high halves; no per-word byte reversal.
  * The last partial word is included. Same arguments, count is bytes. */
-    .macro bch_byte_step offset
-    l8ui a6, a2, \offset
-    ee.movi.32.a q0, a7, 0
+    .macro bch_byte_step offset, input=1
+    ee.movi.32.a q0, a6, 0
+    .if \input
+    l8ui a7, a2, \offset
     xor a6, a6, a7
+    .endif
     extui a8, a6, 0, 8
     slli a8, a8, 4
     add a8, a8, a4
@@ -147,14 +200,17 @@ dvbs2_pie_bch_byte:
     ee.zero.q q0
     ee.zero.q q1
     movi a9, 4096
-    srli a10, a3, 2
-    extui a3, a3, 0, 2
-    loopnez a10, 99f
-    bch_byte_step 0
-    bch_byte_step 1
-    bch_byte_step 2
-    bch_byte_step 3
-    addi a2, a2, 4
+    srli a10, a3, 4
+    extui a3, a3, 0, 4
+    beqz a10, 99f
+97:
+    ee.vld.128.ip q4, a2, 16
+    ee.xorq q0, q0, q4
+    .rept 16
+    bch_byte_step 0, 0
+    .endr
+    addi a10, a10, -1
+    bnez a10, 97b
 99:
     loopnez a3, 98f
     bch_byte_step 0
@@ -523,6 +579,50 @@ dvbs2_pie_index8:
     .endm
     qpsk_codes dvbs2_pie_index4,1
     qpsk_codes dvbs2_pie_quads,0
+
+/* Shift a QPSK code run by one nibble: byte i = low(src[i-1]) << 4 |
+ * high(src[i]), initially src[-1] = 0. This is the half-byte PL header offset.
+ * Source may be unaligned (successive 360-byte data runs alternate by 8).
+ * Shifted stores have the run8 contract; the caller handles <16 final bytes.
+ * void dvbs2_pie_quad_run(src, block, vectors, sar_byte, tail) */
+    .align 4
+    .global dvbs2_pie_quad_run
+    .type dvbs2_pie_quad_run, @function
+dvbs2_pie_quad_run:
+    entry a1, 32
+    splat q7, 0x0f0f0f0f
+    ee.zero.q q4                        /* preceding low nibble */
+    /* Nine-byte pilots are shorter than an aligned store. Preserve the
+     * prefix: it can include data from the preceding run. Rotate the old
+     * block so SRCQ's first store recovers exactly its leading bytes. */
+    ee.vld.128.ip q5, a3, 0
+    neg a10, a5
+    extui a10, a10, 0, 4
+    wur.sar_byte a10
+    ee.src.q q5, q5, q5
+    extui a8, a2, 0, 4
+    movi a9, 15
+    ssai 4
+    ee.vld.128.ip q0, a2, 16
+    loopnez a4, 95f
+    ee.vld.128.ip q1, a2, 16
+    wur.sar_byte a8
+    ee.src.q q2, q0, q1                 /* sixteen input bytes */
+    ee.orq q0, q1, q1
+    ee.vsr.32 q3, q2
+    ee.andq q3, q3, q7                  /* high nibbles */
+    ee.andq q2, q2, q7
+    ee.vsl.32 q2, q2                    /* low nibbles in high halves */
+    wur.sar_byte a9
+    ee.src.q.qup q6, q4, q2             /* previous byte, then bytes 0..14 */
+    ee.orq q3, q3, q6
+    wur.sar_byte a5
+    ee.srcq.128.st.incp q5, q3, a3
+    ee.orq q5, q3, q3
+95:
+    ee.srcq.128.st.incp q5, q3, a6
+    retw
+    .size dvbs2_pie_quad_run, . - dvbs2_pie_quad_run
 
 /* One data run: table lookups, four groups (16 phase bytes) per vector,
  * stored through EE.SRCQ.128.ST.INCP so the run may start at any address.

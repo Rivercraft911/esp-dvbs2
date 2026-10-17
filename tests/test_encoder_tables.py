@@ -54,6 +54,26 @@ def test_sparse_pairs():
         assert seen == expected
 
 
+def test_pair_bch():
+    table = gen.bch_pair()
+    rows = [int.from_bytes(table[k:k+16], "big") for k in range(0, len(table), 16)]
+    byte = d.bch_byte_table(False, 8)
+    for v in range(256):
+        assert rows[256+v] == byte[v]
+        assert rows[v] == ((byte[v] << 8) & ((1 << 128)-1)) ^ byte[byte[v] >> 120]
+    rng = np.random.default_rng(20261017)
+    for rate in ("8/9", "9/10"):
+        c = d.code(rate)
+        assert c.t == 8 and c.kbch % 16 == 0
+        for data in (bytes(c.kbch//8), bytes([255])*(c.kbch//8), rng.bytes(c.kbch//8)):
+            reg = 0
+            for i in range(0, len(data), 2):
+                head = (reg >> 112) ^ int.from_bytes(data[i:i+2], "big")
+                reg = ((reg << 16) & ((1 << 128)-1)) ^ rows[head >> 8] ^ rows[256+(head & 255)]
+            expected = np.packbits(d.bch_encode(np.unpackbits(np.frombuffer(data, np.uint8)), rate)[c.kbch:])
+            assert reg.to_bytes(16, "big") == expected.tobytes()
+
+
 def test_packed_four():
     # Independent phase formula for every possible index, including the
     # removed P1 high bit. Inspect the actual generated words too.
@@ -90,6 +110,7 @@ def test_qpsk_packed():
 
 if __name__ == "__main__":
     test_byte_bch()
+    test_pair_bch()
     test_sparse_pairs()
     test_packed_four()
     test_qpsk_packed()

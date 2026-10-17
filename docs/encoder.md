@@ -20,9 +20,10 @@ Portable C remains the host oracle and fallback for these data layouts.
 - BB: copy payload, write the 80-bit header and scramble in one pass. TS uses
   table CRC-8 and keeps packet state across frames.
 - BCH: use byte recurrence with an 8,192 B resident table for t=10/12 when the
-  workspace is internal. Use register-based nibble rows for t=8 and PSRAM
-  workspaces. The flash byte-table and copy-per-frame experiments lost in the
-  live stream. [Measured cache effects](../results/2026-10-16-next/README.md).
+  workspace is internal. Fold 16 input bytes into the remainder before reducing.
+  Internal t=8 uses two 4,096 B flash tables, reducing two bytes per step.
+  PSRAM workspaces keep register-based nibble rows. Earlier t=10/12 flash byte
+  tables lost in the live stream. [Cache effects](../results/2026-10-16-next/README.md).
 - LDPC: form doubled 360-bit information groups; XOR shifted byte windows into
   parity rows, prefix-XOR, transpose and pack into canonical MSB-first bits.
 - Map: fuse interleaving, constellation mapping and PL scrambling. Internal
@@ -31,6 +32,8 @@ Portable C remains the host oracle and fallback for these data layouts.
 - PL: insert the prepared header and pilots. QPSK at 20 and 80/3 Msym/s writes
   four `phase>>1` codes per byte, oldest in bits 7:6. Other fast rates write
   pairs, first phase in the low nibble. Default 1 Msym/s uses raw phase bytes.
+  The QPSK vector copy preserves the aligned store's prefix: a nine-byte pilot
+  can share that store with the preceding run's data.
 
 Payload is a continuous xorshift32 stream, seed 2026. Each frame overwrites
 its first 40 payload bytes with the stored station ID. Dummy frames consume no
@@ -78,6 +81,44 @@ both BCH policies, pilots and guards. The EE.LDXQ.32 address probe remains:
 measured silicon follows the TRM; Espressif QEMU differs by 4 B.
 [Measurement](../results/2026-10-16-fec-limit/README.md).
 QEMU and instruction models establish no silicon timing.
+
+## Encoder candidate for 33.33 Msym/s
+
+At `Rs = 100e6/3 symbols/s`, the frame budgets are 159,796.8 cycles for 8PSK
+and 239,630.4 for QPSK. A 15% reserve gives integer ceilings 135,827 and
+203,685 cycles/frame. FEC/map work does not depend on samples/symbol or roll-off.
+The wider waveform, its RAM cost and the matching BBHEADER roll-off bits must
+be integrated separately; this candidate retains roll-off 0.35.
+
+For t=8, with 128-bit remainder R and generator g from 5.3.1:
+`R' = (R << 16) XOR T0[head0 XOR byte0] XOR T1[head1 XOR byte1]`, truncated
+to 128 bits, where `T0[v] = v*x^136 mod g`, `T1[v] = v*x^128 mod g`.
+All message lengths are even. Zero input keeps a zero remainder; full ones
+and random frames match the independent bit-serial reference. Preloading a
+message vector uses linearity: XOR it into the first 128 remainder bits, then
+reduce as if the next 16 input bytes were zero. Tail bytes use the original
+recurrence.
+
+`encode_kernel_cycles_mean` and `encode_kernel_cycles_live_max` time one
+continuous interval from the end of payload generation through PL framing,
+including station ID and profiling. They exclude ring waits. Startup is excluded
+only from the live maximum. Adding 10,000 cycles is an **input-copy estimate**,
+not a measurement of SPI or a maximum formed by subtracting stage maxima.
+
+After the coordinator builds/flashes the committed revision, run:
+
+```sh
+host/check.sh --encoder --plan
+PYTHON=/Library/Frameworks/Python.framework/Versions/3.13/bin/python3 \
+  RX=/path/to/leandvb host/check.sh --encoder notes/moon-encoder-board
+```
+
+This keeps going through six decoded dumps, FEC CRCs, four 30 s fast paces,
+one 10 s PSRAM regression and three Wi-Fi probes. It prints every criterion
+first. Both post-payload mean and live maximum plus 10k must meet the ceilings
+above. Wi-Fi up and low-water free RAM must each reach 20,480 B. The 9/10
+8PSK dump is 16 frames, CRC 3,782,178,445. Existing CRCs are unchanged. The
+real SPI stream must later meet the same total-cycle ceilings without substitution.
 
 The Python reference's 16APSK/32APSK formulas and independent digest/loopback
 tests remain. APSK has no firmware transmitter mode. Its unused firmware

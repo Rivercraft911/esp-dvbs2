@@ -180,7 +180,7 @@ def test_stream(output=None, receiver=None):
         cases += [(mc,4,"N0CALL",80) for mc in range(4,18)]
         cases += [(mc,3,"N0CALL",80) for mc in range(4,12)]
         cases = [(mc,n,call,rate,16 if mc < 12 and rate == 80 else 40) for mc,n,call,rate in cases]
-        cases += [(mc,4,"N0CALL",80,16) for mc in (13,15)]
+        cases += [(mc,4,"N0CALL",80,16) for mc in (13,15,17)]
         cases += [(4,40,"N0CALL",40,16), (13,8,"N0CALL",40,16)]
         cases += [(mc,4,"N0CALL",80,40) for mc in (4,11)]
         for mc, sps, call, rate, frames in cases:
@@ -205,6 +205,8 @@ def test_stream(output=None, receiver=None):
                 assert r["ring_slots"] == (3 if sps <= 4 else 2 if packed else 8)
                 assert r["prefill_frames"] == r["ring_slots"]
                 assert 0 <= r["encode_cycles_live_max"] <= r["encode_cycles_max"]
+                assert 0 <= r["encode_kernel_cycles_mean"] <= r["encode_cycles_mean"]
+                assert 0 <= r["encode_kernel_cycles_live_max"] <= r["encode_cycles_live_max"]
                 assert r["ring_memory"] == ("internal" if packed else "psram")
                 assert r["ring_format"] == ("quads" if quads else "packed" if packed else "raw")
                 assert r["workspace_memory"] == ("internal" if packed and (mc < 12 or sps == 4) else "psram")
@@ -214,7 +216,8 @@ def test_stream(output=None, receiver=None):
                 cached = packed and (mc < 12 or sps == 4) and mc not in (10, 11, 16, 17)
                 assert r["bch_cache_bytes"] == (8192 if cached else 0)
                 assert r["bch_cache_heap_bytes"] == r["bch_cache_bytes"]
-                assert r["bch_variant"] == ("resident-byte" if cached else "nibble")
+                pair = packed and (mc < 12 or sps == 4) and mc in (10,11,16,17)
+                assert r["bch_variant"] == ("resident-byte" if cached else "flash-pair" if pair else "nibble")
                 assert r["packed_mapper"] == ("none" if not packed else "quads" if quads else "direct" if mc < 12 or sps == 4 else "sparse")
                 assert bool(int(r["layout"]["bch"], 16)) == cached
                 slots = [int(a, 16) for a in r["layout"]["slots"]]
@@ -260,7 +263,7 @@ def test_stream(output=None, receiver=None):
                         assert r["ring_heap_bytes"] == need
                 assert all(p["calls"] == r["frames_encoded"] for p in r["profile"]["encoder"].values())
                 assert r["symbol_rate"] == rate * 1000000 // sps
-            if receiver and (mc < 12 or mc in (13, 15)):
+            if receiver and (mc < 12 or mc in (13, 15, 17)):
                 cmd = [sys.executable, str(ROOT / "host/onair.py"), str(iq),
                        "--rate", str(rate * 1000000 // (10 if sps == 40 else 2 if mc < 12 and sps == 8 else 1)), "--symbol-rate", str(rate * 1000000 / sps),
                        "--scale", "512", "--modcod", str(mc), "--stream", str(frames),
