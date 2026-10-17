@@ -45,8 +45,11 @@
 #define WORST_PEAK 718.4            // conservative sqrt(2)*508 LSB axis bound, before rounding
 #define SEED 2026
 #define ENCODER_PRIORITY 5          // above the command loop, below the Wi-Fi and IPC tasks
-// Samples, including the first bank's extra lead. Later banks re-read 2112 words.
-#define CACHED_WORDS (RADIO_S3_BANK_WORDS - RADIO_S3_STEP_WORDS + RADIO_S3_LEAD_WORDS)
+// Samples, including the first bank's extra lead. Later banks re-read 2112 words, or 640 on the
+// 80 MS/s geometry, which keeps only its 768 (dvb.cached).
+#define CACHED_FOR(rate) (RADIO_S3_BANK_WORDS - RADIO_S3_STEP_FOR(rate) + RADIO_S3_LEAD_FOR(rate))
+#define CACHED_WORDS CACHED_FOR(RADIO_S3_DAC_RATE)
+_Static_assert(CACHED_FOR(RADIO_S3_DAC_RATE_80M) <= CACHED_WORDS, "sample cache too small");
 // Finished samples cover the overlap. The next fresh sample only needs filter history and
 // one symbol cut at each end, even when the output wraps in the middle of an 8-sps symbol.
 #define OVERLAP_SYMBOLS (SHAPER_HISTORY + 2)
@@ -59,6 +62,7 @@ typedef struct {
     uint32_t samples[CACHED_WORDS] __attribute__((aligned(16)));
     uint64_t sample_end;            // cached samples end here; only advances on fresh samples
     size_t sample_at;               // circular cache index of sample_end
+    size_t cached;                  // cache length for the run's geometry, at most CACHED_WORDS
     uint32_t max_fill_cycles;       // one fill call
     bool profile;                  // radio-off commands only
     uint32_t dac_rate;             // the run's bank geometry (radio_s3.h)
@@ -135,11 +139,11 @@ static IRAM_ATTR esp_err_t fill(uint32_t *dst, uint64_t first, size_t count, voi
     // of cached symbols. Never read the other physical DAC bank: it may belong to the radio.
     if (enc.packed && first < dvb.sample_end) {
         const uint64_t back = dvb.sample_end - first;
-        if (back > CACHED_WORDS) return ESP_FAIL;
-        size_t at = dvb.sample_at + CACHED_WORDS - (size_t)back;
-        if (at >= CACHED_WORDS) at -= CACHED_WORDS;
+        if (back > dvb.cached) return ESP_FAIL;
+        size_t at = dvb.sample_at + dvb.cached - (size_t)back;
+        if (at >= dvb.cached) at -= dvb.cached;
         const size_t cached = back < count ? (size_t)back : count;
-        const size_t head = cached < CACHED_WORDS - at ? cached : CACHED_WORDS - at;
+        const size_t head = cached < dvb.cached - at ? cached : dvb.cached - at;
         shaper_copy_words(dst, dvb.samples + at, head);
         shaper_copy_words(dst + head, dvb.samples, cached - head);
         dst += cached, first += cached, count -= cached;
@@ -175,18 +179,18 @@ static IRAM_ATTR esp_err_t fill(uint32_t *dst, uint64_t first, size_t count, voi
         dvb.profile ? &dvb.whole : NULL, dvb.profile ? &dvb.partial : NULL);
     if (enc.packed && count) {
         // Save only new samples; a short callback appends without moving the preceding tail.
-        // A long callback replaces the cache with its last CACHED_WORDS samples.
+        // A long callback replaces the cache with its last dvb.cached samples.
         const stream_mark_t save = dvb.profile ? stream_mark_for(&dvb.save) : (stream_mark_t){0};
-        if (count >= CACHED_WORDS) {
-            shaper_copy_words(dvb.samples, dst + count - CACHED_WORDS, CACHED_WORDS);
+        if (count >= dvb.cached) {
+            shaper_copy_words(dvb.samples, dst + count - dvb.cached, dvb.cached);
             dvb.sample_at = 0;
         } else {
-            const size_t head = count < CACHED_WORDS - dvb.sample_at ? count :
-                                CACHED_WORDS - dvb.sample_at;
+            const size_t head = count < dvb.cached - dvb.sample_at ? count :
+                                dvb.cached - dvb.sample_at;
             shaper_copy_words(dvb.samples + dvb.sample_at, dst, head);
             shaper_copy_words(dvb.samples, dst + head, count - head);
             dvb.sample_at += count;
-            if (dvb.sample_at >= CACHED_WORDS) dvb.sample_at -= CACHED_WORDS;
+            if (dvb.sample_at >= dvb.cached) dvb.sample_at -= dvb.cached;
         }
         dvb.sample_end = first + count;
         if (dvb.profile) {
@@ -342,6 +346,7 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
     dvb.worst_save = dvb.worst_notify = 0;
     dvb.shaped_words = dvb.reused_words = 0;
     dvb.sample_end = dvb.sample_at = 0;
+    dvb.cached = CACHED_FOR(dac_rate);
     dvb.profile = !strcmp(cmd, "dvbpace") || !strcmp(cmd, "dvbdump");
     // The fill phases of a timed run record cycles only; an untimed dump also reads the
     // shared cache counters. Encoder stages always read them.
