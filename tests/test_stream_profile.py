@@ -32,11 +32,13 @@ with tempfile.TemporaryDirectory() as tmp:
 #include <assert.h>
 #include "stream_profile.h"
 int main(void) {
-    stream_profile_t p = {0};
+    stream_profile_t p = {.counters = 1}, cycles_only = {0};
     stream_mark_t a = {UINT32_MAX - 9, UINT32_MAX, 50, 100, 70};
     stream_mark_t b = {10, 2, 55, 130, 70};
     stream_record(&p, a, b);
     assert(p.calls == 1 && p.cycles == 20 && p.max_cycles == 20);
+    stream_record(&cycles_only, a, b);
+    assert(cycles_only.cycles == 20 && cycles_only.flash_miss == 0 && cycles_only.data_access == 0);
     assert(p.flash_miss == 3 && p.psram_miss == 5 && p.data_access == 30);
     assert(p.instruction_miss == 0);
     for (int i = 0; i < 3; ++i)

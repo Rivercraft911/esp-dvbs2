@@ -42,10 +42,12 @@ static inline void stream_record(stream_profile_t *p, stream_mark_t a, stream_ma
 {
     const uint32_t cycles = b.cycles - a.cycles;
     p->cycles += cycles;
-    p->flash_miss += (uint32_t)(b.flash_miss - a.flash_miss);
-    p->psram_miss += (uint32_t)(b.psram_miss - a.psram_miss);
-    p->data_access += (uint32_t)(b.data_access - a.data_access);
-    p->instruction_miss += (uint32_t)(b.instruction_miss - a.instruction_miss);
+    if (p->counters) {
+        p->flash_miss += (uint32_t)(b.flash_miss - a.flash_miss);
+        p->psram_miss += (uint32_t)(b.psram_miss - a.psram_miss);
+        p->data_access += (uint32_t)(b.data_access - a.data_access);
+        p->instruction_miss += (uint32_t)(b.instruction_miss - a.instruction_miss);
+    }
     p->calls++;
     if (cycles > p->max_cycles) p->max_cycles = cycles;
 }

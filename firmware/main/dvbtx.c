@@ -282,6 +282,9 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
     if (dvb.profile) cache_profile_start();
     enc.stall_ms = stall_ms;
     enc.min_cycles = UINT32_MAX;
+    for (unsigned i = 0; i < 6; ++i) {
+        enc.stage[i].counters = 1;
+    }
     const uint32_t internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     const size_t payload_bytes = (mode->kbch - 80) / 8;
     enc.packed = mode->bits_per_symbol == 3;
@@ -314,15 +317,18 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
             enc.filler = base + 2 * frame;
             enc.payload = enc.filler + dummy;
         }
-    } else {
-        enc.slots = heap_caps_malloc(RING_SLOTS * symbols, MALLOC_CAP_SPIRAM);
-        enc.filler = heap_caps_malloc(DVBS2_DUMMY_SYMBOLS, MALLOC_CAP_SPIRAM);
-        enc.payload = heap_caps_malloc(payload_bytes, MALLOC_CAP_SPIRAM);
     }
     // Fast encoder: per-mode context in internal RAM, workspace in cached PSRAM
     // (components/dvbs2/include/dvbs2.h).
     enc.fast = heap_caps_aligned_alloc(16, dvbs2_fast_mode_size(mode), internal);
     enc.ws = heap_caps_aligned_alloc(16, sizeof *enc.ws, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!enc.packed) {
+        // QPSK: main's order and sizes, so the PSRAM addresses, and with them the data cache
+        // sets that the fill's frame reads share with the encoder, stay as they were.
+        enc.payload = heap_caps_malloc(payload_bytes, MALLOC_CAP_SPIRAM);
+        enc.slots = heap_caps_malloc(RING_SLOTS * symbols, MALLOC_CAP_SPIRAM);
+        enc.filler = heap_caps_malloc(DVBS2_DUMMY_SYMBOLS, MALLOC_CAP_SPIRAM);
+    }
     int32_t *taps = heap_caps_malloc(TAPS * sizeof *taps, MALLOC_CAP_SPIRAM);
     if (!enc.fast || !enc.ws || !enc.payload || !enc.filler || !taps ||
             (!enc.packed && !enc.slots) || dvbs2_fast_prepare(enc.fast, mode, PILOTS, 15)) {
