@@ -1,4 +1,4 @@
-"""Small file link over DVB-S2 GCS. See docs/payload-path.md for the wire format.
+"""Small file link over DVB-S2 GCS. See docs/file-link.md for the wire format.
 
 Independent systematic Cauchy Reed-Solomon erasure code over GF(256), polynomial
 0x11d. This is an application protocol, not RaptorQ, GSE or MPE.
