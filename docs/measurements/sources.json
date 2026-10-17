@@ -1,0 +1,29 @@
+{
+  "archive": "archive/dev-2026-10-17",
+  "records": [
+    {
+      "file": "2026-10-17-moonshot-keyed.jsonl",
+      "source": "results/2026-10-17-moonshot/keyed.jsonl",
+      "records": 1,
+      "sha256": "06d5c411e025cad0fb2309526b5c38c7daa98ee6af29ecde37e4dc4f46a6a2ef"
+    },
+    {
+      "file": "2026-10-17-keyed-qpsk-runs.jsonl",
+      "source": "results/2026-10-17-keyed-qpsk/runs.jsonl",
+      "records": 2,
+      "sha256": "3117790ca96a8500af83b08640a586e1a0751120059bdef3e338485e1d0080fe"
+    },
+    {
+      "file": "2026-10-16-keyed-20m-runs.jsonl",
+      "source": "results/2026-10-16-keyed-20m/runs.jsonl",
+      "records": 2,
+      "sha256": "8a98715196874db905f8ec53a0d518236beffdec416dad93fc8b3513aef4627d"
+    },
+    {
+      "file": "2026-10-17-qpsk-fill-board-decodes.jsonl",
+      "source": "results/2026-10-17-qpsk-fill-board/decodes.jsonl",
+      "records": 1,
+      "sha256": "9e98ddb69ecfa994a2f69fc9a3f4fcfb9953bf81814fd77577f1c710a34743c6"
+    }
+  ]
+}

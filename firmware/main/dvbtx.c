@@ -6,8 +6,8 @@
 // On underrun the ring inserts a 3330-symbol dummy PLFRAME (EN 302 307-1 5.1.5,
 // 5.5.1), preserving each choice for overlapping bank reads. No payload is skipped.
 // Legacy RRC roll-off 0.35 and fractional 0.20 match the BBHEADER. Legacy scaling uses the
-// conservative bound sqrt(2)*508 LSB for every table (host/shaper.py Profile.taps).
-// The taps divide out the DAC's sample hold (host/shaper.py corrected_rrc) because the
+// conservative bound sqrt(2)*508 LSB for every table (archived host/shaper.py Profile.taps).
+// The taps divide out the DAC's sample hold (archived host/shaper.py corrected_rrc) because the
 // radio sends the held signal; a raw dvbdump has no hold and measures differently.
 
 #include "dvbtx.h"

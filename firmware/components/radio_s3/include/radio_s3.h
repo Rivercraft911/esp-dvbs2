@@ -10,7 +10,7 @@
 #define RADIO_S3_DAC_RATE_80M 80000000U  /* bit 15 set; keyed at 20 and 80/3 Msym/s */
 #define RADIO_S3_BANK_WORDS 16380U
 
-/* Bank geometry (docs/bank-geometry.md). Bank k plays samples [k*STEP, (k+1)*STEP) and also
+/* Bank geometry (docs/how-it-works.md). Bank k plays samples [k*STEP, (k+1)*STEP) and also
  * holds LEAD samples before and TAIL after them, so a switch up to LEAD samples early or TAIL
  * late plays the same samples. LEAD + STEP + TAIL = BANK_WORDS, so every fill rewrites the
  * whole bank and is due every STEP samples. The switch is aimed LEAD/2 early. All multiples
@@ -78,7 +78,7 @@ typedef struct {
     uint32_t id_count;        /* planned start, periodic and end segments */
     uint64_t planned_samples; /* payload + all IDs */
     radio_filter_stats_t filter; /* keyed runs only; snapshots before playback and cleanup */
-    radio_s3_wifi_heap_t wifi; /* run, wifi_probe and paced_wifi */
+    radio_s3_wifi_heap_t wifi; /* run and paced_wifi */
 } radio_s3_stats_t;
 
 /* Synchronous, exclusive run on core 1, 240 MHz. Valid requests are integer MHz
@@ -92,12 +92,6 @@ typedef struct {
  * runs fail before worker creation. On a fatal fill/deadline fault, abort immediately: a final ID
  * cannot be guaranteed. No flash write is permitted during a run.
  */
-/* Switch probe for later radio_s3_run calls (`tx ... gap`), never for DVB. After each fill,
- * silence the bank's own lead and tail, where both banks normally agree. Every switch then
- * plays |switch sample - k*STEP| silent samples, the bank's aim plus the DAC's lag, which an
- * RF capture measures (host/capture.py --signal gap). */
-void radio_s3_set_gaps(bool on);
-
 /* Receives the samples the DAC would play, [first, first + count), from a bank that holds
  * sample n at word n % RADIO_S3_BANK_WORDS. */
 typedef esp_err_t (*radio_s3_sink_fn)(const uint32_t *bank, uint64_t first, size_t count,

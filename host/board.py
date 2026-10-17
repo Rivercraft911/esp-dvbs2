@@ -2,10 +2,8 @@
 """Send a command to the esp-dvbs2 firmware and collect its '@' JSON results.
 
     python3 host/board.py info
-    python3 host/board.py membench --out results/2026-10-16-memory/runs.jsonl
-    python3 host/board.py fecbench --out results/<date>-encoder/runs.jsonl
-    python3 host/board.py "usbrx 4000000" --send 4000000     # payload ingress over USB
-    python3 host/board.py "dvbdump 4 20" --save dump.iq        # binary samples after a record
+    python3 host/board.py "dvbpace 11 26m667 10" --out notes/pace.jsonl
+    python3 host/board.py "dvbdump 4 16" --save dump.iq
 
 Each record is printed, and with --out appended to a JSON-lines file together with the command
 and the host time. The firmware marks the end of every command with {"done": true}. A record
@@ -132,17 +130,8 @@ def watchdog_reset(port: str) -> None:
     time.sleep(2.5)                        # boot and USB driver start
 
 
-def payload(n: int) -> bytes:
-    """n bytes of a fixed pseudo-random pattern (numpy-free so the host tool stays light)."""
-    out, x = bytearray(n), 2026
-    for i in range(n):
-        x = (x * 1103515245 + 12345) & 0x7FFFFFFF
-        out[i] = x >> 16 & 0xFF
-    return bytes(out)
-
-
 def run(port: str, command: str, timeout: float = 30.0, reset: bool = False,
-        data: bytes = b"", save: pathlib.Path | None = None) -> list[dict]:
+        save: pathlib.Path | None = None) -> list[dict]:
     """Collect '@' records until done. Raw bytes announced by binary_bytes go to save, and the
     record gains host_crc32 of what arrived. The deadline moves while bytes keep arriving."""
     link = open_port(port, reset)
@@ -150,9 +139,6 @@ def run(port: str, command: str, timeout: float = 30.0, reset: bool = False,
     try:
         link.reset_input_buffer()
         link.write(command.encode() + b"\n")
-        if data:
-            time.sleep(0.05)
-            link.write(data)
         records, pending, device_text, deadline = [], b"", b"", time.monotonic() + timeout
         while time.monotonic() < deadline:
             chunk = link.read(65536)
@@ -195,23 +181,17 @@ def run(port: str, command: str, timeout: float = 30.0, reset: bool = False,
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("command", help="firmware command line, e.g. info, membench or fecbench")
+    parser.add_argument("command", help="firmware command line, e.g. info or dvbdump 4 16")
     parser.add_argument("--port", default=DEFAULT_PORT)
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--reset", action="store_true", help="restart the firmware first")
-    parser.add_argument("--send", type=int, default=0, metavar="N",
-                        help="after the command, send N pattern bytes (for usbrx)")
     parser.add_argument("--out", type=pathlib.Path, help="append records to this JSON-lines file")
     parser.add_argument("--save", type=pathlib.Path, help="write binary data from the board here")
     args = parser.parse_args()
     args.port = resolve_port(args.port)
 
-    data = payload(args.send) if args.send else b""
     with reserve_port(args.port, args.reset):
-        records = run(args.port, args.command, args.timeout, args.reset, data, args.save)
-    if data:
-        for r in records:
-            r["host_crc32"] = zlib.crc32(data)
+        records = run(args.port, args.command, args.timeout, args.reset, args.save)
     stamp = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
     for record in records:
         print(json.dumps(record))

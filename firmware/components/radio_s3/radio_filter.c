@@ -1,5 +1,5 @@
 // Independent implementation from the installed S3 ROM instruction trace.
-// docs/wide-filter.md gives ROM addresses, masks, sources and measurement limits.
+// Archived docs/wide-filter.md gives ROM addresses and masks; see docs/prior-art.md.
 #include "radio_filter.h"
 
 #include <inttypes.h>
@@ -10,25 +10,11 @@
 #include "soc/soc.h"
 
 extern void rom_bb_bss_cbw40(unsigned int mode);
-extern void rom_bb_bss_cbw40_ana(unsigned int wide);
-
-static radio_filter_mode_t mode = RADIO_FILTER_AUTO;
-static const char *const names[] = {"auto", "narrow", "wide", "analog"};
-
-bool radio_filter_set(const char *name)
-{
-    for (unsigned i = 0; i < sizeof names / sizeof names[0]; ++i) {
-        if (!strcmp(name, names[i])) {
-            mode = (radio_filter_mode_t)i;
-            return true;
-        }
-    }
-    return false;
-}
+static const char *const names[] = {"auto", "narrow", "wide"};
 
 radio_filter_mode_t radio_filter_get(void)
 {
-    return mode;
+    return RADIO_FILTER_AUTO;
 }
 
 static void snapshot(radio_filter_regs_t *r)
@@ -47,8 +33,7 @@ static void snapshot(radio_filter_regs_t *r)
 static bool matches(const radio_filter_stats_t *s, const radio_filter_regs_t *r)
 {
     const bool wide = s->selected == RADIO_FILTER_WIDE;
-    const bool analog = wide || s->selected == RADIO_FILTER_ANALOG;
-    return (r->analog & 0x003f0000U) == (analog ? 0x00120000U : 0) &&
+    return (r->analog & 0x003f0000U) == (wide ? 0x00120000U : 0) &&
            (r->digital & 0xcU) == (wide ? 4U : 0) &&
            (r->channel & 3U) == (wide ? 3U : 0) &&
            (!wide || (!(r->cbw & 0x40U) && !(r->mac & 1U)));
@@ -56,16 +41,10 @@ static bool matches(const radio_filter_stats_t *s, const radio_filter_regs_t *r)
 
 bool radio_filter_apply(radio_filter_stats_t *s)
 {
-    s->selected = s->requested == RADIO_FILTER_AUTO ?
-                  (s->occupied_hz > 20000000U ? RADIO_FILTER_WIDE : RADIO_FILTER_NARROW) :
-                  s->requested;
+    s->selected = s->occupied_hz > 20000000U ? RADIO_FILTER_WIDE : RADIO_FILTER_NARROW;
     snapshot(&s->before);
     // CW has already reset the PHY to mode 0. Apply AFTER stop_tx_tone and PLL retune.
-    // Explicit mode 0 also makes forced-chain and analog-only comparisons reproducible.
     rom_bb_bss_cbw40(s->selected == RADIO_FILTER_WIDE ? 2 : 0);
-    if (s->selected == RADIO_FILTER_ANALOG) {
-        rom_bb_bss_cbw40_ana(1);
-    }
     snapshot(&s->active);
     s->applied = true;
     s->matches = matches(s, &s->active);

@@ -219,6 +219,7 @@ def test_stream(output=None, receiver=None, input_only=False):
         cases += [(mc,4,"N0CALL",80,16) for mc in (13,15,17)]
         cases += [(4,40,"N0CALL",40,16), (13,8,"N0CALL",40,16)]
         cases += [(mc,4,"N0CALL",80,40) for mc in (4,11)]
+        cases += [(mc,40,"N0CALL",40,16) for mc in range(5,12)]
         for mc, sps, call, rate, frames in cases:
             short = (2 if mc < 12 else 1) if rate == 80 else 0
             quads = short == 2
@@ -305,10 +306,10 @@ def test_stream(output=None, receiver=None, input_only=False):
                 assert all(p["calls"] == r["frames_encoded"] for p in r["profile"]["encoder"].values())
                 assert r["symbol_rate"] == rate * 1000000 // sps
             if receiver and (mc < 12 or mc in (13, 15, 17)):
-                cmd = [sys.executable, str(ROOT / "host/onair.py"), str(iq),
+                cmd = [sys.executable, str(ROOT / "host/decode.py"), str(iq),
                        "--rate", str(rate * 1000000 // (10 if sps == 40 else 2 if mc < 12 and sps == 8 else 1)), "--symbol-rate", str(rate * 1000000 / sps),
                        "--scale", "512", "--modcod", str(mc), "--stream", str(frames),
-                       "--callsign", call, "--shift", "0", "--receiver", str(receiver)]
+                       "--callsign", call, "--receiver", str(receiver)]
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
                 assert result.returncode == 0, (cmd, result.stdout, result.stderr)
                 decoded = json.loads(result.stdout)

@@ -5,11 +5,11 @@ none of their code is incorporated into this repository, since several licences 
 reuse in an Apache-2.0 project. Independent receivers run as separate, locally installed tools.
 Facts below were read from each project's source and documents on 2026-10-16.
 
-The APSK host reference is also checked against separate transmitter harnesses using
+The reference was checked against separate transmitter harnesses using
 [GNU Radio gr-dtv at aee9fd3](https://github.com/gnuradio/gnuradio/tree/aee9fd3f79389c4282a98e8d62c8405c73fd91df/gr-dtv)
 and the LeanSDR revision below. Their code stays outside this repository. Independent
 stage digests, numerical symbol comparisons and file-loopback evidence are documented in
-[the APSK results](../results/2026-10-16-apsk-decode/README.md).
+[the APSK results](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/results/2026-10-16-apsk-decode/README.md).
 
 | Project | Chip | What it showed | Licence |
 |---|---|---|---|
@@ -20,7 +20,7 @@ stage digests, numerical symbol comparisons and file-loopback evidence are docum
 | [eSpDR](https://github.com/h0m3us3r/eSpDR) | S3 | Receiver; [issue 3](https://github.com/h0m3us3r/eSpDR/issues/3) documents the DAC channel and the PLL tuning register. | 0BSD |
 | [esp32-sdr-trx](https://github.com/jochenhammes/esp32-sdr-trx) (DA2JH) | S3 | Receiver for SDR++, and FM/SSB voice on 13 cm by steering the test tone 40,000 times per second. | 0BSD |
 | [ESP32SDR](https://github.com/lozaning/ESP32SDR) | S3 | Tone keying (OOK/FSK); reported that DAC replay did not radiate, which later work explains as a setup issue. | none stated |
-| [LeanSDR / LeanDVB](https://github.com/pabr/leansdr/tree/84c59e1c7a1a79338d5722d63f28640cc9d350f3) (pabr) | host | Independent DVB-S2 IQ receiver. `host/decode.py` runs a separate local executable; its BBFRAME output supports GCS payload comparison. Receiver source and local macOS/status patches stay in ignored `notes/`. | GPL-3.0-or-later |
+| [LeanSDR / LeanDVB](https://github.com/pabr/leansdr/tree/84c59e1c7a1a79338d5722d63f28640cc9d350f3) (pabr) | host | Independent DVB-S2 IQ receiver. `host/decode.py` runs a separate local executable; its BBFRAME output supports GCS payload comparison. Receiver source stays outside this repository; the self-check supports stock debug output and extended status. | GPL-3.0-or-later |
 
 ## What this project takes from them
 
@@ -33,7 +33,7 @@ stage digests, numerical symbol comparisons and file-loopback evidence are docum
   test tone turns the whole transmit chain on with the PHY's calibrated settings and leaves the
   DAC on the data path ([esp_sdr_paced.c](https://github.com/cyber-murmel/esp-sdr-zephyr/blob/3214c16a7c9f136414cc5ae9d245ea290c98a6ce/lib/esp_sdr/src/esp_sdr_paced.c#L203-L232)).
   Forcing the front end without it passed only the I branch on this board
-  ([results](../results/2026-10-16-radio/README.md)).
+  ([results](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/results/2026-10-16-radio/README.md)).
 - **Tuning:** the S3's PLL locks from about 1.8 to 2.8 GHz (esp-sdr-zephyr), which covers the
   13 cm band.
 - **Filter controls (esp-sdr-zephyr):** BBTOP block `0x67` registers 4/5 control the receive
@@ -42,16 +42,16 @@ stage digests, numerical symbol comparisons and file-loopback evidence are docum
   Its reported response within about 3 dB through +/-18 MHz in bandwidth mode 2 is an
   end-to-end measurement between two S3s, including both filters
   ([hardware quirks, lines 56–65](https://github.com/cyber-murmel/esp-sdr-zephyr/blob/3214c16a7c9f136414cc5ae9d245ea290c98a6ce/doc/hardware-quirks.md#L56-L65)).
-  Our transmitter's cabled response remains unmeasured. The new
-  [filter experiment](wide-filter.md) applies the bandwidth selector after CW setup,
+  Our transmitter's cabled response remains unmeasured. The
+  [archived filter experiment](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/docs/wide-filter.md) applies the bandwidth selector after CW setup,
   logs TX/RX capacitor readbacks, and gives the E200 qualification gates.
 - **Self capture:** ESPARGOS demonstrates raw RX I/Q. On the S3 the capture and playback
   engines share the SRAM bank selector, so that alone does not establish capture of
   our live DAC stream. The vendor calibration loopback tap and its RF coverage remain
-  unqualified; [the feasibility assessment](wide-filter.md#can-the-s3-measure-itself)
+  unqualified; [the archived feasibility assessment](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/docs/wide-filter.md#can-the-s3-measure-itself)
   separates the controls found in ROM from a working spectrum self-test.
-- **Quality:** the measured 31.5 dB MER is far above what QPSK and 8PSK need, so the radio is not
-  expected to limit this project's modulation.
+- **Quality:** their reported 31.5 dB MER is evidence for their link. It does not establish
+  this transmitter's RF quality; our wideband RF decode remains unmeasured.
 
 ## Our own earlier work
 

@@ -1,1 +1,0 @@
-{"board_command": "dvbdump 4 2 128 1", "capture": "m4-f2-p128-d1.iq", "delay_samples": 178.5, "mer_db": 47.028777833517985, "rms_per_branch": 58.29829914332258, "sample_rate": 40000000.0, "symbols": 66364}

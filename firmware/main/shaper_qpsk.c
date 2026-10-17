@@ -1,4 +1,4 @@
-// Nine-symbol QPSK pulse, factored by four-symbol input blocks. host/qpsk_fill.py is the oracle.
+// Nine-symbol QPSK pulse, factored by four-symbol input blocks. The original oracle is archived host/qpsk_fill.py.
 #include "shaper_qpsk.h"
 #include "shaper_qpsk_taps.h"
 #include "shaper_taps.h"

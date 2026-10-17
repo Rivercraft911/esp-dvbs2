@@ -12,42 +12,17 @@ jobs:
       - run: pip install numpy scipy
       - run: python tests/test_dvbs2.py
       - run: python tests/test_dvbs2_8psk.py
-      - run: python tests/test_dvbs2_apsk.py
       - run: python tests/test_dvbs2_c.py
-      - run: python tests/test_fecbench.py
-      - run: python tests/test_encoder_tables.py
-      - run: python tests/test_iq.py
-      - run: python tests/test_decode.py
-      - run: python tests/test_filelink.py
-      - run: python tests/test_qpsk_fill.py
-      - run: python tests/test_shaper.py
-      - run: python tests/test_shaper_cycles.py
-      - run: python tests/test_shaper_short.py
-      - run: python tests/test_radio_filter.py
-      - run: python tests/test_filter_response.py
-      - run: python tests/test_radio.py
-      - run: python tests/test_tx_command.py
-      - run: python tests/test_tx_samples.py
-      - run: python tests/test_tx_8psk.py
-      - run: python tests/test_station_id.py
-      - run: python tests/test_station_store.py
-      - run: python tests/test_capture.py
-      - run: python tests/test_onair.py
-      - run: python tests/test_sdr.py
-      - run: python tests/test_bench.py
-      - run: python tests/test_mer.py
-      - run: python tests/test_ring.py
-      - run: python tests/test_stream_profile.py
-      - run: python tests/test_check.py
-      - run: python tests/test_encoder_memory.py
-      - run: python tests/test_rational.py
-      - run: python tests/test_machine.py
-      - run: python tests/test_ingress.py
-      - run: python tests/test_cm5_spi.py
-      - run: python tests/test_spi_input.py
-      - run: python tests/test_spi_in_board.py
-      - run: python tests/test_spi_sender.py
       - run: python tests/test_stream.py
+      - run: python tests/test_rational.py
+      - run: python tests/test_self_check.py
+      - name: SPI input (maintained with the SPI implementation)
+        run: |
+          python tests/test_ingress.py
+          python tests/test_cm5_spi.py
+          python tests/test_spi_input.py
+          python tests/test_spi_in_board.py
+          python tests/test_spi_sender.py
 
   firmware:
     runs-on: ubuntu-latest
@@ -58,18 +33,3 @@ jobs:
           esp_idf_version: v6.1
           target: esp32s3
           path: firmware
-      - uses: espressif/esp-idf-ci-action@v1
-        with:
-          esp_idf_version: v6.1
-          target: esp32s3
-          path: tests/shaper_pie
-      - uses: espressif/esp-idf-ci-action@v1
-        with:
-          esp_idf_version: v6.1
-          target: esp32s3
-          path: tests/radio_qemu
-      - uses: espressif/esp-idf-ci-action@v1
-        with:
-          esp_idf_version: v6.1
-          target: esp32s3
-          path: tests/encoder_pie

@@ -1,24 +1,4 @@
-// esp-dvbs2 firmware. Line commands arrive over the chip's USB port; every result is one JSON
-// object on a line starting with '@', so host/board.py can separate results from log output.
-// Each command ends with {"cmd":...,"done":true}.
-//
-//   info       chip, clocks, memory, firmware version and stored callsign
-//   callsign [CALL|clear]  read, store or erase the station callsign in NVS (station_commands.c)
-//   iddump [CALL] [40|80]  the CW ID's bank samples at 10 kS/s over USB at a 40 or 80 MS/s DAC, no radio
-//   membench   memory and bank-fill timing (membench.c)
-//   filter <auto|narrow|wide|analog>  later runs only; default auto
-//   tx <integer MHz> <tone|two|tag|...> <1..60 seconds> [0..17 gain, default 0] [40|80 MS/s]
-//              (gap: a 128 tone with every bank's lead and tail silenced, the switch probe;
-//              at 80 MS/s every test signal runs at twice its frequency; sweep requires 80 MS/s)
-//   dvb <MHz> <modcod> [5m|10m|20m|26m667|33m333] <1..60 seconds> [0..17 gain] [16..508 peak]  DVB-S2 on air (dvbtx.c)
-//   dvbdump <modcod> [5m|10m|20m|26m667|33m333] <frames> [peak] [decimation] [stall ms]  USB samples, no radio
-//   dvbpace <modcod> [5m|10m|20m|26m667|33m333] <seconds> [peak] [stall ms]  paced simulation, no TX; moonshot keeps Wi-Fi RX up
-//              (20m and 26m667 use 80 MS/s; 33m333 uses 12/5 samples/symbol and roll-off 0.20)
-//   wifimem [<modcod> [5m|10m|20m|26m667|33m333]]  Wi-Fi start-up heap next to that transmitter's memory;
-//              starts and stops Wi-Fi like dvb but never keys, retunes or plays (dvbtx.c)
-//   fecbench [plain|pie]  normal-frame encoder correctness and stage timing (fecbench.c)
-//   usbrx N    receive N bytes over USB as fast as the host sends them; report the rate
-
+// esp-dvbs2 USB console. Results start with @; each command ends with done:true.
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,8 +19,6 @@
 
 #include "dvbtx.h"
 #include "spi_input.h"
-#include "fecbench.h"
-#include "membench.h"
 #include "radio_s3.h"
 #include "radio_signals.h"
 #include "shaper.h"
@@ -48,7 +26,7 @@
 #include "station_store.h"
 
 // tx's test signals borrow the shaping table's internal store: commands run one at a time, and
-// every DVB command rebuilds its table. This keeps 13.5 KB of static RAM free for the heap.
+// every DVB command rebuilds its table. No separate signal allocation is needed.
 _Static_assert(sizeof(radio_signal_t) <= sizeof shaper_store, "tx signal must fit the store");
 static radio_signal_t *const tx_signal = (radio_signal_t *)shaper_store;
 
@@ -191,19 +169,17 @@ static void cmd_tx(char *args)
         !number(duration, 1, 60, &seconds) ||
         (level && !number(level, 0, RADIO_S3_GAIN_MAX, &gain)) ||
         (msps && (!number(msps, 40, 80, &rate) || (rate != 40 && rate != 80))) || extra ||
-        !radio_signal_init(tx_signal, name) || (!strcmp(name, "sweep") && rate != 80)) {
+        !radio_signal_init(tx_signal, name)) {
         printf("@{\"cmd\":\"tx\",\"error\":\"usage: tx <2390..2450 integer MHz> "
-               "<tone|tone<1..511>|two|tag|neg|low|ionly|qonly|zero|dci|dcq|gap|sweep> <1..60 seconds> [0..17 gain, default 0] "
+               "<tone|tone<1..511>|two|neg|low|ionly|qonly|zero|dci|dcq> <1..60 seconds> [0..17 gain, default 0] "
                "[40|80 MS/s]\"}\n");
         return;
     }
     rate *= 1000000;
     radio_s3_stats_t s = {0};
-    radio_s3_set_gaps(!strcmp(name, "gap"));
     const uint32_t bandwidth = tx_signal->bandwidth_40m * (rate / RADIO_S3_DAC_RATE);
     const esp_err_t err = radio_s3_run_bandwidth(freq, gain, seconds, rate, bandwidth,
                                                fill_signal, tx_signal, &s);
-    radio_s3_set_gaps(false);
     printf("@{\"cmd\":\"tx\",\"freq_mhz\":%lu,\"signal\":\"%s\",\"seconds\":%lu,"
            "\"gain\":%lu,\"dac_rate_nominal\":%u,\"bank_words\":%u,\"step_words\":%u,"
            "\"elapsed_samples\":%llu,\"elapsed_cycles\":%llu,\"fills\":%lu,"
@@ -242,44 +218,6 @@ static void cmd_info(void)
            (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
            (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
            (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM), esp_timer_get_time() / 1000);
-}
-
-// Payload ingress test: read N bytes straight from the USB driver (not through stdio) and time
-// them from the first byte to the last. The host sends a seeded pattern; the CRC lets it confirm
-// that every byte arrived intact and in order.
-static void cmd_usbrx(unsigned total)
-{
-    uint8_t *buf = heap_caps_malloc(4096, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    if (!buf) {
-        printf("@{\"cmd\":\"usbrx\",\"error\":\"allocation failed\"}\n");
-        return;
-    }
-    unsigned got = 0;
-    uint32_t crc = 0xFFFFFFFFu;
-    int64_t first = 0, last = 0;
-    while (got < total) {
-        const int want = total - got < 4096 ? (int)(total - got) : 4096;
-        const int n = usb_serial_jtag_read_bytes(buf, want, pdMS_TO_TICKS(2000));
-        if (n <= 0) {
-            break;
-        }
-        last = esp_timer_get_time();
-        if (got == 0) {
-            first = last;
-        }
-        for (int i = 0; i < n; ++i) {
-            crc ^= buf[i];
-            for (int k = 0; k < 8; ++k) {
-                crc = (crc >> 1) ^ (0xEDB88320u & -(crc & 1u));
-            }
-        }
-        got += (unsigned)n;
-    }
-    heap_caps_free(buf);
-    const double seconds = (last - first) / 1e6;
-    printf("@{\"cmd\":\"usbrx\",\"bytes\":%u,\"requested\":%u,\"us\":%lld,\"mbit_per_s\":%.3f,"
-           "\"crc32\":%lu}\n", got, total, (long long)(last - first),
-           seconds > 0 ? got * 8 / seconds / 1e6 : 0.0, (unsigned long)~crc);
 }
 
 void app_main(void)
@@ -325,8 +263,6 @@ void app_main(void)
             strcpy(line, "iddump");
         } else if (strcmp(line, "info") == 0) {
             cmd_info();
-        } else if (strcmp(line, "membench") == 0) {
-            membench_run();
         } else if (strcmp(line, "tx") == 0 || strncmp(line, "tx ", 3) == 0 ||
                    strncmp(line, "tx\t", 3) == 0) {
             cmd_tx(line + 2);
@@ -345,22 +281,9 @@ void app_main(void)
         } else if (strncmp(line, "dvb ", 4) == 0) {
             cmd_dvb(line + 4);
             strcpy(line, "dvb");
-        } else if (strncmp(line, "filter ", 7) == 0) {
-            if (radio_filter_set(line + 7)) {
-                printf("@{\"cmd\":\"filter\",\"requested\":\"%s\"}\n", line + 7);
-            } else {
-                printf("@{\"cmd\":\"filter\",\"error\":\"usage: filter <auto|narrow|wide|analog>\"}\n");
-            }
-            strcpy(line, "filter");
-        } else if (strcmp(line, "fecbench") == 0) {
-            fecbench_run("pie");
-        } else if (strncmp(line, "fecbench ", 9) == 0) {
-            fecbench_run(line + 9);
         } else if (strcmp(line, "wifimem") == 0 || strncmp(line, "wifimem ", 8) == 0) {
             cmd_wifimem(line + 7);
             strcpy(line, "wifimem");
-        } else if (strncmp(line, "usbrx ", 6) == 0) {
-            cmd_usbrx((unsigned)strtoul(line + 6, NULL, 10));
         } else {
             printf("@{\"error\":\"unknown command\",\"line\":\"%.40s\"}\n", line);
         }
