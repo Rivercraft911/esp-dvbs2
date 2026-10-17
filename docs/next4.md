@@ -5,6 +5,12 @@ both packed mappers and the borrowed workspace tail pass their correctness
 checks. No serial port, board or radio was used for this integration. Timing and
 Wi-Fi heap on the combined firmware remain for the coordinator.
 
+Builds here use `IDF_COMPONENT_MANAGER=0`. The requested plain `idf.py build`
+was also attempted, but the sandbox denies the unused component manager's
+process discovery (`psutil`, `sysctl`, `PermissionError: Operation not permitted`).
+No managed component is needed. Disabling that manager permits the same v6.1
+toolchain and sdkconfig to build normally; no project setting was changed.
+
 `a7e55f2` merges `exp/max-encoder` at `0ec9964`. `f00537a` merges
 `exp/max-astra` at `ba549b4`. The integration starts from main `32ea843`.
 `c75812a` adds the requested `wifimem 13 20ms6` allocation probe and its tests.
