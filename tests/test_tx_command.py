@@ -84,6 +84,11 @@ dvbtx["wifimem"] = (["x", "3", "18", "12", "12 1m", "4 5m", "13 5m extra", "4 ex
                      ("15 10m", (15, 4)), (" 17\t10m", (17, 4))])
 dvbtx["wifimem"][0].extend(["13 20m", "17 20m", "13 10m80"])
 
+dvbtx["dvb"][0].append("2400 13 20ms6 1")
+dvbtx["wifimem"][0].append("13 20ms6")
+dvbtx["dvbdump"][1].append(("13 20ms6 40", (13,40,128,1,0,4,80000000,1)))
+dvbtx["dvbpace"][1].append(("15 20ms6 30", (15,30,128,0,80000000,4,0,1)))
+
 prelude = r'''
 #include <assert.h>
 #include <errno.h>
@@ -126,7 +131,7 @@ static const char *esp_err_to_name(esp_err_t error)
     (void)error;
     return "ESP_OK";
 }
-static unsigned dvb_calls, dump_calls, pace_calls, wifi_calls, got[7];
+static unsigned dvb_calls, dump_calls, pace_calls, wifi_calls, got[8];
 static void stub(unsigned *count, unsigned a, unsigned b, unsigned c, unsigned d, unsigned e,
                  unsigned f, unsigned g)
 {
@@ -140,14 +145,16 @@ static void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned
     stub(&dvb_calls, freq, modcod, seconds, gain, level, sps, 0);
 }
 static void dvbtx_dump(unsigned modcod, unsigned frames, unsigned level, unsigned decim,
-                       unsigned stall, unsigned sps, uint32_t rate)
+                       unsigned stall, unsigned sps, uint32_t rate, bool short_pulse)
 {
     stub(&dump_calls, modcod, frames, level, decim, stall, sps, rate);
+    got[7] = short_pulse;
 }
 static void dvbtx_pace(unsigned modcod, uint32_t seconds, unsigned level, unsigned stall,
-                       unsigned sps, uint32_t rate)
+                       unsigned sps, uint32_t rate, bool short_pulse)
 {
     stub(&pace_calls, modcod, seconds, level, stall, rate, sps, 0);
+    got[7] = short_pulse;
 }
 static void dvbtx_wifi(unsigned modcod, unsigned sps)
 {

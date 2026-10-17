@@ -211,6 +211,25 @@ done:
     heap_caps_free(rows);
 }
 
+static void short_bench(void)
+{
+    const unsigned internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    uint8_t *sym = heap_caps_malloc(4104, internal);
+    if (!sym) { printf("@{\"cmd\":\"membench\",\"error\":\"short allocation failed\"}\n"); return; }
+    uint32_t x = 2026, cycles[REPEATS], *bank = radio_s3_bank(0);
+    for (unsigned i = 0; i < 4104; ++i) {
+        x ^= x << 13, x ^= x >> 17, x ^= x << 5;
+        sym[i] = ((x >> 16) & 7) << 4;
+    }
+    shaper_table_t t;
+    shaper_short_build(&t, shaper_store, 128);
+    TIME(cycles, shaper_fill_c(bank, sym+8, 4095, &t));
+    report("short4_c", cycles, 16380, 0, checksum(bank,16380));
+    TIME(cycles, shaper_short4_pie(bank, sym+8, 4095, t.blocks));
+    report("short4_pie", cycles, 16380, 0, checksum(bank,16380));
+    heap_caps_free(sym);
+}
+
 // Isolated n3 experiment. It never enters the streaming or transmit paths.
 static void block_bench(void)
 {
@@ -302,4 +321,5 @@ done:
     heap_caps_free(iq), heap_caps_free(big);
     shaper_bench();
     block_bench();
+    short_bench();
 }

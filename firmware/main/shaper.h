@@ -19,6 +19,7 @@ typedef struct {
     uint32_t *blocks;      // window w's parts 0, 1, 2 at blocks + w * block_words
     uint16_t n;            // samples per symbol, 4..40
     uint16_t block_words;  // 3 * (n rounded up to 4) rounded up to a power of two
+    uint8_t parts;         // 0: legacy three-part table; 2: six-symbol experiment
     uint8_t bits;          // bits per symbol code: 3 (eight phases) or 2 (QPSK)
 } shaper_table_t;
 
@@ -85,3 +86,7 @@ void shaper_fill4_rows_all_pie(uint32_t *dst, const uint32_t *const *rows, int n
 // n5, 3-bit codes, padded eight-word part rows. Four symbols/group, groups >= 0;
 // exactly 20*groups words, aligned dst, no writes outside output. Eight history codes.
 void shaper_fill5_pie(uint32_t *dst, const uint8_t *sym, int groups, const uint32_t *blocks);
+
+// Radio-off 20ms6 experiment. sym[-5..nsym] must be readable (one lookahead byte).
+void shaper_short_build(shaper_table_t *t, uint32_t *blocks, unsigned peak);
+void shaper_short4_pie(uint32_t *dst, const uint8_t *sym, int nsym, const uint32_t *blocks);

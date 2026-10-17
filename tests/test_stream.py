@@ -166,18 +166,20 @@ def test_stream(output=None):
                         "-I" + str(ROOT / "firmware/components/station_id/include"),
                         str(ROOT / "tests/stream_host.c"), str(ROOT / "firmware/main/ring.c"),
                         str(ROOT / "firmware/main/shaper.c"),
+                        str(ROOT / "firmware/main/shaper_short.c"),
                         str(ROOT / "firmware/components/dvbs2/dvbs2.c"),
                         str(ROOT / "firmware/components/dvbs2/fast.c"),
                         str(ROOT / "firmware/components/station_id/station_id.c"),
                         "-lm", "-o", str(exe)], check=True)
         crcs = {}
-        for mc, sps, call, rate in ((13, 4, "N0CALL", 40), (15, 4, "N0CALL", 40), (17, 4, "", 40),
-                                    (12, 8, "", 40), (13, 8, "N0CALL", 40), (15, 8, "N0CALL", 40),
-                                    (17, 8, "", 40), (4, 40, "N0CALL", 40), (13, 4, "N0CALL", 80),
-                                    (15, 4, "N0CALL", 80), (17, 4, "", 80), (12, 8, "", 80),
-                                    (13, 8, "N0CALL", 80)):
-            iq = output / f'{mc}-n{sps}-{rate}m.iq' if output else folder / "dump.iq"
-            out = subprocess.run([str(exe), str(mc), str(sps), str(iq), call, str(rate * 1000000)],
+        for mc, sps, call, rate, short in ((13, 4, "N0CALL", 40, 0), (15, 4, "N0CALL", 40, 0), (17, 4, "", 40, 0),
+                                    (12, 8, "", 40, 0), (13, 8, "N0CALL", 40, 0), (15, 8, "N0CALL", 40, 0),
+                                    (17, 8, "", 40, 0), (4, 40, "N0CALL", 40, 0), (13, 4, "N0CALL", 80, 0),
+                                    (15, 4, "N0CALL", 80, 0), (17, 4, "", 80, 0), (12, 8, "", 80, 0),
+                                    (13, 8, "N0CALL", 80, 0), (13, 4, "N0CALL", 80, 1),
+                                    (15, 4, "N0CALL", 80, 1), (17, 4, "", 80, 1)):
+            iq = output / f'{mc}-n{sps}-{rate}m-s{6 if short else 9}.iq' if output else folder / "dump.iq"
+            out = subprocess.run([str(exe), str(mc), str(sps), str(iq), call, str(rate * 1000000), str(short)],
                                  capture_output=True, text=True, timeout=60, check=True).stdout
             records = [json.loads(line[1:]) for line in out.splitlines() if line.startswith("@")]
             dumps = [r for r in records if "crc32" in r]
@@ -187,7 +189,7 @@ def test_stream(output=None):
                         (13, 4): 474263962, (15, 4): 1757765864}
             for r in dumps:
                 assert r["crc32"] == zlib.crc32(iq.read_bytes())
-                if (mc, sps) in expected:
+                if not short and (mc, sps) in expected:
                     assert r["crc32"] == expected[mc, sps]
                 assert r["status"] == "ESP_OK" and not r["encoder_failed"]
                 assert r["callsign"] == call
@@ -222,7 +224,12 @@ def test_stream(output=None):
                     assert filler == slots[0] + 2 * frame
                     assert payload == filler + (3330 // 2 + 31) // 16 * 16
                     need = payload - slots[0] + r["payload_bytes_per_frame"]
-                    if sps == 4:
+                    if short:
+                        assert slots[0] == int(r["layout"]["table"], 16) + 16384
+                        assert slots[2] >= payload + r["payload_bytes_per_frame"]
+                        assert slots[2] + frame <= int(r["layout"]["table"], 16) + 65536
+                        assert r["ring_heap_bytes"] == 0
+                    elif sps == 4:
                         # Two frames, dummy and payload in the store; the third on the heap.
                         assert slots[0] == int(r["layout"]["table"], 16) + 32768
                         assert need <= 32768 and r["ring_heap_bytes"] == frame
@@ -233,14 +240,21 @@ def test_stream(output=None):
                 assert r["symbol_rate"] == rate * 1000000 // sps
             # The fill depends on the sample index only: the 80 MS/s bank geometry (other lead,
             # tail and step) must give the same samples as 40 MS/s.
-            crcs[mc, sps, call, rate] = dumps[0]["crc32"]
-            if rate == 80:
-                assert crcs[mc, sps, call, 80] == crcs[mc, sps, call, 40]
+            crcs[mc, sps, call, rate, short] = dumps[0]["crc32"]
+            if rate == 80 and not short:
+                assert crcs[mc, sps, call, 80, 0] == crcs[mc, sps, call, 40, 0]
             print(f"stream host: MODCOD {mc}, {sps} sps at {rate} MS/s, {dumps[0]['ring_format']} ring, "
                   f"callsign {call or 'none'}, 2 x 40 frames, "
                   f"CRC {dumps[0]['crc32']}, "
                   "all DAC words match plain encoder; cleanup and notifications pass")
 
+        # More than one complete physical-wrap cycle for both geometries. Every
+        # word is still checked by the plain encoder oracle inside the C harness.
+        for rate, short, frames in ((40000000, 0, 256), (80000000, 1, 160)):
+            subprocess.run([str(exe), "13", "4", str(folder / "wrap.iq"), "N0CALL",
+                            str(rate), str(short), str(frames)], capture_output=True,
+                           text=True, timeout=120, check=True)
+        print("stream host: complete 1365/819-bank wrap cycles, sample reuse matches the oracle")
 
 if __name__ == "__main__":
     test_stream(pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else None)

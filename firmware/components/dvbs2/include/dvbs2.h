@@ -31,6 +31,13 @@ typedef struct {
     uint32_t parity[90][12]; /* q rows, 360 useful LSB-first bits per row */
 } dvbs2_workspace;
 
+/* Fast stages use bits[] plus bounded vector lookahead, never reference parity[].
+ * Bytes [8144, sizeof(dvbs2_workspace)) may hold unrelated data while ONLY fast
+ * stages run. The plain LDPC encoder needs parity[] and cannot share this tail.
+ * 8100 bytes round up to 8112, then 32 guard bytes; test_encoder_pie checks it.
+ * Keep the full workspace allocation and alignment required by this API. */
+#define DVBS2_FAST_WORKSPACE_USED 8144
+
 typedef struct {
     uint16_t packet_pos; /* raw TS byte offset, 0..187 */
     uint8_t previous_crc, crc;
