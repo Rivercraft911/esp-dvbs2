@@ -17,6 +17,7 @@ jobs:
       - run: python tests/test_fecbench.py
       - run: python tests/test_iq.py
       - run: python tests/test_decode.py
+      - run: python tests/test_filelink.py
       - run: python tests/test_shaper.py
       - run: python tests/test_shaper_apsk.py
       - run: python tests/test_radio.py
