@@ -1,49 +1,64 @@
 #!/bin/bash
-# Coordinator only. Run after flashing. No flash, reset, NVS write or radio keying here.
-set -euo pipefail
+# Coordinator only, after flashing. No reset, flash, NVS write or radio keying.
+set -uo pipefail
 cd "$(dirname "$0")/.."
-PY=${PY:-/Library/Frameworks/Python.framework/Versions/3.13/bin/python3}
+PY=${PY:-python3}
 RX=${RX:-/Users/river/Documents/stanford/SSI/esp-dvbs2/notes/leansdr/src/apps/leandvb}
 OUT=${1:-notes/spi-in-board-$(date +%Y%m%d-%H%M%S)}
-mkdir -p "$(dirname "$OUT")"
-mkdir "$OUT"
+mkdir -p "$(dirname "$OUT")" || exit 1
+mkdir "$OUT" || exit 1
 exec > >(tee "$OUT/console.log") 2>&1
 board() { "$PY" host/board.py "$1" --port "${PORT:-/dev/cu.usbmodem101}" --timeout 90 --out "$OUT/runs.jsonl" "${@:2}"; }
+failed=0
+step() {
+    local label=$1
+    shift
+    if "$@"; then printf 'PASS %s\n' "$label" >> "$OUT/summary.txt"
+    else printf 'FAIL %s\n' "$label" >> "$OUT/summary.txt"; failed=1; fi
+}
 trap 'board "spiinput off" || true' EXIT
-printf 'Radio-off gates in docs/spi-input.md. Bare board, nothing on the selected SPI pins.\n'
-board info
-board "spipins ${PINS:-devkit}"
-for rate in 46.6 87; do board "spirx 3000 gcs loop $rate"; done
-for fault in 1 2 3 4 5; do board "spirx 500 ts loop 87 $fault"; done
-for kind in gcs ts; do
-    board "spiinput $kind loop 55"
-    board 'dvbdump 11 26m667 16 128 1' --save "$OUT/$kind.iq"
-    "$PY" host/spi_input.py decode "$OUT/$kind.iq" --kind "$kind" --receiver "$RX" > "$OUT/$kind.decode.json"
-    board 'dvbpace 11 26m667 30'
-    board 'wifimem 11 26m667'
+printf 'Radio off. Bare board, nothing on selected SPI pins. Demo first; replay is a compute gate only.\n'
+step info board info
+step pins board "spipins ${PINS:-devkit}"
+# A fixed 22 Mb/s offered ceiling leaves room for the 19.36 Mb/s demo stream.
+if board 'spiinput ts loop 22'; then
+    step demo-dump board 'dvbdump 13 10m 40 128 1' --save "$OUT/demo.iq"
+    step demo-decode "$PY" host/spi_input.py decode "$OUT/demo.iq" --kind ts --modcod 13 --sps 4 --rate 40000000 --frames 40 --receiver "$RX"
+    step demo-pace board "dvbpace 13 10m ${SECONDS_PER_RUN:-10}"
+else printf 'FAIL demo-setup\n' >> "$OUT/summary.txt"; failed=1; fi
+# No sender task or SPI3 allocation. Actual CRC/copy/encoder; no DMA contention proof.
+wifi_modes=('13 10m' '4 26m667' '11 26m667' '4 20mq4' '13 20m' '17 10m80')
+if [[ ${WIFI_ALL:-0} == 1 ]]; then
+    wifi_modes=()
+    for mc in {4..17}; do
+        for rate in 5m 10m 10m80 20m; do wifi_modes+=("$mc $rate"); done
+        if (( mc < 12 )); then wifi_modes+=("$mc" "$mc 26m667" "$mc 20mq4")
+        else wifi_modes+=("$mc 20ms6"); fi
+    done
+fi
+for kind in ts gcs; do
+    if board "spiinput $kind replay"; then
+        step "$kind-compute-dump" board 'dvbdump 11 26m667 16 128 1' --save "$OUT/$kind.iq"
+        step "$kind-compute-decode" "$PY" host/spi_input.py decode "$OUT/$kind.iq" --kind "$kind" --replay --receiver "$RX"
+        step "$kind-compute-pace" board "dvbpace 11 26m667 ${SECONDS_PER_RUN:-10}"
+    else printf 'FAIL %s-replay-setup\n' "$kind" >> "$OUT/summary.txt"; failed=1; fi
+    # Receive-only allocation, no sender buffers. No arriving bytes are required.
+    if board "spiinput $kind"; then
+        for mode in "${wifi_modes[@]}"; do
+            step "$kind-wifi-$mode" board "wifimem $mode"
+        done
+    else printf 'FAIL %s-receive-setup\n' "$kind" >> "$OUT/summary.txt"; failed=1; fi
 done
-board 'spiinput gcs loop 55 6'
-board 'dvbpace 11 26m667 2'
-board 'spiinput off'
-board 'dvbdump 11 26m667 16 128 1' --save "$OUT/reg-qpsk.iq"
-board 'dvbdump 13 20ms6 40 128 1' --save "$OUT/reg-8psk.iq"
-board 'dvbpace 11 26m667 30'
-"$PY" host/spi_input.py check "$OUT/runs.jsonl"
-"$PY" - "$OUT" "$(git describe --always --dirty)" <<'PY'
-import json, pathlib, sys, zlib
-folder = pathlib.Path(sys.argv[1])
-rows = [json.loads(s) for s in (folder/'runs.jsonl').read_text().splitlines()]
-assert any(r.get('firmware') == sys.argv[2] for r in rows), 'wrong firmware'
-for command, file, expected in (
-    ('dvbdump 11 26m667 16 128 1', 'gcs.iq', None),
-    ('dvbdump 11 26m667 16 128 1', 'ts.iq', None),
-    ('dvbdump 11 26m667 16 128 1', 'reg-qpsk.iq', 1271511239),
-    ('dvbdump 13 20ms6 40 128 1', 'reg-8psk.iq', 3178964763)):
-    data = (folder/file).read_bytes()
-    crc = zlib.crc32(data)
-    matches = [r for r in rows if r.get('command') == command and r.get('crc32') == crc]
-    assert matches, (file, crc)
-    assert any(r.get('host_crc32') == crc and r.get('binary_bytes') == len(data) for r in rows), file
-    if expected is not None: assert crc == expected, (file, crc, expected)
-print('SPI gates, received/USB/file CRCs and synthetic regression CRCs: passed')
-PY
+for rate in 22 46.6 87; do step "throughput-$rate" board "spirx 1000 gcs loop $rate"; done
+for fault in 1 2 3 4 5; do step "fault-$fault" board "spirx 500 ts loop 87 $fault"; done
+if board 'spiinput ts loop 22 6'; then step starvation board 'dvbpace 13 10m 2'
+else printf 'FAIL starvation-setup\n' >> "$OUT/summary.txt"; failed=1; fi
+step input-off board 'spiinput off'
+step regression-qpsk board 'dvbdump 11 26m667 16 128 1' --save "$OUT/reg-qpsk.iq"
+step regression-8psk board 'dvbdump 13 20ms6 40 128 1' --save "$OUT/reg-8psk.iq"
+step regression-pace board "dvbpace 11 26m667 ${SECONDS_PER_RUN:-10}"
+step gates "$PY" host/spi_input.py check "$OUT/runs.jsonl" --folder "$OUT" --firmware "$(git describe --always --dirty)"
+printf '\nSummary (%s)\n' "$OUT"
+cat "$OUT/summary.txt"
+printf 'External CM5/S3 DMA and cable timing still require a separate run.\n'
+exit "$failed"

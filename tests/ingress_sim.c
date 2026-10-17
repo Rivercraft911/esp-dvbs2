@@ -23,6 +23,7 @@ typedef struct {
     int halted;
     int ready, ready_calls;
     int violations, restarts, appends;
+    int replay;
     int isr;                /* run the end-of-frame interrupt (ingress_update_ready) */
     uint32_t buffers[INGRESS_SLOTS * INGRESS_SLOT_BYTES / 4];
 } sim;
@@ -30,6 +31,7 @@ typedef struct {
 static void rearm(void *ctx, ingress_desc *slot, bool restart)
 {
     sim *s = ctx;
+    if (s->replay) { ingress_replay_release(&s->ring, slot); return; }
     if (restart) {
         s->cur = slot;
         s->fill = 0;
@@ -72,6 +74,18 @@ void sim_free(sim *s)
 ingress_ring *sim_ring(sim *s)
 {
     return &s->ring;
+}
+
+void sim_set_buffer(sim *s, unsigned slot, uint8_t *p)
+{
+    s->ring.desc[slot].buf = p;
+}
+
+void sim_replay(sim *s, unsigned type)
+{
+    s->replay = 1;
+    s->ring.type = type;
+    ingress_replay_fill(&s->ring);
 }
 
 void sim_set_isr(sim *s, int on)

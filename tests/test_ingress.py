@@ -19,7 +19,7 @@ import zlib
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MSG, HEADER, PAYLOAD, PACKET = 1332, 12, 1316, 188
-SLOTS, SLOT_BYTES, MARGIN = 8, 1336, 2
+SLOTS, SLOT_BYTES, MARGIN = 4, 1336, 2
 NOP, TS, GCS = 0, 1, 2
 FAULT_EVERY = 64
 STATS = ("msgs", "bytes", "nops", "err_short", "err_long", "err_header", "err_crc",

@@ -178,16 +178,18 @@ def test_stream(output=None, receiver=None, input_only=False):
                         "-lm", "-o", str(exe)], check=True)
         # External TS/GCS: actual ingress checks, split copies, both mapper layouts,
         # repeated starts, every allocation failure, empty startup and resumed input.
-        for kind in (1, 2):
-            for mc, sps, pulse in ((11,3,2), (11,4,2), (13,4,0), (17,8,0)):
+        for kind in (1, 2, 3, 4):
+            for mc, sps, pulse in ((4,3,2), (11,3,2), (4,4,2), (11,4,2), (13,4,0), (17,8,0), (4,40,0)):
                 iq = (output or folder)/f"input-{kind}-{mc}-n{sps}.iq"
+                input_rate = 40000000 if mc == 13 or sps == 40 else 80000000
+                input_frames = 40 if mc == 13 else 16
                 subprocess.run([str(exe), str(mc), str(sps), str(iq),
-                                "N0CALL", "80000000", str(pulse), "16", str(kind)],
+                                "N0CALL", str(input_rate), str(pulse), str(input_frames), str(kind)],
                                capture_output=True, text=True, timeout=60, check=True)
-                if receiver and mc < 12:
+                if receiver and mc in (11, 13):
                     sys.path.insert(0, str(ROOT / "host"))
                     from spi_input import decode_dump
-                    decode_dump(iq, kind, mc, sps, 80000000, 16, receiver)
+                    decode_dump(iq, (kind-1)%2+1, mc, sps, input_rate, input_frames, receiver, replay=kind>2)
         print("input stream: TS/GCS, split reads, startup/starvation/recovery, allocation cleanup, every DAC word: ok")
         if input_only:
             return

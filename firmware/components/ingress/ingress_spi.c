@@ -59,6 +59,7 @@ static void spi_rx_reset(void)
 static void rearm(void *ctx, ingress_desc *slot, bool restart)
 {
     (void)ctx;
+    if (s.cfg.replay) { ingress_replay_release(&s.ring, slot); return; }
     portENTER_CRITICAL(&s.lock);
     if (restart) {
         if (!gpio_get_level(s.cfg.cs)) { portEXIT_CRITICAL(&s.lock); return; }
@@ -83,7 +84,9 @@ static IRAM_ATTR bool on_eof(gdma_channel_handle_t chan, gdma_event_data_t *even
     portEXIT_CRITICAL_ISR(&s.lock);
     const bool woke = s.cfg.received ? s.cfg.received(s.cfg.ctx) : false;
     s.stats.eof_irqs++;
-    s.stats.isr_cycles += esp_cpu_get_cycle_count() - t0;
+    const uint32_t cycles = esp_cpu_get_cycle_count() - t0;
+    s.stats.isr_cycles += cycles;
+    if (cycles > s.stats.isr_max) s.stats.isr_max = cycles;
     return woke;
 }
 
@@ -123,14 +126,17 @@ esp_err_t ingress_spi_start(const ingress_spi_config *cfg, ingress_ring **ring)
             if (pins[i] == pins[j]) return ESP_ERR_INVALID_ARG;
     }
     s.cfg = *cfg;
-    s.stats.eof_irqs = s.stats.isr_cycles = 0;
-    s.buffers = heap_caps_aligned_alloc(4, INGRESS_SLOTS * INGRESS_SLOT_BYTES,
+    s.stats.eof_irqs = s.stats.isr_cycles = s.stats.isr_max = 0;
+    s.buffers = cfg->buffers[0] ? NULL : heap_caps_aligned_alloc(4, INGRESS_SLOTS * INGRESS_SLOT_BYTES,
                                         MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-    if (!s.buffers) {
+    if (!cfg->buffers[0] && !s.buffers) {
         return ESP_ERR_NO_MEM;
     }
     s.hw = (ingress_hw){.rearm = rearm, .ready = set_ready};
     ingress_init(&s.ring, s.buffers, &s.hw);
+    if (cfg->buffers[0])
+        for (unsigned i = 0; i < INGRESS_SLOTS; ++i) s.ring.desc[i].buf = cfg->buffers[i];
+    s.ring.type = 0;
 
     esp_err_t err = spicommon_bus_alloc(HOST, "ingress");
     if (err != ESP_OK) {
@@ -179,7 +185,7 @@ esp_err_t ingress_spi_start(const ingress_spi_config *cfg, ingress_ring **ring)
     spi_ll_disable_intr(s.spi, UINT32_MAX);
     spi_ll_clear_intr(s.spi, UINT32_MAX);
     spi_rx_reset();
-    gdma_start(s.rx, (intptr_t)&s.ring.desc[0]);
+    if (!cfg->replay) gdma_start(s.rx, (intptr_t)&s.ring.desc[0]);
 
     connect_input(cfg->sclk, spi_periph_signal[HOST].spiclk_in, false);
     connect_input(cfg->cs, spi_periph_signal[HOST].spics_in, true);
@@ -194,7 +200,7 @@ esp_err_t ingress_spi_start(const ingress_spi_config *cfg, ingress_ring **ring)
     gpio_set_level(cfg->ready, 0);
 
     portENTER_CRITICAL(&s.lock);
-    ingress_update_ready(&s.ring);
+    if (!cfg->replay) ingress_update_ready(&s.ring);
     portEXIT_CRITICAL(&s.lock);
     *ring = &s.ring;
     return ESP_OK;

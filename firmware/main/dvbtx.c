@@ -345,6 +345,7 @@ done:
 
 static void release(void)
 {
+    spi_input_buffers(NULL, 0, NULL, 0);
     if (cache_configured) {
         const uint32_t regs[] = {EXTMEM_IBUS_TO_FLASH_START_VADDR_REG,
             EXTMEM_IBUS_TO_FLASH_END_VADDR_REG, EXTMEM_DBUS_TO_FLASH_START_VADDR_REG,
@@ -422,6 +423,8 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
     }
     const uint32_t internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     const size_t payload_bytes = (mode->kbch - 80) / 8;
+    const bool input = spi_input_type() != 0;
+    size_t store_used = shaper_table_words(sps, mode->bits_per_symbol) * 4;
     enc.packed = sps != 40;
     enc.quads = quads;
     dvb.table.n = sps;
@@ -441,6 +444,7 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
         // 12,420 B reclaimed rather than 8,352 B, saving another 4,068 heap bytes.
         const size_t extra = sps == 4 ? (sizeof *enc.ws+15) & ~(size_t)15 : stored*frame;
         enc.filler = base+extra;
+        store_used = used+extra+dummy;
         if (used+extra+dummy > sizeof shaper_store) {
             release();
             return 0;
@@ -448,11 +452,12 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
     } else if (enc.packed) {
         const size_t frame = packed_bytes(symbols), dummy = packed_bytes(DVBS2_DUMMY_SYMBOLS);
         const size_t used = short_pulse ? 16384 : shaper_table_words(sps, mode->bits_per_symbol) * 4;
-        const size_t need = 2 * frame + dummy + payload_bytes;
+        const size_t need = 2 * frame + dummy + (input ? 0 : payload_bytes);
         uint8_t *base;
         if (mode->bits_per_symbol == 2) {
             // QPSK's 4/8 KiB table leaves room for all frames, dummy and payload.
-            const size_t total = nslots * frame + dummy + payload_bytes;
+            const size_t total = nslots * frame + dummy + (input ? 0 : payload_bytes);
+            store_used = used+total;
             if (used + total > sizeof shaper_store) {
                 printf("@{\"cmd\":\"%s\",\"error\":\"internal ring does not fit\"}\n", cmd);
                 release();
@@ -472,6 +477,7 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
                     return 0;
                 }
                 base = (uint8_t *)shaper_store + used;
+                store_used = total;
                 if (short_pulse) enc.slot[2] = base + ((need + 15) & ~(size_t)15);
                 else {
                     enc.slot[2] = enc.block = heap_caps_aligned_alloc(16, frame, internal);
@@ -488,18 +494,21 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
             }
         }
     }
-    // Both fast QPSK rates keep workspace and byte BCH off the shared cache.
+    // Fast QPSK keeps its workspace internal. Synthetic input can also cache byte BCH.
     const bool resident = enc.packed && (mode->bits_per_symbol == 2 || sps == 4);
-    enc.fast = heap_caps_aligned_alloc(16, dvbs2_fast_mode_size(mode), internal);
+    // The slow 8-sps 8PSK path already uses cached PSRAM for its workspace.
+    // Keep its context there too when SPI is selected, reserving internal RAM for Wi-Fi.
+    enc.fast = heap_caps_aligned_alloc(16, dvbs2_fast_mode_size(mode),
+                                      input && enc.packed && !resident ? MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT : internal);
     enc.ws = quads && sps == 4 ? (dvbs2_workspace *)(shaper_store + QPSK_TABLE_WORDS(4)) :
         heap_caps_aligned_alloc(16, sizeof *enc.ws,
                                resident ? internal : MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     dvb.win_bytes = quads ? 2 + (RADIO_S3_BANK_WORDS + 8*sps-2)/(4*sps) + 1 :
                            SHAPER_HISTORY + (RADIO_S3_BANK_WORDS + sps - 1) / sps + 2;
-    if (quads) enc.payload = dvbs2_fast_payload(enc.fast);
+    if (quads || (input && enc.packed)) enc.payload = dvbs2_fast_payload(enc.fast);
     dvb.win = resident ? (enc.ws ? (uint8_t *)enc.ws + DVBS2_FAST_WORKSPACE_USED : NULL) :
                         heap_caps_aligned_alloc(16, dvb.win_bytes, internal);
-    if (resident && mode->t > 8)
+    if (resident && mode->t > 8 && !input)
         enc.bch = heap_caps_aligned_alloc(16, DVBS2_BCH_CACHE_BYTES, internal);
     if (!enc.packed) {
         // QPSK: main's order and sizes, so the PSRAM addresses, and with them the data cache
@@ -514,10 +523,11 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
     // At 8-sps 8PSK the PSRAM workspace needs the sparse mapper's smaller
     // cache footprint. Its temporary phases reuse the existing context scratch.
     if (!dvb.win || !enc.fast || !enc.ws || !enc.payload || !enc.filler || !taps ||
-            (resident && mode->t > 8 && !enc.bch) || (!enc.packed && !enc.slots) ||
+            (resident && mode->t > 8 && !input && !enc.bch) || (!enc.packed && !enc.slots) ||
             (quads && !enc.slot[nslots-1]) ||
             dvbs2_fast_prepare(enc.fast, mode, PILOTS,
                               15 | (quads ? DVBS2_MAP_QUADS : 0) |
+                              (input ? DVBS2_BCH_NIBBLE : 0) |
                               (resident ? 0 : DVBS2_BCH_NIBBLE | DVBS2_MAP_SPARSE)) ||
             (enc.bch && dvbs2_fast_cache_bch(enc.fast, enc.bch))) {
         printf("@{\"cmd\":\"%s\",\"error\":\"allocation failed\"}\n", cmd);
@@ -556,6 +566,13 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
         ring_init(&dvb.ring, enc.slots, RING_SLOTS, enc.filler, symbols);
     }
     ring_filler_length(&dvb.ring, DVBS2_DUMMY_SYMBOLS);
+
+    const size_t tail = (store_used+15) & ~(size_t)15;
+    const size_t ws_used = (DVBS2_FAST_WORKSPACE_USED+dvb.win_bytes+15) & ~(size_t)15;
+    spi_input_buffers(tail < sizeof shaper_store ? (uint8_t *)shaper_store+tail : NULL,
+                      tail < sizeof shaper_store ? sizeof shaper_store-tail : 0,
+                      resident ? (uint8_t *)enc.ws+ws_used : NULL,
+                      resident && ws_used < sizeof *enc.ws ? sizeof *enc.ws-ws_used : 0);
 
     enc.exited = xSemaphoreCreateBinaryStatic(&exited_storage);
     if (xTaskCreatePinnedToCore(encoder_task, "encoder", 4096, &enc, ENCODER_PRIORITY, &enc.task, 0)
@@ -605,6 +622,7 @@ static void stop_encoder(void)
     vTaskDelete(enc.task);
     const ring_t *r = &dvb.ring;
     spi_input_print();
+    printf(",\"fast_memory\":\"%s\"", spi_input_type() && enc.mode->bits_per_symbol == 3 && dvb.table.n == 8 ? "psram" : "internal");
     printf(",\"input_pending\":%" PRIu32, enc.input_pending);
     printf(",\"input_waits\":%" PRIu32 ",\"input_partial\":%" PRIu32
            ",\"input_frame_cycles_max\":%" PRIu32,

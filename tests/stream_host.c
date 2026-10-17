@@ -19,10 +19,31 @@ extern uint32_t sim_transfer(void *, const uint8_t *, uint32_t);
 static void *input_sim;
 static unsigned native_input, input_seq, input_reads;
 static volatile bool input_empty;
+static bool native_replay;
+static uint8_t *native_buffers[INGRESS_SLOTS];
+extern void sim_set_buffer(void *, unsigned, uint8_t *);
+extern void sim_replay(void *, unsigned);
+void spi_input_buffers(uint8_t *tail, size_t n, uint8_t *ws, size_t m) {
+    // Borrowed DMA slots must fit and stay disjoint from every live encoder region.
+    memset(native_buffers, 0, sizeof native_buffers);
+    if (!native_input) return;
+    assert(!((uintptr_t)tail & 3) && !((uintptr_t)ws & 3));
+    if (tail) assert(tail >= (uint8_t *)shaper_store && tail+n <= (uint8_t *)(shaper_store+SHAPER_STORE_WORDS));
+    unsigned count = 0;
+    for (size_t at = 0; tail && at+INGRESS_SLOT_BYTES <= n && count < INGRESS_SLOTS; at += INGRESS_SLOT_BYTES)
+        native_buffers[count++] = tail+at;
+    for (size_t at = 0; ws && at+INGRESS_SLOT_BYTES <= m && count < INGRESS_SLOTS; at += INGRESS_SLOT_BYTES)
+        native_buffers[count++] = ws+at;
+    if (count < INGRESS_SLOTS) memset(native_buffers, 0, sizeof native_buffers);
+    if (ws) assert(ws >= (uint8_t *)enc.ws+DVBS2_FAST_WORKSPACE_USED+dvb.win_bytes && ws+m <= (uint8_t *)(enc.ws+1));
+}
 unsigned spi_input_type(void) { return native_input; }
 esp_err_t spi_input_start(void) {
     if (native_input) {
         input_sim = sim_new(); sim_ring(input_sim)->type = native_input;
+        if (native_buffers[0])
+            for (unsigned i = 0; i < INGRESS_SLOTS; ++i) sim_set_buffer(input_sim, i, native_buffers[i]);
+        if (native_replay) sim_replay(input_sim, native_input);
         input_seq = input_reads = 0;
     }
     return ESP_OK;
@@ -31,7 +52,7 @@ size_t spi_input_read(uint8_t *dst, size_t n) {
     if (input_empty || (++input_reads % 7) == 0) return 0; // starvation between partial reads
     ingress_ring *r = sim_ring(input_sim);
     uint8_t msg[PV_MSG_BYTES];
-    while (r->ready) {
+    while (!native_replay && r->ready) {
         ingress_pattern(msg + PV_HEADER_BYTES, input_seq, native_input);
         pv_seal(msg, native_input, input_seq++, PV_PAYLOAD_MAX);
         assert(sim_transfer(input_sim, msg, sizeof msg) == sizeof msg);
@@ -155,6 +176,7 @@ int main(int argc, char **argv)
     const unsigned pulse = argc >= 7 ? atoi(argv[6]) : 0;
     const bool quads = pulse == 2 || sps == 3, short_pulse = pulse == 1;
     if (argc == 9) native_input = atoi(argv[8]);
+    if (native_input > 2) { native_replay = true; native_input -= 2; }
     const dvbs2_mode *mode = dvbs2_find_mode(mc);
     const size_t length = dvbs2_frame_symbols(mode, 1), bytes = (mode->kbch - 80) / 8;
     phase_count = (frames + 2) * length;
@@ -166,7 +188,7 @@ int main(int argc, char **argv)
     uint8_t *source = malloc((frames+4)*bytes + PV_PAYLOAD_MAX);
     if (native_input)
         for (unsigned j = 0; j < (frames+4)*bytes; j += PV_PAYLOAD_MAX)
-            ingress_pattern(source+j, j/PV_PAYLOAD_MAX, native_input);
+            ingress_pattern(source+j, native_replay ? (j/PV_PAYLOAD_MAX)%INGRESS_SLOTS : j/PV_PAYLOAD_MAX, native_input);
     for (unsigned f = 0; f < frames + 2; ++f) {
         if (native_input) memcpy(payload, source+f*bytes, bytes);
         else {
@@ -186,7 +208,7 @@ int main(int argc, char **argv)
     const int allocations = allocation_count;
     const bool resident = sps != 40 && (mc < 12 || sps == 4);
     assert(allocations == (sps == 40 ? 7 : 3 + (mc >= 12 && !short_pulse) +
-                          (resident && mode->t > 8) + !resident));
+                          (resident && mode->t > 8 && !native_input) + !resident));
     for (unsigned i = 0; i < 64; ++i) {
         if (native_blocks[i].p == enc.ws)
             assert(native_blocks[i].caps == ((resident ? MALLOC_CAP_INTERNAL : MALLOC_CAP_SPIRAM) | MALLOC_CAP_8BIT));

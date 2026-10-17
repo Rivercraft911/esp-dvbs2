@@ -21,11 +21,14 @@ typedef struct {
     int sclk, cs, d0, d1, d2, d3, ready; /* seven distinct GPIO numbers */
     bool (*received)(void *ctx); /* optional EOF ISR notification; return task-woken flag */
     void *ctx;
+    uint8_t *buffers[INGRESS_SLOTS]; /* optional borrowed internal DMA slots, each 1336 B */
+    bool replay; /* diagnostic: presealed ring, DMA idle, no external sender */
     bool loopback;  /* the pads are driven by an on-chip master: only connect the slave inputs */
 } ingress_spi_config;
 
 typedef struct {
     uint32_t eof_irqs;      /* end-of-frame interrupts taken */
+    uint32_t isr_max;       /* maximum callback window, entry/exit excluded */
     uint32_t isr_cycles;    /* CPU cycles inside the interrupt callback (not entry and exit) */
 } ingress_spi_stats;
 

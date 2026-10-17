@@ -41,6 +41,20 @@ def main():
     rejected(pace)
     pace['underruns'] = 1
     record_check(pace)
+    wifi = dict(cmd='wifimem', status='ESP_OK', encoder_failed=False, input='ts',
+                spi=spi, frames_encoded=0, input_bytes=0, input_cycles=0,
+                frames_played=0, positions=0, max_fill_call_cycles=0,
+                wifi_free_up=20000, wifi_min_free=20000)
+    record_check(wifi)  # receive-only heap probe does not need an external source
+    for key in ('wifi_free_up', 'wifi_min_free'):
+        bad = copy.deepcopy(wifi); bad[key] = 19999; rejected(bad)
+    demo = copy.deepcopy(pace)
+    demo.update(command='dvbpace 13 10m 30', input_fault=0, underruns=0, sps=4,
+                frame_symbols=22194, symbol_rate=10000000, encode_cycles_live_max=532656)
+    record_check(demo)
+    demo['encode_cycles_live_max'] += 1; rejected(demo)
+    demo.update(encode_cycles_live_max=532656, input_copy_cycles=2, input_cycles=1)
+    rejected(demo)
     print('SPI run gates: corruption, CRC, loss, throughput, starvation and timing: ok')
 
 

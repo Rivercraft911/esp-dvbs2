@@ -2,10 +2,12 @@
  * Portable C99. INGRESS_IRAM places the per-message path in ESP32 instruction RAM, as the
  * end-of-frame interrupt calls ingress_update_ready. Little-endian targets only. */
 #include "ingress.h"
+#include "ingress_pattern.h"
 
 #include <string.h>
 
 #ifdef INGRESS_IRAM
+#include "esp_cpu.h"
 #define HOT __attribute__((section(".iram1"), noinline))
 #else
 #define HOT
@@ -133,13 +135,33 @@ void ingress_init(ingress_ring *r, uint8_t *buffers, const ingress_hw *hw)
     r->ready = -1;
     for (int i = 0; i < INGRESS_SLOTS; ++i) {
         ingress_desc *d = &r->desc[i];
-        d->buf = buffers + i * INGRESS_SLOT_BYTES;
+        d->buf = buffers ? buffers + i * INGRESS_SLOT_BYTES : NULL;
         d->next = i + 1 < INGRESS_SLOTS ? &r->desc[i + 1] : NULL;
         d->dw0 = INGRESS_OWNER_DMA | INGRESS_SLOT_BYTES;
     }
     if (!crc_ready) {
         crc_init();
     }
+}
+
+/* Replay deliberately repeats sequence 0..SLOTS-1. It measures the actual parser,
+ * CRC, split copies and descriptor releases, with presealed data and no producer.
+ * Reset only sequence tracking; transport sequence tests use the normal DMA model. */
+void ingress_replay_fill(ingress_ring *r)
+{
+    for (unsigned i = 0; i < INGRESS_SLOTS; ++i) {
+        ingress_desc *d = &r->desc[i];
+        ingress_pattern(d->buf + PV_HEADER_BYTES, i, r->type);
+        pv_seal(d->buf, r->type, i, PV_PAYLOAD_MAX);
+        d->dw0 = INGRESS_SLOT_BYTES | (PV_MSG_BYTES << 12) | INGRESS_EOF;
+    }
+}
+
+void ingress_replay_release(ingress_ring *r, ingress_desc *slot)
+{
+    r->seq_known = false;
+    slot->dw0 = INGRESS_SLOT_BYTES | (PV_MSG_BYTES << 12) | INGRESS_EOF;
+    ingress_update_ready(r);
 }
 
 HOT void ingress_update_ready(ingress_ring *r)
@@ -269,7 +291,15 @@ HOT size_t ingress_read(ingress_ring *r, uint8_t *dst, size_t n)
             }
         }
         const size_t k = n - done < r->left ? n - done : r->left;
+#ifdef INGRESS_IRAM
+        const uint32_t t0 = esp_cpu_get_cycle_count();
+#endif
         memcpy(dst + done, r->data, k);
+#ifdef INGRESS_IRAM
+        const uint32_t cycles = esp_cpu_get_cycle_count()-t0;
+        r->copy_cycles += cycles;
+        if (cycles > r->copy_max) r->copy_max = cycles;
+#endif
         r->data += k;
         r->left -= k;
         done += k;
