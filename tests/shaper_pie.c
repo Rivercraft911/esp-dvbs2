@@ -88,5 +88,7 @@ void app_main(void)
         }
     }
     if (tx_samples_check()) { puts("TX-SAMPLES-FAIL"); }
+    int qpsk_fill_check(void);
+    if (qpsk_fill_check()) puts("QPSK-FILL-FAIL");
     puts("QEMU-END");
 }
