@@ -52,6 +52,10 @@ static void bank_fill(radio_s3_fill_fn fn, void *ctx, unsigned b, uint64_t first
             assert(banks[b][(at + i) % RADIO_S3_BANK_WORDS] == reference[at % sps + i]);
         at += count;
     }
+    if (dvb.ring.packed) {
+        assert(dvb.shaped_words == dvb.sample_end);
+        assert(dvb.sample_end == first + RADIO_S3_BANK_WORDS);
+    }
     stats->fills++;
 }
 
@@ -84,7 +88,7 @@ int main(int argc, char **argv)
 {
     assert(argc == 4 || argc == 5);
     if (argc == 5) callsign = argv[4];
-    const unsigned mc = (unsigned)atoi(argv[1]), sps = (unsigned)atoi(argv[2]), frames = 16;
+    const unsigned mc = (unsigned)atoi(argv[1]), sps = (unsigned)atoi(argv[2]), frames = 40;
     const dvbs2_mode *mode = dvbs2_find_mode(mc);
     const size_t length = dvbs2_frame_symbols(mode, 1), bytes = (mode->kbch - 80) / 8;
     phase_count = (frames + 2) * length;

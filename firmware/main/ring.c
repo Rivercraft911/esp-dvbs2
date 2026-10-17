@@ -59,16 +59,23 @@ void ring_packed(ring_t *r)
     r->packed = 1;
 }
 
+void ring_packed_codes(ring_t *r)
+{
+    r->packed = 2;
+}
+
 #ifdef __XTENSA__
 // shaper_pie.S: 16 packed bytes (any alignment) to 32 phases at a 16-byte aligned dst.
 void shaper_unpack_pie(uint8_t *dst, const uint8_t *src, unsigned blocks);
+void shaper_unpack_codes_pie(uint8_t *dst, const uint8_t *src, unsigned blocks);
 #endif
 
-IRAM_ATTR void ring_unpack(uint8_t *dst, const uint8_t *packed, size_t at, size_t n)
+static inline __attribute__((always_inline)) void unpack(uint8_t *dst, const uint8_t *packed,
+                                                         size_t at, size_t n, unsigned shift)
 {
     const uint8_t *p = packed + at / 2;
     if (n && (at & 1)) {
-        *dst++ = *p++ >> 4;
+        *dst++ = (*p++ >> 4) << shift;
         --n;
     }
 #ifdef __XTENSA__
@@ -78,24 +85,35 @@ IRAM_ATTR void ring_unpack(uint8_t *dst, const uint8_t *packed, size_t at, size_
     if (!(head & 1) && n >= head + 32) {
         for (n -= head; head; head -= 2) {
             const uint8_t b = *p++;
-            dst[0] = b & 15;
-            dst[1] = b >> 4;
+            dst[0] = (b & 15) << shift;
+            dst[1] = (b >> 4) << shift;
             dst += 2;
         }
         const size_t blocks = n / 32;
-        shaper_unpack_pie(dst, p, (unsigned)blocks);
+        if (shift) shaper_unpack_codes_pie(dst, p, (unsigned)blocks);
+        else shaper_unpack_pie(dst, p, (unsigned)blocks);
         dst += 32 * blocks, p += 16 * blocks, n -= 32 * blocks;
     }
 #endif
     for (; n >= 2; n -= 2) {
         const uint8_t b = *p++;
-        dst[0] = b & 15;
-        dst[1] = b >> 4;
+        dst[0] = (b & 15) << shift;
+        dst[1] = (b >> 4) << shift;
         dst += 2;
     }
     if (n) {
-        *dst = *p & 15;
+        *dst = (*p & 15) << shift;
     }
+}
+
+IRAM_ATTR void ring_unpack(uint8_t *dst, const uint8_t *packed, size_t at, size_t n)
+{
+    unpack(dst, packed, at, n, 0);
+}
+
+IRAM_ATTR void ring_unpack_codes(uint8_t *dst, const uint8_t *packed, size_t at, size_t n)
+{
+    unpack(dst, packed, at, n, 4);
 }
 
 // Copy absolute symbols, retaining choices until no future overlap can read them.
@@ -148,7 +166,9 @@ static IRAM_ATTR int ring_read(ring_t *r, uint8_t *dst, int64_t first, size_t co
         const size_t at = (uint64_t)first - r->start[i];
         const size_t avail = r->end[i] - (uint64_t)first;
         const size_t part = avail < count ? avail : count;
-        if (r->packed) {
+        if (r->packed == 2) {
+            ring_unpack_codes(dst, src, at, part);
+        } else if (r->packed) {
             ring_unpack(dst, src, at, part);
         } else {
             memcpy(dst, src + at, part);

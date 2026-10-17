@@ -22,6 +22,24 @@ static int block_words(int n)
 
 uint32_t shaper_store[SHAPER_STORE_WORDS] __attribute__((aligned(16)));
 
+IRAM_ATTR void shaper_copy_words(uint32_t *dst, const uint32_t *src, size_t words)
+{
+    volatile uint32_t *out = dst;
+#ifdef __XTENSA__
+    void shaper_copy_pie(volatile uint32_t *, const uint32_t *, unsigned);
+    while (words && (((uintptr_t)out | (uintptr_t)src) & 15)) {
+        *out++ = *src++;
+        --words;
+    }
+    const size_t pairs = words / 8;
+    if (pairs) {
+        shaper_copy_pie(out, src, (unsigned)pairs);
+        out += pairs * 8, src += pairs * 8, words -= pairs * 8;
+    }
+#endif
+    while (words--) *out++ = *src++;
+}
+
 size_t shaper_table_words(int n, int bits)
 {
     return ((size_t)1 << (SPAN * bits)) * block_words(n);
@@ -148,9 +166,28 @@ IRAM_ATTR void shaper_samples(uint32_t *dst, const uint8_t *sym, unsigned skip, 
     shaper_samples_profile(dst, sym, skip, count, t, NULL, NULL);
 }
 
-IRAM_ATTR void shaper_samples_profile(uint32_t *dst, const uint8_t *sym, unsigned skip,
-                                     size_t count, const shaper_table_t *t,
-                                     stream_profile_t *whole, stream_profile_t *partial)
+static IRAM_ATTR void fill_codes(uint32_t *dst, const uint8_t *sym, int nsym,
+                                 const shaper_table_t *t)
+{
+#ifdef __XTENSA__
+    if (!nsym) return;
+    if (t->n == 4) {
+        shaper_fill4_all_pie(dst, sym, nsym, t->blocks);
+    } else if (t->n == 8) {
+        const int groups = (nsym - 1) / 6, bulk = 6 * groups + 1;
+        shaper_fill8_pie(dst, sym, groups, t->blocks);
+        shaper_fill_c(dst + bulk * 8, sym + bulk, nsym - bulk, t);
+    } else {
+        shaper_fill40_pie(dst, sym, nsym, t->blocks);
+    }
+#else
+    shaper_fill_c(dst, sym, nsym, t);
+#endif
+}
+
+static IRAM_ATTR void samples(uint32_t *dst, const uint8_t *sym, unsigned skip,
+                              size_t count, const shaper_table_t *t,
+                              stream_profile_t *whole, stream_profile_t *partial, int codes)
 {
     if (!count) {
         return;
@@ -159,7 +196,7 @@ IRAM_ATTR void shaper_samples_profile(uint32_t *dst, const uint8_t *sym, unsigne
     const unsigned n = t->n;
     if (skip) {
         const stream_mark_t before = partial ? stream_mark_for(partial) : (stream_mark_t){0};
-        shaper_fill_raw(part, sym++, 1, t);
+        (codes ? fill_codes : shaper_fill_raw)(part, sym++, 1, t);
         const size_t take = n - skip < count ? n - skip : count;
         memcpy(dst, part + skip, take * 4);
         dst += take, count -= take;
@@ -168,16 +205,30 @@ IRAM_ATTR void shaper_samples_profile(uint32_t *dst, const uint8_t *sym, unsigne
     const size_t symbols = count / n;
     if (symbols) {
         const stream_mark_t before = whole ? stream_mark_for(whole) : (stream_mark_t){0};
-        shaper_fill_raw(dst, sym, (int)symbols, t);
+        (codes ? fill_codes : shaper_fill_raw)(dst, sym, (int)symbols, t);
         if (whole) stream_record(whole, before, stream_mark_for(whole));
     }
     dst += symbols * n, count -= symbols * n, sym += symbols;
     if (count) {
         const stream_mark_t before = partial ? stream_mark_for(partial) : (stream_mark_t){0};
-        shaper_fill_raw(part, sym, 1, t);
+        (codes ? fill_codes : shaper_fill_raw)(part, sym, 1, t);
         memcpy(dst, part, count * 4);
         if (partial) stream_record(partial, before, stream_mark_for(partial));
     }
+}
+
+IRAM_ATTR void shaper_samples_profile(uint32_t *dst, const uint8_t *sym, unsigned skip,
+                                     size_t count, const shaper_table_t *t,
+                                     stream_profile_t *whole, stream_profile_t *partial)
+{
+    samples(dst, sym, skip, count, t, whole, partial, 0);
+}
+
+IRAM_ATTR void shaper_samples_codes_profile(uint32_t *dst, const uint8_t *sym, unsigned skip,
+                                           size_t count, const shaper_table_t *t,
+                                           stream_profile_t *whole, stream_profile_t *partial)
+{
+    samples(dst, sym, skip, count, t, whole, partial, 1);
 }
 
 // Stage row addresses on the producer core. The consumer needs rows[-6..nsym], one pointer

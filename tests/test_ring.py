@@ -18,12 +18,13 @@ SLOTS = 8        # RING_SLOTS in dvbtx.c
 
 
 def run(exe, *args, sps=40, dummy=None, split=False, cache=False, packed=False, margin=None,
-        fails=False):
+        fails=False, reuse=False):
     out = subprocess.run([str(exe), *map(str, args)], capture_output=True, text=True, env=dict(os.environ, RING_SPS=str(sps),
                          **({"RING_DUMMY": str(dummy)} if dummy else {}),
                          **({"RING_SPLIT": "1"} if split else {}),
                          **({"RING_CACHE": "1"} if cache else {}),
                          **({"RING_PACKED": "1"} if packed else {}),
+                         **({"RING_REUSE": "1", "RING_CODES": "1"} if reuse else {}),
                          **({"RING_CACHE_MARGIN": str(margin)} if margin is not None else {})))
     if fails:
         assert out.stdout.startswith("FAIL ring_window"), (args, out.stdout, out.stderr)
@@ -104,6 +105,16 @@ def test_ring():
             assert r["underruns"] == 0 and r["min_lead"] > 50 * two["min_lead"], (r, two)
         run(exe, "threads", 22194, 3, 80, 47, sps=4, dummy=3330, split=True, cache=True,
             packed=True)
+        # Finished-sample reuse makes fresh symbol reads monotonic, with ten history bytes.
+        # Cross every output-wrap offset, both nibble parities, starvation and slot reuse.
+        for sps, slots in ((4, 3), (8, 2)):
+            for load in (400, 800, 950, 1250):
+                r = run(exe, "sim", 22194, slots, 600, load, 0, 0, 1, sps=sps, dummy=3330,
+                        split=True, cache=True, packed=True, reuse=True)
+                limit = 950 if slots == 3 else 800
+                assert (r["underruns"] == 0) if load <= limit else r["underruns"] > 0, r
+            run(exe, "threads", 22194, slots, 120, 59, sps=sps, dummy=3330, split=True,
+                cache=True, packed=True, reuse=True)
         # The cache's two end symbols are needed at 8 sps (bank edges cut symbols), not at 4.
         run(exe, "sim", 22194, 2, 20, 400, 0, 0, 1, sps=8, dummy=3330, split=True, cache=True,
             packed=True, margin=0, fails=True)
