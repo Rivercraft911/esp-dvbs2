@@ -1,15 +1,16 @@
-# 8PSK offset queue
+# 8PSK queue checks
 
-`python3 tests/test_lofty.py --receiver /path/to/leandvb` checks the actual
-transmitter and all new DAC samples against Python, allocation failures,
-repeated commands, sequence wraps and three independent 16-frame decodes.
-It also checks the native kernel hashes against independent convolution.
-All retained waveforms remain in `tests/test_stream.py`.
+`python3 tests/test_lofty.py --receiver /path/to/leandvb` checks all new DAC
+words against the independent Python encoder and convolution, allocation
+failure cleanup, repeated commands, counter wraps and three 16-frame decodes.
+The kernel tests cover 4,320 guarded slices, 36 resident-cache mapper frames,
+96 QPSK sign-mapper frames and 4,095 fused QPSK render blocks. Context guards
+use each mode's actual allocation size. Native clocks and heap are synthetic.
 
 With ESP-IDF v6.1 active:
 
 ```sh
-IDF_COMPONENT_MANAGER=0 idf.py -C tests/lofty build
+IDF_COMPONENT_MANAGER=0 idf.py -C tests/lofty -DLOFTY_TRACE=OFF build
 (cd tests/lofty/build && python -m esptool --chip esp32s3 merge-bin \
   -o flash.bin --fill-flash-size 4MB @flash_args)
 qemu-system-xtensa -nographic -machine esp32s3 \
@@ -17,21 +18,21 @@ qemu-system-xtensa -nographic -machine esp32s3 \
   -serial file:notes/lofty-qemu.log -monitor none
 ```
 
-Stop at `QEMU-END`. Pass the log with `tests/test_lofty.py --qemu LOG`.
-Require 4,320 guarded sample slices, 36 mapper frames (all code rates and
-both pilot settings), zero errors and hashes equal to Python. Prepared
-offsets are also checked at every destination word alignment.
+Stop at `QEMU-END`. `tests/test_lofty.py --qemu notes/lofty-qemu.log` checks
+all table/sample hashes against Python, then runs the native checks. Require
+zero errors, intact guards and the 96-frame/4,095-block success messages.
 
-Rebuild with `-DLOFTY_TRACE=ON` for short encoder/render traces. Add QEMU
-`-d in_asm,exec,nochain -D notes/lofty.trace`; disassemble the same linked
-ELF with `xtensa-esp32s3-elf-objdump -d --no-show-raw-insn` and run:
+Rebuild with `-DLOFTY_TRACE=ON` for two successive frames at each of MODCODs
+13, 15, 17 and 11. This covers both 8PSK halfword offsets and persistent page
+positions. Add QEMU `-d in_asm,exec,nochain -D notes/lofty.trace`; disassemble
+the linked ELF with `xtensa-esp32s3-elf-objdump -d --no-show-raw-insn`, then:
 
 ```sh
 python3 host/lofty_cycles.py notes/lofty.trace notes/lofty.dis
 ```
 
-The trace sentinels mask interrupts only inside each kernel interval. The
-live transmitter does not. Replay counts executed instructions, per-lane
-PIE hazards and taken redirects. It never uses QEMU CCOUNT as timing.
-Cache/bus contention, real input, Wi-Fi, heap fragmentation and keyed
-qualification require the [coordinator](../../docs/lofty.md).
+The 49 intervals include six stages per frame (first publication separate
+from remaining publication) and one renderer. Sentinels mask interrupts only
+inside this fixture. Live firmware keeps interrupts enabled. Replay counts
+instructions, lane dependencies and redirects, never QEMU CCOUNT. Cache/bus
+stalls, Wi-Fi heap and deadlines need the [coordinator](../../docs/lofty.md).

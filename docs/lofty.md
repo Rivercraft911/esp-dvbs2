@@ -1,98 +1,91 @@
 # 8PSK at 80/3 Msym/s
 
-`26m667` now accepts 8PSK end to end. This is an offline candidate, not a
-measured operating point. The 9/10 trace model fits 15% reserve. The 2/3 and
-5/6 models meet the frame deadline but fail that reserve. No board or radio
-was accessed. [Evidence](../results/2026-10-17-eight-lofty/README.md).
+The candidate keeps the encoder's hot GCS tables in internal RAM. All three
+16-frame waveforms retain their CRCs and decode without corrections. Board
+admission is pending. The coordinator's `3cbf37c` image decoded correctly but
+starved its queue under flash-cache pressure. This round accessed no board or
+radio. [Records and limits](../results/2026-10-17-lofty-ram/README.md).
 
-## Waveform
+## Tables and framing
 
-The adopted candidate uses a five-symbol inverse-hold root-raised-cosine
-pulse, roll-off 0.35, three samples/symbol, Kaiser beta 1.5. Shortening to
-three or four symbols failed the Annex A mask in the pulse model. Five
-symbols pass. `host/lofty.py` independently derives the integer taps and
-checks the exact covariance of the rounded tables, including the DAC hold.
-At peak 128 its margins are +0.250 dB upper, +0.225 dB lower and +6.970 dB
-beyond the last mask point. The analog radio response is unknown.
+The five-symbol inverse-hold root-raised-cosine pulse is unchanged: roll-off
+0.35, three samples/symbol, Kaiser beta 1.5. `host/lofty.py` derives the taps,
+part rounding, waveform and rounded-table spectrum independently. Its ideal
+DAC-hold mask margins remain +0.250 dB upper, +0.225 dB lower and +6.970 dB
+far. The radio's analog response still needs measurement.
 
-Four output symbols occupy 12 samples. Their eight contributing symbols are
-[-4..3], split into [-4..-2], [-1..1], [2..3]. Each part is rounded once per
-axis in DAC LSB, using 2^-30 constellation coordinates and taps in 1/256 LSB.
-Offset-binary biases sum to 512 per axis. Adding the three packed words and
-XORing 0x80200 gives signed I/Q without cross-field carry. The newest pair
-contributes zero to the first vector. Its other two vectors are duplicated
-to absorb one otherwise unwanted index bit. Storage is
-`2*512*12*4 + 2*128*4*4 = 53248 B`.
+Four output symbols use the eight phases [-4..3], split into [-4..-2],
+[-1..1], [2..3]. Preserve all three independent roundings. The first part's
+last eight samples depend on only two phases; its first four need three.
+The newest part's duplicated rows are removed. Storage is now
+`512*4*4 + 64*8*4 + 512*12*4 + 2*64*4*4 = 36864 B`, saving 16,384 B.
+Keeping the last two vectors adjacent spends 896 B to save two renderer
+instructions per twelve samples. Offset-binary biases still sum to 512 per
+axis; packed additions followed by XOR `0x80200` produce the same DAC words.
 
-This avoids the large full-axis tables: five values across eight symbol
-positions would require 5^8 possibilities per axis. A 22.5-degree rotation
-reduces the alphabet to four values, but a six-symbol pulse still needs up
-to seven symbols per vector. Splitting weighted sign streams then needs
-four vector lookups instead of QPSK's two. Those estimates did not justify
-keeping another kernel. The retained solution instead folds address work
-into the producer and uses the shorter mask-compliant pulse.
-
-## Queue and cores
-
-For chronological packed phases `h` in the last eight symbols, the producer
-publishes one descriptor per four symbols:
+For chronological eight-phase history `h`, publication uses:
 
 ```
 A = (h >> 15) & 511; B = (h >> 6) & 511; C = h & 63
-descriptor = (3*A << 4) | (3*B << 15) | (C << 26)
+descriptor = (A << 4) | (3*B << 13) | (C << 24)
 ```
 
-The renderer extracts offsets at bits 0, 11 and 21. PIE vector loads ignore
-the low four address bits (ESP32-S3 TRM v1.8, 1.8.88). The C offset includes
-one B bit, handled by the duplicated rows. There is no bank preparation or
-multiply on core 1. Eight vector loads, fused additions and three stores
-render twelve samples in 22 model cycles, 1.833 cycles/sample.
+PIE vector loads ignore the low four address bits (ESP32-S3 TRM v1.8,
+1.8.88). The renderer costs 24 model cycles/twelve samples, versus 22 before.
+Only a board run can establish the changed SRAM contention and bank maximum.
 
-The new core-0 loops use cached flash instructions to preserve legacy heap
-floors; all core-1 fill code stays in IRAM. Instruction-cache effects still need
-a board measurement. Core 0 maps FEC bit planes through 256-entry and 16-entry tables. Their
-outputs OR together, so the mapping cache is 1,088 B. Header and pilot words are
-prepared once. A PIE pass publishes scaled histories, preserving partial
-groups and history across frame boundaries. All preparation remains timed
-inside MAP. Only full-queue waits are excluded.
+The encoder maps four phases per halfword into existing context scratch.
+It publishes a first page before expanding the rest of the PL frame. This
+keeps bulk framing out of the longest gap before publication. A 720 B run
+buffer and 320 B first-page buffer reuse idle LDPC scratch. Queue publication
+borrows those words directly. There is no intermediate page copy. Partial
+phase groups and descriptor history survive frame boundaries.
 
-There are 36 guarded 528 B pages, 128 groups and 1,536 samples per page.
-Twenty-three pages share the fixed 65,536 B store; thirteen use a 6,864 B
-internal allocation. The fast workspace uses 8,144 B separately. The static
-store and encoder stack sizes stay fixed. Queue coverage is 165,888 cycles. After the
-two-page wake threshold and one complete bank burst, 107,532 cycles remain
-for publication gaps and wake allowance. Counters use acquire/release;
-physical cursors survive sequence wrap.
+## RAM and coverage
 
-## Limits and coordinator gate
+The fixed store holds `36864 + 38*528 + 8144 = 65072 B`: pulse tables,
+guarded pages and workspace. MODCODs 13/15/17 use 48/49/44 pages, with
+5,280/5,808/3,168 B of additional queue heap. Complete resident encoder data,
+including the mapper, use 23,024/24,176/24,320 B. PRBS storage is sized to the
+active BB frame; BCH, Gold, LDPC program/columns and header CRC stay resident.
+All stage work and input copies remain timed. Only full-queue waits are excluded.
 
-At 240 MHz and 80 MS/s, a 15,740-sample bank lasts 47,220 cycles. Its 85%
-ceiling is 40,137. A normal pilot-bearing 8PSK frame has 22,194 symbols
-(EN 302 307-1, 5.5/Table 11), hence `22194*3*3 = 199746 cycles/frame` and a
-169,784-cycle ceiling. Payload bit rate is `(Kbch-80)*(80e6/3)/22194`:
-51.618, 64.594 and 69.823 Mb/s for 2/3, 5/6 and 9/10.
+At 240 MHz and 80 MS/s, each page covers `1536*3 = 4608 cycles`. After the
+two-page wake threshold and a complete 16,380-sample bank burst, coverage is
+`((pages-2)*1536-16380)*3`: 162,828/167,436/144,396 cycles. The gate compares
+this against the measured publication gap plus wake cost. More queue coverage
+does not establish average encoder capacity.
 
-The trace model includes all encoder/framing/preparation instructions and a
-4,823-cycle input-copy planning floor from the main SPI measurement. It
-excludes silicon cache/bus stalls and Wi-Fi interrupts. A 25% inflation
-sensitivity fails even at 9/10. The fill prediction transfers main QPSK's
-measured residual and adds 1,000 cycles for the changed wrapper. Neither is
-a hardware bound. In particular, 2/3 and 5/6 are not reserve-qualified;
-no slower fallback above 20 Msym/s has been established for those rates.
+The main merge places allocator code in flash. Linked heap space improves,
+but Wi-Fi allocation and fragmentation still need the coordinator's probe.
+The record estimates internal minima from the previous silicon run and actual
+allocation/linker deltas. No host heap counter is used as a measurement.
 
-After the coordinator builds/flashes this revision with N0CALL stored:
+## Main regressions and admission
+
+Synthetic 8PSK 9/10 at 5m uses paired byte BCH instead of register-nibble BCH.
+QPSK uses fused load/add/store for disjoint I/Q fields, and vector prefix
+updates for sign histories. Its 50-page/four-page wake geometry preserves
+`50-4 = 54-8` pages of post-wake coverage and shares 2,320 B of resident
+encoder data with the store. Every original 2% ceiling and heap floor remains
+pinned in `tests/data/lofty_gates.json`.
+
+An 8PSK frame lasts `22194*3*240e6/80e6 = 199746 cycles`; 85% is 169,784.
+The bank deadline is `15740*3 = 47220 cycles`, with a 40,137-cycle ceiling.
+Frame sizes follow EN 302 307-1 clause 5.5; bank geometry is in `radio_s3.h`.
+Trace replay excludes cache/bus stalls and interrupt delays. It establishes
+neither silicon timing nor admission; the full 15% goal remains open.
+
+After the coordinator builds/flashes the committed revision with N0CALL:
 
 ```sh
-host/check.sh --lofty --plan
 PYTHON=/Library/Frameworks/Python.framework/Versions/3.13/bin/python3 \
 RX=/Users/river/Documents/stanford/SSI/esp-dvbs2/notes/leansdr/src/apps/leandvb \
-  host/check.sh --lofty notes/eight-lofty-board
+  host/check.sh --lofty notes/eight-lofty-round2-board
 ```
 
-The runner prints criteria first, keeps going, runs 10 s main regressions
-with unchanged ceilings/floors before the candidate, then 16-frame dumps,
-LeanDVB, 20/20/10 s Wi-Fi-up paces and heap probes. Both cores must retain
-15%, heap up/min must reach 20,000 B, stack must retain 512 B, and every
-queue/overlap/deadline check must pass. An overall admission failure is
-expected if the lower code rates retain the modelled costs. It never
-flashes, writes NVS or transmits. Keyed qualification is still separate.
+`--plan` opens no device. The slim runner keeps going, runs main first,
+then dumps/decodes all three candidates and runs 20/20/10 s Wi-Fi-up paces.
+Both cores must retain 15%, free/minimum heap must reach 20,000 B, stack
+must retain 512 B, and queue/overlap/deadline checks must pass. It never
+flashes, writes NVS or transmits. Keyed qualification remains separate.
