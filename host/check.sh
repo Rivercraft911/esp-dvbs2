@@ -30,10 +30,10 @@ golden = json.loads(pathlib.Path('tests/data/waveform_crcs.json').read_text())
 selected = ['4/40/40/16', '13/8/40/16', '13/4/40/40',
             '4/4/80/16', '11/4/80/16', '13/4/80/16', '15/4/80/16',
             '4/3/80/16', '11/3/80/16']
+main_selected = selected[:]
 if a.moonshot:
     golden.update(json.loads(pathlib.Path('tests/data/moon_stream_crcs.json').read_text()))
-    selected = ['4/40/40/16','13/8/40/16','15/4/80/16',
-                '11/12/80/16','17/12/80/16','17/3/80/16']
+    selected += ['11/12/80/16','17/12/80/16','17/3/80/16']
 if a.all_crcs: selected = list(golden)
 # Every modulation/rate path; 30 s for the four critical paths, 10 s for regressions.
 # Sources are immutable 30 s board measurements; their cycle ceilings are never relaxed.
@@ -43,8 +43,9 @@ paces = [(4,'',10,'2026-10-17-next4','dvbpace 4 30'),
          (11,'20m',30,'2026-10-17-qpsk-goal','dvbpace 11 20mq4 30'),
          (11,'26m667',30,'2026-10-17-qpsk-goal','dvbpace 11 26m667 30'),
          (17,'5m',30,'2026-10-17-qpsk-goal','dvbpace 17 5m 30'),
-         (13,'10m',10,'2026-10-17-next4','dvbpace 13 10m 30'),
+         (13,'10m',30,'2026-10-17-next4','dvbpace 13 10m 30'),
          (15,'20m',30,'2026-10-17-next4','dvbpace 15 20ms6 30')]
+main_paces = paces[:]
 if a.encoder:
     selected = ['11/3/80/16','17/4/80/16','13/4/80/16','15/4/80/16',
                 '13/8/40/16','4/40/40/16']
@@ -55,6 +56,7 @@ if a.encoder:
              (13,'20m',30,'2026-10-17-next4','dvbpace 13 20ms6 30'),
              (15,'20m',30,'2026-10-17-next4','dvbpace 15 20ms6 30'),
              (17,'5m',10,'2026-10-17-qpsk-goal','dvbpace 17 5m 30')]
+selected = list(dict.fromkeys(main_selected+selected))
 if a.all_crcs: selected = list(golden)
 metrics = ('max_fill_cycles','encode_cycles_mean','encode_cycles_live_max')
 
@@ -65,25 +67,34 @@ def baseline(topic, command):
     assert len(found) == 1, (topic,command,len(found))
     return found[0]
 
+main_limits = [{k:baseline(topic,cmd)[k]*102//100 for k in metrics} for _,_,_,topic,cmd in main_paces]
 limits = [{k:baseline(topic,cmd)[k]*102//100 for k in metrics} for _,_,_,topic,cmd in paces]
 if a.encoder: limits[1] = {'max_fill_cycles':limits[1]['max_fill_cycles']}
 # Exact previously measured heap floors: free with Wi-Fi up / command low-water, bytes.
 wifi = [(17,'5m',22351,22351), (11,'26m667',43203,41387), (13,'20m',36727,34875)]
 if a.encoder: wifi = [(17,'5m',20480,20480), (11,'26m667',20480,20480), (17,'20m',20480,20480)]
 
+main_wifi = wifi[:] if not a.encoder else [(17,'5m',22351,22351), (11,'26m667',43203,41387), (13,'20m',36727,34875)]
 if a.moonshot:
     # Exact 240 MHz deadlines, 15% reserve. No host-clock timing thresholds.
-    paces = [paces[4], paces[7]] + [(mc,token,30,None,None) for mc,token in
+    paces = [(mc,token,30,None,None) for mc,token in
                                   ((11,'33m333'),(17,'33m333'),(17,'26m667'))]
-    limits = [limits[4],limits[7]]
-    for mc,token,_,_,_ in paces[2:]:
+    limits = []
+    for mc,token,_,_,_ in paces:
         num,den = (12,5) if token == '33m333' else (3,1)
         symbols = 33282 if mc < 12 else 22194
         ceiling = 240000000*symbols*num*85//(80000000*den*100)
         limits.append(dict(max_fill_cycles=40137, encode_cycles_mean=ceiling,
                            encode_cycles_live_max=ceiling))
-    wifi = [(17,'5m',22351,22351)] + [(mc,token,20000,20000) for mc,token in
+    wifi = [(mc,token,20000,20000) for mc,token in
                                    ((11,'33m333'),(17,'33m333'),(17,'26m667'))]
+
+# Baselines always run first, in this same session. Candidate checks add to them.
+extra_paces = [(p,l) for p,l in zip(paces,limits)
+               if (p[0],p[1]) not in {(b[0],b[1]) for b in main_paces}]
+extra_wifi = [w for w in wifi if w[:2] not in {b[:2] for b in main_wifi}]
+paces, limits = main_paces+[p for p,_ in extra_paces], main_limits+[l for _,l in extra_paces]
+wifi = main_wifi+extra_wifi
 
 def mode(mc, token):
     sps = {'':40,'5m':8,'10m':4,'20m':4,'26m667':3,'33m333':12}[token]
@@ -107,7 +118,9 @@ print('  recovers >=N-2 QPSK frames; 8PSK allows <=1 leading acquisition frame a
 print('  with zero LDPC checks/flips, BCH errors/corrections and payload errors.')
 for key in selected: print('  dump', dump_args(key), 'CRC32', golden[key])
 print('Paces: selected 30 s key runs and 10 s regressions; zero late fills/switches/fatal lateness, positive slack, live encoder, conserved fill words.')
-print('Pace input: eight precomputed PSRAM frames, measured copy and station header; all four PIE stage bits active.')
+print('Hard gate: every retained main dump and pace runs first; all three timing metrics <=102% of the fixed main measurements.')
+print('A candidate is ineligible if any main gate fails, even when its own pace passes.')
+print('Pace input: main modes use the main synthetic source; candidate copies are timed separately; all four PIE stage bits active.')
 for (mc,token,seconds,topic,old),limit in zip(paces,limits):
     print(f'  {mc} {token or "1m"}, {seconds} s: ceilings {limit} cycles (encoder cycles/frame); '+(f'<=102% of {topic}: {old}' if topic else '85% of the exact deadline'))
 for mc,token,up,low in wifi: print(f'  wifimem {mc} {token}: up >= {up} B, minimum >= {low} B; no playback.')
@@ -268,12 +281,30 @@ step('all host waveform CRCs', lambda:run([python,'tests/test_stream.py'],'host-
 if a.moonshot: step('new host streams', lambda:run([python,'tests/test_rational.py'],'host-new.log'))
 step('info',info)
 step('fecbench pie',fec)
-for key in selected:
-    step('dump '+key,lambda key=key:dump(key))
-    step('decode '+key,lambda key=key:decode(key))
-for (mc,token,seconds,_,_),limit in zip(paces,limits):
-    step(f'pace {mc} {token or "1m"}',lambda mc=mc,token=token,seconds=seconds,limit=limit:pace(mc,token,seconds,limit))
-for args in wifi: step(f'wifimem {args[0]} {args[1]}',lambda args=args:memory(*args))
+def check_dumps(keys):
+    for key in keys:
+        step('dump '+key,lambda key=key:dump(key))
+        step('decode '+key,lambda key=key:decode(key))
+
+def check_paces(runs, ceilings):
+    for (mc,token,seconds,_,_),limit in zip(runs,ceilings):
+        step(f'pace {mc} {token or "1m"}',lambda mc=mc,token=token,seconds=seconds,limit=limit:pace(mc,token,seconds,limit))
+
+def check_memory(probes):
+    for args in probes: step(f'wifimem {args[0]} {args[1]}',lambda args=args:memory(*args))
+
+def require_passes():
+    failed = [label for label,verdict,_ in summary if verdict == 'FAIL']
+    assert not failed, 'ineligible: '+', '.join(failed)
+
+check_dumps(main_selected)
+check_paces(main_paces,main_limits)
+check_memory(main_wifi)
+step('main regression gate',require_passes)
+check_dumps([key for key in selected if key not in main_selected])
+check_paces([p for p,_ in extra_paces],[l for _,l in extra_paces])
+check_memory(extra_wifi)
+if a.moonshot or a.encoder: step('candidate admission',require_passes)
 print('\nEvery result:')
 print((out/'summary.tsv').read_text(),end='')
 failed = sum(verdict == 'FAIL' for _,verdict,_ in summary)

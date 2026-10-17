@@ -80,6 +80,18 @@ else:
    r['encode_kernel_cycles_mean']=r['encode_kernel_cycles_live_max']=125827
    if bad and mc==13:r['encode_kernel_cycles_mean']+=1
    if bad and mc==15:r['encode_kernel_cycles_live_max']+=1
+  if not moon:
+   commands={'4 ': 'dvbpace 4 30','11 5m':'dvbpace 11 5m 30','11 10m':'dvbpace 11 10m 30',
+             '11 20m':'dvbpace 11 20mq4 30','11 26m667':'dvbpace 11 26m667 30',
+             '17 5m':'dvbpace 17 5m 30','13 10m':'dvbpace 13 10m 30','15 20m':'dvbpace 15 20ms6 30'}
+   key=f'{mc} {token}'
+   if key in commands and not bad:
+    records=[json.loads(l) for f in pathlib.Path('results').glob('*/*.jsonl') for l in f.read_text().splitlines()]
+    base=next(b for b in records if b.get('command')==commands[key] and b.get('status')=='ESP_OK')
+    for metric in ('max_fill_cycles','encode_cycles_mean','encode_cycles_live_max'):
+     r[metric]=base[metric]*102//100
+    if os.getenv('REGRESS','').startswith(key+':'):
+     r[os.environ['REGRESS'].split(':')[1]]+=1
   rows=[r]
  else:
   r.update(wifi_free_up=50000,wifi_min_free=50000,frames_played=0,positions=0,max_fill_call_cycles=0)
@@ -135,13 +147,18 @@ with tempfile.TemporaryDirectory() as tmp:
         assert json.loads((out/'revision.json').read_text())['host_firmware'] == 'test-fw'
         assert json.loads((out/'board-info.json').read_text())[0]['firmware'] == 'test-fw'
         summary=(out/'summary.tsv').read_text().splitlines()
-        assert len(summary)==(25 if moon else 32), summary
+        assert len(summary)==(47 if moon else 33), summary
         failures=[line for line in summary if line.startswith('FAIL')]
-        assert len(failures)==((9 if moon else 8) if fail else 0), failures
+        assert bool(failures)==fail, failures
+        assert any('main regression gate' in line for line in failures)==fail
+        if moon: assert any('candidate admission' in line for line in failures)==fail
         assert run.stdout.index('Pass criteria') < run.stdout.index('PASS:')
         commands=[json.loads(line) for line in (root/'commands.jsonl').read_text().splitlines()]
         assert commands[-1]==('wifimem 17 26m667' if moon else 'wifimem 13 20m'), commands
-        assert len(commands)==(17 if moon else 22)*(2 if fail else 1), commands
+        assert len(commands)==(31 if moon else 22)*(2 if fail else 1), commands
+        for command in ('dvbpace 11 26m667 30','dvbpace 15 20m 30','dvbpace 13 10m 30','dvbpace 17 5m 30'):
+            assert command in commands
+            if moon: assert commands.index(command)<commands.index('dvbpace 11 33m333 30')
     (root/'commands.jsonl').unlink()
     plan=subprocess.run(['sh','host/check.sh','--encoder','--plan'],cwd=root,env=env,
                         capture_output=True,text=True,check=True)
@@ -155,9 +172,20 @@ with tempfile.TemporaryDirectory() as tmp:
         assert json.loads((out/'revision.json').read_text())['host_firmware'] == 'test-fw'
         assert json.loads((out/'board-info.json').read_text())[0]['firmware'] == 'test-fw'
         summary=(out/'summary.tsv').read_text().splitlines()
-        assert len(summary)==23, summary
+        assert len(summary)==(33+2+2+1+1), summary
         failures=[line for line in summary if line.startswith('FAIL')]
-        assert len(failures)==(7 if fail else 0), failures
+        assert bool(failures)==fail, failures
         commands=[json.loads(line) for line in (root/'commands.jsonl').read_text().splitlines()]
-        assert commands[-1]=='wifimem 17 20m' and len(commands)==16*(2 if fail else 1), commands
+        assert commands[-1]=='wifimem 17 20m' and len(commands)==26*(2 if fail else 1), commands
+    # Each main timing metric independently invalidates an otherwise passing moonshot.
+    for mode in ('11 26m667','15 20m','13 10m','17 5m'):
+        for metric in ('max_fill_cycles','encode_cycles_mean','encode_cycles_live_max'):
+            out=root/(mode.replace(' ','-')+'-'+metric)
+            run=subprocess.run(['sh','host/check.sh','--moonshot',str(out)],cwd=root,
+                               env=dict(env,REGRESS=mode+':'+metric),capture_output=True,text=True,timeout=60)
+            assert run.returncode==1, (run.stdout,run.stderr)
+            summary=(out/'summary.tsv').read_text()
+            assert 'FAIL\tpace '+mode+'\t' in summary
+            assert 'FAIL\tmain regression gate\t' in summary and 'FAIL\tcandidate admission\t' in summary
+            assert 'PASS\tpace 11 33m333\t' in summary
 print('check: dry plan, all commands run after failures, strict CRC/decode/2%/heap gates, final exit and summary pass')
