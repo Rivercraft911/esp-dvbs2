@@ -165,6 +165,18 @@ IRAM_ATTR void shaper_samples(uint32_t *dst, const uint8_t *sym, unsigned skip, 
 static IRAM_ATTR void fill_codes(uint32_t *dst, const uint8_t *sym, int nsym,
                                  const shaper_table_t *t)
 {
+    if (t->parts == SHAPER_AXES_PARTS) {
+#ifdef __XTENSA__
+        if (!nsym) return;
+        const int groups = (nsym-1)/6, bulk = 6*groups+1;
+        shaper_axes8_pie(dst, sym, groups, t->blocks);
+        for (int i = bulk; i < nsym; ++i)
+            shaper_axes8_pie(dst+8*i, sym+i, 0, t->blocks);
+#else
+        shaper_axes_c(dst, sym, nsym, t);
+#endif
+        return;
+    }
 #ifdef __XTENSA__
     if (!nsym) return;
     if (t->parts == 2) {

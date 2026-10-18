@@ -245,8 +245,20 @@ static void bank_fill(radio_s3_fill_fn fn, void *ctx, unsigned b, uint64_t first
         assert(end_symbol <= phase_count);
         for (size_t i = 0; i < symbols; ++i)
             shifted[i] = s0 + (int64_t)i < 0 ? 0 : phases[(size_t)(s0 + (int64_t)i)] << 4;
+        shaper_table_t oracle = dvb.table;
+        if (dvb.table.parts == SHAPER_AXES_PARTS) {
+            static uint32_t full[SHAPER_STORE_WORDS];
+            static bool built;
+            if (!built) {
+                int32_t taps[72];
+                for (unsigned i=0;i<72;++i)
+                    taps[i]=(int32_t)((double)shaper_taps_8psk_n8_a35[i]*128/WORST_PEAK);
+                shaper_build(&oracle,full,taps,8,3);
+                built=true;
+            } else oracle=(shaper_table_t){.blocks=full,.n=8,.bits=3,.block_words=32};
+        }
         shaper_fill_c(reference, shifted + SHAPER_HISTORY,
-                       (int)(symbols - SHAPER_HISTORY), &dvb.table);
+                       (int)(symbols - SHAPER_HISTORY), &oracle);
         for (size_t i = 0; i < count; ++i)
             assert(banks[b][(at + i+bank_shift) % RADIO_S3_BANK_WORDS] == reference[at % sps + i]);
         at += count;

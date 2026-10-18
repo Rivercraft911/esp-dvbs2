@@ -56,6 +56,14 @@ static inline void *heap_caps_aligned_alloc(size_t a, size_t n, unsigned caps) {
     ++allocation_count;
     if (fail_after == 0) return NULL;
     if (fail_after > 0) --fail_after;
+#ifdef NATIVE_INTERNAL_BUDGET
+    if (caps & MALLOC_CAP_INTERNAL) {
+        size_t used=0;
+        for (unsigned i=0;i<64;++i)
+            if (native_blocks[i].p && (native_blocks[i].caps & MALLOC_CAP_INTERNAL)) used+=native_blocks[i].n;
+        if (used+n > NATIVE_INTERNAL_BUDGET || n > 2048) return NULL;
+    }
+#endif
     void *p = NULL; assert(!posix_memalign(&p, a < sizeof(void *) ? sizeof(void *) : a, n));
     for (unsigned i = 0; i < 64; ++i)
         if (!native_blocks[i].p) { native_blocks[i].p = p; native_blocks[i].n = n;
@@ -79,8 +87,25 @@ static inline void heap_caps_free(void *p) {
     for (unsigned i = 0; i < 64; ++i) if (native_blocks[i].p == p) native_blocks[i].p = NULL;
     --live_allocations; free(p);
 }
-static inline size_t heap_caps_get_free_size(unsigned c) { (void)c; return 65536; }
+static inline size_t heap_caps_get_free_size(unsigned c) {
+#ifdef NATIVE_INTERNAL_BUDGET
+    if (c & MALLOC_CAP_INTERNAL) {
+        size_t used=0;
+        for (unsigned i=0;i<64;++i)
+            if (native_blocks[i].p && (native_blocks[i].caps & MALLOC_CAP_INTERNAL)) used+=native_blocks[i].n;
+        return NATIVE_INTERNAL_BUDGET-used;
+    }
+#endif
+    (void)c; return 65536;
+}
+#ifdef NATIVE_INTERNAL_BUDGET
+static inline size_t heap_caps_get_largest_free_block(unsigned c) {
+    const size_t free=heap_caps_get_free_size(c);
+    return (c & MALLOC_CAP_INTERNAL) && free > 2048 ? 2048 : free;
+}
+#else
 #define heap_caps_get_largest_free_block heap_caps_get_free_size
+#endif
 #define heap_caps_get_minimum_free_size heap_caps_get_free_size
 static inline int heap_caps_monitor_local_minimum_free_size_start(void) { return 0; }
 static inline int heap_caps_monitor_local_minimum_free_size_stop(void) { return 0; }
@@ -185,6 +210,7 @@ def compile_stream(folder, source="stream_host.c", defines=()):
                     str(ROOT / "firmware/components/ingress/ingress.c"),
                     str(ROOT / "firmware/components/ingress/ingress_pattern.c"), str(ROOT / "firmware/main/ring.c"),
                     str(ROOT / "firmware/main/shaper.c"),
+                    str(ROOT / "firmware/main/shaper_axes.c"),
                     str(ROOT / "firmware/main/shaper_short.c"),
                     str(ROOT / "firmware/main/machine.c"),
                     str(ROOT / "firmware/main/lofty.c"),

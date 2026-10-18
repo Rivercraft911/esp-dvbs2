@@ -73,14 +73,22 @@ def test_controls():
             ring.close()
 
 
-def check_model(symbols, payload, sps, hold):
-    modes = 8 if sps == 40 else 14
+def pattern(sps, hold, axes=False):
+    if axes and hold == 3:
+        return [4,11,13,17]
+    if axes:
+        return [4,12,5,13,6,14,7,15,8,16,9,17,10,11]
+    return list(range(4,12 if sps == 40 else 18))
+
+
+def check_model(symbols, payload, sps, hold, axes=False):
+    modes = len(pattern(sps,hold,axes))
     count = (32*2+8) if not hold else 2*modes*hold+8
     offset = used = 0
     sequence = []
     with NativeEncoder() as enc:
         for frame in range(count):
-            mc = (13 if frame else 4) if not hold else 4+(frame//hold)%modes
+            mc = (13 if frame else 4) if not hold else pattern(sps,hold,axes)[(frame//hold)%modes]
             rate = d.RATES[mc-1] if mc < 12 else d.PSK8_RATES[mc-12]
             n = (d.code(rate).kbch-80)//8
             data = payload[used:used+n]
@@ -106,13 +114,14 @@ def check_model(symbols, payload, sps, hold):
     return sequence
 
 
-def run(receiver=None, output=None):
+def run(receiver=None, output=None, axes=False):
     test_controls()
     with tempfile.TemporaryDirectory() as tmp:
         folder = output or Path(tmp)
         folder.mkdir(parents=True, exist_ok=True)
-        exe = compile_stream(Path(tmp), source='vcm_host.c')
-        for sps, hold in ((40, 1), (8, 1), (4, 1), (4, 2), (4, 0)):
+        exe = compile_stream(Path(tmp), source='vcm_host.c',
+                             defines=('NATIVE_INTERNAL_BUDGET=30000',) if axes else ())
+        for sps, hold in (((8,1),(8,2),(8,3),(8,0)) if axes else ((40, 1), (8, 1), (4, 1), (4, 2), (4, 0))):
             stem = folder/f'vcm-n{sps}-hold{hold}'
             symbols = stem.with_suffix('.phases')
             payload = stem.with_suffix('.payload')
@@ -124,11 +133,20 @@ def run(receiver=None, output=None):
                 messages = [send.message(b'\x0d', 0, 3)]
                 messages += [send.message(data[i:i+1316], 1+i//1316, 2) for i in range(0, len(data), 1316)]
                 wire.write_bytes(b''.join(messages))
-            result = subprocess.run([str(exe), str(sps), str(hold), str(symbols), str(payload), str(wire)],
+            result = subprocess.run([str(exe), str(sps), str(hold), str(symbols), str(payload), str(wire)]+(['axes'] if axes else []),
                                     capture_output=True, text=True, timeout=90)
             assert result.returncode == 0, result.stdout[-2000:]+result.stderr
+            if axes and hold == 3:
+                rows=[json.loads(line[1:]) for line in result.stdout.splitlines() if line.startswith('@{')]
+                pace,= [row for row in rows if row.get('cmd') == 'dvbpace' and 'status' in row]
+                assert pace['paced_wifi_up'] and pace['vcm_axes'] and pace['status'] == 'ESP_OK'
+                assert pace['free_internal'] == 30000 and pace['largest_internal'] == 2048
+                assert pace['workspace_bytes'] == 8144 and pace['playback_store_bytes'] == 64192
+                assert pace['sample_cache_store_bytes'] == 8704 and pace['table_bytes'] == 10240
+                probe,= [row for row in rows if row.get('cmd') == 'wifimem' and 'status' in row]
+                assert probe['status'] == 'ESP_OK' and probe['ring_heap_bytes'] == 0
             summary = next(line for line in result.stdout.splitlines() if line.startswith('VCM n'))
-            sequence = check_model(np.fromfile(symbols, np.uint8), payload.read_bytes(), sps, hold)
+            sequence = check_model(np.fromfile(symbols, np.uint8), payload.read_bytes(), sps, hold, axes)
             print(summary+'; every PL symbol and DAC word matches', flush=True)
             if receiver:
                 iq = np.fromfile(str(symbols)+'.iq', '<i2').reshape(-1, 2).astype(np.float32)/512
@@ -141,7 +159,7 @@ def run(receiver=None, output=None):
                 assert report['frame_lock'] and report['lock_at_end'] and report['status_complete'], report
                 assert set(report['modcods']) == set(sequence), report
                 assert got and got in payload.read_bytes(), report
-                assert report['bb_frames'] >= (32 if not hold else 2*(8 if sps == 40 else 14)*hold)-5, report
+                assert report['bb_frames'] >= (32 if not hold else 2*len(pattern(sps,hold,axes))*hold)-5, report
                 for key in ('ldpc_bit_flips', 'bch_corrected_bits', 'bch_failed_frames', 'bbheader_rejected_frames'):
                     assert report[key] == 0, report
                 print(json.dumps(dict(sps=sps, hold=hold, frames=report['bb_frames'], modcods=report['modcods'],
@@ -152,5 +170,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--receiver', type=Path)
     parser.add_argument('--output', type=Path)
+    parser.add_argument('--axes', action='store_true')
     args = parser.parse_args()
-    run(args.receiver, args.output)
+    run(args.receiver, args.output, args.axes)
