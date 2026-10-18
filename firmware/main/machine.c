@@ -102,6 +102,26 @@ IRAM_ATTR void machine_render(uint32_t *dst, const uint32_t *signs, unsigned n, 
 #endif
 }
 
+IRAM_ATTR uint32_t machine_expand(uint32_t *dst, const uint32_t *axes, uint32_t history)
+{
+#ifdef __XTENSA__
+    uint32_t dvbs2_qpsk_histories(uint32_t *, const uint8_t *, unsigned, uint32_t);
+    return dvbs2_qpsk_histories(dst,(const uint8_t *)axes,MACHINE_PAGE_BLOCKS/16,history);
+#else
+    unsigned pending = 0;
+    for (unsigned k = 0; k < MACHINE_PAGE_AXIS_WORDS; ++k) {
+        uint32_t w = axes[k];
+        for (int shift = 15; shift >= 0; --shift) {
+            const uint32_t signs = w >> shift;
+            history = ((history << 1) & 0x7ff07ff0) |
+                      (signs & 1) << 4 | (signs & 0x10000) << 4;
+            if (++pending == 5) { *dst++ = history; pending = 0; }
+        }
+    }
+    return history;
+#endif
+}
+
 IRAM_ATTR void machine_samples(uint32_t *dst, const uint32_t *signs, unsigned skip, size_t n,
                               const uint32_t *table)
 {
@@ -128,5 +148,71 @@ void machine_reference(uint32_t *dst, const uint8_t *src, unsigned at,
         uint32_t signs[2] = {prepare_one(src,at),0};
         machine_render(dst,signs,1,table);
         dst += 12, at += 5;
+    }
+}
+
+// One 192-sample chunk. The Xtensa kernel extracts the three windows per axis
+// directly from the two rolling 32-bit sign streams; no history page is stored.
+static inline __attribute__((always_inline)) void axis_render(uint32_t *dst, const uint32_t *axes, unsigned chunk,
+                               uint32_t previous, const uint32_t *table, unsigned runs)
+{
+    const unsigned at = 5*chunk;
+    if (at) previous = axes[at-1];
+#ifdef __XTENSA__
+    machine_axis_render_pie(dst,axes+at,runs,previous,table);
+#else
+    uint32_t history = (previous << 4) & 0x7ff07ff0;
+    unsigned pending = 0;
+    for (unsigned k = 0; k < 5*runs; ++k) {
+        uint32_t w = axes[at+k];
+        for (int shift = 15; shift >= 0; --shift) {
+            uint32_t signs = w >> shift;
+            history = ((history << 1) & 0x7ff07ff0) |
+                      ((signs & 1) << 4) | ((signs & 0x10000) << 4);
+            if (++pending == 5) {
+                uint32_t pair[2] = {history,0};
+                machine_render(dst,pair,1,table);
+                dst += 12;
+                pending = 0;
+            }
+        }
+    }
+#endif
+}
+
+static inline __attribute__((always_inline)) void axis_copy(uint32_t *dst, const uint32_t *src, size_t n)
+{
+    volatile uint32_t *out = dst;
+#ifdef __XTENSA__
+    void shaper_copy_pie(volatile uint32_t *, const uint32_t *, unsigned);
+    while (n && (((uintptr_t)out | (uintptr_t)src)&15)) {
+        *out++ = *src++;
+        --n;
+    }
+    unsigned pairs = n/8;
+    if (pairs) shaper_copy_pie(out,src,pairs);
+    out += 8*pairs, src += 8*pairs, n -= 8*pairs;
+#endif
+    while (n--) *out++ = *src++;
+}
+
+IRAM_ATTR void machine_axis_samples(uint32_t *dst, const uint32_t *axes, uint32_t previous,
+                                    unsigned skip, size_t n, const uint32_t *table, uint32_t *scratch)
+{
+    while (n) {
+        const unsigned chunk = skip/MACHINE_AXIS_CHUNK_SAMPLES;
+        const unsigned cut = skip%MACHINE_AXIS_CHUNK_SAMPLES;
+        if (!cut && !((uintptr_t)dst&15) && n >= MACHINE_AXIS_CHUNK_SAMPLES) {
+            unsigned runs = n/MACHINE_AXIS_CHUNK_SAMPLES;
+            axis_render(dst,axes,chunk,previous,table,runs);
+            unsigned done = MACHINE_AXIS_CHUNK_SAMPLES*runs;
+            dst += done, n -= done, skip += done;
+        } else {
+            axis_render(scratch,axes,chunk,previous,table,1);
+            size_t take = MACHINE_AXIS_CHUNK_SAMPLES-cut;
+            if (take > n) take = n;
+            axis_copy(dst,scratch+cut,take);
+            dst += take, n -= take, skip += take;
+        }
     }
 }

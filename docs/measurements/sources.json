@@ -2,6 +2,12 @@
   "archive": "archive/dev-2026-10-17",
   "records": [
     {
+      "file": "2026-10-17-qpsk-reserve-keyed.jsonl",
+      "source": "board run 2026-10-18T02:54Z UTC (2026-10-17 PDT), firmware e96795b on exp/qpsk-qualify, notes/qpsk-keyed/keyed.jsonl",
+      "records": 1,
+      "sha256": "19d097e6ea8145e468a6b27782e98c3a1431e8abfffbd75446569a79935008ce"
+    },
+    {
       "file": "2026-10-17-moonshot-keyed.jsonl",
       "source": "results/2026-10-17-moonshot/keyed.jsonl",
       "records": 1,

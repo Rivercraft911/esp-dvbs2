@@ -21,6 +21,9 @@ def main():
         records = [json.loads(line) for line in raw.splitlines()]
         assert len(records) == source['records']
         rows.extend(r for r in records if r.get('cmd') == 'dvb')
+    # sources.json lists the newest record first; keep one record per mode and rate.
+    seen = set()
+    rows = [r for r in rows if not ((r['modcod'], r['symbol_rate']) in seen or seen.add((r['modcod'], r['symbol_rate'])))]
     rows.sort(key=lambda r: (r['modcod'] >= 12, -r['symbol_rate'], r['modcod']))
     labels = []
     for r in rows:

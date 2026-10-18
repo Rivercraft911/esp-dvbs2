@@ -69,8 +69,10 @@ typedef struct {
     bool moon;                    // core-0 sign mapper / core-1 renderer
     machine_page *pages;           // borrowed shaper-store tail
     uint32_t produced, consumed;   // single writer each; release/acquire ownership
-    unsigned put_index, get_index, page_blocks;
+    unsigned put_index, get_index, page_words;
     dvbs2_sign_state mapper;
+    uint32_t *render_scratch;       // 192 sample words for physical bank cuts
+    uint32_t axis_history;          // previous page's final sixteen signs per axis
     uint64_t queue_wait_cycles;
     uint32_t queue_wait_max, queue_wait_live_max, prepare_ticks, page_clock, page_gap_max;
     uint64_t page_wait;
@@ -79,8 +81,7 @@ typedef struct {
     unsigned waiting;              // producer is asleep; consumer wakes once below threshold
     uint32_t queue_low, queue_empty, queue_wakes;
     uint32_t wake_bank, wake_max;
-    bool wake_pending;             // legacy slot released in the first bank callback
-    const uint32_t *sign_lut;
+    bool wake_pending;             // released storage; notify only after the whole bank
     uint32_t prepare_max;
     uint32_t prepare_tail_max;
     uint64_t prepare_cycles;
@@ -90,13 +91,17 @@ typedef struct {
     stream_profile_t copy, whole, partial, save, notify;
     uint64_t fill_words, fill_cycles;
     uint32_t fill_calls;
+    uint32_t bank_cycles, bank_whole, bank_calls;
+    uint32_t max_bank_cycles, max_bank_whole, max_bank_calls;
     uint32_t worst_copy, worst_whole, worst_partial, worst_save, worst_notify;
     uint64_t shaped_words, reused_words;
 } dvb_t;
 
 static DRAM_ATTR dvb_t dvb;
-_Static_assert(MACHINE_PAGE_BLOCKS%4 == 0 && sizeof(machine_page)%16 == 0,
+_Static_assert(MACHINE_PAGE_BLOCKS%16 == 0 && sizeof(machine_page)%16 == 0,
                "queue pages retain prepare and render alignment");
+_Static_assert(MACHINE_PAGES*5*MACHINE_PAGE_BLOCKS >= 2*33282,
+               "fractional startup holds two complete pilot-on frames");
 _Static_assert(sizeof(dvbs2_workspace) - DVBS2_FAST_WORKSPACE_USED >=
                SHAPER_HISTORY + BANK_SYMBOLS + 1, "fast workspace tail holds n4 window");
 typedef struct {
@@ -186,7 +191,7 @@ static void moon_wait(void)
 
 static IRAM_ATTR __attribute__((noinline)) int moon_map(void)
 {
-    if (dvbs2_fast_sign_start(enc.fast,enc.ws,&dvb.mapper)) return -1;
+    if (dvbs2_fast_axis_start(enc.fast,enc.ws,&dvb.mapper)) return -1;
     while (!enc.stop && dvb.mapper.at < dvb.ring.frame_symbols) {
         while (!enc.stop && dvb.produced-__atomic_load_n(&dvb.consumed,__ATOMIC_ACQUIRE) == MACHINE_PAGES)
             moon_wait();
@@ -194,17 +199,16 @@ static IRAM_ATTR __attribute__((noinline)) int moon_map(void)
         machine_page *page = dvb.pages+dvb.put_index;
         const TickType_t tick = xTaskGetTickCount();
         const uint32_t before = esp_cpu_get_cycle_count();
-        const unsigned n = dvbs2_fast_sign_read(enc.fast,&dvb.mapper,page->signs+dvb.page_blocks,
-                                                MACHINE_PAGE_BLOCKS-dvb.page_blocks,dvb.sign_lut);
+        const unsigned n = dvbs2_fast_axis_read(enc.fast,&dvb.mapper,page->axes+dvb.page_words,
+                                                MACHINE_PAGE_AXIS_WORDS-dvb.page_words);
         const uint32_t cycles = esp_cpu_get_cycle_count()-before;
         if (cycles > dvb.prepare_max) {
             dvb.prepare_max = cycles;
             dvb.prepare_ticks = xTaskGetTickCount()-tick;
         }
         dvb.prepare_cycles += cycles;
-        dvb.page_blocks += n;
-        if (dvb.page_blocks == MACHINE_PAGE_BLOCKS) {
-            page->signs[MACHINE_PAGE_BLOCKS] = 0;
+        dvb.page_words += n;
+        if (dvb.page_words == MACHINE_PAGE_AXIS_WORDS) {
             const uint32_t tail = esp_cpu_get_cycle_count();
             if (dvb.prepare_pages) {
                 const uint32_t gap = tail-dvb.page_clock-(uint32_t)(dvb.queue_wait_cycles-dvb.page_wait);
@@ -212,7 +216,7 @@ static IRAM_ATTR __attribute__((noinline)) int moon_map(void)
             }
             dvb.page_clock = tail;
             dvb.page_wait = dvb.queue_wait_cycles;
-            dvb.page_blocks = 0;
+            dvb.page_words = 0;
             if (++dvb.put_index == MACHINE_PAGES) dvb.put_index = 0;
             __atomic_store_n(&dvb.produced,dvb.produced+1,__ATOMIC_RELEASE);
             const uint32_t spent = esp_cpu_get_cycle_count()-tail;
@@ -237,20 +241,16 @@ static IRAM_ATTR esp_err_t moon_shape(uint32_t *dst, uint64_t first, size_t coun
         machine_page *page = dvb.pages+dvb.get_index;
         const size_t left = MACHINE_PAGE_SAMPLES-dvb.page_sample;
         const size_t take = count < left ? count : left;
-        machine_samples(dst,page->signs+dvb.page_sample/12,dvb.page_sample%12,take,shaper_store);
+        machine_axis_samples(dst,page->axes,dvb.axis_history,dvb.page_sample,take,
+                             shaper_store,dvb.render_scratch);
         dst += take, count -= take, dvb.page_sample += take;
         dvb.queue_sample += take;
         if (dvb.page_sample == MACHINE_PAGE_SAMPLES) {
             dvb.page_sample = 0;
+            dvb.axis_history = page->axes[MACHINE_PAGE_AXIS_WORDS-1];
             if (++dvb.get_index == MACHINE_PAGES) dvb.get_index = 0;
             __atomic_store_n(&dvb.consumed,get+1,__ATOMIC_RELEASE);
-            if (put-get-1 <= MACHINE_PAGES-MACHINE_WAKE_PAGES &&
-                __atomic_exchange_n(&dvb.waiting,0,__ATOMIC_ACQ_REL)) {
-                ++dvb.queue_wakes;
-                const uint32_t before = esp_cpu_get_cycle_count();
-                xTaskNotifyGive(enc.task);
-                dvb.wake_bank += esp_cpu_get_cycle_count()-before;
-            }
+            dvb.wake_pending = true;
         }
     }
     return ESP_OK;
@@ -356,9 +356,17 @@ static IRAM_ATTR esp_err_t fill(uint32_t *dst, uint64_t first, size_t count, voi
     // The wrapped prefix still needs the shaper SRAM. Hold a released slot's
     // notification until both callbacks finish; preserve it across callbacks.
     if (dvb.ring.freed != freed && enc.packed && !dvb.moon) dvb.wake_pending = true;
-    if (dvb.wake_pending && bank_done) {
+    if (dvb.wake_pending && bank_done && (!dvb.moon ||
+        (__atomic_load_n(&dvb.produced,__ATOMIC_ACQUIRE)-dvb.consumed <=
+         MACHINE_PAGES-MACHINE_WAKE_PAGES &&
+         __atomic_exchange_n(&dvb.waiting,0,__ATOMIC_ACQ_REL)))) {
         const stream_mark_t wake = dvb.profile ? stream_mark_for(&dvb.notify) : (stream_mark_t){0};
+        const uint32_t start = esp_cpu_get_cycle_count();
         xTaskNotifyGive(enc.task);
+        if (dvb.moon) {
+            ++dvb.queue_wakes;
+            dvb.wake_bank += esp_cpu_get_cycle_count()-start;
+        }
         dvb.wake_pending = false;
         if (dvb.profile) {
             const stream_mark_t after = stream_mark_for(&dvb.notify);
@@ -371,6 +379,19 @@ static IRAM_ATTR esp_err_t fill(uint32_t *dst, uint64_t first, size_t count, voi
         dvb.wake_bank = 0;
     }
     const uint32_t cycles = esp_cpu_get_cycle_count() - before;
+    if (dvb.moon) {
+        dvb.bank_cycles += cycles;
+        dvb.bank_whole += dvb.whole.cycles-w0;
+        ++dvb.bank_calls;
+        if (bank_done) {
+            if (dvb.bank_cycles > dvb.max_bank_cycles) {
+                dvb.max_bank_cycles = dvb.bank_cycles;
+                dvb.max_bank_whole = dvb.bank_whole;
+                dvb.max_bank_calls = dvb.bank_calls;
+            }
+            dvb.bank_cycles = dvb.bank_whole = dvb.bank_calls = 0;
+        }
+    }
     dvb.fill_words += requested;
     dvb.shaped_words += count;
     dvb.reused_words += requested - count;
@@ -612,6 +633,8 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
     memset(&dvb.save, 0, sizeof dvb.save);
     memset(&dvb.notify, 0, sizeof dvb.notify);
     dvb.fill_words = dvb.fill_cycles = dvb.fill_calls = 0;
+    dvb.bank_cycles = dvb.bank_whole = dvb.bank_calls = 0;
+    dvb.max_bank_cycles = dvb.max_bank_whole = dvb.max_bank_calls = 0;
     dvb.worst_copy = dvb.worst_whole = dvb.worst_partial = 0;
     dvb.worst_save = dvb.worst_notify = 0;
     dvb.shaped_words = dvb.reused_words = 0;
@@ -651,17 +674,16 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
         dvb.prepare_cycles = 0;
         dvb.prepare_pages = 0;
         machine_build(shaper_store,level);
-        dvb.page_blocks = 0;
+        dvb.page_words = 0;
         dvb.mapper = (dvbs2_sign_state){0};
+        dvb.axis_history = 0;
         dvb.queue_wait_cycles = dvb.queue_wait_max = dvb.queue_wait_live_max = dvb.prepare_ticks = 0;
         dvb.page_clock = dvb.page_gap_max = dvb.page_wait = 0;
         dvb.pages = (machine_page *)(shaper_store+MACHINE_TABLE_WORDS);
-        uint32_t *lut = (uint32_t *)(dvb.pages+MACHINE_PAGES);
-        machine_lut(lut);
-        dvb.sign_lut = lut;
+        dvb.render_scratch = (uint32_t *)(dvb.pages+MACHINE_PAGES);
         dvb.win = NULL;
         dvb.win_bytes = 0;
-        moon_ws = (dvbs2_workspace *)(lut+MACHINE_LUT_WORDS);
+        moon_ws = (dvbs2_workspace *)(dvb.render_scratch+MACHINE_AXIS_CHUNK_SAMPLES);
         store_used = (uint8_t *)moon_ws+DVBS2_FAST_WORKSPACE_USED-(uint8_t *)shaper_store;
         if (store_used > sizeof shaper_store) { release(); return 0; }
     } else if (quads) {
@@ -941,6 +963,9 @@ static void stop_encoder(void)
                          dvb.queue_wait_cycles,(unsigned)dvb.queue_wait_max,(unsigned)dvb.queue_wait_live_max,(unsigned)dvb.prepare_ticks,(unsigned)dvb.page_gap_max,MACHINE_PAGE_SAMPLES,MACHINE_WAKE_PAGES);
     if (dvb.moon) printf(",\"encode_work_cycles_mean\":%" PRIu64 ",\"encode_work_cycles_live_max\":%" PRIu32,
                          enc.frames ? enc.work_cycles/enc.frames : 0,enc.work_live_max);
+    if (dvb.moon) printf(",\"history_expansion\":\"fused\",\"payload_bank_max_cycles\":%u,"
+                         "\"payload_bank_max_whole_cycles\":%u,\"payload_bank_max_calls\":%u",
+                         (unsigned)dvb.max_bank_cycles,(unsigned)dvb.max_bank_whole,(unsigned)dvb.max_bank_calls);
     if (dvb.moon) printf(",\"queue_pages\":%u,\"queue_low_pages\":%u,\"queue_empty\":%u,"
                          "\"queue_wake_max_cycles\":%u,\"queue_wakes\":%u,\"prepare_pages\":%u,"
                          "\"prepare_max_cycles\":%u,\"prepare_tail_max_cycles\":%u,\"prepare_cycles\":%" PRIu64 ","

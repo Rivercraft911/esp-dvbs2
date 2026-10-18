@@ -15,6 +15,7 @@ jobs:
       - run: python tests/test_dvbs2_c.py
       - run: python tests/test_stream.py
       - run: python tests/test_rational.py
+      - run: python tests/test_qpsk_axes.py
       - run: python tests/test_self_check.py
       - name: SPI input
         run: |

@@ -1,7 +1,9 @@
 // Actual dvbtx.c lifecycle with pthread task/notification stubs, no peripherals.
 // Timing is synthetic. Compare every filled DAC word against the plain encoder.
 #include "native.h"
+#include <stdbool.h>
 #include "ring.h"
+#include "machine.h"
 static int checked_window(ring_t *, uint8_t *, size_t, uint64_t, size_t, unsigned, unsigned, unsigned);
 static int checked_task(void (*)(void *), const char *, unsigned, void *, unsigned, TaskHandle_t *, int);
 #define xTaskCreatePinnedToCore checked_task
@@ -135,14 +137,17 @@ static void bank_fill(radio_s3_fill_fn fn, void *ctx, unsigned b, uint64_t first
             assert(tries++ < 5000);
             vTaskDelay(1);
         }
-        const unsigned sent = enc.task->notifications_sent;
         if (dvb.moon && getenv("EARLY_WAKE")) xTaskNotifyGive(enc.task);
+        const unsigned sent = enc.task->notifications_sent;
         assert(fn(banks[b] + (at+bank_shift) % RADIO_S3_BANK_WORDS, at, count, ctx) == ESP_OK);
         if (enc.packed && !dvb.moon) {
             if (offset && !p) assert(enc.task->notifications_sent == sent);
             else assert(!dvb.wake_pending);
         }
         if (dvb.moon) {
+            // A bank wrap must finish both callbacks before waking core 0.
+            assert(enc.task->notifications_sent-sent <= 1);
+            if (offset && !p) assert(enc.task->notifications_sent == sent);
             // The independent Python block/convolution oracle checks the whole
             // output, including both cores and every bank/frame seam.
             at += count;
@@ -220,6 +225,32 @@ void radio_filter_print(const radio_filter_stats_t *stats) { (void)stats; }
 static unsigned wifi_probes;
 static esp_err_t discard(const uint32_t *bank, uint64_t first, size_t count, void *ctx)
 { (void)bank; (void)first; (void)count; (void)ctx; return ESP_OK; }
+
+static void id_handoff_check(uint32_t rate)
+{
+    station_id_t id;
+    assert(station_id_init_rate(&id,callsign,rate,rate,fill,NULL));
+    const uint64_t step = RADIO_S3_STEP_FOR(rate), lead = RADIO_S3_LEAD_FOR(rate);
+    const uint64_t first = (id.length+lead)/step*step-lead;
+    assert(first < id.length && first+RADIO_S3_BANK_WORDS > id.length);
+    const unsigned sent = enc.task->notifications_sent;
+    const size_t offset = first%RADIO_S3_BANK_WORDS;
+    const size_t head = RADIO_S3_BANK_WORDS-offset;
+    assert(station_id_fill(banks[0]+offset,first,head,&id) == ESP_OK);
+    if (offset) assert(station_id_fill(banks[0],first+head,offset,&id) == ESP_OK);
+    assert(enc.task->notifications_sent-sent <= 1);
+    const size_t samples = first+RADIO_S3_BANK_WORDS-id.length;
+    assert(dvb.queue_sample == samples && dvb.queue_empty == 0);
+    // Independent packed-phase path checks payload at the exact CW/data seam.
+    uint8_t packed[1800] = {0};
+    const unsigned groups = (samples+11)/12;
+    for (unsigned j = 6; j < 6+5*groups+8; ++j)
+        packed[j/4] |= (phases[j-6] >> 1) << (6-2*(j&3));
+    machine_reference(reference,packed,0,groups,shaper_store);
+    for (unsigned j = 0; j < samples; ++j)
+        assert(banks[0][(id.length+j)%RADIO_S3_BANK_WORDS] == reference[j]);
+}
+
 esp_err_t radio_s3_wifi_probe(radio_s3_stats_t *stats)
 {
     assert(enc.fast && enc.ws && enc.payload && (dvb.moon || dvb.win));
@@ -358,13 +389,12 @@ int main(int argc, char **argv)
         assert(pace_allocations == allocations+(int)heap_input);
         assert((enc.input != NULL) == moon);
         if (moon) {
-            if (quads) {
-                assert(!enc.input_borrowed);
-            } else {
-                assert(!enc.input_borrowed);
-                for (unsigned i = 0; i < 64; ++i)
-                    if (native_blocks[i].p == enc.input) assert(native_blocks[i].caps & MALLOC_CAP_INTERNAL);
-            }
+            assert(enc.input_borrowed);
+            assert(enc.prefill_frames >= 2);
+            assert(dvb.axis_history == 0);
+            assert(dvb.render_scratch+MACHINE_AXIS_CHUNK_SAMPLES <= (uint32_t *)enc.ws);
+            assert(enc.input >= (uint8_t *)enc.ws+DVBS2_FAST_WORKSPACE_USED);
+            assert(enc.input+bytes <= (uint8_t *)(shaper_store+SHAPER_STORE_WORDS));
             x = SEED;
             for (size_t i = 0; i < bytes; ++i) assert(enc.input[i] == next_byte(&x));
         }
@@ -373,6 +403,12 @@ int main(int argc, char **argv)
                                       rate,discard,NULL,&stats));
         stop_encoder(); printf("}\n");
         assert(live_allocations == 0);
+        if (moon && mc == 11) {
+            assert(start_encoder("dvbpace",mc,128,0,sps,rate));
+            id_handoff_check(rate);
+            stop_encoder(); printf("}\n");
+            assert(live_allocations == 0);
+        }
         if (heap_input) {
             fail_after = pace_allocations-1;
             assert(!start_encoder("dvbpace",mc,128,0,sps,rate));

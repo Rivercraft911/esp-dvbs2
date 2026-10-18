@@ -1,7 +1,7 @@
 idf_component_register(SRCS "main.c" "spi_input.c" "usb_input.c" "station_commands.c" "dvbtx.c" "ring.c" "shaper.c" "shaper_pie.S"
                        "shaper_qpsk.c" "shaper_qpsk_pie.S"
                        "shaper_short.c" "shaper_short_pie.S"
-                       "machine.c" "machine_pie.S"
+                       "machine.c" "machine_pie.S" "machine_axis_pie.S"
                        INCLUDE_DIRS "."
                        LDFRAGMENTS "stream.lf"
                        PRIV_REQUIRES esp_driver_usb_serial_jtag esp_hal_usb vfs esp_psram esp_app_format

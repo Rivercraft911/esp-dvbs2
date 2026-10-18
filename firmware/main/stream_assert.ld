@@ -1,3 +1,11 @@
 /* ESP32-S3 instruction RAM aperture, TRM v1.8 table 4.3-1, p403. */
 ASSERT(xTaskGenericNotify >= 0x40370000 && xTaskGenericNotify < 0x403e0000,
        "stream notification must be in IRAM")
+ASSERT(machine_axis_render_pie >= 0x40370000 && machine_axis_render_pie < 0x403e0000,
+       "fractional vector renderer must be in IRAM")
+ASSERT(machine_axis_samples >= 0x40370000 && machine_axis_samples < 0x403e0000,
+       "fractional bank-cut wrapper must be in IRAM")
+ASSERT(shaper_copy_pie >= 0x40370000 && shaper_copy_pie < 0x403e0000,
+       "fractional cut copies must be in IRAM")
+ASSERT(shaper_store >= 0x3fc88000 && shaper_store + 65536 <= 0x3fd00000,
+       "fractional tables, queue and scratch must be internal DRAM")
