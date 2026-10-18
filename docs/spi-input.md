@@ -187,7 +187,11 @@ the check offers it 6 Mb/s for raw bytes. External senders don't share that core
 ## Over USB instead
 
 The same messages also work over the S3's USB cable, with no wiring at all. The
-[USB sender](../examples/usb-send/README.md) is one Python file that does this from a laptop.
+[examples/usb-send](../examples/usb-send/README.md) Python sender uses only `pyserial`
+and defaults to radio-off checks. Measured payload intake is **3.23 Mb/s** at
+5 Msym/s with the PSRAM encoder (radio off, 2026-10-17), suitable for files,
+telemetry and low-rate video.
+
 Its console protocol:
 
 - `spiinput usb [ts|gcs]` selects USB for the next run. Wait for `usbinput ready:true`, then

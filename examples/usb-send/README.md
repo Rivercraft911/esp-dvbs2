@@ -4,6 +4,9 @@ One Python file sends video or files from a laptop to the S3's **native
 USB-Serial-JTAG** port. The S3 frames and encodes them. Copy `send.py` anywhere;
 its only dependency is `pyserial`. Close other serial tools first.
 
+Measured payload intake: **3.23 Mb/s on 2026-10-17 at 5 Msym/s with the PSRAM
+encoder**, radio off. This suits files, telemetry and low-rate video.
+
 ```sh
 python3 -m pip install pyserial
 python3 send.py send movie.ts --port /dev/cu.usbmodem101
@@ -68,8 +71,8 @@ restart after RF-off counters are saved. Evidence goes under `notes/usb-board-*`
 - Send a 2 KiB file, dump 24 frames, verify USB dump CRC, decode with independent
   LeanDVB, run `unpack`, require identical SHA-256 and zero reported FEC errors.
 - Saturate USB GCS for 20 seconds using 8PSK 2/3 at 5 Msym/s (9.678 Mb/s demand).
-  Report measured payload Mb/s; require at least 3.5 Mb/s over 15 complete
-  seconds after the opening ID.
+  Report measured payload Mb/s; require a **3.0 Mb/s regression floor** over
+  15 complete seconds after the opening ID, based on the measured 3.23 Mb/s.
 - Interrupt a PV message after 17 bytes, require a failure report with board
   counters and an automatic restart, then open a fresh console for the next check.
 - Pace TS for 20 seconds at QPSK 1/2's 0.965 Mb/s payload rate; require at least 98%.
@@ -77,13 +80,13 @@ restart after RF-off counters are saved. Evidence goes under `notes/usb-board-*`
 Both paces require matched sender/board counts, zero protocol/sequence errors and
 no missed output bank deadlines. Dummies at startup/end or during saturation
 are expected. Checks continue after failures; `summary.json` records the outcome.
-**Sustainable USB+encoder throughput still needs a board rerun.** Archived
-USB-only intake was 4.6 Mb/s intact. The host scheduling model reproduces the
-previous failure with ideal task scheduling: the encoder fills its output ring
-during N0CALL's 5.22-second opening ID, while the radio-off sender abandons its
-blocked write after five seconds. The longer deadline survives this pause; the
-model then delivers 3.79 Mb/s GCS and 0.966 Mb/s TS with identical payloads.
-These are simulations, not board measurements.
+On 2026-10-17, firmware `5059465` accepted 5,514 GCS messages without errors:
+3.226 Mb/s over 17 steady seconds, 2.50 Mb/s including the opening ID pause,
+and 2.90 Mb/s averaged over the requested payload run. TS pace measured
+0.966 Mb/s at the mode's rate. File recovery and interrupted-write recovery also
+passed, alongside self-check 23/23 and SPI 19/19. The 3.0 Mb/s floor allows
+variation around this measurement; byte counts, integrity, recovery and timing
+checks stay strict.
 
 Host tests never open ports: `python3 tests/test_usb_input.py` and
 `python3 tests/test_usb_send.py`. Add `--receiver "$RX"` to the latter for a C

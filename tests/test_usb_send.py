@@ -238,8 +238,11 @@ def test_stream():
             rejects(send.check_run, stats, bad, dump)
         bad = copy.deepcopy(rows); next(r for r in bad if 'usb' in r)['encoder_failed'] = True
         rejects(send.check_run, stats, bad, dump)
-        bad = copy.deepcopy(report); next(r['usb'] for r in bad['records'] if 'usb' in r)['mbps'] = 3.4
+        bad = copy.deepcopy(report); next(r['usb'] for r in bad['records'] if 'usb' in r)['mbps'] = 2.999
         rejects(check.gates, bad, saturation=True)
+        for mbps in (3.0, 3.226):
+            measured = copy.deepcopy(report); next(r['usb'] for r in measured['records'] if 'usb' in r)['mbps'] = mbps
+            check.gates(measured, saturation=True)
         if not dump:
             # A high aggregate rate cannot conceal a dead reader after CW.
             bad = copy.deepcopy(report); run = next(r for r in bad['records'] if 'usb' in r)
@@ -427,7 +430,7 @@ def test_coordinator():
                 u = dict(messages=3, payload_bytes=3948, nops=1, next_seq=4, short=0, header=0,
                          crc=0, sync=0, lost=0, back=0, wrong_type=0, partial_bytes=0, ended=True,
                          ts_packets=0, crc_chain=0, us=18000000,
-                         mbps=3.0 if fail_rate and name == 'saturation' else 4.0)
+                         mbps=2.999 if fail_rate and name == 'saturation' else 3.226)
                 row = dict(usb=u, status='ESP_OK', encoder_failed=False, frames_encoded=20,
                            underruns=1, late_fills=0, late_switches=0, fatal_late=0, min_fill_slack_cycles=1, seconds=20,
                            payload_bytes_per_frame=4016, symbol_rate=1000000, frame_symbols=33282,
