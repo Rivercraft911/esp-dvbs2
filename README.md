@@ -37,7 +37,10 @@ real time with the DAC output going nowhere.
 
 | Mode | Symbol rate | Bandwidth | **Data rate** | Tested |
 |---|---:|---:|---:|---|
+| 8PSK 9/10 | 26.67 Msym/s | 36 MHz | **69.8 Mb/s** | keyed |
+| 8PSK 5/6 | 26.67 Msym/s | 36 MHz | **64.6 Mb/s** | keyed |
 | QPSK 9/10, roll-off 0.20 | 33.33 Msym/s | **40 MHz** | **58.2 Mb/s** | keyed |
+| 8PSK 2/3 | 26.67 Msym/s | 36 MHz | **51.6 Mb/s** | keyed |
 | 8PSK 5/6 | 20 Msym/s | 27 MHz | **48.4 Mb/s** | keyed* |
 | QPSK 9/10 | 26.67 Msym/s | 36 MHz | 46.6 Mb/s | keyed |
 | 8PSK 2/3 | 20 Msym/s | 27 MHz | 38.7 Mb/s | keyed* |

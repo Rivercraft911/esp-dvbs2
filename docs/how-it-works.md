@@ -148,6 +148,16 @@ Firmware e96795b met the 15% reserve on both cores in one 30 s keyed run: encode
 198,879 of 239,630 cycles/frame, maximum fill 39,548 of 47,220 cycles/bank.
 Live input and RF decode at this rate remain unmeasured. [Evidence](measurements.md#40-mhz).
 
+## 8PSK at 36 MHz
+
+The three-sample 8PSK path uses resident encoder tables and a queue of compact
+four-symbol descriptors. Core 1 renders them directly into the DAC bank. Its
+54-page queue shares the shaping store; startup and transient delays can insert
+standard dummy PLFRAMEs without dropping a data frame. The [queue and memory
+design](lofty.md) explains the page geometry and admission rule.
+[Three keyed rates](measurements.md#8psk-at-36-mhz) reached 51.6, 64.6 and
+69.8 Mb/s in 36 MHz nominal shaped bandwidth.
+
 ## Rates
 
 | Rate token | Modulation | DAC | Samples/symbol | Pulse span |
@@ -158,6 +168,7 @@ Live input and RF decode at this rate remain unmeasured. [Evidence](measurements
 | `20m` | QPSK | 80 MS/s | 4 | 9 symbols |
 | `20m` | 8PSK | 80 MS/s | 4 | 6 symbols |
 | `26m667` | QPSK | 80 MS/s | 3 | 9 symbols |
+| `26m667` | 8PSK | 80 MS/s | 3 | 5 symbols |
 | `33m333` | QPSK | 80 MS/s | 12/5 | 7 symbols |
 
 QPSK MODCODs 4..11 select rates 1/2, 3/5, 2/3, 3/4, 4/5, 5/6, 8/9, 9/10.

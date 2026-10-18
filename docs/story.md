@@ -152,12 +152,35 @@ has 37% encoder headroom. ([records](measurements.md#40-mhz))
 Somewhere along the way the $5 chip outgrew the SDR on the bench: the E200's AD9363 sees at
 most 20 MHz, so watching the whole 40 MHz signal takes a wider receiver.
 
+## 8PSK at 36 MHz
+
+The next step was 8PSK at 26.67 Msym/s. Three bits per symbol promised more data
+than QPSK's 40 MHz mode, in a narrower channel. It began with a cache storm:
+the encoder's flash tables and the renderer kept evicting each other's working
+sets. Resident tables and compact queued descriptors made the encoder fast
+enough. Standard dummy frames gave a late encoder somewhere to recover without
+breaking the data sequence.
+
+But the fastest encoder still spent 22% of its airtime on dummies. Models said it
+should keep up. A page sweep finally showed what was missing: at 46 pages it
+inserted 17,602 steady dummies in 10 s; at 50, 5,180; at 54, none. A data frame
+needs 44 pages. Ten spare pages let the next frame's burst of mapping overlap
+playback. The queue depth, not the mean encoder time, set the limit. Sharing the
+table store and moving cold data to PSRAM made 54 pages fit with Wi-Fi running.
+
+Keyed in the closed box for 30 s each, all three rates ran without a late fill
+or a steady dummy: 51.6 Mb/s at 2/3, 64.6 at 5/6, and **69.8 at 9/10**. The longest
+bank fills were 39,011, 38,509 and 38,255 cycles against 47,220. There was room on
+both cores, and at least 22,211 bytes remained through Wi-Fi startup. The chip's
+dumped samples decoded in LeanDVB; receiving the signal over RF is still ahead.
+([keyed records](measurements.md#8psk-at-36-mhz))
+
 ## Now
 
 Payload now arrives over [SPI or USB](spi-input.md), a [live-video example](../examples/live-video/README.md)
 carries a camera's transport stream, and an [over-the-air check](../examples/over-the-air/README.md)
 waits for an E200 in a bigger Faraday box: the next measurement is a receiver decoding the signal
-over the air. 8PSK at 26.67 Msym/s (36 MHz) is being finished, and 40 MHz stays QPSK.
+over the air. 8PSK now reaches 26.67 Msym/s (36 MHz), and 40 MHz stays QPSK.
 The current [implementation](how-it-works.md), [evidence](measurements.md) and
 [radio-off example](../examples/self-check/README.md) are the starting point. All development
 records remain in the [archive tag](https://github.com/Rivercraft911/esp-dvbs2/tree/archive/dev-2026-10-17).

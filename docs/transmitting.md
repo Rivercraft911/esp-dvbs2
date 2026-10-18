@@ -79,7 +79,7 @@ omit `flash`.
 
 MODCOD selects modulation and code rate: QPSK 4..11, 8PSK 12..17. The
 [rate table](how-it-works.md#rates) gives the exact choices. QPSK defaults to 1 Msym/s.
-Both modulations accept `5m`, `10m`, `20m`; `26m667` and `33m333` are QPSK only.
+Both modulations accept `5m`, `10m`, `20m` and `26m667`; `33m333` is QPSK only.
 Dumps are little-endian int16 I/Q with full scale 512. Golden CRCs use peak 128 and N0CALL.
 SPI argument ranges, custom pins and fault/replay options: [diagnostics](spi-input.md#diagnostics).
 

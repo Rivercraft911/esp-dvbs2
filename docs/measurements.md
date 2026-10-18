@@ -20,7 +20,10 @@ different firmware versions. The video-example row is a host-model check only.
 
 | Mode | Symbol rate | Bandwidth | Data rate | Tested | Fill headroom |
 |---|---:|---:|---:|---|---|
+| 8PSK 9/10 | 26.67 Msym/s | 36 MHz | 69.8 Mb/s | keyed | 19% ([records](#8psk-at-36-mhz)) |
+| 8PSK 5/6 | 26.67 Msym/s | 36 MHz | 64.6 Mb/s | keyed | 18% ([records](#8psk-at-36-mhz)) |
 | QPSK 9/10, roll-off 0.20 | 33.33 Msym/s | 40 MHz | 58.2 Mb/s | keyed | 16%; encoder 37%, prepared payload ([records](#40-mhz)) |
+| 8PSK 2/3 | 26.67 Msym/s | 36 MHz | 51.6 Mb/s | keyed | 17% ([records](#8psk-at-36-mhz)) |
 | 8PSK 5/6 | 20 Msym/s | 27 MHz | 48.4 Mb/s | keyed | 14% [radio off, current pulse](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/results/2026-10-17-next4/README.md); 5% keyed, [earlier pulse](#8psk-at-20-msyms) |
 | QPSK 9/10 | 26.67 Msym/s | 36 MHz | 46.6 Mb/s | keyed | 18% ([record](#qpsk-at-2667-msyms)) |
 | 8PSK 2/3 | 20 Msym/s | 27 MHz | 38.7 Mb/s | keyed | 14% radio off, current pulse |
@@ -53,6 +56,51 @@ These payload rates exclude Morse ID intervals and include the synthetic callsig
 they are not measured sustained video-input throughput.
 
 ![Payload rates calculated from the five selected keyed records](img/payload.png)
+
+## 8PSK at 36 MHz
+
+On 2026-10-18, firmware **87b17a9** keyed 8PSK 2/3, 5/6 and 9/10 at
+80/3 Msym/s, roll-off 0.35, for 30 s each in the closed Faraday box. The commands
+were `dvb 2412 MC 26m667 30 0 128 --fixture`, with MC 13, 15 and 17. Wi-Fi
+remained up. Each run reused one prepared payload and encoded every frame
+through the normal baseband, FEC and pilot stages. This measures the complete
+transmitter's timing with prepared input, not external input throughput or RF decoding.
+
+| Quantity | [2/3, MODCOD 13](measurements/2026-10-18-8psk-26m667-keyed-13.jsonl) | [5/6, MODCOD 15](measurements/2026-10-18-8psk-26m667-keyed-15.jsonl) | [9/10, MODCOD 17](measurements/2026-10-18-8psk-26m667-keyed-17.jsonl) |
+|---|---:|---:|---:|
+| Status | ESP_OK | ESP_OK | ESP_OK |
+| Data frames played | 23,501 | 23,501 | 23,501 |
+| Startup / steady-state dummy frames | 2 / 0 | 2 / 0 | 2 / 0 |
+| Late fills / switches | 0 / 0 | 0 / 0 | 0 / 0 |
+| Encoder mean / live maximum, cycles/frame | 163,086 / 243,124 | 167,875 / 247,503 | 147,941 / 211,351 |
+| Longest bank fill, cycles | 39,011 | 38,509 | 38,255 |
+| Minimum fill slack, cycles | 7,576 | 8,423 | 8,318 |
+| Minimum queued lead, symbols | 692 | 692 | 3,252 |
+| Queue pages | 54 | 54 | 54 |
+| Minimum free internal RAM during command, B | 26,583 | 23,907 | 22,211 |
+
+The frame duration is `22194 * 240e6 / (80e6/3) = 199746 cycles`.
+Mean encoder headroom was 18%, 16% and 26%; fill headroom against the
+47,220-cycle bank deadline was 17%, 18% and 19%. Every longest fill was below
+40,137 cycles, the 15% reserve line. A dummy PLFRAME lets an individual encoder
+frame exceed its duration without interrupting the data sequence. There were
+no steady-state dummies, empty queues or underruns in these runs.
+
+With B = 5370, 6720 and 7264 bytes and Ns = 22194 symbols, the payload-rate
+equation above gives 51.6, 64.6 and 69.8 Mb/s during data playout. Nominal shaped
+bandwidth is `1.35 * (80/3) MHz = 36 MHz`. The 30 s command includes both
+Morse IDs; these rates exclude their airtime.
+
+Separate 16-frame USB sample dumps at these three rates decoded as contiguous
+exact payloads in LeanDVB, with zero LDPC flips, BCH failures, BCH corrections
+or payload bit errors. [Copied decode records](measurements/2026-10-18-8psk-26m667-decodes.jsonl).
+These were digital dumps, not receiver captures over RF.
+
+The [queue-depth sweep](measurements/2026-10-18-8psk-page-sweep.jsonl), firmware
+**aaeb50e**, paced MODCOD 17 for 10 s per count with Wi-Fi and the radio off.
+At 46, 50, 54 and 58 pages it played 9,374, 11,238, 12,015 and 12,015 data frames,
+with 17,602, 5,180, 0 and 0 steady dummies. This led to the 54-page layout used
+by the keyed runs; it does not establish the minimum queue depth under every load.
 
 ## 40 MHz
 
