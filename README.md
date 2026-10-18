@@ -82,6 +82,8 @@ Wi-Fi memory check. All console commands are in [transmitting](docs/transmitting
 
 ## Send it your data
 
+[USB sender](examples/usb-send/README.md): one Python file (`pyserial` only) sends video or files from a laptop over native USB, with radio-off defaults and SHA-256 file recovery.
+
 The S3 takes its payload over SPI. The sender clocks fixed 1,332-byte messages: a 12-byte
 header (`PV`, version, type, sequence, length), up to seven 188-byte MPEG-TS packets and a
 CRC-32. A READY pin tells the sender when the S3 has room. Single-line SPI at 20 MHz carries

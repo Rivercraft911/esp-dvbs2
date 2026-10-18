@@ -72,6 +72,7 @@ Raw SPI needs only SCK, CS, MOSI, READY and GND; leave MISO and D1..D3 disconnec
 | `spiinput on [ts\|gcs]` | Standard raw input; TS by default |
 | `spiinput quad [ts\|gcs]` | Quad input, same messages; TS by default |
 | `spiinput off` | Restore synthetic input |
+| `spiinput usb [ts\|gcs]` | Same PV messages over native USB; see the [USB sender](../examples/usb-send/README.md) |
 | `spiinput on [ts\|gcs] loop Mb/s` | On-chip sender for the next run; also works with `quad` |
 | `spirx 3000 on loop 9` | Three-second on-chip receive/pattern check, radio off |
 
@@ -117,3 +118,22 @@ raw TS/GCS, quad, decoded payloads and synthetic waveform CRCs; logs under `note
 ```sh
 PORT=/dev/cu.usbmodem101 PINS=devkit RX=/path/to/leandvb bash host/spi-board.sh
 ```
+
+
+## USB payload on the console
+
+`spiinput usb [ts|gcs]` selects USB for the next run; `spiinput off|on|quad`
+restores synthetic/SPI input. Wait for `usbinput ready:true`, then send standard
+1,332-byte PV v1 messages above. The validator and encoder path
+are shared with SPI. USB reads may split messages anywhere. A standard PV NOP is
+reserved for **end of stream** on USB. On `usbinput stop:true`, finish the current
+message and send NOP. Send no more bytes until the command's `done:true` record.
+The script reads console records and raw IQ concurrently with payload writes;
+`--report` preserves all counters, measured rates and errors.
+
+Firmware drains queued binary bytes before returning to the console. Missing NOP
+reports an error after three seconds and quarantines input with the radio off.
+After an interrupted or uncertain write, manually reset before a fresh session;
+never retry that message or send console text into the unfinished binary stream.
+Successful OS writes alone are not reception acknowledgements; the script checks
+receiver counts. Existing `host/board.py` result and dump framing is unchanged.

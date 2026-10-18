@@ -24,6 +24,11 @@ jobs:
           python tests/test_spi_board.py
           python tests/test_spi_sender.py
 
+      - name: USB payload input (no hardware)
+        run: |
+          python tests/test_usb_input.py
+          python tests/test_usb_send.py
+
   firmware:
     runs-on: ubuntu-latest
     steps:
