@@ -127,6 +127,7 @@ python3 host/board.py "dvbpace 11 26m667 10" --timeout 120
 | `host/dvbs2.py`, `host/dvbs2_tables.py` | Independent Python oracle and standard tables |
 | `host/plots.py` | Regenerate the measurement figures from the retained raw records |
 | `examples/self-check/` | Radio-off example and board regression check |
+| [`examples/live-video/`](examples/live-video/README.md) | UHD/LeanDVB video receiver and RF-free TS-to-IQ dry run |
 | `tests/` | Standard vectors, C/Python agreement and stream CRCs; table generators in `reference/` |
 | `docs/` | [How it works](docs/how-it-works.md), [transmitting](docs/transmitting.md), [story](docs/story.md), [measurements](docs/measurements.md), [credits](docs/prior-art.md) |
 
