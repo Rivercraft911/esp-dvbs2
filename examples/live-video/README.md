@@ -1,110 +1,138 @@
 # Live video over DVB-S2
 
-A CM5 camera running `pv-capture` sends MPEG-TS over SPI to an ESP32-S3;
-a UHD receiver and LeanDVB recover TS for a file or player. Normal frames,
-QPSK 3/4 (MODCOD **7**), pilots on, **10 Msym/s**, roll-off **0.35**.
+Send a **9 Mb/s MPEG-TS** file or ffmpeg stream over SPI with the [Pi sender](../pi-sender/README.md).
+The example uses normal frames, QPSK 3/4 (**MODCOD 7**), pilots, **10 Msym/s** and roll-off
+**0.35**: **14.520762 Mb/s** payload capacity in **13.5 MHz**. At 5 Msym/s it would carry
+only 7.260381 Mb/s. A 9 Mb/s source leaves valid DVB-S2 dummy frames between data frames.
 
-The TS capacity is `(48408-80) * 10e6 / 33282 = 14.520762 Mb/s`:
-32,400 data symbols + 90 header + 22×36 pilots per frame. The camera's two
-4 Mb/s H.264 streams fit in its **9 Mb/s total CBR TS**, including tables,
-metadata and nulls. Raw 20 MHz SPI has an ideal **19.395726 Mb/s** payload
-ceiling, before software overhead. Keep this mode; 5 Msym/s QPSK 3/4 would
-carry only 7.260381 Mb/s. The 9 Mb/s producer leaves DVB-S2 dummy frames
-between data frames; these are expected and do not enter recovered TS.
+The verified route is **host-model TS → DVB-S2 IQ → LeanDVB → TS**, with MPEG-2 video.
+It opens no devices. S3 sample dumps and on-chip SPI loopback have separate tests;
+external SPI/cameras, live H.264 playback and RF reception remain unmeasured.
 
-See [SPI wiring and the unchanged pv-capture contract](../../docs/spi-input.md).
-Use `spiinput on`, mode 0, 20 MHz, one raw 1,332-byte message per CS,
-READY on GPIO25. Do not add a command prefix or change the camera transport.
+## RF-free dry run
 
-## Prepare
+Use the [host Python shell](../../README.md#quick-start) with numpy/scipy, Git, Make and a
+C++ compiler. No GNU Radio, UHD, ffmpeg or player is required.
+The [pinned LeanDVB builder](../self-check/README.md#prepare) installs the separate receiver:
 
-Install Python 3, numpy/scipy (dry run only), UHD's `uhd_rx_cfile`, and
-[LeanDVB](../self-check/README.md#prepare). Set `RX` to the receiver executable
-and put UHD tools on `PATH`. No device is opened by `--help`, `--plan`, or `--iq`.
-For playback install a TS demuxer and H.264 decoder as well as a player.
-GStreamer needs `mpegtsdemux`, an H.264 decoder, and a video sink; its base
-plugins alone cannot play this feed. File output works without a player.
+```sh
+python3 examples/self-check/build_receiver.py
+export RX="$PWD/notes/leansdr/src/apps/leandvb"
+python3 examples/live-video/dry_run.py notes/video-dry --receiver "$RX"
+python3 examples/live-video/check_ts.py notes/video-dry/received.ts \
+  --reference notes/video-dry/source.ts
+```
 
-## Three live commands
+Use a new output directory each time. This generates one second of animated MPEG-2 video
+in a 9 Mb/s TS, encodes it with the host model into 20 MS/s IQ, and invokes `receive.py --iq`.
+Success requires at least 90% recovery as an exact contiguous source slice, zero continuity
+and PSI CRC errors, PAT/PMT, a declared video PID with PES starts, and PCR.
+Acquisition and buffering can trim the ends; no packets may disappear in the middle.
+IQ, both TS files, receiver logs and `report.json` stay in the output directory.
+`--ts video.ts` substitutes another complete 9 Mb/s TS source.
+
+## Prepare a sender
+
+On a Linux Pi/CM5, enable SPI0 and install the [sender dependencies](../pi-sender/README.md)
+(`spidev` and `gpiod>=2,<3`). Identify the GPIO chip with `gpioinfo`.
+Connect **Pi BCM GPIO25 (header pin 22) to S3 GPIO8 (READY)**, plus SCK, CS, MOSI and GND
+as in the [complete wiring table](../../docs/spi-input.md#pins).
+Use mode 0 at 20 MHz: one raw 1,332-byte message per CS, without a command prefix.
+The ideal payload ceiling is 19.395726 Mb/s before software overhead.
+
+For a self-contained file source, generate 35 seconds of test video on the Pi:
+
+```sh
+python3 examples/live-video/make_ts.py demo.ts --frames 875
+python3 examples/pi-sender/send.py --vector  # 1332 bytes, CRC 0x51be328d; no hardware
+```
+
+For H.264 instead, install ffmpeg with `libx264`, and encode your source into a new file:
+
+```sh
+ffmpeg -i input.mp4 -t 35 -an -c:v libx264 -preset ultrafast -tune zerolatency \
+  -b:v 4M -maxrate 4M -bufsize 8M -pix_fmt yuv420p -muxrate 9000000 -f mpegts demo.ts
+```
+
+Optional PigeonVision camera software can supply the same PV-SPI v1 messages; its camera
+setup is outside this example. The file and ffmpeg routes use only the shipped sender.
+
+## Live reception
+
+Install **GNU Radio with gr-uhd and UHD**, which supplies the
+[`uhd_rx_cfile` application](https://github.com/gnuradio/gnuradio/blob/aee9fd3f79389c4282a98e8d62c8405c73fd91df/gr-uhd/apps/uhd_rx_cfile),
+and put it on PATH. UHD alone does not supply this flowgraph.
+
+```sh
+command -v uhd_rx_cfile
+export RX=/absolute/path/to/leandvb
+```
 
 First follow [contained RF and station identification](../../docs/transmitting.md).
-Keep RF in coax through suitable attenuators or a closed shielded box until
-the assigned station callsign is set up. Confirm input-power limits and port
-names. One coordinator owns the board; no other serial client may run.
-Set an operator-approved `FREQ_MHZ`/matching `FREQ_HZ`; the S3 accepts integer
-2390–2450 MHz. These commands are for the operator, not part of the dry run.
+Set the assigned callsign, confirm receiver input-power limits and port names, and use one
+serial client. Choose an authorized integer `FREQ_MHZ` in 2390–2450 and the matching
+`FREQ_HZ`. These commands access hardware and are separate from the dry run.
 
-1. **Receiver host**, start before the S3 (B200 below). For an E200 with UHD
-   firmware replace `type=b200` with `addr=$E200_ADDR`:
+1. **Receiver host**, start before the S3 (B200 shown):
 
    ```sh
    python3 examples/live-video/receive.py --args type=b200 --freq "$FREQ_HZ" \
      --gain 0 --antenna RX2 --seconds 75 --output received.ts 2>receiver.log
    ```
 
-2. **S3 console**, select the correct board pins and fresh input, then transmit
-   at the same center frequency (replace `FREQ_MHZ` with its integer value):
+2. **S3 console**, after setting the station callsign, replace `FREQ_MHZ` with its value:
 
    ```text
    spipins devkit
-   spiinput on
+   spiinput on ts
    dvb FREQ_MHZ 7 10m 60 0 128
    ```
 
-3. **CM5**, after the S3 is running, use its existing resolved camera config
-   and a fresh session directory; stop capture with Ctrl-C after about 35 s:
+3. **Pi/CM5**, once the S3 is running, send the prepared file:
 
    ```sh
-   pv-capture --config capture.json
+   python3 examples/pi-sender/send.py demo.ts --mbps 9 --gpiochip /dev/gpiochip4
    ```
 
-Stop capture several seconds before the S3's payload window ends. The 60 s
-S3 limit includes start/end Morse IDs; the receiver reacquires after the first
-ID. Never disconnect the RF path while a timed S3 run is still active.
+   To stream from ffmpeg instead:
 
-The receiver requests **20 MS/s**, two samples/symbol, for **13.5 MHz** occupied
-bandwidth, within the E200's 20 MHz limit. It uses manual **0 dB RX gain** as a
-contained-path starting point, `sc16` on the wire and interleaved signed int16
-to LeanDVB (`--s16`), about **80 MB/s**. Increase gain only from measured level;
-do not clip. Check UHD's actual sample-rate readback is 20 MS/s and reject
-overflows (`O`), sequence drops or rate coercion. Do not use the 40 MS/s S3 DAC
-rate as the SDR rate. No sample decimation is used in this receive path.
+   ```sh
+   ffmpeg -re -i demo.ts -c copy -muxrate 9000000 -f mpegts pipe:1 |
+     python3 examples/pi-sender/send.py - --mbps 9 --gpiochip /dev/gpiochip4
+   ```
 
-Add `--player 'gst-launch-1.0 -q playbin uri=fd://0'` to view while saving,
-or use `--player 'ffplay -i pipe:0'` / `--player 'cvlc -'` if installed.
-Output files must be new. Diagnostics go to stderr; stdout is TS only.
-The UHD IQ FIFO keeps its startup text out of the samples.
+Stop the sender several seconds before the S3 payload window ends. The 60 s limit includes
+start/end Morse ID; the receiver must reacquire after the first ID. Keep the contained RF
+path connected until the timed run finishes.
 
-## RF-free dry run and success checks
+Reception requests **20 MS/s**, two samples/symbol, within the E200's 20 MHz bandwidth.
+For an E200 with UHD firmware use `--args "addr=$E200_ADDR"`. Start at manual 0 dB RX gain
+and adjust from measured level without clipping. Samples are `sc16` on the wire, signed
+int16 into LeanDVB (`--s16`), about 80 MB/s. Verify the actual sample-rate readback;
+reject UHD overflows (`O`), sequence drops and rate coercion. Use the SDR's rate, not the
+S3's 40 MS/s DAC rate.
+
+Add `--player 'ffplay -i pipe:0'`, `--player 'cvlc -'`, or
+`--player 'gst-launch-1.0 -q playbin uri=fd://0'` to view while saving. Install the player,
+TS demuxer and the source codec's decoder first (H.264 for the ffmpeg route, MPEG-2 for the
+test file). Output files must be new. Diagnostics go to stderr; stdout carries TS only.
+
+Run `python3 examples/live-video/check_ts.py received.ts`. Compare drained sender/S3
+`messages`, `ts_packets`, `payload_bytes`, `crc_chain` and `next_seq`; require zero protocol
+errors, drops, timeouts, uncertain writes, late S3 banks, underruns and encoder failures.
+Verify moving video as well: valid TS alone does not prove playback or RF operation.
+
+## Saved IQ
 
 ```sh
-python3 examples/live-video/dry_run.py notes/video-dry --receiver "$RX"
-python3 examples/live-video/check_ts.py notes/video-dry/received.ts \
-  --reference notes/video-dry/source.ts
+python3 examples/live-video/receive.py --iq dump.cf32 --rate 20e6 --output recovered.ts
 ```
 
-This synthesizes one second of valid animated MPEG-2 video in a 9 Mb/s TS,
-uses the repo's host encoder/model for QPSK 3/4 and .35 RRC IQ at 20 MS/s,
-inserts idle dummy frames, and invokes **the same receive.py** with `--iq`.
-No board, serial port, SDR or RF is involved. `--ts video.ts` uses another
-complete 9 Mb/s TS source. `report.json`, `receiver.log`, IQ and both TS files
-remain in the new directory. Success requires at least 90% recovery as an
-exact contiguous source slice, zero continuity/PSI CRC errors, PAT/PMT, a
-declared video PID with PES starts, and PCR. Leading acquisition and trailing
-encoder/decoder buffering can trim packets. Nothing may disappear in the middle.
+For an S3 `dvbdump`, use `--format i16` and its reported sample rate, symbol rate and
+MODCOD. For example, a non-decimated 10 Msym/s dump is 40 MS/s. Synthetic GCS dumps contain
+no TS. [Common IQ format aliases](../../docs/transmitting.md#console).
+`--help` and `--plan` do not open devices.
 
-For saved IQ: `receive.py --iq dump.cf32 --rate 20e6 --output recovered.ts`.
-An S3 `dvbdump` is **signed int16**, so use `--format s16` and its reported
-sample rate (e.g. `--rate 40e6` for a non-decimated 10 Msym/s dump).
-Match its actual symbol rate and MODCOD too. Synthetic GCS dumps contain no TS.
-
-On live output run `python3 examples/live-video/check_ts.py received.ts`.
-The camera should advertise H.264 video PIDs **256/257**, private metadata
-PID **258**, and repeated PAT/PMT; the synthetic video has one MPEG-2 PID 256.
-Compare drained sender/S3 messages, TS packets, bytes, CRC chain and next
-sequence, with zero protocol errors/drops/timeouts/uncertain writes. Require
-zero S3 late banks/underruns/encoder failures. Finally verify visible moving
-video; TS checks alone do not prove H.264 decoding, timing or live RF operation.
-
-Format/streaming references: [UHD](https://files.ettus.com/manual/page_stream.html),
-[LeanDVB](https://github.com/pabr/leansdr), [MPEG-2 video](https://www.itu.int/rec/T-REC-H.262).
+References: [UHD streaming](https://files.ettus.com/manual/page_stream.html),
+[pinned LeanDVB](https://github.com/pabr/leansdr/tree/84c59e1c7a1a79338d5722d63f28640cc9d350f3),
+[MPEG-2 video](https://www.itu.int/rec/T-REC-H.262).

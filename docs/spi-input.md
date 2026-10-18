@@ -13,7 +13,7 @@ an FPGA.
 | Clock | up to 20 MHz | up to 40 MHz |
 | Ideal payload rate | 19.4 Mb/s | 136 Mb/s |
 | Tested on the board | 9 and 12 Mb/s | 46.6 Mb/s |
-| Sender needs | plain SPI writes | a 3-byte command phase + 8 dummy clocks |
+| Sender needs | plain SPI writes | one command byte + one address byte + 8 dummy clocks |
 | Select with | `spiinput on` | `spiinput quad` |
 
 Tested rates are the S3 receiving from its own second SPI peripheral (on-chip loopback);
@@ -46,9 +46,10 @@ the mode, the S3 sends DVB-S2 dummy frames and resumes the data in order.
 ## How messages are framed
 
 Every CS assertion carries exactly one **1,332-byte message**. Multibyte fields are little
-endian; bits go out MSB first. The format is the one the PigeonVision camera project's
-`pv-capture` sends (hence the `PV` magic and the name PV-SPI v1), so that sender works
-unchanged.
+endian; bits go out MSB first. The [reference sender](../examples/pi-sender/README.md)
+implements this format (PV-SPI v1). The `PV` magic also supports optional PigeonVision
+camera integration; no camera software or configuration is required for the file/ffmpeg
+route in the [video example](../examples/live-video/README.md).
 
 | Bytes | Field | Value |
 |---|---|---|
@@ -81,6 +82,11 @@ READY is an S3 output that says it has room for another message.
 - Never send on an old READY reading. There is no acknowledgement or retry.
 - Quad: send command `0x23` and address `0x00` on D0, then **8 dummy clocks**, then the same
   1,332-byte message on D0..D3, high nibble first, bit 3 on D3.
+
+That is 8 command + 8 address + 8 dummy clocks, **24 preamble clocks total**.
+It follows the [S3 TRM](https://www.espressif.com/sites/default/files/documentation/esp32-s3_technical_reference_manual_en.pdf),
+§30.5.9, table 30.5-14 (Wr_DMA `0x23`); both the firmware
+receiver and on-chip sender configure those same three 8-clock phases.
 
 The ideal payload rate is one message per transfer plus the 10 µs gap:
 
@@ -115,10 +121,36 @@ quad:        H = 24, L = 4   -> 136 Mb/s at 40 MHz
 | `spiinput quad [ts\|gcs]` | Quad input for the next run |
 | `spiinput off` | Back to the synthetic test payload |
 | `spiinput on [ts\|gcs] loop Mb/s` | On-chip test sender at that rate (also with `quad`) |
-| `spirx 3000 on loop 9` | Three-second receive check with the on-chip sender, radio off |
+| `spirx ms on\|quad [ts\|gcs] [loop [Mb/s [fault]]]` | Receive diagnostic, radio off |
+| `spisend ms on\|quad [ts\|gcs] [MHz [Mb/s [fault]]]` | Test sender on a second S3 |
 
 Input selection applies to the next `dvbdump`, `dvbpace`, `wifimem` or `dvb`; it does not
 start reception or the radio. Settings last until changed or reset.
+
+## Diagnostics
+
+`spirx` and `spisend` accept **100..120000 ms**, TS by default.
+`spisend` clocks at **1..20 MHz** single-line (default 20), or **1..40 MHz** quad
+(default 40). Offered payload rate is **0..140 Mb/s**; zero means unpaced, still obeying
+READY and the inter-message gap. On-chip `loop` uses 20 MHz for single-line input and
+40 MHz for quad. Without `loop`, `spirx` waits for an external sender.
+For example, `spirx 3000 on loop 9` checks single-line reception for three seconds.
+
+`fault` is **0..6**, default 0. These are deliberate diagnostic conditions:
+
+| Fault | Effect |
+|---|---|
+| 0 | Normal transfers |
+| 1 | Corrupt payload CRC every 64th message |
+| 2 | Short transfer every 64th message |
+| 3 | Long transfer every 64th message |
+| 4 | Ignore READY; receive probe also pauses periodically |
+| 5 | Receive probe pauses periodically while sender obeys READY |
+| 6 | Sender pauses periodically |
+
+`spiinput quad [ts\|gcs] replay` supplies an in-memory pattern without SPI transfers;
+it is a diagnostic, not external input. `spipins SCK CS D0 D1 D2 D3 READY` accepts seven
+distinct output-capable GPIOs; choose pins available on your board.
 
 ## Test your sender
 

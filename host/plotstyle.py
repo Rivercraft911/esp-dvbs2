@@ -1,6 +1,7 @@
 """Paper-style figures, adapted from RP2350_IQ_Benchmark/reference/plotstyle.py.
 
-Serif text, fine boxed axes, inward ticks and open markers. Use Matplotlib's
+Source revision: 88ab018e65a51805ff562842177a4d47b1b04b2e (same author).
+See docs/prior-art.md. Serif text, fine boxed axes, inward ticks and open markers. Use Matplotlib's
 bundled STIX font so rendering does not depend on installed system fonts.
 """
 import os

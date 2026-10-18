@@ -1,8 +1,8 @@
-// Full-axis sign tables from exp/moon-wild-a f704aa0, prepared a page at a time.
+// Full-axis sign tables (source f704aa0), rendered from compact I/Q bit planes.
 #include "machine.h"
 #include "esp_attr.h"
 
-// Seven-symbol pulse from exp/moon-fill 73136ce. 1/256 DAC LSB at peak 508.
+// Seven-symbol pulse (source 73136ce). 1/256 DAC LSB at peak 508.
 static const int32_t pulse[84] = {
     -3579,-4265,-4743,-4206,-2604,-3794,-2601,-1020,100,2911,4975,6875,
     10146,10151,9793,10518,8619,8950,6091,1014,-3414,-9060,-13121,-16662,

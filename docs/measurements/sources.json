@@ -3,7 +3,7 @@
   "records": [
     {
       "file": "2026-10-17-qpsk-reserve-keyed.jsonl",
-      "source": "board run 2026-10-18T02:54Z UTC (2026-10-17 PDT), firmware e96795b on exp/qpsk-qualify, notes/qpsk-keyed/keyed.jsonl",
+      "source": "board run 2026-10-18T02:54Z UTC (2026-10-17 PDT), firmware e96795b",
       "records": 1,
       "sha256": "19d097e6ea8145e468a6b27782e98c3a1431e8abfffbd75446569a79935008ce"
     },
@@ -30,6 +30,12 @@
       "source": "results/2026-10-17-qpsk-fill-board/decodes.jsonl",
       "records": 1,
       "sha256": "9e98ddb69ecfa994a2f69fc9a3f4fcfb9953bf81814fd77577f1c710a34743c6"
+    },
+    {
+      "file": "2026-10-16-keyed-qpsk-1m.jsonl",
+      "source": "results/2026-10-16-keyed-next2/runs.jsonl (QPSK 1/2 record)",
+      "records": 1,
+      "sha256": "87df0a3b85a12a56d400e7ed4d29fd4a4aa1aba6c9514c05bbc143c75357df60"
     }
   ]
 }

@@ -1,4 +1,4 @@
-"""Coordinator gates reject corrupted, slow and late records. No serial access."""
+"""SPI checks reject corrupted, slow and late records. No serial access."""
 import copy
 import json
 import pathlib
