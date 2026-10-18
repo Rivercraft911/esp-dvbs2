@@ -2,6 +2,23 @@
 #include "shaper_taps.h"
 #include "esp_attr.h"
 
+#if LOFTY_FUSED
+// The two fragments must be rounded independently, even after table fusion.
+static int lofty_term(unsigned w, unsigned count, int position, unsigned p,
+                       unsigned axis, const int32_t *taps)
+{
+    int64_t sum = 0;
+    for (unsigned j = 0; j < count; ++j) {
+        int h = (int)p-3*(position+(int)j);
+        unsigned phase = (w>>(3*(count-1-j)))&7;
+        if (h >= 0 && h < 15)
+            sum += (int64_t)(axis ? shaper_level_q[phase] : shaper_level_i[phase])*taps[h];
+    }
+    int value = (int)(((sum < 0 ? -sum : sum)+(INT64_C(1)<<37))>>38);
+    return sum < 0 ? -value : value;
+}
+#endif
+
 int lofty_build(uint32_t *table, unsigned peak)
 {
     // tests/reference/psk8_26m667.py: inverse-hold RRC, alpha .35, five symbols, Kaiser beta 1.5.
@@ -33,6 +50,30 @@ int lofty_build(uint32_t *table, unsigned peak)
     for (unsigned axis = 0; axis < 2; ++axis)
         for (unsigned p = 0; p < 12; ++p)
             bias[0][axis][p] = 512-bias[1][axis][p]-bias[2][axis][p];
+#if LOFTY_FUSED
+    // Chronological symbols a..h become a,b,c,g,h,d,e,f in the queue.
+    // A0 = abc; (A1+C1) = bcg; (A2+C2) = cgh; B0..2 = def.
+    for (unsigned plane = 0; plane < 6; ++plane)
+        for (unsigned w = 0; w < 512; ++w)
+            for (unsigned j = 0; j < 4; ++j) {
+                unsigned p = 4*(plane < 3 ? plane : plane-3)+j;
+                uint32_t packed = 0;
+                for (unsigned axis = 0; axis < 2; ++axis) {
+                    int value;
+                    if (plane == 0)
+                        value = lofty_term(w,3,-4,p,axis,taps)+bias[0][axis][p];
+                    else if (plane == 1)
+                        value = lofty_term(w>>3,2,-3,p,axis,taps)+
+                                lofty_term(w&7,1,2,p,axis,taps)+bias[0][axis][p]+bias[2][axis][p];
+                    else if (plane == 2)
+                        value = lofty_term(w>>6,1,-2,p,axis,taps)+
+                                lofty_term(w&63,2,2,p,axis,taps)+bias[0][axis][p]+bias[2][axis][p];
+                    else value = lofty_term(w,3,-1,p,axis,taps)+bias[1][axis][p];
+                    packed |= (uint32_t)value<<(10*axis);
+                }
+                table[2048*plane+4*w+j] = packed;
+            }
+#else
     // A's first vector needs three symbols, its last two need only two.
     // Keep those two vectors adjacent to save a renderer address calculation.
     const unsigned parts[] = {0,0,1,2,2}, first[] = {0,4,0,4,8};
@@ -60,6 +101,7 @@ int lofty_build(uint32_t *table, unsigned peak)
             }
         table += width*rows;
     }
+#endif
     return 0;
 }
 
@@ -67,7 +109,7 @@ uint32_t lofty_prepare(uint32_t *dst, const uint16_t *src, unsigned n, uint32_t 
 {
     while (n && ((uintptr_t)dst&15)) {
         uint32_t h = previous<<12 | *src++;
-        *dst++ = (((h>>15)&511)<<4) | (((h>>6)&511)*3<<13) | ((h&63)<<24);
+        *dst++ = (LOFTY_FUSED ? lofty_fused_descriptor(h) : lofty_scaled_descriptor(h));
         previous = h&4095;
         --n;
     }
@@ -78,7 +120,7 @@ uint32_t lofty_prepare(uint32_t *dst, const uint16_t *src, unsigned n, uint32_t 
 #endif
     while (n--) {
         uint32_t h = previous<<12 | *src++;
-        *dst++ = (((h>>15)&511)<<4) | (((h>>6)&511)*3<<13) | ((h&63)<<24);
+        *dst++ = (LOFTY_FUSED ? lofty_fused_descriptor(h) : lofty_scaled_descriptor(h));
         previous = h&4095;
     }
     return previous;
@@ -89,12 +131,20 @@ void lofty_render(uint32_t *dst, const uint32_t *src, unsigned n, const uint32_t
 {
     while (n--) {
         uint32_t w = *src++;
+#if LOFTY_FUSED
+        unsigned indices[] = {(w>>19)&511,(w>>16)&511,(w>>13)&511};
+        unsigned b = (w>>4)&511;
+        for (unsigned p = 0; p < 12; ++p)
+            *dst++ = (table[2048*(p/4)+4*indices[p/4]+(p&3)]+
+                      table[2048*(3+p/4)+4*b+(p&3)])^0x80200;
+#else
         unsigned a = (w>>4)&511, b = (w>>13)&2047, c = (w>>24)&63;
         for (unsigned p = 0; p < 12; ++p) {
             uint32_t av = p < 4 ? table[4*a+p] : table[2048+8*(a&63)+p-4];
             *dst++ = (av+table[2560+4*b+p]+(p < 4 ? 0 :
                 table[(p < 8 ? 8704 : 8960)+4*c+(p&3)]))^0x80200;
         }
+#endif
     }
 }
 
@@ -127,6 +177,7 @@ LOFTY_TEXT void lofty_samples(uint32_t *dst, const uint32_t *src, unsigned skip,
     }
 }
 
+#if !LOFTY_FUSED
 #if defined(__XTENSA__) || defined(LOFTY_CACHE_HOST)
 #ifndef LOFTY_CACHE_HOST
 #include "esp32s3/rom/cache.h"
@@ -180,3 +231,5 @@ int lofty_resident(int on)
     return 0;
 #endif
 }
+
+#endif // !LOFTY_FUSED

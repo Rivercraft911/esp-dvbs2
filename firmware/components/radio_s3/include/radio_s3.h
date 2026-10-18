@@ -65,6 +65,17 @@ typedef struct {
  * aborts before playback/TX setup. The default implementation returns ESP_OK. */
 esp_err_t radio_s3_stream_ready(void);
 
+/* Experimental Wi-Fi teardown while an independent PHY lifetime remains held.
+ * No BT controller may coexist. RF quality without Wi-Fi recalibration is unverified. */
+typedef struct { bool phy_solo; } radio_s3_options_t;
+typedef struct {
+    int64_t at_us;
+    int32_t wifi_mode_result;
+    bool wifi_initialized;
+    uint32_t phy_users, free_internal, largest_internal;
+    uint8_t wifi_irq_routes[2], irq_sampled_cores;
+} radio_s3_session_stats_t;
+
 typedef struct {
     uint64_t elapsed_samples; /* Nominal timeline at the run's rate, not an RF measurement. */
     uint64_t elapsed_cycles;
@@ -84,6 +95,8 @@ typedef struct {
     uint64_t planned_samples; /* payload + all IDs */
     radio_filter_stats_t filter; /* keyed runs only; snapshots before playback and cleanup */
     radio_s3_wifi_heap_t wifi; /* run and paced_wifi */
+    int64_t wifi_stop_at_us, wifi_deinit_at_us;
+    radio_s3_session_stats_t session, after; /* opt-in handoff / cleanup */
 } radio_s3_stats_t;
 
 /* Synchronous, exclusive run on core 1, 240 MHz. Valid requests are integer MHz
@@ -160,3 +173,10 @@ esp_err_t radio_s3_wifi_probe(radio_s3_stats_t *stats);
  * tone, TX keying, DAC or bank-ownership register writes; no MAC frames. */
 esp_err_t radio_s3_paced_wifi_rate(uint32_t seconds, uint32_t dac_rate, radio_s3_fill_fn fill,
                                    void *ctx, radio_s3_stats_t *stats);
+
+/* Explicit opt-in variants; NULL options retain the original lifetime. */
+esp_err_t radio_s3_run_options(uint32_t freq_mhz, uint8_t gain, uint32_t seconds,
+                               uint32_t dac_rate, uint32_t occupied_hz, radio_s3_fill_fn fill,
+                               void *ctx, const radio_s3_options_t *options, radio_s3_stats_t *stats);
+esp_err_t radio_s3_paced_wifi_options(uint32_t seconds, uint32_t dac_rate, radio_s3_fill_fn fill,
+                                      void *ctx, const radio_s3_options_t *options, radio_s3_stats_t *stats);

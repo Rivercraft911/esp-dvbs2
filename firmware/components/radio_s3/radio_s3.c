@@ -27,6 +27,9 @@
 #include <string.h>
 
 #include "radio_s3.h"
+#include "physolo.h"
+#include "esp_timer.h"
+#include "esp_private/phy.h"
 #include "station_id.h"
 #include "station_store.h"
 #include "esp_heap_caps.h"
@@ -153,6 +156,7 @@ typedef struct {
     void *sink_ctx;
     radio_s3_dry_stats_t *dry;
     geometry_t geo;
+    radio_s3_options_t options;
 } run_t;
 
 static inline uint32_t IRAM_ATTR cycles(void)
@@ -418,6 +422,8 @@ static void worker(void *arg)
     bool started = false;
     bool watch_worker = false;
     bool watch_idle = false;
+    bool rf_setup = false;
+    physolo_t solo = {0};
 #if CONFIG_PM_ENABLE
     esp_pm_lock_handle_t cpu_lock = NULL;
     esp_pm_lock_handle_t sleep_lock = NULL;
@@ -428,6 +434,7 @@ static void worker(void *arg)
         error = ESP_ERR_INVALID_STATE;
         goto cleanup;
     }
+    if (run->options.phy_solo && (error = physolo_available()) != ESP_OK) goto cleanup;
 #if CONFIG_PM_ENABLE
     error = esp_pm_lock_create(ESP_PM_CPU_FREQ_MAX, 0, "radio_cpu", &cpu_lock);
     if (error != ESP_OK) {
@@ -480,7 +487,30 @@ static void worker(void *arg)
     }
     heap_now(&heap->free_up, &heap->largest_up);
     heap->min_free = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
-    if (error == ESP_OK) error = radio_s3_stream_ready();
+    if (error != ESP_OK) goto cleanup;
+    if (run->options.phy_solo) {
+        error = esp_wifi_set_promiscuous(false);
+        if (error != ESP_OK) goto cleanup;
+        error = physolo_acquire(&solo);
+        if (error != ESP_OK) goto cleanup;
+        error = esp_wifi_stop();
+        if (error != ESP_OK) goto cleanup;
+        started = false;
+        run->stats->wifi_stop_at_us = esp_timer_get_time();
+        error = esp_wifi_deinit();
+        if (error != ESP_OK) goto cleanup;
+        initialized = false;
+        run->stats->wifi_deinit_at_us = esp_timer_get_time();
+        error = physolo_snapshot(&run->stats->session);
+        if (error != ESP_OK) goto cleanup;
+        if (run->stats->session.wifi_initialized || run->stats->session.phy_users != PHY_MODEM_BT ||
+            run->stats->session.wifi_irq_routes[0] || run->stats->session.wifi_irq_routes[1]) {
+            error = ESP_ERR_INVALID_STATE;
+            goto cleanup;
+        }
+    }
+    // Admit stream memory only after the optional teardown, before any RF setup.
+    error = radio_s3_stream_ready();
     if (error == ESP_OK && run->wifi_pace) {
         error = watch_begin(run, &watch_idle, &watch_worker);
         if (error == ESP_OK) error = paced(run);
@@ -489,6 +519,7 @@ static void worker(void *arg)
     if (error != ESP_OK || run->probe) {
         goto cleanup;
     }
+    rf_setup = true;
     REG_WRITE(DAC_CTRL, 0);
     REG_WRITE(ADC_CTRL, 0);
     REG_WRITE(BANK_USAGE, REG_READ(BANK_USAGE) & ~0xfU);
@@ -508,7 +539,7 @@ static void worker(void *arg)
     error = stream(run);
 
 cleanup:
-    if (started && !run->probe) {
+    if (rf_setup) {
         REG_WRITE(DAC_CTRL, 0);
         if (run->stats->filter.applied && !radio_filter_finish(&run->stats->filter) && error == ESP_OK) {
             error = ESP_ERR_INVALID_STATE;
@@ -535,6 +566,13 @@ cleanup:
         if (error == ESP_OK && deinitialized != ESP_OK) {
             error = deinitialized;
         }
+    }
+    physolo_release(&solo);
+    if (run->options.phy_solo) {
+        const esp_err_t observed = physolo_snapshot(&run->stats->after);
+        if (error == ESP_OK) error = observed;
+        if (error == ESP_OK && (run->stats->after.wifi_initialized || run->stats->after.phy_users))
+            error = ESP_ERR_INVALID_STATE;
     }
     watch_end(watch_idle, watch_worker);
 #if CONFIG_PM_ENABLE
@@ -721,13 +759,21 @@ esp_err_t radio_s3_paced_run_rate(uint32_t seconds, uint32_t dac_rate, radio_s3_
 esp_err_t radio_s3_paced_wifi_rate(uint32_t seconds, uint32_t dac_rate, radio_s3_fill_fn fill,
                                    void *ctx, radio_s3_stats_t *stats)
 {
+    return radio_s3_paced_wifi_options(seconds,dac_rate,fill,ctx,NULL,stats);
+}
+
+esp_err_t radio_s3_paced_wifi_options(uint32_t seconds, uint32_t dac_rate, radio_s3_fill_fn fill,
+                                      void *ctx, const radio_s3_options_t *options, radio_s3_stats_t *stats)
+{
     if (!fill || !stats || seconds == 0 || seconds > 600 || !known_rate(dac_rate) ||
+            (options && options->phy_solo && seconds > 60) ||
             !station_store_get()[0]) return ESP_ERR_INVALID_ARG;
     memset(stats,0,sizeof *stats);
     stats->min_fill_slack_cycles = UINT32_MAX;
     run_t run = {.seconds=seconds, .samples=(uint64_t)seconds*dac_rate,
                  .identify=true, .probe=true, .wifi_pace=true,
                  .fill=fill, .ctx=ctx, .stats=stats, .geo=geometry(dac_rate)};
+    if (options) run.options = *options;
     const esp_err_t error = on_core1(worker,&run);
     if (stats->min_fill_slack_cycles == UINT32_MAX) stats->min_fill_slack_cycles = 0;
     return error;
@@ -778,6 +824,13 @@ esp_err_t radio_s3_run_bandwidth(uint32_t freq_mhz, uint8_t gain, uint32_t secon
                                  uint32_t dac_rate, uint32_t occupied_hz, radio_s3_fill_fn fill,
                                  void *ctx, radio_s3_stats_t *stats)
 {
+    return radio_s3_run_options(freq_mhz,gain,seconds,dac_rate,occupied_hz,fill,ctx,NULL,stats);
+}
+
+esp_err_t radio_s3_run_options(uint32_t freq_mhz, uint8_t gain, uint32_t seconds,
+                               uint32_t dac_rate, uint32_t occupied_hz, radio_s3_fill_fn fill,
+                               void *ctx, const radio_s3_options_t *options, radio_s3_stats_t *stats)
+{
     if (!occupied_hz || occupied_hz > dac_rate || !fill || !stats || freq_mhz < 2390 || freq_mhz > 2450 ||
             gain > RADIO_S3_GAIN_MAX || seconds == 0 || seconds > 60 || !known_rate(dac_rate)) {
         return ESP_ERR_INVALID_ARG;
@@ -796,6 +849,7 @@ esp_err_t radio_s3_run_bandwidth(uint32_t freq_mhz, uint8_t gain, uint32_t secon
         .fill = fill, .ctx = ctx, .stats = stats,
         .geo = geometry(dac_rate),
     };
+    if (options) run.options = *options;
     esp_err_t error = on_core1(worker, &run);
     if (stats->min_fill_slack_cycles == UINT32_MAX) {
         stats->min_fill_slack_cycles = 0;

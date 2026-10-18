@@ -5,11 +5,15 @@
 // The old order lets the context and workspace split the only cache-sized
 // region. Match the IDF first-fitting-region policy and charge block overhead.
 static bool fragmented;
+static size_t queue_allocation_limit;
 static const size_t region_size[] = {16000,31744,19000};
 static size_t region_free[3], first_request;
 static struct { void *p; unsigned region; size_t bytes; } region_blocks[64];
 static void *fragment_alloc(size_t align, size_t n, unsigned caps)
 {
+    if ((caps & MALLOC_CAP_INTERNAL) && queue_allocation_limit && n > queue_allocation_limit) {
+        ++allocation_count; return NULL;
+    }
     if (!fragmented || !(caps & MALLOC_CAP_INTERNAL)) return heap_caps_aligned_alloc(align,n,caps);
     if (!first_request) first_request = n;
     for (unsigned r = 0; r < 3; ++r) {
@@ -170,8 +174,8 @@ static esp_err_t pace(bool wifi, uint32_t sec, uint32_t rate, radio_s3_fill_fn f
     if (dvb.lofty) {
         assert(enc.table_tail && esp_ptr_external_ram(enc.table_tail));
         assert(!enc.ws_borrowed && heap_caps_get_allocated_size(enc.ws) == DVBS2_FAST_WORKSPACE_USED);
-        assert(!enc.block);
-        for (unsigned i = 1; i < expect_pages && i < LOFTY_STORED; ++i)
+        assert(!!enc.block == enc.fused);
+        for (unsigned i = 1; i < expect_pages && i < (enc.fused ? LOFTY_FUSED_STORED : LOFTY_STORED); ++i)
             assert(lofty_page_at(i) == lofty_page_at(i-1)+1);
         assert(enc.prefill_frames == 1);
     }
@@ -185,7 +189,7 @@ static esp_err_t pace(bool wifi, uint32_t sec, uint32_t rate, radio_s3_fill_fn f
         first += n;
     }
     assert(!dvb.queue_empty && !dvb.ring.underruns);
-    if (dvb.lofty) assert(lofty_mux.frames == 8 && !lofty_mux.startup && !lofty_mux.steady);
+    if (dvb.lofty && !getenv("FORCE_DUMMIES")) assert(lofty_mux.frames == 8 && !lofty_mux.startup && !lofty_mux.steady);
     if (dvb.lofty) {
         assert(!dvb.copy.calls && !dvb.whole.calls && !dvb.save.calls && !dvb.notify.calls);
         assert(dvb.fill_calls);
@@ -202,7 +206,11 @@ esp_err_t radio_s3_paced_wifi_rate(uint32_t sec, uint32_t rate, radio_s3_fill_fn
                                    void *ctx, radio_s3_stats_t *stats)
 { return pace(true,sec,rate,fn,ctx,stats); }
 
+#ifdef FUSED_MEMORY_TEST
+int memory_checks_main(void)
+#else
 int main(void)
+#endif
 {
     callsign = "N0CALL";
     assert(!posix_memalign((void **)&banks,65536,2*sizeof *banks));

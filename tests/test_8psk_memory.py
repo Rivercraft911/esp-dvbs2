@@ -28,22 +28,24 @@ def check(out):
 #define RADIO_S3_GAIN_MAX 17
 static bool station_require(const char *cmd) { (void)cmd; return true; }
 static unsigned keyed_calls;
+static bool expected_solo, expected_fused;
 static void dvbtx_run_check(uint32_t freq, unsigned mc, uint32_t sec, unsigned gain,
-    unsigned peak, unsigned sps, uint32_t rate, bool fixture)
+    unsigned peak, unsigned sps, uint32_t rate, bool fixture, bool solo, bool fused)
 {
     assert(freq == 2412 && sec == 30 && !gain && peak == 128 && rate == 80000000);
     assert((mc == 11 && sps == DVB_SPS_12_5) || ((mc == 13 || mc == 15 || mc == 17) && sps == 3));
-    assert(fixture == (keyed_calls < 4)); ++keyed_calls;
+    assert(fixture == (keyed_calls < 4 || keyed_calls >= 5));
+    assert(solo == expected_solo && fused == expected_fused); ++keyed_calls;
 }
-#define dvbtx_run dvbtx_run_check
+#define dvbtx_run_options dvbtx_run_check
 static unsigned calls;
 static void dvbtx_pace_check(unsigned mc, uint32_t sec, unsigned peak, unsigned stall,
-    unsigned sps, uint32_t rate)
+    unsigned sps, uint32_t rate, bool solo, bool fused)
 {
     assert(mc == 17 && sec == 10 && peak == 128 && !stall && sps == 3 && rate == 80000000);
-    ++calls;
+    assert(solo == expected_solo && fused == expected_fused); ++calls;
 }
-#define dvbtx_pace dvbtx_pace_check
+#define dvbtx_pace_options dvbtx_pace_check
 '''+functions+'''
 int main(void) {
     const char *cases[] = {"17 26m667 10", "17 26m667 10 128 0",
@@ -58,13 +60,29 @@ int main(void) {
     const char *keyed[] = {"2412 13 26m667 30 0 128 --fixture",
         "--fixture 2412 15 26m667 30", "2412 17 26m667 --fixture 30",
         "2412 11 33m333 30 --fixture", "2412 13 26m667 30",
-        "2412 13 26m667 30 --fixture --fixture", "2412 13 26m667 30 --phy-solo",
+        "2412 13 26m667 30 --fixture --fixture", "2412 13 26m667 30 --phy-solojunk",
         "2412 11 20m 30 --fixture", "2412 13 20m 30 --fixture",
         "2412 13 26m667 30 --fixturejunk", "13 26m667 30 --fixture"};
     for (unsigned i = 0; i < sizeof keyed/sizeof *keyed; ++i) {
         char text[128]; strcpy(text,keyed[i]); cmd_dvb(text);
         assert(keyed_calls == (i < 5 ? i+1 : 5));
     }
+    for (unsigned flags=1; flags<4; ++flags) {
+        expected_solo = flags&1; expected_fused = flags&2;
+        char keyed_option[128], pace_option[128];
+        snprintf(keyed_option,sizeof keyed_option,"--fixture 2412 13 26m667 30 %s %s",
+                 expected_solo ? "--phy-solo" : "",expected_fused ? "--fused" : "");
+        snprintf(pace_option,sizeof pace_option,"17 26m667 10 %s %s",
+                 expected_fused ? "--fused" : "",expected_solo ? "--phy-solo" : "");
+        cmd_dvb(keyed_option); cmd_dvbpace(pace_option);
+        assert(keyed_calls == 5+flags && calls == 2+flags);
+    }
+    char duplicate[]="2412 13 26m667 30 --fused --fused";
+    char duplicate_solo[]="17 26m667 10 --phy-solo --phy-solo";
+    char wrong_rate[]="2412 13 20m 30 --fused";
+    char too_long[]="17 26m667 61 --phy-solo";
+    cmd_dvb(duplicate); cmd_dvbpace(duplicate_solo); cmd_dvb(wrong_rate); cmd_dvbpace(too_long);
+    assert(keyed_calls == 8 && calls == 5);
     puts("keyed fixture: flag order, QPSK/8PSK rates, defaults, duplicates and unsupported options: ok");
 }
 ''')
@@ -145,15 +163,17 @@ def check_residency(current):
     size = (end-first+31)&~31
     assert first%32 == 0 and 0 < size <= 4096
     assert 0x42000000 <= first < end < 0x42800000
-    for name in ('lofty_shape','lofty_short','lofty_splice','lofty_samples'):
+    for name in ('lofty_shape','lofty_short','lofty_splice','lofty_samples',
+                 'lofty_fused_samples','lofty_fused_render_pie','lofty_fused_render_pages_pie','lofty_page_at'):
         assert first <= m[name] < end,(name,m[name])
-    assert 0x42000000 <= m['lofty_prepare_pie'] < 0x42800000
+    for name in ('lofty_prepare_pie','lofty_fused_prepare_pie'):
+        assert 0x42000000 <= m[name] < 0x42800000
     for name in ('lofty_render_pie','lofty_render_pages_pie','machine_axis_render_pie',
                  'machine_axis_samples','xTaskGenericNotify','shaper_copy_pie'):
         assert 0x40370000 <= m[name] < 0x403e0000,(name,m[name])
     store = m['shaper_store']
     assert store%16 == 0 and 0x3fc88000 <= store < store+65536 <= 0x3fcc0000
-    print(f'linked: {size} B locked only for 26m667; renderer IRAM; common 64 KiB store before DAC')
+    print(f'linked: {size} B locked only for 26m667; scaled renderer IRAM, fused renderer locked; common 64 KiB store before DAC')
 
 if __name__ == '__main__':
     p = argparse.ArgumentParser(description=__doc__)

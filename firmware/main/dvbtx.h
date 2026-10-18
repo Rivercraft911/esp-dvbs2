@@ -30,3 +30,10 @@ void dvbtx_pace(unsigned modcod, uint32_t seconds, unsigned level, unsigned stal
 // Reports internal heap before and after each step and the low-water mark.
 // The probe never plays samples.
 void dvbtx_wifi(unsigned modcod, unsigned sps, uint32_t dac_rate);
+
+// Timed experimental options. fused tries the larger table only with room for
+// all 54 pages and the existing floor/guard; otherwise keeps scaled rendering.
+void dvbtx_run_options(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, unsigned level,
+                        unsigned sps, uint32_t dac_rate, bool fixture, bool phy_solo, bool fused);
+void dvbtx_pace_options(unsigned modcod, uint32_t seconds, unsigned level, unsigned stall_ms,
+                         unsigned sps, uint32_t dac_rate, bool phy_solo, bool fused);

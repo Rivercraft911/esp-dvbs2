@@ -28,6 +28,7 @@ def kernels(text):
     rows = [json.loads(l[1:]) for l in text.splitlines() if l.startswith('@{')]
     assert len(rows) == 11,len(rows)
     assert "sign mapper: 96 frames" in text and "machine add: 4095 blocks" in text
+    assert "fused tails: three peaks" in text
     assert "lofty pages: 99 guarded batches" in text
     for r in rows[:9]:
         assert r['table'] == checksum(lofty.table(r['peak']).tobytes()),r
@@ -53,6 +54,7 @@ def check(out, receiver=None):
                     '-I'+str(out),'-I'+str(ROOT/'firmware/main'),'-I'+str(component/'include'),
                     str(ROOT/'tests/psk8_kernels.c'),str(ROOT/'tests/sign_mapper.c'),
                     str(ROOT/'firmware/main/machine.c'),str(ROOT/'firmware/main/lofty.c'),
+                    str(ROOT/'firmware/main/lofty_fused.c'),
                     str(component/'fast.c'),str(component/'dvbs2.c'),'-o',str(kernel)],check=True)
     kernels(subprocess.check_output([str(kernel)],text=True))
     crcs = {}

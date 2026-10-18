@@ -32,15 +32,17 @@ static void advance(uint64_t time)
     dvb.producer_phase = blocked ? QUEUE_WAIT : page ? QUEUE_MAP : QUEUE_FEC;
 }
 
-static void envelope(void)
+static void envelope_one(bool fused)
 {
+    enc.fused = fused;
+    const unsigned period = (fused ? 21 : 23)*128;
     for (unsigned wake = 0; wake <= 47220; wake += 47220)
         for (unsigned gap = 0; gap <= 100000; gap += 17) {
             unsigned brute = 44;
             for (unsigned q = 2; q < 44; ++q) {
                 bool safe = true;
                 for (unsigned k = 1; k <= 44-q; ++k) {
-                    int64_t deadline = ((int64_t)q-9+k-1)*2944;
+                    int64_t deadline = ((int64_t)q-9+k-1)*period;
                     if ((int64_t)wake+2*(int64_t)gap*k > deadline) safe = false;
                 }
                 if (safe) { brute = q; break; }
@@ -48,9 +50,9 @@ static void envelope(void)
             assert(lofty_admission(gap,wake) == brute);
         }
     assert(lofty_admission(1000,0) == 10);
-    assert(lofty_admission(1000,47220) == 26);
+    assert(lofty_admission(1000,47220) == (fused ? 28 : 26));
     for (unsigned wake = 0; wake <= 47220; wake += 47220) {
-        unsigned limit = (34*2944-wake)/2;
+        unsigned limit = (34*period-wake)/2;
         assert(lofty_admission(limit,wake) == 43);
         assert(lofty_admission(limit+1,wake) == 44);
         assert(lofty_admission(UINT32_MAX,wake) == 44);
@@ -61,7 +63,7 @@ int main(int argc, char **argv)
 {
     assert(argc == 3 || argc == 4);
     unsigned mc = atoi(argv[1]); slow = atoi(argv[2]);
-    envelope();
+    envelope_one(false); envelope_one(true); enc.fused = false;
     setenv("UNPACED_LOFTY","1",1);
     callsign = "N0CALL";
     assert(start_encoder("dvbpace",mc,128,0,3,80000000));
