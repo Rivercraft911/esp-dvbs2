@@ -93,7 +93,9 @@ typedef struct dvbs2_fast dvbs2_fast;
  * 8PSK mapper's hot cache footprint at 512 B beside a PSRAM workspace.
  * MAP_QUADS selects the QPSK block shaper's four-symbol bytes.
  * RO_20 selects GCS BBHEADER roll-off 0.20; the default is 0.35. */
-enum { DVBS2_BCH_NIBBLE = 16, DVBS2_MAP_SPARSE = 256, DVBS2_MAP_QUADS = 512, DVBS2_RO_20 = 1024 };
+/* VCM clears CCM in GCS MATYPE-1. TS VCM requires Annex D adaptation, not implemented. */
+enum { DVBS2_BCH_NIBBLE = 16, DVBS2_MAP_SPARSE = 256, DVBS2_MAP_QUADS = 512,
+       DVBS2_RO_20 = 1024, DVBS2_VCM = 2048 };
 /* QPSK only: MAP_QUADS makes the packed APIs emit four phase>>1 codes per byte,
  * oldest in bits 7:6. The last byte's unused low bits are zero. */
 void dvbs2_pack_quads(const uint8_t *phases, uint8_t *packed, size_t symbols);

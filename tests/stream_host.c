@@ -97,6 +97,7 @@ extern void sim_free(void *);
 extern ingress_ring *sim_ring(void *);
 extern uint32_t sim_transfer(void *, const uint8_t *, uint32_t);
 static void *input_sim;
+static FILE *native_wire;
 static unsigned native_input, input_seq, input_reads, input_zero_reads;
 static volatile bool input_empty;
 static bool native_replay;
@@ -117,11 +118,14 @@ void spi_input_buffers(uint8_t *tail, size_t n, uint8_t *ws, size_t m) {
     if (count < INGRESS_SLOTS) memset(native_buffers, 0, sizeof native_buffers);
     if (ws) assert(ws >= (uint8_t *)enc.ws+DVBS2_FAST_WORKSPACE_USED+dvb.win_bytes && ws+m <= (uint8_t *)(enc.ws+1));
 }
+static bool (*native_control)(unsigned);
+void spi_input_control(bool (*control)(unsigned)) { native_control=control; }
 unsigned spi_input_type(void) { return native_input; }
 const char *spi_input_source(void) { return "spi"; }
 esp_err_t spi_input_start(void) {
     if (native_input) {
         input_sim = sim_new(); sim_ring(input_sim)->type = native_input;
+        sim_ring(input_sim)->control=native_control;
         if (native_buffers[0])
             for (unsigned i = 0; i < INGRESS_SLOTS; ++i) sim_set_buffer(input_sim, i, native_buffers[i]);
         if (native_replay) sim_replay(input_sim, native_input);
@@ -137,8 +141,14 @@ size_t spi_input_read(uint8_t *dst, size_t n) {
     ingress_ring *r = sim_ring(input_sim);
     uint8_t msg[PV_MSG_BYTES];
     while (!native_replay && r->ready) {
-        ingress_pattern(msg + PV_HEADER_BYTES, input_seq, native_input);
-        pv_seal(msg, native_input, input_seq++, PV_PAYLOAD_MAX);
+        if (native_wire) {
+            const size_t count=fread(msg,1,sizeof msg,native_wire);
+            if (!count) break;
+            assert(count == sizeof msg);
+        } else {
+            ingress_pattern(msg + PV_HEADER_BYTES, input_seq, native_input);
+            pv_seal(msg, native_input, input_seq++, PV_PAYLOAD_MAX);
+        }
         assert(sim_transfer(input_sim, msg, sizeof msg) == sizeof msg);
     }
     if (n > 997) n = 997; // cut TS packets and SPI messages across calls and frames
@@ -166,6 +176,15 @@ int usb_serial_jtag_write_bytes(const void *buf, size_t n, unsigned timeout)
     return (int)n;
 }
 
+static bool vcm_ready(size_t end)
+{
+    const ring_t *r=&dvb.ring;
+    const unsigned published=__atomic_load_n(&r->published,__ATOMIC_ACQUIRE);
+    uint64_t available=r->chosen_end;
+    for (unsigned f=r->next_frame;f!=published;++f) available+=r->slot_symbols[f%r->nslots];
+    return available >= end;
+}
+
 static void bank_fill(radio_s3_fill_fn fn, void *ctx, unsigned b, uint64_t first,
                        radio_s3_dry_stats_t *stats)
 {
@@ -180,7 +199,7 @@ static void bank_fill(radio_s3_fill_fn fn, void *ctx, unsigned b, uint64_t first
         const size_t needed = (end_symbol + dvb.ring.frame_symbols - 1) / dvb.ring.frame_symbols;
         // Host correctness test only: wait for the native encoder, with a deadlock timeout.
         unsigned tries = 0;
-        while (dvb.lofty ? false : dvb.moon ? dvb.queue_sample+
+        while (enc.vcm ? !vcm_ready(end_symbol) : dvb.lofty ? false : dvb.moon ? dvb.queue_sample+
                (uint32_t)(__atomic_load_n(&dvb.produced,__ATOMIC_ACQUIRE)-dvb.consumed)*MACHINE_PAGE_SAMPLES-
                dvb.page_sample < at+count :
                __atomic_load_n(&dvb.ring.published,__ATOMIC_ACQUIRE) < needed) {

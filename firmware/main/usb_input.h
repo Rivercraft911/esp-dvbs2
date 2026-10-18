@@ -3,6 +3,7 @@
 #include "esp_err.h"
 
 esp_err_t usb_input_start(unsigned type);
+void usb_input_control(bool (*control)(unsigned));
 size_t usb_input_read(uint8_t *dst, size_t n);
 void usb_input_stop(void);
 void usb_input_print(void);

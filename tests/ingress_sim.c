@@ -76,6 +76,11 @@ ingress_ring *sim_ring(sim *s)
     return &s->ring;
 }
 
+void sim_control(sim *s, bool (*control)(unsigned))
+{
+    s->ring.control = control;
+}
+
 void sim_set_buffer(sim *s, unsigned slot, uint8_t *p)
 {
     s->ring.desc[slot].buf = p;

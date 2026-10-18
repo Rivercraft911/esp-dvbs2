@@ -20,7 +20,7 @@ MSG, HEADER, PAYLOAD, PACKET = 1332, 12, 1316, 188
 SLOTS, SLOT_BYTES, MARGIN = 4, 1336, 2
 NOP, TS, GCS = 0, 1, 2
 STATS = ("msgs", "bytes", "nops", "err_short", "err_long", "err_header", "err_crc",
-         "err_sync", "lost", "seq_back", "overruns", "restarts", "ready_falls", "ts_packets", "crc_chain")
+         "err_sync", "lost", "seq_back", "overruns", "restarts", "ready_falls", "ts_packets", "crc_chain", "controls", "control_rejected")
 
 
 class Stats(ct.Structure):
@@ -208,7 +208,7 @@ def test_stream(native):
     s = ring.stats()
     check(bytes(out) == b"".join(payloads), "byte stream equals the payloads in order")
     check(s["msgs"] == 2000 and s["bytes"] == 2000 * PAYLOAD, "all messages accepted")
-    check(all(s[k] == 0 for k in STATS if k not in ("msgs", "bytes", "ready_falls", "ts_packets", "crc_chain")),
+    check(all(s[k] == 0 for k in STATS if k not in ("msgs", "bytes", "ready_falls", "ts_packets", "crc_chain", "controls", "control_rejected")),
           f"no errors, losses or overruns: {s}")
     chain = 0
     for m in messages: chain = zlib.crc32(m[-4:], chain)

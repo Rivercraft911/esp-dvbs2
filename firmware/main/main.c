@@ -295,6 +295,9 @@ void app_main(void)
                    strncmp(line, "spisend ", 8) == 0 || strncmp(line, "spirx ", 6) == 0) {
             char *args = strchr(line, ' '); *args++ = 0;
             spi_input_command(line, args);
+        } else if (strncmp(line, "vcm ", 4) == 0) {
+            dvbtx_vcm_command(line + 4);
+            strcpy(line, "vcm");
         } else if (strncmp(line, "dvbdump ", 8) == 0) {
             cmd_dvbdump(line + 8);
             strcpy(line, "dvbdump");

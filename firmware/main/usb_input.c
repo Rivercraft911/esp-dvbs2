@@ -66,6 +66,9 @@ static void free_buffers(void)
     tables=NULL; buffers=NULL; active=false;
 }
 
+static bool (*control_handler)(unsigned);
+void usb_input_control(bool (*control)(unsigned)) { control_handler=control; }
+
 esp_err_t usb_input_start(unsigned type)
 {
     buffers=heap_caps_malloc(INGRESS_SLOTS*INGRESS_SLOT_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -80,7 +83,8 @@ esp_err_t usb_input_start(unsigned type)
     usb_serial_jtag_ll_disable_intr_mask(USB_SERIAL_JTAG_INTR_SERIAL_OUT_RECV_PKT);
     portEXIT_CRITICAL(&rx_mux);
     pv_crc32_tables(tables);
-    ingress_init(&ring,buffers,&hw); ring.type=type;
+    ingress_init(&ring,buffers,&hw);
+    ring.control=control_handler; ring.type=type;
     partial=0; ended=false; active=true;
     wire_bytes=0; fifo_bytes=driver_bytes=fifo_reads=waits=timer_errors=0; first=last=0;
     rx_reenabled=driver_queue_max=0;
@@ -176,6 +180,7 @@ void usb_input_stop(void) { /* RX stays masked through final counters and drain.
 void usb_input_print(void)
 {
     const ingress_stats *s=&ring.st;
+    printf(",\"controls\":%"PRIu32",\"control_rejected\":%"PRIu32, s->controls,s->control_rejected);
     const int64_t us=last>first ? last-first : 0;
     const uint32_t rx_mask=usb_serial_jtag_ll_get_intr_ena_status();
     const size_t pending=usb_serial_jtag_get_read_bytes_available();

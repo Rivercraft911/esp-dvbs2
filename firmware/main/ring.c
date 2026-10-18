@@ -43,6 +43,18 @@ void ring_publish(ring_t *r, uint32_t e)
     __atomic_store_n(&r->published, e + 1, __ATOMIC_RELEASE);
 }
 
+void ring_publish_frame(ring_t *r, uint32_t e, uint32_t symbols)
+{
+    r->slot_symbols[e % r->nslots] = symbols;
+    ring_publish(r, e);
+}
+
+static inline uint32_t frame_length(const ring_t *r, uint32_t e)
+{
+    const uint32_t n = r->slot_symbols[e % r->nslots];
+    return n ? n : r->frame_symbols;
+}
+
 void ring_filler_length(ring_t *r, uint32_t symbols)
 {
     r->filler_symbols = symbols;
@@ -201,11 +213,11 @@ static IRAM_ATTR int ring_read(ring_t *r, uint8_t *dst, size_t to, int64_t first
         }
         r->choice[i] = c;
         r->start[i] = r->chosen_end;
-        r->chosen_end += c == RING_FILLER ? r->filler_symbols : r->frame_symbols;
+        r->chosen_end += c == RING_FILLER ? r->filler_symbols : frame_length(r, c);
         r->end[i] = r->chosen_end;
     }
-    const int64_t lead = (int64_t)r->chosen_end +
-                         (int64_t)(published - r->next_frame) * r->frame_symbols - end;
+    int64_t lead = (int64_t)r->chosen_end - end;
+    for (uint32_t e = r->next_frame; e != published; ++e) lead += frame_length(r, e);
     if (lead < r->min_lead) {
         r->min_lead = lead;
     }

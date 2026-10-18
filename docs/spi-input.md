@@ -27,6 +27,7 @@ from the message size and the gap between messages (below).
 | TS | 1 to 7 whole 188-byte MPEG transport-stream packets | Video and audio from any TS source (ffmpeg, a camera pipeline) |
 | GCS | 1 to 1,316 arbitrary bytes | Files, telemetry, anything else |
 | NOP | none | Keep-alive; carries no data |
+| Control | one MODCOD byte, 4..17 | [VCM](vcm.md), GCS only; applies at a frame boundary |
 
 Choose TS or GCS for a run (`spiinput on ts` or `spiinput on gcs`). TS packets get the
 standard DVB-S2 sync handling; GCS bytes pass through unchanged. When input is slower than
@@ -55,7 +56,7 @@ route in the [video example](../examples/live-video/README.md).
 |---|---|---|
 | 0..1 | Magic | ASCII `PV` (`50 56`) |
 | 2 | Version | `1` |
-| 3 | Type | `0` NOP, `1` TS, `2` GCS |
+| 3 | Type | `0` NOP, `1` TS, `2` GCS, `3` MODCOD control |
 | 4..5 | Sequence | +1 for every message, NOP included; wraps at 65536 |
 | 6..7 | Length | Valid payload bytes |
 | 8..11 | Reserved | zero |

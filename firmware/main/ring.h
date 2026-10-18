@@ -26,6 +26,7 @@ typedef struct {
     uint8_t *slots[RING_MAX_SLOTS]; // separate allocations are allowed
     const uint8_t *filler;        // played when the encoder is late
     uint32_t frame_symbols;
+    uint32_t slot_symbols[RING_MAX_SLOTS]; // published with each frame; zero uses frame_symbols
     uint32_t filler_symbols;
     uint32_t nslots;
     uint32_t published;           // encoder: frames finished
@@ -70,6 +71,8 @@ void ring_unpack_codes(uint8_t *dst, const uint8_t *packed, size_t at, size_t n)
 uint8_t *ring_slot(ring_t *r, uint32_t e);
 // Encoder: frame e is complete. Frames are published in order.
 void ring_publish(ring_t *r, uint32_t e);
+// Variable-length frames: metadata and symbols become visible in the same release.
+void ring_publish_frame(ring_t *r, uint32_t e, uint32_t symbols);
 
 // Fill: the symbols a shaper needs for samples [first, first + count) at sps samples per symbol,
 // starting `history` symbols before the first one, into dst (room bytes). Symbols before 0 read
