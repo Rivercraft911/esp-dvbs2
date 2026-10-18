@@ -22,6 +22,22 @@ KBCH = (32208, 38688, 43040, 48408, 51648, 53840, 57472, 58192,
         38688, 43040, 48408, 53840, 57472, 58192)
 
 
+def fec_codec():
+    # Also allow copying host/filelink.py alongside this sender.
+    host = Path(__file__).resolve().parent.parent.parent/'host'
+    if host.is_dir():
+        sys.path.insert(0, str(host))
+    import filelink
+    return filelink
+
+
+def fec_parameters(value):
+    try:
+        return fec_codec().parameters(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
 def message(payload, seq, kind=2):
     if kind not in (0, 1, 2) or len(payload) > PAYLOAD:
         raise ValueError('invalid PV type or length')
@@ -61,7 +77,7 @@ def safe_name(name):
 
 
 @contextlib.contextmanager
-def container(source, name, frame_bytes):
+def container(source, name, frame_bytes, fec=None):
     # Spooling also supports file containers from stdin, without keeping a large
     # file in RAM. Snapshot first so the length and hash describe the bytes sent.
     with tempfile.TemporaryFile() as snapshot, tempfile.TemporaryFile() as stream:
@@ -72,18 +88,37 @@ def container(source, name, frame_bytes):
                 break
             snapshot.write(part); digest.update(part); length += len(part)
         encoded = safe_name(name).encode('utf8')
-        stream.write(bytes(8*frame_bytes))  # receiver acquisition may lose leading BBFRAMEs
+        if fec is None:
+            stream.write(bytes(8*frame_bytes))  # acquisition may lose leading BBFRAMEs
         stream.write(HEADER.pack(MAGIC, len(encoded), length, digest.digest()) + encoded)
         snapshot.seek(0); shutil.copyfileobj(snapshot, stream)
         # Complete the final BBFRAME, then leave four trailing data frames.
-        stream.write(bytes((-stream.tell()) % frame_bytes + 4*frame_bytes))
+        if fec is None:
+            stream.write(bytes((-stream.tell()) % frame_bytes + 4*frame_bytes))
         stream.seek(0)
-        yield stream
+        if fec is None:
+            yield stream
+        else:
+            with tempfile.TemporaryFile() as coded:
+                fec_codec().write_stream(stream, coded, frame_bytes, *fec)
+                yield coded
 
 
-def unpack(source, output=None):
+def unpack(source, output=None, *, fec=False, bbf=False):
     # Scan a continuous GCS DATA FIELD stream (or --fd-bbf output with headers
     # stripped). Ignore acquisition/padding bytes; never trust a received path.
+    if fec or bbf:
+        import io
+        raw = source.read()
+        if bbf:
+            # Loading the codec also makes the host BBHEADER parser available.
+            fec_codec()
+            from decode import parse_bbframes
+            frames = parse_bbframes(raw)
+            if any(f['stream_type'] != 1 for f in frames):
+                raise ValueError('file unpack requires GCS')
+            raw = b''.join(f['payload'] for f in frames)
+        source = io.BytesIO(fec_codec().recover(raw) if fec else raw)
     window = b''
     while True:
         part = source.read(65536)
@@ -513,10 +548,14 @@ def main(argv=None):
     sub = p.add_subparsers(dest='action', required=True)
     u = sub.add_parser('unpack', help='recover a file from LeanDVB GCS output')
     u.add_argument('file', help='decoded byte stream, or -'); u.add_argument('-o', '--output', type=Path)
+    u.add_argument('--fec', action='store_true', help='recover erasure-coded file')
+    u.add_argument('--bbf', action='store_true', help='input is LeanDVB --fd-bbf records')
     s = sub.add_parser('send', help='radio off unless --key is supplied')
     s.add_argument('file', nargs='?', default='-')
     s.add_argument('--kind', choices=('file', 'ts', 'gcs'), help='default: .ts -> TS; other files -> container; stdin -> TS')
     s.add_argument('--name', default='stdin.bin', help='container name for stdin')
+    s.add_argument('--fec', nargs='?', const='16:4', type=fec_parameters, metavar='K:M',
+                   help='file erasure coding; default 16:4; one shard per GCS frame')
     s.add_argument('--port'); s.add_argument('--modcod', type=int, default=4)
     s.add_argument('--rate', choices=('1m', '5m', '10m', '20m', '26m667', '33m333'), default='1m')
     s.add_argument('--seconds', type=int, default=10); s.add_argument('--frames', type=int, default=24)
@@ -540,7 +579,7 @@ def main(argv=None):
         if a.action == 'unpack':
             with contextlib.ExitStack() as stack:
                 source = sys.stdin.buffer if a.file == '-' else stack.enter_context(Path(a.file).open('rb'))
-                print(json.dumps(unpack(source, a.output)))
+                print(json.dumps(unpack(source, a.output, fec=a.fec, bbf=a.bbf)))
             return
         if (not 1 <= a.seconds <= 600 or not 1 <= a.frames <= 256 or not 2390 <= a.frequency <= 2450 or
                 not 0 <= a.gain <= 17 or not math.isfinite(a.mbps) or a.mbps < 0 or
@@ -550,11 +589,19 @@ def main(argv=None):
         a.report.parent.mkdir(parents=True, exist_ok=True)
         a.report.write_text(json.dumps(report, indent=2)+'\n')
         frame_bytes, capacity = mode(a.modcod, a.rate)
-        kind = a.kind or ('ts' if a.file == '-' or Path(a.file).suffix.lower() == '.ts' else 'file')
+        kind = a.kind or ('file' if a.fec else 'ts' if a.file == '-' or Path(a.file).suffix.lower() == '.ts' else 'file')
+        if a.fec and kind != 'file':
+            raise ValueError('--fec requires --kind file')
         with contextlib.ExitStack() as stack:
             source = sys.stdin.buffer if a.file == '-' else stack.enter_context(Path(a.file).open('rb'))
             if kind == 'file':
-                source = stack.enter_context(container(source, a.name if a.file == '-' else Path(a.file).name, frame_bytes))
+                source = stack.enter_context(container(source, a.name if a.file == '-' else Path(a.file).name, frame_bytes, a.fec))
+                if a.fec:
+                    report['fec'] = dict(k=a.fec[0], m=a.fec[1], frame_bytes=frame_bytes,
+                                         frames=source.seek(0, 2)//frame_bytes)
+                    source.seek(0)
+                    if a.dump and a.frames < report['fec']['frames']:
+                        raise ValueError(f"FEC file needs --frames >= {report['fec']['frames']}")
             sink = stack.enter_context(a.dump.open('xb')) if a.dump else None
             link = stack.enter_context(open_port(a.port))
             report['info'] = console_info(link, report['setup'])

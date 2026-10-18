@@ -111,7 +111,9 @@ Wi-Fi memory check. All console commands are in [transmitting](docs/transmitting
 [examples/usb-send](examples/usb-send/README.md) is one Python file (`pyserial` only) for
 files, telemetry and low-rate video over native USB. Measured payload intake is **3.23 Mb/s**
 at 5 Msym/s with the PSRAM encoder (radio off, 2026-10-17). It defaults to radio-off checks
-and includes SHA-256 file recovery.
+and includes SHA-256 file recovery. USB and SPI senders accept `--fec 16:4` to
+recover from any four missing frames per 20-frame block on a one-way link;
+see [file transfer](docs/file-link.md) for overhead and the IQ-to-LeanDVB proof.
 
 SPI carries higher rates. The sender clocks fixed 1,332-byte messages: a 12-byte
 header (`PV`, version, type, sequence, length), up to seven 188-byte MPEG-TS packets and a

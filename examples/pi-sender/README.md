@@ -33,6 +33,19 @@ For arbitrary bytes, select `spiinput on gcs` before starting the S3 run, then:
 python3 examples/pi-sender/send.py bytes.bin --kind gcs --gpiochip /dev/gpiochip4
 ```
 
+For files with frame-loss recovery, select `spiinput on gcs` on the S3, then:
+
+```sh
+python3 examples/pi-sender/send.py document.pdf --fec 16:4 --modcod 13 --gpiochip /dev/gpiochip4
+python3 examples/usb-send/send.py unpack decoded.gcs --fec -o recovered.pdf
+```
+
+`--fec` defaults to `16:4` and implies file mode; `--kind file` without FEC uses
+the original file container. `--modcod` **must match the S3 run** so every shard
+fills exactly one GCS data field. Start a fresh input run for each file and keep
+the mode fixed. This uses the shared USB container and `host/filelink.py` from
+the repository; see [wire format, overhead and tests](../../docs/file-link.md).
+
 The sender uses mode 0, MSB first, one raw 1,332-byte message per CS at 20 MHz.
 `--hz 1000000` selects a slower clock. `--mbps` sets the offered payload ceiling
 (default 9 Mb/s); READY can reduce the actual rate. It accumulates short reads,
