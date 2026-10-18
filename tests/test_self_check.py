@@ -37,7 +37,8 @@ def test_decode():
     rejects(decode.parse_bbframes, bytes([header[0]^1])+header[1:]+b"abc")
     r = decode.summarize("FRAMELOCK 1\nLDPCCORR = 0\nBCHCORR = 0\n", [], b"")
     assert r["status_complete"] and r["ldpc_checks_before"] is None
-    r.update(payload_match=True, payload_bit_errors=0, first_frame=0, payload_frames=14)
+    r.update(payload_match=True, payload_bit_errors=0, first_frame=0, payload_frames=14,
+             bb_frames=14)
     check.check_decode(r, 11, 16)
     for key, value in (("ldpc_bit_flips", 1), ("bch_failed_frames", 1),
                        ("bch_corrected_bits", 1), ("payload_frames", 13),
@@ -48,6 +49,54 @@ def test_decode():
     for mc in range(4,18):
         rate = dvbs2.RATES[mc-1] if mc < 12 else dvbs2.PSK8_RATES[mc-12]
         assert len(decode.payload(mc, 1, "N0CALL")) == (dvbs2.code(rate).kbch-80)//8
+
+
+def test_dummy_decode():
+    structures = json.loads((ROOT/"tests/data/psk8_26m667_frames.json").read_text())
+    for mc, full, dummies in ((13,16,0),(15,14,8),(17,12,22)):
+        before = structures[f"{mc}/3/80/16"]["dummy_before"]
+        layout = decode.stream_layout(mc,16,before)
+        assert layout["expected_payload_frames"] == full
+        assert layout["expected_dummy_frames"] == dummies
+    for before in ((3,2),(-1,),(17,)):
+        rejects(decode.stream_layout,17,16,before)
+    assert decode.stream_layout(17,1,(0,)*7) == dict(
+        expected_payload_frames=0, expected_dummy_frames=6,
+        partial_payload_symbols=0, partial_dummy_symbols=2214)
+    # Empty BBFRAMEs carry no payload; dummy PLFRAMEs do not produce BBFRAMEs.
+    size = len(decode.payload(17,1,"N0CALL"))
+    expected = decode.payload(17,16,"N0CALL")
+    got = expected[:11*size]
+    frames = [dict(dfl_bits=size*8,stream_type=1) for _ in range(11)]
+    frames += [dict(dfl_bits=0,stream_type=1)] * 2
+    status = "FRAMELOCK 1\n" + "LDPCCORR = 0\nBCHCORR = 0\n" * 11
+    report = decode.summarize(status,frames,got)
+    assert report["payload_frames"] == 11 and report["bb_frames"] == 13
+    before = structures["17/3/80/16"]["dummy_before"]
+    with tempfile.TemporaryDirectory() as tmp:
+        capture = Path(tmp)/"dump.cfile"
+        capture.write_bytes(bytes(8))
+        argv = ["decode.py",str(capture),"--format","cf32","--rate","80000000",
+                "--symbol-rate",str(80000000/3),"--modcod","17","--stream","16",
+                "--dummy-before",",".join(map(str,before))]
+        def run(result, data):
+            output = io.StringIO()
+            with patch.object(sys,"argv",argv), patch.object(decode,"decode",return_value=(dict(result),data)), \
+                    contextlib.redirect_stdout(output):
+                code = decode.main()
+            return code,json.loads(output.getvalue())
+        code,r = run(report,got)
+        assert code == 0 and r["payload_frames"] == 11 and r["expected_payload_frames"] == 12
+        assert r["first_frame"] == 0 and r["compared_bits"] == 639232
+        check.check_decode(r,17,16,12)
+        # Preserve the same EOF allowance; one decoded frame cannot pass.
+        rejects(check.check_decode,dict(r,payload_frames=1,bb_frames=3),17,16,12)
+        rejects(check.check_decode,dict(r,payload_frames=8,bb_frames=10),17,16,12)
+        rejects(check.check_decode,dict(r,expected_payload_frames=16),17,16,12)
+        assert run(report,got[:40]+bytes([got[40]^1])+got[41:])[0] == 1
+        assert run(dict(report,payload_frames=12),got)[0] == 1
+        missing = expected[:4*size]+expected[5*size:12*size]
+        assert run(report,missing)[0] == 1
 
 
 def row(mc, token):
@@ -182,6 +231,7 @@ def test_tones():
 
 if __name__ == "__main__":
     test_decode()
+    test_dummy_decode()
     test_pace_and_crc()
     test_8psk_gates()
     test_keep_going()

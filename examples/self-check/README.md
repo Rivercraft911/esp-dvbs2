@@ -66,11 +66,18 @@ The selected modes cover 1 Msym/s QPSK, 5 Msym/s 8PSK, 20 Msym/s QPSK/8PSK,
 10 s paces cover 13, 15 and 17 at `26m667`. Paces also cover QPSK at 5/10 Msym/s
 and 8PSK at 10 Msym/s. CI checks every supported modulation/rate combination on the host.
 
-For N dumped frames, LeanDVB must return at least N-2 contiguous QPSK frames.
-8PSK permits at most one leading acquisition frame and three trailing frames lost at EOF.
+N is the number of complete data frames in the pinned dump layout, excluding
+standard dummy PLFRAMEs and any final partial frame. LeanDVB must return at least
+N-2 contiguous QPSK frames. 8PSK permits at most one leading acquisition frame
+and three trailing data frames lost at EOF. The 17/3/80/16 dump spans 16 nominal
+frame lengths but contains 12 complete data frames, 22 dummies and part of the
+next data frame. Its 11 decoded payload frames meet the existing EOF allowance.
+`decode.py --dummy-before` supplies this known schedule; it counts nonempty
+decoded BBFRAMEs separately from nominal duration and expected complete data frames.
 There is no tolerance for payload errors, LDPC flips or BCH corrections. The decoder adds
 4,096 zero samples only to receiver input for pipeline lookahead, outside the dump CRC.
-CRC fixtures use peak 128, pilots on and callsign N0CALL.
+CRC fixtures use peak 128, pilots on and callsign N0CALL. The [frame layouts and
+goldens](../../tests/data/README.md) are checked against the independent host model.
 
 All paces require ESP_OK, zero underruns/late fills/late switches/fatal lateness, positive
 slack, a live encoder with all four PIE stages, at least 512 B encoder stack headroom,

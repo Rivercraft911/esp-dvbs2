@@ -18,6 +18,7 @@ static uint32_t checked_load(const volatile uint32_t *, int);
 static uint32_t checked_load(const volatile uint32_t *p, int order)
 {
     static unsigned forced_mask;
+    static unsigned forced_frame;
     static bool forced_admission;
     if (p == &dvb.produced && !current && forced_admission) {
         forced_admission = false;
@@ -26,12 +27,20 @@ static uint32_t checked_load(const volatile uint32_t *p, int order)
     if (p == &lofty_mux.published && !current && !getenv("UNPACED_LOFTY")) {
         // Host-only producer pacing at admission, without changing physical
         // bank callbacks. The hardware consumer never waits here.
-        if (!lofty_mux.output) forced_mask = 0;
+        if (!lofty_mux.output) { forced_mask = 0; forced_frame = UINT32_MAX; }
         const char *frame = getenv("FORCE_DUMMY_FRAME");
+        const char *from = getenv("DUMMY_FROM_FRAME");
+        const char *period_text = getenv("DUMMY_FRAME_PERIOD");
+        const unsigned period = period_text ? strtoul(period_text,NULL,0) : 1;
+        assert(period);
+        const bool each = from && lofty_mux.frames >= strtoul(from,NULL,0) &&
+                          (lofty_mux.frames-strtoul(from,NULL,0))%period == 0 &&
+                          lofty_mux.frames != forced_frame;
         unsigned bit = frame ? lofty_mux.frames == strtoul(frame,NULL,0) :
                        lofty_mux.frames == 0 ? 1 : lofty_mux.frames == 1 ? 2 : lofty_mux.frames == 5 ? 4 : 0;
-        if ((frame || getenv("FORCE_DUMMIES")) && bit && !(forced_mask&bit)) {
+        if (each || ((frame || getenv("FORCE_DUMMIES")) && bit && !(forced_mask&bit))) {
             forced_mask |= bit;
+            forced_frame = lofty_mux.frames;
             forced_admission = true;
             return lofty_mux.frames; // force a not-ready admission snapshot
         }

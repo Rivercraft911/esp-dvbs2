@@ -24,7 +24,7 @@ FEC_STATUS = re.compile(
     r"S2FEC modcod=(\d+) short=(\d+) pilots=(\d+) ldpc_flips=(\d+) "
     r"ldpc_checks_before=(\d+) ldpc_checks_after=(\d+) bch_errors=(-?\d+)")
 MODCODS = {4: "QPSK 1/2", 6: "QPSK 2/3", 7: "QPSK 3/4", 11: "QPSK 9/10",
-           13: "8PSK 2/3", 15: "8PSK 5/6",
+           13: "8PSK 2/3", 15: "8PSK 5/6", 17: "8PSK 9/10",
            18: "16APSK 2/3", 19: "16APSK 3/4", 20: "16APSK 4/5", 21: "16APSK 5/6",
            22: "16APSK 8/9", 23: "16APSK 9/10", 24: "32APSK 3/4", 25: "32APSK 4/5",
            26: "32APSK 5/6", 27: "32APSK 8/9", 28: "32APSK 9/10"}
@@ -118,6 +118,7 @@ def summarize(status, frames, payload, expected=None):
         "fec_frames": len(attempts) if attempts else None,
         "bb_frames": len(frames),
         "empty_bb_frames": sum(f["dfl_bits"] == 0 for f in frames),
+        "payload_frames": sum(f["dfl_bits"] > 0 for f in frames),
         "ldpc_bit_flips": sum(a[3] for a in attempts) if attempts else None,
         "ldpc_checks_before": sum(a[4] for a in attempts) if attempts else None,
         "ldpc_checks_after": sum(a[5] for a in attempts) if attempts else None,
@@ -255,6 +256,36 @@ def stream_match(expected, got, per_frame):
     return at if at >= 0 else None
 
 
+def stream_layout(modcod, frames, dummy_before=()):
+    """Count complete data/dummy frames inside a nominal dump duration.
+
+    Dummy positions are zero-based data-frame indices, repeated for a pair.
+    A physical dummy has 3,330 symbols and produces no BBFRAME or payload.
+    The final partial frame cannot be expected from a receiver.
+    """
+    if not 4 <= modcod <= 17 or frames < 1:
+        raise ValueError("need MODCOD 4..17 and at least one nominal frame")
+    if list(dummy_before) != sorted(dummy_before) or any(
+            not isinstance(n, int) or not 0 <= n <= frames for n in dummy_before):
+        raise ValueError("dummy positions must be ordered data-frame indices in 0..frames")
+    symbols = 33282 if modcod < 12 else 22194
+    left, data, dummies, at = frames * symbols, 0, 0, 0
+    while left:
+        dummy = at < len(dummy_before) and dummy_before[at] == data
+        length = 3330 if dummy else symbols
+        if left < length:
+            break
+        left -= length
+        if dummy:
+            at += 1
+            dummies += 1
+        else:
+            data += 1
+    return dict(expected_payload_frames=data, expected_dummy_frames=dummies,
+                partial_payload_symbols=left if left and not dummy else 0,
+                partial_dummy_symbols=left if left and dummy else 0)
+
+
 def main():
     p = argparse.ArgumentParser(description="Decode board samples with a separate LeanDVB process.")
     p.add_argument("capture", type=Path)
@@ -264,7 +295,9 @@ def main():
     p.add_argument("--scale", type=float, default=512, help="int16 full scale, board=512")
     p.add_argument("--format", choices=("i16", "s16", "cf32", "f32"), default="i16")
     p.add_argument("--modcod", type=int, default=4)
-    p.add_argument("--stream", type=int, required=True, help="number of dumped test frames")
+    p.add_argument("--stream", type=int, required=True, help="dump duration in nominal data-frame lengths")
+    p.add_argument("--dummy-before", type=lambda s: tuple(map(int, s.split(","))), default=(),
+                   help="known dummy schedule: comma-separated data-frame indices, repeated for pairs")
     p.add_argument("--callsign", default="N0CALL", help="callsign in the dumped payload")
     p.add_argument("--receiver", type=Path, help="leandvb executable, or set LEANDVB")
     p.add_argument("--log", type=Path)
@@ -274,6 +307,7 @@ def main():
     try:
         import numpy as np
         expected = payload(a.modcod, a.stream, a.callsign)
+        layout = stream_layout(a.modcod, a.stream, a.dummy_before)
         with tempfile.TemporaryDirectory() as tmp:
             source = a.capture
             if a.format == "i16":
@@ -287,9 +321,13 @@ def main():
                                  alpha=a.rolloff, receiver=a.receiver, output=a.output, log=a.log)
         size = len(expected) // a.stream
         at = stream_match(expected, got, size)
+        # Count nonempty decoded BBFRAMEs, never nominal sample intervals or
+        # dummy PLFRAMEs. Require all recovered bytes to belong to those frames.
+        if len(got) != report["payload_frames"] * size:
+            at = None
         report.update(stream_frames=a.stream, payload_match=at is not None,
                       first_frame=None if at is None else at // size,
-                      payload_frames=len(got) // size,
+                      **layout,
                       payload_bit_errors=None if at is None else 0,
                       compared_bits=0 if at is None else len(got)*8,
                       receiver_flush_samples=4096 if a.format == "i16" else 0)

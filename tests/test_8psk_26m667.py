@@ -15,6 +15,7 @@ sys.path.insert(0,str(ROOT/'host'))
 sys.path.insert(0,str(ROOT/'tests/reference'))
 import psk8_26m667 as lofty
 import waveforms as onair
+import decode
 
 
 def checksum(data):
@@ -108,9 +109,9 @@ def check(out, receiver=None):
             assert all(d[k] == 0 for k in ('bch_failed_frames','bch_corrected_bits',
                        'ldpc_checks_before','ldpc_bit_flips','payload_bit_errors')),d
             print('LeanDVB',mc,d['payload_frames'],'bit-exact frames',flush=True)
-    pinned = ROOT/'tests/data/psk8_26m667_crcs.json'
-    if pinned.exists(): assert crcs == json.loads(pinned.read_text())
-    (out/'crcs.json').write_text(json.dumps(crcs,indent=2)+'\n')
+    structures = json.loads((ROOT/'tests/data/psk8_26m667_frames.json').read_text())
+    assert crcs == {key: value['data_only_crc32'] for key,value in structures.items()}
+    check_dump_layouts(out,exe,structures)
     for peak in (16,128,508):
         margins = lofty.mask_margins(lofty.taps(peak),3,.35)
         assert min(margins[k] for k in ('upper','lower','far')) > 0,margins
@@ -118,6 +119,40 @@ def check(out, receiver=None):
     quantized = lofty.quantized_mask()
     assert min(quantized.values()) > 0,quantized
     print('exact rounded-table mask at peak 128',quantized)
+
+
+def check_dump_layouts(out, exe, structures):
+    """Reproduce board dump structure without silicon clocks or saved board files."""
+    golden = json.loads((ROOT/'tests/data/psk8_26m667_crcs.json').read_text())
+    for mc in (13,15,17):
+        key = f'{mc}/3/80/16'
+        before = tuple(structures[key]['dummy_before'])
+        symbols = onair.symbols(mc,16,dummy_before=before,callsign='N0CALL')
+        phases = np.rint(np.angle(symbols)*4/np.pi).astype(int)%8
+        model = lofty.iq(lofty.shape(phases))[:16*22194*3]
+        model = np.column_stack((model.real,model.imag)).astype('<i2')
+        assert zlib.crc32(model.tobytes()) == golden[key]
+        env = dict(os.environ)
+        if before:
+            starts = sorted(set(before))
+            assert all(before.count(f) == 2 for f in starts)
+            periods = {b-a for a,b in zip(starts,starts[1:])}
+            assert len(periods) == 1
+            env.update(DUMMY_FROM_FRAME=str(starts[0]), DUMMY_FRAME_PERIOD=str(periods.pop()))
+        iq = out/f'layout-{mc}.iq'
+        run = subprocess.run([str(exe),str(mc),'3',str(iq),'N0CALL','80000000','16'],
+                             env=env,capture_output=True,text=True,timeout=90)
+        (out/f'layout-{mc}.log').write_text(run.stdout+run.stderr)
+        assert run.returncode == 0,(run.stdout,run.stderr)
+        actual = np.fromfile(iq,dtype='<i2').reshape(-1,2)
+        np.testing.assert_array_equal(actual,model)
+        rows = [json.loads(l[1:]) for l in run.stdout.splitlines() if l.startswith('@{')]
+        dumps = [r for r in rows if 'crc32' in r]
+        assert len(dumps) == 2 and all(r['crc32'] == golden[key] for r in dumps)
+        assert all(r['queue_empty'] == r['underruns'] == r['overlap_mismatches'] == 0 for r in dumps)
+        layout = decode.stream_layout(mc,16,before)
+        assert layout['expected_payload_frames'] == {13:16,15:14,17:12}[mc]
+        print(mc,'pinned data/dummy layout, every word exact; CRC',golden[key],flush=True)
 
 
 def check_dummies(out, receiver=None):

@@ -77,11 +77,16 @@ def check_dump(rows, path, key, golden):
     assert r["crc32"] == binary[0]["host_crc32"] == zlib.crc32(data) == golden[key], r
 
 
-def check_decode(r, mc, frames):
+def check_decode(r, mc, frames, data_frames=None):
+    available = frames if data_frames is None else data_frames
+    assert 0 < available <= frames, r
     assert r["frame_lock"] and r["status_complete"] and r["payload_match"], r
     assert 0 <= r["first_frame"] <= 1, r
-    assert (r["payload_frames"] + r["first_frame"] >= frames-3 if mc >= 12 else
-            r["payload_frames"] >= frames-2), r
+    assert r.get("expected_payload_frames", available) == available, r
+    assert r["payload_frames"] + r["first_frame"] <= available, r
+    assert r["payload_frames"] == r["bb_frames"] - r["empty_bb_frames"], r
+    assert (r["payload_frames"] + r["first_frame"] >= available-3 if mc >= 12 else
+            r["payload_frames"] >= available-2), r
     for k in ("bch_failed_frames", "bch_corrected_bits", "ldpc_bit_flips", "payload_bit_errors",
               "bbheader_rejected_frames"):
         assert r[k] == 0, r
@@ -124,6 +129,9 @@ def main():
     p.add_argument("--port", default="/dev/cu.usbmodem101")
     p.add_argument("--receiver", default=os.environ.get("LEANDVB", "leandvb"))
     a = p.parse_args()
+    sys.path.insert(0, str(ROOT/"host"))
+    import decode as decoder  # stdlib only; --plan still never imports the board driver
+    structures = json.loads((ROOT/"tests/data/psk8_26m667_frames.json").read_text())
     golden = {}
     for name in ("waveform_crcs.json", "moon_stream_crcs.json", "psk8_26m667_crcs.json"):
         golden.update(json.loads((ROOT/"tests/data"/name).read_text()))
@@ -136,9 +144,15 @@ def main():
     print("Dumps: exact byte count, zero overlap errors, firmware/USB/file/golden CRC32 all equal.")
     for key in DUMPS:
         print(f"  {key}: CRC32 {golden[key]}")
+        if key in structures:
+            layout = decoder.stream_layout(int(key.split("/")[0]), 16, structures[key]["dummy_before"])
+            print(f"    {layout['expected_payload_frames']} complete data frames, "
+                  f"{layout['expected_dummy_frames']} dummy frames, "
+                  f"{layout['partial_payload_symbols']} symbols of the final partial data frame")
     print("LeanDVB: frame lock, complete FEC diagnostics, contiguous exact payload; no LDPC flips,")
     print("  BCH errors/corrections or bad BB headers. Reported syndrome counts must be zero.")
-    print("  QPSK >=N-2 frames; 8PSK <=1 leading and <=3 trailing acquisition/EOF frames.")
+    print("  N is complete data frames in the pinned layout, excluding dummy airtime/partial frames.")
+    print("  QPSK >=N-2; 8PSK <=1 leading and <=3 trailing acquisition/EOF data frames lost.")
     print("Paces: zero late fills/switches/fatal lateness, positive slack, PIE mask 15, stack >=512 B,")
     print("  live encoder and conserved fill words. 33m333: queue never empty, Wi-Fi free/min >=20000 B.")
     for mc, token, seconds in PACES:
@@ -163,7 +177,6 @@ def main():
         return 0
 
     # Imports and receiver discovery precede device access; --plan needs no board dependencies.
-    sys.path.insert(0, str(ROOT/"host"))
     import board
     import numpy  # noqa: F401
     import scipy  # noqa: F401
@@ -221,11 +234,15 @@ def main():
                "--rate", str(rate//decim), "--symbol-rate", str(rate*den/num),
                "--rolloff", str(.20 if den == 5 else .35), "--modcod", str(mc),
                "--stream", str(frames), "--receiver", a.receiver, "--log", str(out/(name+".receiver.log"))]
+        dummies = structures.get(key, {}).get("dummy_before", ())
+        if dummies:
+            cmd += ["--dummy-before", ",".join(map(str, dummies))]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=150)
         (out/(name+".decode.json")).write_text(result.stdout)
         (out/(name+".decode.stderr")).write_text(result.stderr)
         assert result.returncode == 0, result.stdout + result.stderr
-        check_decode(json.loads(result.stdout), mc, frames)
+        available = decoder.stream_layout(mc, frames, dummies)["expected_payload_frames"]
+        check_decode(json.loads(result.stdout), mc, frames, available)
 
     a.port = board.resolve_port(a.port)
     try:
