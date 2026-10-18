@@ -134,14 +134,17 @@ static void bank_fill(radio_s3_fill_fn fn, void *ctx, unsigned b, uint64_t first
             assert(tries++ < 5000);
             vTaskDelay(1);
         }
-        const unsigned sent = enc.task->notifications_sent;
         if (dvb.moon && getenv("EARLY_WAKE")) xTaskNotifyGive(enc.task);
+        const unsigned sent = enc.task->notifications_sent;
         assert(fn(banks[b] + (at+bank_shift) % RADIO_S3_BANK_WORDS, at, count, ctx) == ESP_OK);
         if (enc.packed && !dvb.moon) {
             if (offset && !p) assert(enc.task->notifications_sent == sent);
             else assert(!dvb.wake_pending);
         }
         if (dvb.moon) {
+            // A bank wrap must finish both callbacks before waking core 0.
+            assert(enc.task->notifications_sent-sent <= 1);
+            if (offset && !p) assert(enc.task->notifications_sent == sent);
             // The independent Python block/convolution oracle checks the whole
             // output, including both cores and every bank/frame seam.
             at += count;

@@ -79,7 +79,7 @@ typedef struct {
     unsigned waiting;              // producer is asleep; consumer wakes once below threshold
     uint32_t queue_low, queue_empty, queue_wakes;
     uint32_t wake_bank, wake_max;
-    bool wake_pending;             // legacy slot released in the first bank callback
+    bool wake_pending;             // released storage; notify only after the whole bank
     const uint32_t *sign_lut;
     uint32_t prepare_max;
     uint32_t prepare_tail_max;
@@ -244,13 +244,7 @@ static IRAM_ATTR esp_err_t moon_shape(uint32_t *dst, uint64_t first, size_t coun
             dvb.page_sample = 0;
             if (++dvb.get_index == MACHINE_PAGES) dvb.get_index = 0;
             __atomic_store_n(&dvb.consumed,get+1,__ATOMIC_RELEASE);
-            if (put-get-1 <= MACHINE_PAGES-MACHINE_WAKE_PAGES &&
-                __atomic_exchange_n(&dvb.waiting,0,__ATOMIC_ACQ_REL)) {
-                ++dvb.queue_wakes;
-                const uint32_t before = esp_cpu_get_cycle_count();
-                xTaskNotifyGive(enc.task);
-                dvb.wake_bank += esp_cpu_get_cycle_count()-before;
-            }
+            dvb.wake_pending = true;
         }
     }
     return ESP_OK;
@@ -356,9 +350,17 @@ static IRAM_ATTR esp_err_t fill(uint32_t *dst, uint64_t first, size_t count, voi
     // The wrapped prefix still needs the shaper SRAM. Hold a released slot's
     // notification until both callbacks finish; preserve it across callbacks.
     if (dvb.ring.freed != freed && enc.packed && !dvb.moon) dvb.wake_pending = true;
-    if (dvb.wake_pending && bank_done) {
+    if (dvb.wake_pending && bank_done && (!dvb.moon ||
+        (__atomic_load_n(&dvb.produced,__ATOMIC_ACQUIRE)-dvb.consumed <=
+         MACHINE_PAGES-MACHINE_WAKE_PAGES &&
+         __atomic_exchange_n(&dvb.waiting,0,__ATOMIC_ACQ_REL)))) {
         const stream_mark_t wake = dvb.profile ? stream_mark_for(&dvb.notify) : (stream_mark_t){0};
+        const uint32_t start = esp_cpu_get_cycle_count();
         xTaskNotifyGive(enc.task);
+        if (dvb.moon) {
+            ++dvb.queue_wakes;
+            dvb.wake_bank += esp_cpu_get_cycle_count()-start;
+        }
         dvb.wake_pending = false;
         if (dvb.profile) {
             const stream_mark_t after = stream_mark_for(&dvb.notify);
