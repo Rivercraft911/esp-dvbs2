@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Coordinate a contained E200/S3 RF check, or decode a saved USB dump offline.
+"""Coordinate a contained SDR/S3 RF check, or decode a saved USB dump offline.
 
 No hardware access for --help, --plan, --dry-run, or a missing --key.
 """
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import datetime as dt
 import json
 import math
@@ -21,13 +22,16 @@ sys.path.insert(0, str(ROOT / "examples/live-video"))
 import decode
 from receive import stop
 
-RADIOCONDA = "/Users/river/radioconda/bin/python"
+RADIOCONDA = str(Path.home() / "radioconda/bin/python")
 DEFAULT_RX = "/Users/river/Documents/stanford/SSI/esp-dvbs2/notes/leansdr/src/apps/leandvb"
 MODES = {7: "QPSK 3/4", 13: "8PSK 2/3", 11: "QPSK 9/10", 15: "8PSK 5/6", 17: "8PSK 9/10"}
+MODES.update({4: "QPSK 1/2", 6: "QPSK 2/3"})
+RATES = {"1m": 1e6, "5m": 5e6, "10m": 10e6, "20m": 20e6,
+         "26m667": 80e6 / 3, "33m333": 100e6 / 3}
 
 
 def settings(a):
-    rs = {"5m": 5e6, "10m": 10e6}[a.rate]
+    rs = RATES[a.rate]
     fs = 2 * rs
     if not 2390 <= a.mhz <= 2450 or not 1 <= a.seconds <= 60:
         raise ValueError("need 2390..2450 MHz and 1..60 seconds")
@@ -43,6 +47,37 @@ def settings(a):
         raise ValueError("--dry-run requires --callsign and --dump-rate (after dump decimation)")
     if a.dry_run is not None and a.key:
         raise ValueError("--dry-run and --key are mutually exclusive")
+    if a.dry_run is not None and (a.burst or a.upsample != 1):
+        raise ValueError("--burst and --upsample apply to RF capture, not USB replay")
+    if a.rate == "1m" and a.modcod >= 12:
+        raise ValueError("firmware 8PSK requires a named rate >= 5m")
+    if a.backend == "libiio":
+        if a.args:
+            raise ValueError("use --uri for libiio, not UHD --args")
+        if a.uri is not None and (not a.uri.startswith(("ip:", "usb:")) or not a.uri.split(":", 1)[1].strip()):
+            raise ValueError("need an explicit ip:HOST or usb:BUS.ADDR URI (no discovery)")
+        fs = a.sample_rate if a.sample_rate is not None else max(2.5e6, min(61.44e6, 2 * rs))
+        bw = a.bandwidth if a.bandwidth is not None else round(min(56e6, 1.35 * rs * 1.15))
+        if not math.isfinite(fs) or not 2.5e6 <= fs <= 61.44e6 or fs < 1.35 * rs:
+            raise ValueError("libiio sample rate must cover the signal and be 2.5..61.44 MS/s")
+        if not math.isfinite(bw) or not 1.35 * rs <= bw <= 56e6:
+            raise ValueError("libiio bandwidth must cover the signal and be <= 56 MHz")
+        if not 1 <= a.upsample <= 8 or fs * a.upsample < 2 * rs:
+            raise ValueError("need --upsample 1..8 and >= 2 decoder samples/symbol")
+        if not 0 <= a.burst <= 16_000_000:
+            raise ValueError("--burst must be 1..16000000 samples, or 0 for streaming")
+        if not a.burst and fs > 10e6:
+            raise ValueError("libiio streaming above 10 MS/s is refused; use --burst 16000000")
+        if not math.isfinite(a.burst_margin) or a.burst_margin < 2:
+            raise ValueError("--burst-margin must be finite and >= 2 seconds")
+        return dict(backend="libiio", uri=a.uri, sample_rate=fs, symbol_rate=rs,
+                    bandwidth=bw, occupied_hz=1.35 * rs, frequency=a.mhz * 1e6,
+                    gain=a.rx_gain, wire_format="sc16_le", file_format="cf32_le",
+                    burst_samples=a.burst, burst_margin=a.burst_margin, upsample=a.upsample,
+                    pre_seconds=1, post_seconds=1, capture_limit_seconds=a.seconds + 12)
+    if (a.rate not in ("5m", "10m") or a.uri or a.sample_rate is not None or
+            a.bandwidth is not None or a.burst or a.upsample != 1):
+        raise ValueError("UHD supports 5m/10m; URI, sample rate, bandwidth, burst and upsample require --backend libiio")
     # Pin the RFIC clock, avoiding automatic selection and fractional DDC rates.
     # One RX channel, 40 MHz MCR / 4 or / 2, 10 or 20 MHz analog bandwidth.
     device_args = a.args or "addr=E200_IP"
@@ -53,14 +88,27 @@ def settings(a):
         raise ValueError("this check requires master_clock_rate=40000000")
     if "master_clock_rate" not in fields:
         device_args += ",master_clock_rate=40000000"
-    return dict(args=device_args, sample_rate=fs, symbol_rate=rs, master_clock_rate=40e6,
+    return dict(backend="uhd", args=device_args, sample_rate=fs, symbol_rate=rs, master_clock_rate=40e6,
                 bandwidth=fs, occupied_hz=1.35 * rs, frequency=a.mhz * 1e6,
                 gain=a.rx_gain, antenna=a.antenna, wire_format="sc16", file_format="cf32_le",
                 pre_seconds=1, post_seconds=1, capture_limit_seconds=a.seconds + 12)
 
 
 def tx_command(a):
-    return f"dvb {a.mhz} {a.modcod} {a.rate} {a.seconds} {a.gain} {a.peak}" + (" --phy-solo" if a.phy_solo else "")
+    rate = "" if a.rate == "1m" else a.rate + " "
+    return f"dvb {a.mhz} {a.modcod} {rate}{a.seconds} {a.gain} {a.peak}" + (" --phy-solo" if a.phy_solo else "")
+
+
+def capture_command(a, settings_path):
+    iio = a.backend == "libiio"
+    return [a.iio_python if iio else a.uhd_python,
+            str(Path(__file__).with_name("capture_iio.py" if iio else "capture.py")),
+            str(settings_path), "--key"]
+
+
+def capture_bytes(s):
+    samples = s.get("burst_samples") or s["capture_limit_seconds"] * s["sample_rate"]
+    return int(samples * 8)
 
 
 def plan(a, s):
@@ -69,11 +117,10 @@ def plan(a, s):
                 occupied_mhz=[a.mhz - width / 2, a.mhz + width / 2],
                 board_command=tx_command(a), port=a.port,
                 key_authorized=a.key, receiver=a.receiver,
-                capture_command=[a.uhd_python, str(Path(__file__).with_name("capture.py")),
-                                 "OUT/settings.json", "--key"],
-                decoder_command=decode.receiver_command(a.receiver, a.dump_rate or s["sample_rate"],
+                capture_command=capture_command(a, "OUT/settings.json"),
+                decoder_command=decode.receiver_command(a.receiver, (a.dump_rate or s["sample_rate"]) * a.upsample,
                                                        s["symbol_rate"], .35, "BB_FD"),
-                max_capture_bytes=int(s["capture_limit_seconds"] * s["sample_rate"] * 8),
+                max_capture_bytes=capture_bytes(s),
                 steps=[
                     "Require --key and explicit E200 addr; create a new evidence directory.",
                     "Reserve the board port without reset; info: refuse missing/invalid stored callsign.",
@@ -89,6 +136,19 @@ def plan(a, s):
                     "Save report.json, payload.bin, leandvb.log, spectrum.png, board.jsonl and UHD evidence.",
                 ], containment="Closed Faraday box OR cabled with attenuators only; see docs/transmitting.md",
                 interrupt="Interrupting the host does not stop the firmware's timed transmission.")
+    if a.backend == "libiio":
+        result["steps"] = [
+            "Require --key and explicit --uri; reserve board port, validate stored callsign and ID duration.",
+            "spiinput off; start receive-only pylibiio worker at the explicit URI; no discovery or firmware changes.",
+            "Set and read back TX LO powerdown=1, every TX gain=-89.75, every DDS raw=0; refuse otherwise.",
+            "Set/read back RX LO, sample rate, bandwidth, manual gain; verify TX inhibits again before RX buffer.",
+            "Burst: arm without a buffer; trigger after stored-callsign Morse duration + startup margin."
+            if a.burst else "Streaming: require one second of IQ before keying; refuse worker failure.",
+            tx_command(a),
+            "Wait for healthy board done; streaming stops after post-roll; burst requires one complete device buffer.",
+            "Save native-rate spectrum; optionally upsample offline; same LeanDVB exact-byte verification and report.",
+            "Keep capture.json, iio.log and TX inhibit readbacks; no TX settings are restored.",
+        ]
     if a.dry_run is not None:
         result.update(source=str(a.dry_run), dump_sample_rate=a.dump_rate, callsign=a.callsign,
                       steps=["Read saved USB int16 I/Q; scale by 512; append 4096 decoder lookahead samples.",
@@ -115,7 +175,7 @@ def board_result(rows, a, call):
         raise ValueError("expected one board DVB result")
     r = rows[0]
     expected = dict(cmd="dvb", status="ESP_OK", modcod=a.modcod, callsign=call,
-                    symbol_rate={"5m": 5000000, "10m": 10000000}[a.rate],
+                    symbol_rate=int(RATES[a.rate]),
                     payload_source="xorshift32", encoder_failed=False, underruns=0,
                     freq_mhz=a.mhz, seconds=a.seconds, gain=a.gain, peak_level=a.peak)
     if "error" in r or any(r.get(k) != v for k, v in expected.items()):
@@ -139,13 +199,34 @@ def wait_ready(process, out, s):
     deadline = time.monotonic() + 30
     while True:
         if process.poll() is not None:
-            raise RuntimeError("UHD failed before key; see uhd.log and capture.json")
+            raise RuntimeError("SDR worker failed before key; see capture.json and backend log")
         ready, iq = out / "ready.json", out / "capture.cfile"
-        if ready.exists() and iq.stat().st_size >= s["pre_seconds"] * s["sample_rate"] * 8:
+        if ready.exists() and (s.get("burst_samples") or
+                (iq.exists() and iq.stat().st_size >= s["pre_seconds"] * s["sample_rate"] * 8)):
             return
         if time.monotonic() >= deadline:
-            raise TimeoutError("no clean UHD pre-roll within 30 s; board was not keyed")
+            raise TimeoutError("no SDR readiness within 30 s; board was not keyed")
         time.sleep(.05)
+
+
+def check_burst_timing(report, row, settings, command_started, board_done):
+    # Completion arrives after RF stops, so backdating by actual keyed duration
+    # gives a conservative upper bound on when the leading ID ended. Command
+    # submission gives the earliest possible RF start / trailing ID.
+    keyed_duration = row["elapsed_samples"] / row["dac_rate"]
+    id_duration = row["id_samples"] / row["dac_rate"]
+    if (not all(math.isfinite(v) for v in (keyed_duration, id_duration,
+            report["buffer_started_monotonic"], report["buffer_filled_monotonic"])) or
+            not 0 < 2 * id_duration < keyed_duration or
+            report["buffer_filled_monotonic"] < report["buffer_started_monotonic"]):
+        raise RuntimeError("invalid burst / board timing evidence")
+    if (report["samples"] != settings["burst_samples"] or
+            report["buffer_started_monotonic"] < board_done - keyed_duration + id_duration):
+        raise RuntimeError("burst timing not proven after leading Morse ID; increase --burst-margin")
+    if report["buffer_filled_monotonic"] >= command_started + keyed_duration - id_duration:
+        raise RuntimeError("burst timing not proven before trailing Morse ID; increase --seconds")
+    report.update(burst_delay_seconds=settings["burst_delay_seconds"],
+                  board_done_monotonic=board_done, after_leading_id=True, before_trailing_id=True)
 
 
 def hardware(a, s, out):
@@ -159,23 +240,48 @@ def hardware(a, s, out):
         if not rows or any("error" in row for row in rows):
             raise RuntimeError(f"board rejected {text}; see board.jsonl")
         return rows
-    with board.reserve_port(a.port), (out / "uhd.log").open("w") as diagnostics:
+    log = "iio.log" if a.backend == "libiio" else "uhd.log"
+    with board.reserve_port(a.port), (out / log).open("w") as diagnostics:
         call = stored_callsign(command("info"), a.callsign, a.seconds)
+        if s.get("burst_samples"):
+            import morse
+            delay = morse.duration(call) + s["burst_margin"]
+            if delay + s["burst_samples"] / s["sample_rate"] >= a.seconds - morse.duration(call):
+                raise ValueError("burst does not fit between both Morse IDs; increase --seconds")
+            s["burst_delay_seconds"] = delay
         command("spiinput off")
         (out / "settings.json").write_text(json.dumps(s, indent=2) + "\n")
         try:
-            process = subprocess.Popen([a.uhd_python, str(Path(__file__).with_name("capture.py")),
-                                        str(out / "settings.json"), "--key"],
+            process = subprocess.Popen(capture_command(a, out / "settings.json"),
                                        stdout=diagnostics, stderr=subprocess.STDOUT)
             wait_ready(process, out, s)
             print(f"Capture ready; stored callsign {call}; keying: {tx_command(a)}", flush=True)
-            rows = command(tx_command(a), a.seconds + 10)
-            time.sleep(s["post_seconds"])
+            if s.get("burst_samples"):
+                # Keep serial ownership in one command while the worker waits unbuffered.
+                started = time.monotonic()
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    pending = executor.submit(command, tx_command(a), a.seconds + 10)
+                    while time.monotonic() < started + s["burst_delay_seconds"]:
+                        if pending.done():
+                            pending.result()
+                            raise RuntimeError("board finished before burst trigger")
+                        if process.poll() is not None:
+                            raise RuntimeError("IIO worker failed before burst trigger")
+                        time.sleep(.02)
+                    (out / "trigger").touch()
+                    rows = pending.result()
+                board_done = time.monotonic()
+            else:
+                rows = command(tx_command(a), a.seconds + 10)
+                time.sleep(s["post_seconds"])
             (out / "stop").touch()
-            code = process.wait(timeout=5)
+            code = process.wait(timeout=30 if s.get("burst_samples") else 7)
             capture_report = json.loads((out / "capture.json").read_text())
             if code or not capture_report["complete"] or capture_report["overflows"]:
-                raise RuntimeError("UHD capture incomplete; see capture.json and uhd.log")
+                raise RuntimeError(f"SDR capture incomplete; see capture.json and {log}")
+            if s.get("burst_samples"):
+                check_burst_timing(capture_report, rows[0], s, started, board_done)
+                (out / "capture.json").write_text(json.dumps(capture_report, indent=2) + "\n")
             return call, board_result(rows, a, call), capture_report
         finally:
             (out / "stop").touch()
@@ -192,6 +298,20 @@ def convert_dump(source, target):
             (values[:, 0] + 1j * values[:, 1]).astype("<c8").tofile(sink)
         # Identical lookahead to host/decode.py; never part of dump CRC or spectrum.
         np.zeros(4096, dtype="<c8").tofile(sink)
+
+
+def upsample(source, target, factor):
+    """Offline polyphase interpolation, bounded memory and overlapping FIR context."""
+    import numpy as np
+    from scipy.signal import resample_poly
+    z = np.memmap(source, mode="r", dtype="<c8")
+    with target.open("xb") as sink:
+        for first in range(0, len(z), 262144):
+            end = min(first + 262144, len(z))
+            # scipy's default FIR spans 10 input samples on either side for integer upsampling.
+            left, right = max(0, first - 32), min(len(z), end + 32)
+            chunk = resample_poly(z[left:right], factor, 1)
+            chunk[(first-left)*factor:(end-left)*factor].astype("<c8").tofile(sink)
 
 
 def spectrum(source, fs, s, out, flush_samples=0):
@@ -224,7 +344,8 @@ def spectrum(source, fs, s, out, flush_samples=0):
     style.save_figure(fig, out / "spectrum.png",
                       "Hann PSD averaged across saved IQ; red: nominal RRC edges.\n"
                       "Digital full scale only; no calibrated RF power or emission-mask claim.")
-    return dict(blocks=len(starts), fft_samples=n, units="dBFS/Hz", includes_id_and_silence=not bool(flush_samples))
+    return dict(blocks=len(starts), fft_samples=n, units="dBFS/Hz",
+                includes_id_and_silence=not bool(flush_samples) and not bool(s.get("burst_samples")))
 
 
 def analyze(source, fs, frames, call, a, s, out):
@@ -255,11 +376,19 @@ def parser():
     p.add_argument("--dump-rate", type=float, help="saved USB samples/s after decimation")
     p.add_argument("--frames", type=int, default=16, help="synthetic frames in USB dump")
     p.add_argument("--callsign", help="dump callsign; optional stored-callsign cross-check for RF")
+    p.add_argument("--backend", choices=("uhd", "libiio"), default="uhd")
+    p.add_argument("--uri", help="explicit libiio URI, e.g. ip:192.168.2.1 or usb:1.2.3")
+    p.add_argument("--sample-rate", type=float, help="libiio samples/s (default >=2 samples/symbol, max 61.44e6)")
+    p.add_argument("--bandwidth", type=float, help="libiio RX analog bandwidth in Hz; must cover occupied signal")
+    p.add_argument("--burst", type=int, default=0, metavar="SAMPLES", help="libiio single device buffer after CW ID; 0 streams")
+    p.add_argument("--burst-margin", type=float, default=2.3, help="startup margin beyond stored-callsign CW duration, seconds")
+    p.add_argument("--upsample", type=int, default=1, help="libiio offline integer interpolation before decoding (1..8)")
+    p.add_argument("--iio-python", default=RADIOCONDA, help="Python with pylibiio (Radioconda includes it)")
     p.add_argument("--args", help="explicit UHD args including addr=E200_IP")
     p.add_argument("--port", default="/dev/cu.usbmodem101")
     p.add_argument("--mhz", type=int, default=2420)
     p.add_argument("--modcod", type=int, choices=MODES, default=7)
-    p.add_argument("--rate", choices=("5m", "10m"), default="5m")
+    p.add_argument("--rate", choices=RATES, default="5m")
     p.add_argument("--seconds", type=int, default=30, help="keyed window INCLUDING both IDs")
     p.add_argument("--gain", type=int, default=0, help="S3 vendor gain index")
     p.add_argument("--peak", type=int, default=128)
@@ -280,8 +409,9 @@ def main():
         if a.plan:
             print(json.dumps(plan(a, s), indent=2))
             return 0
-        if a.dry_run is None and (not a.key or not a.args):
-            p.error("hardware requires explicit --key AND --args addr=E200_IP; use --plan or --dry-run")
+        address = a.uri if a.backend == "libiio" else a.args
+        if a.dry_run is None and (not a.key or not address):
+            p.error("hardware requires explicit --key AND --uri (libiio) / --args addr= (UHD); use --plan or --dry-run")
         # Fail on missing software before importing board or starting the SDR.
         import numpy  # noqa: F401
         import scipy  # noqa: F401
@@ -291,8 +421,9 @@ def main():
             raise ValueError(f"LeanDVB not found: {a.receiver}")
         if a.callsign:
             a.callsign = morse.callsign(a.callsign)
-        if a.dry_run is None and not shutil.which(a.uhd_python):
-            raise ValueError(f"UHD Python not found: {a.uhd_python}")
+        worker_python = a.iio_python if a.backend == "libiio" else a.uhd_python
+        if a.dry_run is None and not shutil.which(worker_python):
+            raise ValueError(f"capture Python not found: {worker_python}")
         out = (a.out or ROOT / "notes" / dt.datetime.now().strftime("ota-%Y%m%d-%H%M%S")).resolve()
         out.mkdir(parents=True, exist_ok=False)
         (out / "plan.json").write_text(json.dumps(plan(a, s), indent=2) + "\n")
@@ -314,14 +445,20 @@ def main():
                     result["spectrum"] = plotted
                     result["receiver_flush_samples"] = 4096
             else:
-                if shutil.disk_usage(out).free < s["capture_limit_seconds"] * s["sample_rate"] * 8 + 100e6:
+                disk_bytes = capture_bytes(s) * (1 + a.upsample if a.upsample > 1 else 1)
+                if shutil.disk_usage(out).free < disk_bytes + 100e6:
                     raise ValueError("insufficient free disk for bounded cf32 capture")
                 call, frames, capture_report = hardware(a, s, out)
                 source = out / "capture.cfile"
                 # Render even if the receiver subsequently fails to acquire.
                 result["spectrum"] = spectrum(source, s["sample_rate"], s, out)
-                result.update(analyze(source, s["sample_rate"], frames, call, a, s, out))
+                if a.upsample > 1:
+                    target = out / "decode.cfile"
+                    upsample(source, target, a.upsample)
+                    source = target
+                result.update(analyze(source, s["sample_rate"] * a.upsample, frames, call, a, s, out))
                 result["capture"] = capture_report
+                result["offline_upsample"] = a.upsample
         except (Exception, KeyboardInterrupt) as exc:
             result.update(passed=False, error=str(exc) or "interrupted; firmware retains its timed key window")
             source = out / "capture.cfile"
