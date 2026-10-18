@@ -27,7 +27,7 @@ def check(out):
     spec = importlib.util.spec_from_file_location('coordinator',ROOT/'host/jitter.py')
     coordinator = importlib.util.module_from_spec(spec); spec.loader.exec_module(coordinator)
     for mc in (13,15,17):
-        run = subprocess.run([str(exe),str(mc)],env=dict(os.environ,FORCE_DUMMY_FRAME='68'),
+        run = subprocess.run([str(exe),str(mc)],env=dict(os.environ,FORCE_DUMMY_FRAME='72'),
                              capture_output=True,text=True,timeout=60)
         (out/f'{mc}.log').write_text(run.stdout+run.stderr)
         assert run.returncode == 0,run.stderr
@@ -35,6 +35,7 @@ def check(out):
         off, on = [r for r in rows if r.get('test') == 'trace_lifecycle']
         assert 'stream_trace' not in off and not off['traced'] and on['traced']
         assert off['crc'] == on['crc']
+        assert all(off[k] == on[k] for k in ('startup_layout','startup_allocations','startup_prefill','queue_pages'))
         summary = coordinator.trace_summary(on)
         assert summary['frames'] == 64 and summary['map_waits'] > 0
         assert summary['dummies_before_data'] == summary['max_dummies_before_data'] == 2
@@ -54,9 +55,18 @@ def check(out):
         rows = [json.loads(l[1:]) for l in run.stdout.splitlines() if l.startswith('@{')]
         off,on = [r for r in rows if r.get('test') == 'trace_lifecycle']
         assert off['crc'] == on['crc'] and on['frames_played'] == 2
-        assert not on['stream_trace']['complete']
-        assert all(not lane['armed'] and not lane['rows'] for lane in on['stream_trace']['lanes'])
-        print(mc,'two startup frames: trace requested, zero recorder calls, output unchanged')
+        assert not on['stream_trace']['complete'] and on['trace_setup']['state'] == 'waiting'
+        assert all(off[k] == on[k] for k in ('startup_layout','startup_allocations','startup_prefill','queue_pages'))
+        print(mc,'two startup frames: trace requested, no trace allocation/calls, same stream allocation layout and output')
+    run = subprocess.run([str(exe),'17'],env=dict(os.environ,FAIL_TRACE_ALLOCATION='1',FORCE_DUMMY_FRAME='72'),
+                         capture_output=True,text=True,timeout=60)
+    (out/'17-allocation-failure.log').write_text(run.stdout+run.stderr)
+    assert run.returncode == 0,run.stderr
+    rows = [json.loads(l[1:]) for l in run.stdout.splitlines() if l.startswith('@{')]
+    off,on = [r for r in rows if r.get('test') == 'trace_lifecycle']
+    assert off['crc'] == on['crc'] and not on['encoder_failed']
+    assert on['trace_setup']['state'] == 'allocation_failed' and not on['stream_trace']['complete']
+    print('deferred allocation failure: stream continues, waveform unchanged, failure reported after playback')
     plan = subprocess.check_output(['python3',str(ROOT/'host/jitter.py'),'/unused','--trace','--plan'],text=True)
     assert plan.splitlines() == ['info (reset once)',
                                 'dvbpace 15 26m667 10 128 0 trace',

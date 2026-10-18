@@ -2,7 +2,7 @@
 """Radio-off clean gate plus bank/page wake diagnosis, about one minute per mode.
 
 No flashing or transmitter commands. Keep the Mac awake, for example:
-  caffeinate -i python3 host/jitter.py notes/eight-lofty-round14
+  caffeinate -i python3 host/jitter.py notes/eight-lofty-round15
 """
 import argparse
 import datetime as dt
@@ -76,7 +76,15 @@ def gate(r, mc):
 def trace_summary(r):
     t = r['stream_trace']
     assert t['version'] == 2 and t['complete'], 'incomplete stream trace; retain raw rows'
-    assert t['first_frame'] == 64 and t['frame_count'] == t['frames_complete'] == 64
+    first = t['first_frame']
+    assert first == 68 and t['frame_count'] == t['frames_complete'] == 64
+    assert t['storage'] == 'psram' and t['external'], 'trace ring is not external'
+    allocation = t['allocation']
+    assert allocation['frame'] == 66 and allocation['queue_pages'] == r['queue_pages']
+    queued = (allocation['produced']-allocation['consumed']) & 0xffffffff
+    assert queued <= r['queue_pages'] and allocation['frame']-(queued+43)//44 >= 64, 'trace allocated before steady state'
+    setup = r['trace_setup']
+    assert setup['state'] == 'allocated' and setup['allocate_frame'] == 66 and setup['min_played_frames'] == 64
     producer, fill = t['lanes']
     assert [producer['core'],fill['core']] == [0,1]
     for lane in (producer,fill):
@@ -86,7 +94,7 @@ def trace_summary(r):
         assert all(a[0] <= b[0] for a,b in zip(lane['rows'],lane['rows'][1:])), 'trace clock reversed'
     waits = {3:[],5:[]}
     dummies = []
-    for frame in range(64,128):
+    for frame in range(first,first+64):
         p = [e for e in producer['rows'] if e[2] == frame]
         f = [e for e in fill['rows'] if e[2] == frame]
         assert sum(e[3] == 13 for e in p) == 1, 'missing frame start'
@@ -109,7 +117,9 @@ def trace_summary(r):
                 assert e[6:] == start[6:], 'wait changed page index/mapper position'
                 waits[kind-1].append(e[0]-start[0])
         assert not pending, 'unclosed page wait'
-    return dict(frames=64,producer_events=len(producer['rows']),fill_events=len(fill['rows']),
+    return dict(frames=64,address=t['address'],allocation_frame=allocation['frame'],
+                internal_delta=allocation['internal_after']-allocation['internal_before'],
+                producer_events=len(producer['rows']),fill_events=len(fill['rows']),
                 map_waits=len(waits[3]),map_wait_max_us=max(waits[3],default=0),
                 pl_waits=len(waits[5]),pl_wait_max_us=max(waits[5],default=0),
                 dummies_before_data=sum(dummies),max_dummies_before_data=max(dummies),

@@ -64,6 +64,11 @@ static inline void *heap_caps_aligned_alloc(size_t a, size_t n, unsigned caps) {
 static inline void *heap_caps_malloc(size_t n, unsigned caps) {
     return heap_caps_aligned_alloc(16, n, caps);
 }
+static inline int esp_ptr_external_ram(const void *p) {
+    for (unsigned i = 0; i < 64; ++i)
+        if (native_blocks[i].p == p) return !!(native_blocks[i].caps & MALLOC_CAP_SPIRAM);
+    return 0;
+}
 static inline size_t heap_caps_get_allocated_size(void *p) {
     for (unsigned i = 0; i < 64; ++i) if (native_blocks[i].p == p) return native_blocks[i].n;
     abort();
@@ -162,7 +167,7 @@ def compile_stream(folder, source="stream_host.c", defines=()):
     tmp = str(folder)
     (folder / "native.h").write_text(NATIVE)
     for header in ("esp_err.h", "esp_cpu.h", "esp_attr.h", "esp_heap_caps.h", "esp_rom_crc.h",
-                   "esp_timer.h", "driver/usb_serial_jtag.h", "freertos/FreeRTOS.h", "freertos/semphr.h",
+                   "esp_timer.h", "esp_memory_utils.h", "driver/usb_serial_jtag.h", "freertos/FreeRTOS.h", "freertos/semphr.h",
                    "freertos/task.h"):
         path = folder / header
         path.parent.mkdir(exist_ok=True)

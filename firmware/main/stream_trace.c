@@ -1,9 +1,11 @@
 #include "stream_trace.h"
+#include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
 #include "esp_attr.h"
 #include "esp_cpu.h"
 #include "esp_heap_caps.h"
+#include "esp_memory_utils.h"
 #include "esp_timer.h"
 #ifdef __XTENSA__
 #include "sdkconfig.h"
@@ -27,13 +29,25 @@ typedef struct {
 } lane_t;
 struct stream_trace {
     lane_t lane[2];
+    uint32_t internal_before, internal_after, spiram_before, spiram_after;
+    uint32_t frame, put, get, pages;
     stream_trace_event_t producer[PRODUCER_EVENTS], fill[FILL_EVENTS];
 };
 
-stream_trace_t *stream_trace_new(void)
+stream_trace_t *stream_trace_new(uint32_t frame, uint32_t put, uint32_t get, unsigned pages)
 {
+    const uint32_t internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT);
+    const uint32_t spiram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
     stream_trace_t *t = heap_caps_malloc(sizeof *t,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
-    if (t) memset(t,0,sizeof *t); // touch storage before playback; no clock reads
+    if (!t) return NULL;
+    if (!esp_ptr_external_ram(t)) { heap_caps_free(t); return NULL; }
+    // Records are write-before-read. Do not touch the half-megabyte ring here.
+    memset(t->lane,0,sizeof t->lane);
+    t->frame = frame; t->put = put; t->get = get; t->pages = pages;
+    t->internal_before = internal;
+    t->internal_after = heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT);
+    t->spiram_before = spiram;
+    t->spiram_after = heap_caps_get_free_size(MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
     return t;
 }
 
@@ -82,6 +96,9 @@ void stream_trace_print(const stream_trace_t *t)
     if (t->lane[1].armed && (int32_t)(t->lane[1].clock.us-epoch) < 0) epoch = t->lane[1].clock.us;
     printf(",\"stream_trace\":{\"version\":2,\"first_frame\":%u,\"frame_count\":%u,"
            "\"frames_complete\":%u,\"complete\":%s,\"storage\":\"psram\",\"bytes\":%u,"
+           "\"address\":\"0x%"PRIxPTR"\",\"external\":true,\"allocation\":{"
+           "\"frame\":%u,\"produced\":%u,\"consumed\":%u,\"queue_pages\":%u,"
+           "\"internal_before\":%u,\"internal_after\":%u,\"spiram_before\":%u,\"spiram_after\":%u},"
            "\"clock\":\"core-local CCOUNT; us reconstructed after playback from shared esp_timer anchors\","
            "\"epoch_us\":%u,\"cycles_per_us\":%u,\"event_bytes\":%u,\"single_page_batches\":true,"
            "\"columns\":[\"us\",\"cycles\",\"frame\",\"event\",\"produced\",\"consumed\",\"a\",\"b\"],"
@@ -90,7 +107,9 @@ void stream_trace_print(const stream_trace_t *t)
            "\"bound\":10,\"data_end\":11,\"gap_max\":12,\"frame_start\":13},\"lanes\":[",
            STREAM_TRACE_FIRST,STREAM_TRACE_FRAMES,ended,
            ended == STREAM_TRACE_FRAMES && !t->lane[0].dropped && !t->lane[1].dropped ? "true" : "false",
-           (unsigned)sizeof *t,(unsigned)epoch,CLOCK_MHZ,(unsigned)sizeof(stream_trace_event_t));
+           (unsigned)sizeof *t,(uintptr_t)t,(unsigned)t->frame,(unsigned)t->put,(unsigned)t->get,(unsigned)t->pages,
+           (unsigned)t->internal_before,(unsigned)t->internal_after,
+           (unsigned)t->spiram_before,(unsigned)t->spiram_after,(unsigned)epoch,CLOCK_MHZ,(unsigned)sizeof(stream_trace_event_t));
     for (unsigned lane = 0; lane < 2; ++lane) {
         const lane_t *l = &t->lane[lane];
         const stream_trace_event_t *events = lane ? t->fill : t->producer;

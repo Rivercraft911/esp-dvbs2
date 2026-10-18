@@ -101,9 +101,10 @@ typedef struct {
     uint64_t fill_words, fill_cycles;
     uint32_t fill_calls;
     uint32_t worst_copy, worst_whole, worst_partial, worst_save, worst_notify;
-    stream_trace_t *trace;          // optional paced diagnostic, allocated only in PSRAM
+    stream_trace_t *trace;          // deferred PSRAM capture, published with trace_state
+    uint32_t trace_state;           // 0 off, 1 requested, 2 allocated, 3 failed
     uint64_t shaped_words, reused_words;
-    stream_trace_lane_t trace_lane[2]; // internal cursors; null until frame 64
+    stream_trace_lane_t trace_lane[2]; // internal cursors; null until the capture window
 } dvb_t;
 
 static DRAM_ATTR dvb_t dvb;
@@ -135,6 +136,7 @@ _Static_assert(LOFTY_INPUT_BYTES >= 256, "input prefix fits beside mux state");
 #define LOFTY_BANK_SAMPLES RADIO_S3_STEP_WORDS_80M
 #define LOFTY_BANK_CYCLES (3*LOFTY_BANK_SAMPLES)
 #define LOFTY_PAGE_CYCLES (23*LOFTY_BLOCKS) // single-issue lower bound, renderer trace
+#define LOFTY_MAX_PAGES 54
 #define LOFTY_RESERVE_PAGES 9 // 4606 symbols, including the two-symbol prefix
 _Static_assert(LOFTY_BLOCKS == MACHINE_PAGE_BLOCKS && sizeof(lofty_page) == sizeof(machine_page),
                "both queues use the same page geometry");
@@ -221,6 +223,10 @@ static uint32_t next_byte(uint32_t *x)
 }
 
 enum { QUEUE_FEC = 1, QUEUE_MAP, QUEUE_WAIT, QUEUE_PL };
+enum { TRACE_OFF, TRACE_REQUESTED, TRACE_ALLOCATED, TRACE_FAILED };
+_Static_assert(LOFTY_MAX_PAGES < 2*LOFTY_FRAME_PAGES && STREAM_TRACE_ALLOCATE >= 66,
+               "trace allocation follows 64 played frames");
+_Static_assert(STREAM_TRACE_FIRST > STREAM_TRACE_ALLOCATE, "allocate before recording FEC");
 
 static void trace_producer(unsigned event, uint32_t a, uint32_t b)
 {
@@ -508,7 +514,8 @@ static IRAM_ATTR void lofty_splice(uint32_t raw, unsigned skip)
 // with the fastest possible page consumption, bank wakes and nine reserve pages.
 static inline __attribute__((always_inline)) void lofty_boundary(uint32_t ready)
 {
-    if (lofty_mux.frames == STREAM_TRACE_FIRST && dvb.trace && !dvb.trace_lane[1].next)
+    if (lofty_mux.frames == STREAM_TRACE_FIRST &&
+        __atomic_load_n(&dvb.trace_state,__ATOMIC_ACQUIRE) == TRACE_ALLOCATED && !dvb.trace_lane[1].next)
         stream_trace_arm(dvb.trace,&dvb.trace_lane[1],1);
     bool odd = (lofty_mux.startup+lofty_mux.steady)&1;
     unsigned queued = __atomic_load_n(&dvb.produced,__ATOMIC_ACQUIRE)-dvb.consumed;
@@ -857,7 +864,12 @@ static void encoder_task(void *arg)
         dvb.last_word = dvb.page_blocks = 0;
     }
     for (uint32_t f = 0; !e->stop; ++f) {
-        if (f == STREAM_TRACE_FIRST && dvb.trace) {
+        if (f == STREAM_TRACE_ALLOCATE && dvb.trace_state == TRACE_REQUESTED) {
+            dvb.trace = stream_trace_new(f,dvb.produced,
+                __atomic_load_n(&dvb.consumed,__ATOMIC_ACQUIRE),dvb.queue_pages);
+            __atomic_store_n(&dvb.trace_state,dvb.trace ? TRACE_ALLOCATED : TRACE_FAILED,__ATOMIC_RELEASE);
+        }
+        if (f == STREAM_TRACE_FIRST && dvb.trace_state == TRACE_ALLOCATED) {
             stream_trace_arm(dvb.trace,&dvb.trace_lane[0],0);
             trace_producer(TRACE_BOUND,lofty_mux.admission_gap,lofty_mux.admission_pages);
         }
@@ -990,7 +1002,7 @@ static void release(void)
         cache_configured = false;
     }
     (void)heap_caps_monitor_local_minimum_free_size_stop();
-    stream_trace_free(dvb.trace); dvb.trace = NULL;
+    stream_trace_free(dvb.trace); dvb.trace = NULL; dvb.trace_state = TRACE_OFF;
     heap_caps_free(dvb.samples);
     dvb.samples = NULL;
     heap_caps_free(enc.tables);
@@ -1039,6 +1051,12 @@ static size_t start_encoder_traced(const char *cmd, unsigned modcod, unsigned le
         return 0;
     }
     const size_t symbols = dvbs2_frame_symbols(mode, PILOTS);
+    if (trace && !lofty) {
+        printf("@{\"cmd\":\"%s\",\"error\":\"trace needs lofty\"}\n",cmd);
+        return 0;
+    }
+    dvb.trace_state = trace ? TRACE_REQUESTED : TRACE_OFF;
+    memset(dvb.trace_lane,0,sizeof dvb.trace_lane);
     dvb.dac_rate = dac_rate;
     dvb.moon = moon;
     dvb.lofty = lofty;
@@ -1050,7 +1068,7 @@ static size_t start_encoder_traced(const char *cmd, unsigned modcod, unsigned le
         lofty_mux.admission_pages = LOFTY_FRAME_PAGES | (LOFTY_FRAME_PAGES<<8);
     }
     dvb.page_wake = !lofty;
-    dvb.queue_pages = lofty ? (modcod == 17 ? 46 : modcod == 13 ? 54 : LOFTY_PAGES) : MACHINE_PAGES;
+    dvb.queue_pages = lofty ? (modcod == 17 ? 46 : modcod == 13 ? LOFTY_MAX_PAGES : LOFTY_PAGES) : MACHINE_PAGES;
     dvb.wake_pages = lofty ? LOFTY_WAKE : MACHINE_WAKE_PAGES;
     dvb.pages = NULL;
     dvb.lofty_pages = NULL;
@@ -1355,13 +1373,6 @@ static size_t start_encoder_traced(const char *cmd, unsigned modcod, unsigned le
                       resident && !moon && !(enc.ws_borrowed && sps == 3) ? (uint8_t *)enc.ws+ws_used : NULL,
                       resident && !moon && !(enc.ws_borrowed && sps == 3) && ws_used < sizeof *enc.ws ? sizeof *enc.ws-ws_used : 0);
 
-    if (trace) {
-        if (!lofty || !(dvb.trace = stream_trace_new())) {
-            printf("@{\"cmd\":\"%s\",\"error\":\"trace needs lofty and PSRAM storage\"}\n",cmd);
-            release();
-            return 0;
-        }
-    }
     // Bounded bursts above Wi-Fi, then sleep on the full queue. Startup and
     // stop need no controller boost because a full producer always blocks.
     enc.priority = moon ? MOON_PRIORITY : ENCODER_PRIORITY;
@@ -1544,6 +1555,14 @@ static void stop_encoder(void)
     if (dvb.trace) {
         stream_trace_finish(dvb.trace,&dvb.trace_lane[0],0);
         stream_trace_finish(dvb.trace,&dvb.trace_lane[1],1);
+    }
+    if (dvb.trace_state != TRACE_OFF) {
+        const char *state = dvb.trace_state == TRACE_REQUESTED ? "waiting" :
+                            dvb.trace_state == TRACE_ALLOCATED ? "allocated" : "allocation_failed";
+        printf(",\"trace_setup\":{\"state\":\"%s\",\"allocate_frame\":%u,\"min_played_frames\":%u,\"first_frame\":%u}",
+               state,STREAM_TRACE_ALLOCATE,STREAM_TRACE_ALLOCATE-2,STREAM_TRACE_FIRST);
+        if (!dvb.trace) printf(",\"stream_trace\":{\"version\":2,\"complete\":false,\"error\":\"%s\"}",
+                               dvb.trace_state == TRACE_FAILED ? "PSRAM trace allocation failed" : "trace allocation frame not reached");
     }
     stream_trace_print(dvb.trace);
     release();

@@ -113,16 +113,39 @@ in IRAM.
 ## Optional queue trace
 
 `dvbpace ... trace` is capture-only; `observe` and `trace` are mutually
-exclusive. The recorder preallocates/touches 491,568 bytes in PSRAM before
-playback. Both internal cursors stay null through startup. During playback there are no recorder event
-calls, timestamps or event writes before arming. In particular, cold bound
-updates no longer call the recorder outside the capture window.
+exclusive. It requests no extra memory during stream, task or Wi-Fi startup.
+The request flag cannot change the fill's path or allocate memory before
+64 data frames have played. Admission, encoder kernels, queue size, input,
+workspace and producer warm-up are unchanged.
 
-The producer arms when starting data frame 64; the fill arms when choosing
-frame 64. Each stops after frame 127. Dummies do not advance the data frame ID.
-The producer's first event snapshots the already learned admission bound.
-Only events inside these 64 steady frames are recorded. Admission, encoder
-kernels, page counts and wake policy are unchanged.
+The supplied 964aa73 records for 15 already have identical 50-page queues,
+one-frame prefill, end-run free internal heap (44,135 B), largest internal block
+(9,728 B), and stream allocation addresses. The ring already requested PSRAM.
+The Wi-Fi minimum is lower for trace (18,635 vs 20,451 B). These measurements do
+not establish why the old traced run failed; fewer pages/internal ring storage
+are not supported by those records.
+
+The producer now allocates the 491,600-byte ring at frame 66, exclusively in
+PSRAM, and checks `esp_ptr_external_ram`. A frame publishes 44 pages. With at
+most 54 pages queued, 66 produced frames imply at least 66*44-54=2,850 released
+pages, beyond the 2,816 pages of 64 complete frames. Dummies release no pages.
+This page accounting establishes the allocation point without timing assumptions.
+
+Only the small header is initialized. Record storage stays untouched until its
+event writes; there is no half-megabyte zero-fill. Heap poisoning is disabled in
+the firmware configuration. Both cores capture data IDs 68 through 131, zero
+based, after allocation. The producer's first event snapshots the learned
+admission bound. Dummies do not advance the data ID. No recorder events or
+clock reads occur outside that 64-frame window.
+
+`trace_setup` reports waiting/allocated/allocation_failed, allocation frame 66
+and its derived minimum of 64 played frames. `stream_trace` adds the actual
+external address, producer/consumer counters and page count at allocation,
+plus before/after free 8-bit internal and PSRAM heap. Those heap snapshots may
+also include concurrent system activity; the mandatory capability and external
+address check forbid an internal-memory fallback. Early failure before frame 66
+reports no allocation; allocation failure leaves the stream running and reports
+an incomplete capture after playback.
 
 Each active event reads CCOUNT once and stores six 32-bit words: timestamp,
 packed frame/event tag, produced, consumed, a and b. Its cursor stays internal;
@@ -181,15 +204,17 @@ a clean timing qualification. All printing happens after playback stops.
 Dropped events or an incomplete window produce `complete:false`; raw records
 remain available. Unarmed lanes have `armed:false` and empty rows.
 
-The linked internal heap starts 32 bytes earlier than 6c74894; the IRAM end is
-unchanged. These are linker values. Wi-Fi minima and actual capture timing still
+The linked internal heap, IRAM end and resident-table address match 964aa73. These are linker values. Wi-Fi minima and actual capture timing still
 need silicon measurements. No board or radio was accessed during development.
 
 ## Offline checks and collection
 
 The current trace checks use the real concurrent producer and fill. They
-verify dormant startup, 64 complete frames per mode, all 2,816 matching page
-publication/release pairs, dummy counts and unchanged waveform checksums.
+verify identical startup allocation counts/sizes/capabilities and prefill with
+trace on/off, allocation only after 64 played frames, 64 complete captured frames
+per mode, all 2,816 matching publication/release pairs and unchanged waveform
+checksums. A poisoned buffer proves only the header is initialized. Deferred
+allocation failure leaves the waveform unchanged.
 Recorder units check one timestamp per event, two shared-clock reads total,
 CCOUNT/epoch wrap, allocation failure and explicit overflow. Existing admission
 timing models do not establish capture timing on silicon.
@@ -204,12 +229,13 @@ release counters to the existing 4,320 slices, mapper and ISR tests.
 After the coordinator builds/flashes the revision with N0CALL:
 
 ```sh
-caffeinate -i python3 host/jitter.py notes/eight-lofty-round14 --trace
+caffeinate -i python3 host/jitter.py notes/eight-lofty-round15 --trace
 ```
 
 Trace collection runs only 15 and 17 at 26m667, 10 s each, without the interrupt
 observer. `tests/test_stream_trace.py` checks 64 real threaded frames
-per mode and two-frame startup-only runs for 15/17, with zero recorder calls.
+per mode and two-frame startup-only runs for 15/17, with no trace allocation
+or recorder calls and the same stream allocation footprint.
 It checks forced dummies and equal output checksums with tracing on/off.
 No timing model is used in this check.
 
