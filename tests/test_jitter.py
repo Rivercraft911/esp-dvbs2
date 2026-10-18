@@ -30,7 +30,7 @@ def main():
         if command == 'info': return [dict(firmware='abc1234',callsign='N0CALL')]
         args = command.split(); mc = int(args[1]); policy = 'bank' if 'bankwake' in args else 'page' if 'pagewake' in args or mc == 11 else 'bank'
         observer = 'observe' in args
-        if mc == 15 and not observer: raise TimeoutError('injected timeout')
+        if mc == 15 and not observer and 'trace' not in args: raise TimeoutError('injected timeout')
         r = dict(cmd='dvbpace',modcod=mc,queue_wake_policy=policy,paced_wifi_up=True,encoder_pie=15,
                      bch_variant='resident-pair' if mc in (11,17) else 'split-pair',warmup_frames=3,
                      encoder_priority=24,admission_pages=10,admission_wait_pages=26,admission_update_max_cycles=7000,queue_stream_page_max_cycles=600,
@@ -89,6 +89,12 @@ def main():
     summary = check.suite(send,'abc1234',20,trace=True)
     assert len(summary) == 2 and [r['modcod'] for r in summary] == [15,17]
     assert all(r['verdict'] == 'FAIL' and 'stream_trace' in r['detail'] for r in summary)
+    trace_summary = check.trace_summary
+    check.trace_summary = lambda r: dict(frames=64) # framing checked by test_stream_trace
+    summary = check.suite(send,'abc1234',20,trace=True)
+    check.trace_summary = trace_summary
+    assert all(r['verdict'] == 'CAPTURED' and not r['observer'] for r in summary)
+    assert sent[-2:] == ['dvbpace 15 26m667 10 128 0 trace','dvbpace 17 26m667 10 128 0 trace']
     print('jitter coordinator: clean gate, same-bank notify times, keeps going after timing/transport faults: ok')
 
 

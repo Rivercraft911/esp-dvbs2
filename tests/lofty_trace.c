@@ -1,27 +1,48 @@
 // Real concurrent producer/consumer. Host pacing is functional, not a timing model.
 #include "native.h"
+#include "stream_trace.h"
+static unsigned event_calls;
+static void checked_event(stream_trace_lane_t *, unsigned, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
+#define stream_trace_event checked_event
 #define main stream_lifecycle_main
 #include "stream_host.c"
 #undef main
+#undef stream_trace_event
+
+static void checked_event(stream_trace_lane_t *cursor, unsigned kind, uint32_t frame,
+                          uint32_t put, uint32_t get, uint32_t a, uint32_t b)
+{
+    // Check the caller, rather than relying on a filter inside the recorder.
+    assert(cursor->next && frame >= STREAM_TRACE_FIRST && frame < STREAM_TRACE_FIRST+STREAM_TRACE_FRAMES);
+    __atomic_fetch_add(&event_calls,1,__ATOMIC_RELAXED);
+    stream_trace_event(cursor,kind,frame,put,get,a,b);
+}
 
 static uint32_t capture_trace(unsigned mc, bool trace)
 {
     callsign = "N0CALL";
+    event_calls = 0;
     assert(start_encoder_traced("dvbpace",mc,128,0,3,80000000,trace));
+    assert(!__atomic_load_n(&event_calls,__ATOMIC_RELAXED) && !dvb.trace_lane[0].next && !dvb.trace_lane[1].next);
     uint32_t *buf = NULL;
     assert(!posix_memalign((void **)&buf,16,5*MACHINE_PAGE_SAMPLES*4));
-    const uint64_t stop = 130ull*3*LOFTY_FRAME_SYMBOLS+6ull*DVBS2_DUMMY_SYMBOLS;
+    const unsigned frames = getenv("STARTUP_ONLY") ? 2 : 130;
+    const uint64_t stop = (uint64_t)frames*3*LOFTY_FRAME_SYMBOLS+(frames == 130 ? 6ull*DVBS2_DUMMY_SYMBOLS : 0);
     uint32_t crc = 0;
     while (lofty_mux.output < stop) {
         size_t n = stop-lofty_mux.output;
         if (n > 5*MACHINE_PAGE_SAMPLES) n = 5*MACHINE_PAGE_SAMPLES;
         assert(!lofty_shape(buf,lofty_mux.output,n));
+        if (lofty_mux.frames < STREAM_TRACE_FIRST-2) assert(!__atomic_load_n(&event_calls,__ATOMIC_RELAXED));
         crc = esp_rom_crc32_le(crc,(uint8_t *)buf,4*n);
         if (dvb.wake_pending) { moon_wake(); dvb.wake_pending = false; }
         ++dvb.fill_calls;
     }
-    assert(lofty_mux.frames == 130 && !dvb.queue_empty);
-    assert(lofty_mux.steady == 2 && !lofty_mux.startup);
+    assert(lofty_mux.frames == frames && !dvb.queue_empty);
+    assert(!dvb.trace_lane[0].next && !dvb.trace_lane[1].next);
+    if (trace && frames == 130) assert(__atomic_load_n(&event_calls,__ATOMIC_RELAXED) > 5000);
+    else assert(!__atomic_load_n(&event_calls,__ATOMIC_RELAXED));
+    assert(lofty_mux.steady == (frames == 130 ? 2u : 0u) && !lofty_mux.startup);
     printf("@{\"test\":\"trace_lifecycle\",\"modcod\":%u,\"traced\":%s,\"crc\":%u",
            mc,trace ? "true" : "false",crc);
     stop_encoder(); puts("}");
@@ -34,6 +55,8 @@ int main(int argc, char **argv)
 {
     assert(argc == 2);
     unsigned mc = atoi(argv[1]);
+    dvbtx_pace(mc,10,128,0,3,80000000,0,true,true); // rejected before allocation/workers
+    assert(!live_allocations);
     assert(capture_trace(mc,false) == capture_trace(mc,true));
     return 0;
 }

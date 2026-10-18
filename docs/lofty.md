@@ -112,20 +112,44 @@ in IRAM.
 
 ## Optional queue trace
 
-`dvbpace ... observe trace` allocates a 655,416-byte PSRAM recorder before the
-encoder starts. It captures data frames 64 through 127, zero based. Dummies do
-not advance this ID. Admission-bound updates and new maximum page gaps are
-retained even outside that window. This round changes instrumentation only;
-it makes no new claim about the cause or dummy rate.
+`dvbpace ... trace` is capture-only; `observe` and `trace` are mutually
+exclusive. The recorder preallocates/touches 491,568 bytes in PSRAM before
+playback. Both internal cursors stay null through startup. During playback there are no recorder event
+calls, timestamps or event writes before arming. In particular, cold bound
+updates no longer call the recorder outside the capture window.
 
-The pace record's `stream_trace` contains two single-writer lanes, core 0
-producer and core 1 fill. Each row has the declared columns:
-`[us, cycles, frame, event, produced, consumed, a, b]`. `us` is the shared
-`esp_timer_get_time()` clock, in microseconds since the 32-bit `epoch_us`, with
-modular subtraction. IDF v6.1 implements it with SYSTIMER
-(`components/esp_timer/src/esp_timer_impl_systimer.c`). `cycles` is that core's
-CCOUNT; the two core-local cycle counters must not be compared directly.
-Sequence counters also wrap modulo 2^32.
+The producer arms when starting data frame 64; the fill arms when choosing
+frame 64. Each stops after frame 127. Dummies do not advance the data frame ID.
+The producer's first event snapshots the already learned admission bound.
+Only events inside these 64 steady frames are recorded. Admission, encoder
+kernels, page counts and wake policy are unchanged.
+
+Each active event reads CCOUNT once and stores six 32-bit words: timestamp,
+packed frame/event tag, produced, consumed, a and b. Its cursor stays internal;
+only the record goes to PSRAM. The bounded ring reports overflow instead of
+overwriting earlier evidence. The 50-byte IRAM writer has no function calls,
+clock conversion, dummy counting, per-event cost accounting or printing.
+These are source/disassembly facts, not a silicon overhead measurement.
+
+The pace record's `stream_trace` version 2 still prints rows as
+`[us, cycles, frame, event, produced, consumed, a, b]`. Conversion and dummy
+counting happen after playback. At arming, each owning core brackets a shared
+`esp_timer_get_time()` read with CCOUNT reads. Those three values are printed
+as its `anchor`. With fixed 240 MHz and power management disabled in
+`firmware/sdkconfig`, conversion is:
+
+```
+base_cycles = before + (after-before)/2                 [CPU cycles]
+us = anchor.us - epoch_us + uint32(cycles-base_cycles)/240  [microseconds]
+```
+
+`epoch_us` is the earlier armed anchor. Subtractions wrap modulo 2^32; capture
+must fit within one 17.9 s CCOUNT period. The coordinator's runs are 10 s.
+The anchor's before/after span and the shared clock's 1 us resolution expose
+alignment uncertainty. Core-local CCOUNT values must not be compared directly
+across cores. IDF v6.1 uses SYSTIMER for the shared clock
+(`components/esp_timer/src/esp_timer_impl_systimer.c`). Sequence counters also
+wrap modulo 2^32.
 
 | Event | a | b |
 | --- | --- | --- |
@@ -143,32 +167,32 @@ Admission packs the actual decision snapshot: bits 0..7 queued pages, 8..15
 selected threshold, 16 completed frame available, 17 producer outside mapping,
 18 forced second dummy for alignment, 19 dummy selected, 20..22 producer phase
 (1 FEC, 2 map, 3 wait, 4 PL). Row counters are re-read when the event is logged
-and may be newer than the packed snapshot. Publication/release markers follow their atomic stores; they timestamp the
-logging point, rather than the exact store instruction. Wait markers surround the page wait, including its notification recheck.
+and may be newer than the packed snapshot. Publication/release markers follow
+their atomic stores; they timestamp the logging point rather than the exact
+store instruction. Wait markers surround the page wait, including its
+notification recheck.
 
 During these 64 frames only, trace uses one page per render call so every
-release has a marker. Bank-end wakes, admission and queue geometry are retained.
-`single_page_batches` records this diagnostic cost. Event-body cycles/maxima
-exclude call, filter and return; they are not the complete trace overhead.
-Tracing and the observer perturb timing, so these are observed runs. The trace
-allocates/prints only before/after playback. Full lanes report dropped events
-and `complete:false`; the coordinator preserves those raw records.
+release has a marker. `single_page_batches` records that diagnostic cost.
+Before and after capture, default batching remains. Bank-end wakes, admission
+and queue geometry are retained. There are no per-page kernel notifications.
+Capture still perturbs timing, even without the interrupt observer, and is not
+a clean timing qualification. All printing happens after playback stops.
+Dropped events or an incomplete window produce `complete:false`; raw records
+remain available. Unarmed lanes have `armed:false` and empty rows.
 
-Observer bank summaries and route names now allocate PSRAM only when enabled;
-interrupt-handler counters remain internal. The linked internal heap starts
-160 bytes earlier than ebf8fb4, despite the trace hooks. Wi-Fi minima and trace
-timing still require silicon measurements. Encoder kernels and queue sizes are
-unchanged.
+The linked internal heap starts 32 bytes earlier than 6c74894; the IRAM end is
+unchanged. These are linker values. Wi-Fi minima and actual capture timing still
+need silicon measurements. No board or radio was accessed during development.
 
 ## Offline checks and collection
 
-The producer test checks FEC ordering, exact FEC bytes, a cold admission path,
-real rate violations and cycle-counter wrap. The threshold formula is compared
-with every missing-page deadline over 11,766 gap/wake combinations plus limiting
-cases. Event-clock tests run the real publisher and consumer for 1,000 frames
-per mode with minimum-prefix and full-queue starts. Baselines have no steady
-dummies; injected FEC delays use fallback without queue faults. These timing
-inputs are model assumptions, not new measurements.
+The current trace checks use the real concurrent producer and fill. They
+verify dormant startup, 64 complete frames per mode, all 2,816 matching page
+publication/release pairs, dummy counts and unchanged waveform checksums.
+Recorder units check one timestamp per event, two shared-clock reads total,
+CCOUNT/epoch wrap, allocation failure and explicit overflow. Existing admission
+timing models do not establish capture timing on silicon.
 
 No-dummy CRCs remain 2061900610/1873478180/233370528. All QPSK CRCs and the
 200-frame wrap check remain unchanged. Forced-dummy dumps match every Python
@@ -180,14 +204,14 @@ release counters to the existing 4,320 slices, mapper and ISR tests.
 After the coordinator builds/flashes the revision with N0CALL:
 
 ```sh
-caffeinate -i python3 host/jitter.py notes/eight-lofty-round13 --trace
+caffeinate -i python3 host/jitter.py notes/eight-lofty-round14 --trace
 ```
 
-Trace collection runs only 15 and 17 at 26m667, 10 s each, with the interrupt
-observer enabled. `tests/test_stream_trace.py` checks 64 real threaded frames
-per mode, all 2,816 publication/release pairs, forced dummies and equal output
-checksums with tracing on/off. It also checks clock wrap, capture limits and
-allocation failure. No timing model is used in this check.
+Trace collection runs only 15 and 17 at 26m667, 10 s each, without the interrupt
+observer. `tests/test_stream_trace.py` checks 64 real threaded frames
+per mode and two-frame startup-only runs for 15/17, with zero recorder calls.
+It checks forced dummies and equal output checksums with tracing on/off.
+No timing model is used in this check.
 
 Without `--trace`, each mode gets 20 s clean and two 5 s observed runs.
 The runner never flashes or transmits; `--plan` opens no port. Clean gates

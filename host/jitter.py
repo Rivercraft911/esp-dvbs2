@@ -2,7 +2,7 @@
 """Radio-off clean gate plus bank/page wake diagnosis, about one minute per mode.
 
 No flashing or transmitter commands. Keep the Mac awake, for example:
-  caffeinate -i python3 host/jitter.py notes/eight-lofty-round12
+  caffeinate -i python3 host/jitter.py notes/eight-lofty-round14
 """
 import argparse
 import datetime as dt
@@ -16,7 +16,7 @@ CASES = ((13,'26m667'),(15,'26m667'),(17,'26m667'),(11,'33m333'))
 
 def commands(seconds, observe_seconds=5, trace=False):
     if trace:
-        return [(mc,'26m667','bank',True,f'dvbpace {mc} 26m667 10 128 0 observe trace')
+        return [(mc,'26m667','bank',False,f'dvbpace {mc} 26m667 10 128 0 trace')
                 for mc in (15,17)]
     rows = []
     for mc,rate in CASES:
@@ -75,11 +75,12 @@ def gate(r, mc):
 
 def trace_summary(r):
     t = r['stream_trace']
-    assert t['version'] == 1 and t['complete'], 'incomplete stream trace; retain raw rows'
+    assert t['version'] == 2 and t['complete'], 'incomplete stream trace; retain raw rows'
     assert t['first_frame'] == 64 and t['frame_count'] == t['frames_complete'] == 64
     producer, fill = t['lanes']
     assert [producer['core'],fill['core']] == [0,1]
     for lane in (producer,fill):
+        assert lane['armed'], 'trace did not arm'
         assert not lane['dropped'], 'stream trace overflow'
         assert all(len(e) == 8 for e in lane['rows']), 'bad trace row'
         assert all(a[0] <= b[0] for a,b in zip(lane['rows'],lane['rows'][1:])), 'trace clock reversed'
@@ -112,7 +113,8 @@ def trace_summary(r):
                 map_waits=len(waits[3]),map_wait_max_us=max(waits[3],default=0),
                 pl_waits=len(waits[5]),pl_wait_max_us=max(waits[5],default=0),
                 dummies_before_data=sum(dummies),max_dummies_before_data=max(dummies),
-                hook_body_max_cycles=[p['hook_body_max_cycles'] for p in t['lanes']])
+                anchor_span_cycles=[(p['anchor']['cycles_after']-p['anchor']['cycles_before']) & 0xffffffff
+                                    for p in t['lanes']])
 
 
 def suite(send, firmware, seconds, observe_seconds=5, trace=False):
@@ -139,12 +141,12 @@ def suite(send, firmware, seconds, observe_seconds=5, trace=False):
             if trace: row['trace'] = trace_summary(r)
             # Instrumented runs diagnose the lock; only the clean default run is
             # admitted. Keep faults in the raw records and always finish the suite.
-            if not observer: gate(r,mc)
-            row['verdict'] = 'OBSERVED' if observer else 'PASS'
+            if not (observer or trace): gate(r,mc)
+            row['verdict'] = 'CAPTURED' if trace else 'OBSERVED' if observer else 'PASS'
         except Exception as e:
             row.update(verdict='FAIL',detail=str(e))
         summary.append(row)
-        print(f"{row['verdict']}: {mc} {rate} {policy} {'observed' if observer else 'clean'}: "+
+        print(f"{row['verdict']}: {mc} {rate} {policy} {'trace' if trace else 'observed' if observer else 'clean'}: "+
               (f"bank {row['max_fill_cycles']} cycles, encoder {row['encode_cycles_mean']} cycles/frame"
                if 'max_fill_cycles' in row else row.get('detail',''))+
               (f"; data frames {row['frames_played']}, lead {row['min_lead_symbols']} symbols, {row['status']}" if 'status' in row else '')+
@@ -164,7 +166,7 @@ def main():
     p.add_argument('--seconds',type=int,default=20,choices=range(20,56),metavar='20..55')
     p.add_argument('--observe-seconds',type=int,default=5,choices=range(1,21),metavar='1..20')
     p.add_argument('--port',default='/dev/cu.usbmodem101')
-    p.add_argument('--trace',action='store_true',help='15 and 17 only, 10 seconds each, observed page trace')
+    p.add_argument('--trace',action='store_true',help='15 and 17 only, 10 seconds each, capture-only trace without interrupt observer')
     p.add_argument('--plan',action='store_true',help='print commands without opening/resetting a port')
     a = p.parse_args()
     if a.plan:

@@ -21,7 +21,7 @@ void dvbtx_dump(unsigned modcod, unsigned frames, unsigned level, unsigned decim
 // dvbpace command: the same encoder, fills and bank deadlines as dvb for `seconds`, timed against
 // the cycle counter, at 40 or 80 MS/s. Moonshot modes keep Wi-Fi NULL/RX up
 // (radio_s3_paced_wifi_rate); legacy modes leave Wi-Fi off. No DAC or TX keying.
-// trace: optional 64-frame lofty queue diagnostic, stored in PSRAM.
+// trace: optional steady 64-frame lofty capture in PSRAM; excludes observer.
 void dvbtx_pace(unsigned modcod, uint32_t seconds, unsigned level, unsigned stall_ms,
                  unsigned sps, uint32_t dac_rate, unsigned wake_policy, bool observer, bool trace);
 
