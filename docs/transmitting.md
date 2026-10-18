@@ -35,6 +35,35 @@ python3 host/board.py info --reset
 
 Flashing itself does not start a transmission. The firmware waits for a command.
 
+## Console
+
+`host/board.py` sends one command and prints the JSON results. `--save` writes sample dumps.
+
+| Command | Purpose |
+|---|---|
+| `info` | Firmware revision, clocks, memory and stored callsign |
+| `callsign [CALL\|clear]` | Read, set or clear the station ID |
+| `dvbdump MODCOD [rate] frames [peak] [decimation] [stall_ms]` | Samples over USB, radio off |
+| `dvbpace MODCOD [rate] seconds [peak] [stall_ms]` | Live encoder and bank deadlines, no playback |
+| `spiinput on\|quad\|off [ts\|gcs]` | Select [SPI payload input](spi-input.md) for the next run |
+| `spipins devkit\|xiao` | Select the SPI pin preset |
+| `wifimem MODCOD [rate]` | Radio-off Wi-Fi startup and heap check |
+| `iddump [CALL] [40\|80]` | Morse ID samples at 10 kS/s, radio off |
+| `tx MHz signal seconds [gain] [40\|80]` | Transmit a test tone |
+| `dvb MHz MODCOD [rate] seconds [gain] [peak]` | Transmit DVB-S2 |
+
+MODCOD selects modulation and code rate: QPSK 4..11, 8PSK 12..17. The
+[rate table](how-it-works.md#rates) gives the exact choices. QPSK defaults to 1 Msym/s.
+Both modulations accept `5m`, `10m`, `20m`; `26m667` and `33m333` are QPSK only.
+Dumps are little-endian int16 I/Q with full scale 512. Golden CRCs use peak 128 and N0CALL.
+
+```sh
+python3 host/board.py "dvbdump 15 20m 16 128 1" --save fast.iq
+python3 host/decode.py fast.iq --rate 80000000 --symbol-rate 20000000 \
+  --modcod 15 --stream 16 --callsign N0CALL --receiver /path/to/leandvb
+python3 host/board.py "dvbpace 11 26m667 10" --timeout 120
+```
+
 ## Station identification
 
 `callsign CALL` stores 3..23 ASCII characters in nonvolatile storage (NVS), normalizing
@@ -97,7 +126,5 @@ sample continuity and measured station ID are still to do.
 
 ## Payload input
 
-[spi-input.md](spi-input.md) describes the SPI input and its board wiring. That guide and
-the SPI implementation are maintained separately for PigeonVision's pv-capture messages.
-Its historical experiment-tool links refer to the
-[development archive](https://github.com/Rivercraft911/esp-dvbs2/tree/archive/dev-2026-10-17).
+By default every run carries a synthetic test payload with the callsign header. `spiinput on`
+takes real data over SPI for the next run instead; see [spi-input.md](spi-input.md).

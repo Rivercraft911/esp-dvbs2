@@ -1,13 +1,11 @@
-"""Check the PV message format and the ingress slot ring on the host, or board spirx records.
+"""Check the PV message format and ingress slot ring on the host.
 
     python3 tests/test_ingress.py                                   # native checks
-    python3 tests/test_ingress.py results/<date>-spirx/runs.jsonl   # pass criteria per record
 
 The native part compiles firmware/components/ingress/ingress.c with tests/ingress_sim.c, a model
 of the ESP32-S3 GDMA receive channel, and drives it with ctypes. No ESP-IDF, board or pytest.
 """
 import ctypes as ct
-import json
 import os
 import pathlib
 import random
@@ -21,7 +19,6 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 MSG, HEADER, PAYLOAD, PACKET = 1332, 12, 1316, 188
 SLOTS, SLOT_BYTES, MARGIN = 4, 1336, 2
 NOP, TS, GCS = 0, 1, 2
-FAULT_EVERY = 64
 STATS = ("msgs", "bytes", "nops", "err_short", "err_long", "err_header", "err_crc",
          "err_sync", "lost", "seq_back", "overruns", "restarts", "ready_falls", "ts_packets", "crc_chain")
 

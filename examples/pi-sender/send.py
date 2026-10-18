@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Send PV-SPI v1 from a TS file or ffmpeg stdin. No hardware imports for --vector."""
+"""Send raw PV-SPI v1 from a TS/GCS file or stdin. No hardware imports for --vector."""
 import argparse
 import json
 from pathlib import Path
@@ -9,17 +9,22 @@ import time
 import zlib
 
 
-def message(payload, seq):
-    if not payload or len(payload) > 1316 or len(payload) % 188:
-        raise ValueError("need 1..7 complete TS packets")
-    if any(payload[i] != 0x47 for i in range(0, len(payload), 188)):
-        raise ValueError("TS sync byte missing")
-    body = struct.pack("<HBBHHI", 0x5650, 1, 1, seq & 65535, len(payload), 0)
+def message(payload, seq, kind=1):
+    if kind not in (0, 1, 2) or len(payload) > 1316:
+        raise ValueError("invalid PV type or payload length")
+    if (kind == 0 and payload) or (kind != 0 and not payload):
+        raise ValueError("NOP must be empty; data must be nonempty")
+    if kind == 1:
+        if len(payload) % 188:
+            raise ValueError("need 1..7 complete TS packets")
+        if any(payload[i] != 0x47 for i in range(0, len(payload), 188)):
+            raise ValueError("TS sync byte missing")
+    body = struct.pack("<HBBHHI", 0x5650, 1, kind, seq & 65535, len(payload), 0)
     body += payload + bytes(1316-len(payload))
     return body + struct.pack("<I", zlib.crc32(body))
 
 
-def payloads(source):
+def payloads(source, kind=1):
     # Pipe reads may be short. Accumulate until a full batch or EOF.
     pending = b""
     while True:
@@ -30,17 +35,17 @@ def payloads(source):
                 continue
         elif not pending:
             return
-        message(pending, 0)  # Reject a partial packet at EOF.
+        message(pending, 0, kind)  # Reject a partial TS packet at EOF.
         yield pending
         pending = b""
         if not part:
             return
 
 
-def send(source, spi, ready, stats, *, mbps=9., timeout=2., clock=time):
+def send(source, spi, ready, stats, *, kind=1, mbps=9., timeout=2., clock=time):
     released = clock.monotonic()
-    for payload in payloads(source):
-        wire = message(payload, stats['next_seq'])
+    for payload in payloads(source, kind):
+        wire = message(payload, stats['next_seq'], kind)
         tx = list(wire)  # Prepare the transfer before sampling READY.
         delay = released + 10e-6 - clock.monotonic()
         if delay > 0:
@@ -50,7 +55,7 @@ def send(source, spi, ready, stats, *, mbps=9., timeout=2., clock=time):
         while True:
             if waited and clock.monotonic()-started >= timeout:
                 stats['ready_timeouts'] += 1
-                raise TimeoutError("READY low for two seconds")
+                raise TimeoutError(f"READY low for {timeout:g} seconds")
             if ready():
                 break
             if not waited:
@@ -68,9 +73,10 @@ def send(source, spi, ready, stats, *, mbps=9., timeout=2., clock=time):
             raise
         released = clock.monotonic()
         stats['messages'] += 1
-        stats['ts_packets'] += len(payload)//188
+        stats['ts_packets'] += len(payload)//188 if kind == 1 else 0
         stats['payload_bytes'] += len(payload)
-        stats['crc_chain'] = zlib.crc32(wire[-4:], stats['crc_chain'])
+        if kind == 1:
+            stats['crc_chain'] = zlib.crc32(wire[-4:], stats['crc_chain'])
         stats['next_seq'] = (stats['next_seq']+1) & 65535
         delay = len(payload)*8/(mbps*1e6) - (released-started)
         if delay > 0:
@@ -79,12 +85,13 @@ def send(source, spi, ready, stats, *, mbps=9., timeout=2., clock=time):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('file', nargs='?', help='TS file, or - for stdin')
+    p.add_argument('file', nargs='?', help='input file, or - for stdin')
+    p.add_argument('--kind', choices=('ts', 'gcs'), default='ts')
     p.add_argument('--vector', action='store_true')
     p.add_argument('--gpiochip', default='/dev/gpiochip0', help='RP1 chip from gpioinfo')
     p.add_argument('--ready', type=int, default=25)
     p.add_argument('--hz', type=int, default=20000000)
-    p.add_argument('--mbps', type=float, default=9., help='offered TS rate ceiling')
+    p.add_argument('--mbps', type=float, default=9., help='offered payload rate ceiling')
     a = p.parse_args()
     if a.vector:
         wire = message(bytes((0x47, 1, 0, 0x10))+bytes(range(184)), 1)
@@ -106,7 +113,7 @@ def main():
             source = sys.stdin.buffer if a.file == '-' else Path(a.file).open('rb')
             try:
                 send(source, spi, lambda: request.get_value(a.ready) == Value.ACTIVE,
-                     stats, mbps=a.mbps)
+                     stats, kind=1 if a.kind == 'ts' else 2, mbps=a.mbps)
             finally:
                 if source is not sys.stdin.buffer:
                     source.close()

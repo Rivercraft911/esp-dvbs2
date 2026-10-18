@@ -116,9 +116,45 @@ int main(void) {
     assert(stats.eof_irqs==79 && stats.isr_max && yields==79);
     ingress_spi_pv_stop(); assert(!ingress_spi_pv_armed() && freed==1);
     ingress_spi_pv_stop(); assert(freed==1);
+    // The same raw driver and PV parser also carry arbitrary GCS bytes.
+    ingress_init(&ring,(uint8_t *)buffers,&hw); ring.type=PV_GCS;
+    assert(ingress_spi_pv_start(&ring,&cfg,&stats)==0);
+    ingress_update_ready(&ring); arm(); assert(pin);
+    for(unsigned seq=0;seq<2;++seq) {
+        const size_t n=seq?1316:1;
+        for(unsigned i=0;i<n;++i) msg[12+i]=(uint8_t)(i+seq);
+        pv_seal(msg,PV_GCS,seq,n); transfer(msg,1332*8);
+        assert(ingress_read(&ring,out,1)==1 && out[0]==seq);
+        if (n>1) assert(ingress_read(&ring,out+1,n-1)==n-1);
+        assert(memcmp(out,msg+12,n)==0 && pin);
+    }
+    assert(ring.st.msgs==2 && ring.st.bytes==1317 && ring.st.ts_packets==0);
+    assert(ring.st.crc_chain==0 && ring.seq_next==2 && !ring.wrong_type);
+    // An independent master fills the available slots while the encoder works.
+    // A 5370-byte field exceeds all four 1316-byte payload slots combined: the
+    // consumer must copy/release partial fields and retain a message's tail.
+    uint8_t frame[5370];
+    unsigned seq=2, offered=0, consumed=0;
+    for (unsigned f=0;f<128;++f) {
+        size_t used=0;
+        while (used<sizeof frame) {
+            while (pin) {
+                for (unsigned i=0;i<1316;++i) msg[12+i]=(uint8_t)(offered+i);
+                pv_seal(msg,PV_GCS,seq++,1316); transfer(msg,1332*8);
+                offered+=1316;
+            }
+            const size_t n=ingress_read(&ring,frame+used,sizeof frame-used);
+            assert(n>0); used+=n;
+        }
+        for (unsigned i=0;i<sizeof frame;++i) assert(frame[i]==(uint8_t)(consumed+i));
+        consumed+=sizeof frame;
+    }
+    assert(ring.left && ring.held && ring.st.ready_falls>128);
+    assert(!ring.st.overruns && !ring.st.err_crc && !ring.st.lost && !ring.wrong_type);
+    ingress_spi_pv_stop(); assert(freed==2);
     fail_init=1; assert(ingress_spi_pv_start(&ring,&cfg,&stats)!=0);
-    ingress_spi_pv_stop(); assert(freed==1);
-    fail_init=0; fail_queue=1; assert(ingress_spi_pv_start(&ring,&cfg,&stats)!=0 && freed==2);
+    ingress_spi_pv_stop(); assert(freed==2);
+    fail_init=0; fail_queue=1; assert(ingress_spi_pv_start(&ring,&cfg,&stats)!=0 && freed==3);
     puts("PV slave: real callbacks, DMA credit, CS rearm, lengths, CRC chain, NOP, backpressure, cleanup: ok");
 }
 '''
