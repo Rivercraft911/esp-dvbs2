@@ -109,6 +109,28 @@ def main():
     plan = subprocess.check_output(['python3',str(ROOT/'host/jitter.py'),'/unused','--page-sweep','--plan'],text=True)
     assert plan.splitlines() == ['info (reset once)']+[
         f'dvbpace 17 26m667 10 128 0 pages={pages} nowifi' for pages in (46,50,54,58)]
+    plan = subprocess.check_output(['python3',str(ROOT/'host/jitter.py'),'/unused','--queue-gate','--plan'],text=True)
+    expected = [c for mc in (13,15,17) for c in (f'wifimem {mc} 26m667',f'dvbpace {mc} 26m667 20 128 0')]
+    assert plan.splitlines() == ['info (reset once)']+expected
+    queue_sent = []
+
+    def queue_send(command):
+        queue_sent.append(command)
+        if command == 'info': return [dict(firmware='abc1234',callsign='N0CALL')]
+        mc = int(command.split()[1])
+        r, = send(f'dvbpace {mc} 26m667 20 128 0 trace') # reuse complete record without injected transport timeout
+        fixture = command.startswith('dvbpace')
+        r.update(cmd='dvbpace' if fixture else 'wifimem',queue_pages=54,
+                 input_memory='psram' if fixture else 'none',reference_psram_bytes=7000 if fixture else 0,
+                 dummy_steady=2 if mc == 15 and fixture else 0,max_fill_cycles=40000,
+                 queue_sizing=dict(automatic=True,ready=True,target_pages=54,floor_bytes=20000,
+                                   guard_bytes=2048,free_before=32000,free_after=23520,min_before=32000))
+        return [r]
+
+    summary = check.queue_suite(queue_send,'abc1234')
+    assert queue_sent == ['info']+expected
+    assert [r['verdict'] for r in summary] == ['SETUP','PASS','SETUP','FAIL','SETUP','PASS']
+    assert all(r['queue_pages'] == 54 and r['queue_sizing']['free_after'] >= 22048 for r in summary)
     print('jitter coordinator: clean gate, same-bank notify times, keeps going after timing/transport faults: ok')
 
 

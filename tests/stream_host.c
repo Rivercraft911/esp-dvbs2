@@ -274,7 +274,7 @@ esp_err_t radio_s3_wifi_probe(radio_s3_stats_t *stats)
     assert(!enc.packed || dvb.samples); // the heap probe must own the playback cache
     memset(stats, 0, sizeof *stats);
     ++wifi_probes;
-    return ESP_OK;
+    return radio_s3_stream_ready();
 }
 
 int main(int argc, char **argv)
@@ -418,7 +418,8 @@ int main(int argc, char **argv)
             } else {
                 assert(!enc.input_borrowed);
                 for (unsigned i = 0; i < 64; ++i)
-                    if (native_blocks[i].p == enc.input) assert(native_blocks[i].caps & MALLOC_CAP_INTERNAL);
+                    if (native_blocks[i].p == enc.input)
+                        assert(native_blocks[i].caps & (dvb.lofty ? MALLOC_CAP_SPIRAM : MALLOC_CAP_INTERNAL));
             }
             x = SEED;
             for (size_t i = 0; i < bytes; ++i) {

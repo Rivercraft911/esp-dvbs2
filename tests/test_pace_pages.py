@@ -63,6 +63,23 @@ int main(void) {
     assert len(pace) == 9 and all(r['status'] == 'ESP_OK' for r in pace)
     assert all(not r['paced_wifi_up'] and 'wifi_min_free' not in r for r in pace[:7])
     assert all(r['paced_wifi_up'] for r in pace[7:])
+    budget = [r for r in rows if r.get('test') == 'queue_budget']
+    assert len(budget) == 18
+    for mc in (13,15,17):
+        for setup in ('dvb','dvbpace'):
+            pair = [r for r in budget[:12] if r['modcod'] == mc and r['setup'] == setup]
+            assert [r['queue_sizing']['automatic'] for r in pair] == [False,True]
+            assert all(r['queue_pages'] == 54 for r in pair)
+            assert pair[0]['crc'] == pair[1]['crc']
+            auto = pair[1]
+            assert auto['queue_sizing']['free_before'] == 32000
+            assert auto['queue_sizing']['free_after'] == 32000-16*528-32
+            if setup == 'dvbpace':
+                assert auto['input_memory'] == 'psram' and auto['reference_psram_bytes'] > 5000
+            else: assert auto['input_memory'] == 'none' and not auto['reference_psram_bytes']
+    assert [r['queue_pages'] for r in budget[-5:]] == [46,50,0,0,0]
+    assert all(not r['queue_sizing']['ready'] for r in budget[-3:])
+    print('automatic queues: 13/15/17 pace and keyed setup 54 pages; low heap 46, fragmentation 50; failures stop before publication')
     print(run.stdout.splitlines()[-1])
 
 

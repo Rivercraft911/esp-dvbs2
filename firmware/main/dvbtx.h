@@ -24,7 +24,8 @@ void dvbtx_dump(unsigned modcod, unsigned frames, unsigned level, unsigned decim
 // the cycle counter, at 40 or 80 MS/s. Moonshot modes keep Wi-Fi NULL/RX up
 // (radio_s3_paced_wifi_rate); legacy modes leave Wi-Fi off. No DAC or TX keying.
 // trace: optional steady 64-frame lofty capture in PSRAM; excludes observer.
-// pages: lofty queue override (44..64), or zero for the mode's default.
+// pages: lofty queue override (44..64); zero sizes after Wi-Fi start (cap 54).
+// nowifi retains the previous 54/50/46 default without automatic sizing.
 // nowifi: use the radio-off timer without starting Wi-Fi; excludes observer.
 void dvbtx_pace(unsigned modcod, uint32_t seconds, unsigned level, unsigned stall_ms,
                  unsigned sps, uint32_t dac_rate, unsigned wake_policy, bool observer, bool trace,

@@ -52,13 +52,18 @@ typedef esp_err_t (*radio_s3_fill_fn)(uint32_t *dst, uint64_t first_sample,
 
 /* Internal heap around Wi-Fi start-up, bytes: free MALLOC_CAP_INTERNAL and the largest free
  * 8-bit internal block. min_free is the heap's low-water mark (since the command started its
- * local monitor, otherwise since boot), read once Wi-Fi is up. */
+ * local monitor, otherwise since boot), refreshed after playback and cleanup. */
 typedef struct {
     uint32_t free_before, largest_before;   /* before esp_wifi_init */
     uint32_t free_init, largest_init;       /* after esp_wifi_init */
     uint32_t free_up, largest_up;           /* after start, power save off, promiscuous, channel */
     uint32_t min_free;
 } radio_s3_wifi_heap_t;
+
+/* Optional stream-owned allocation/prefill after Wi-Fi start, before timing or
+ * keyed register access. Also called by the Wi-Fi-only memory probe. A failure
+ * aborts before playback/TX setup. The default implementation returns ESP_OK. */
+esp_err_t radio_s3_stream_ready(void);
 
 typedef struct {
     uint64_t elapsed_samples; /* Nominal timeline at the run's rate, not an RF measurement. */

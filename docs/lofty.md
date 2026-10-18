@@ -1,6 +1,6 @@
 # 8PSK at 80/3 Msym/s
 
-The 54/50/46-page queues stream partially queued PLFRAMEs using a measured
+Queues of up to 54 pages stream partially queued PLFRAMEs using a measured
 production bound. If admission fails, the fill selects standard dummy PLFRAMEs.
 It never waits for the producer. QPSK's kernels and queue policy are unchanged.
 This candidate needs the coordinator's hardware qualification; no board or radio
@@ -87,10 +87,25 @@ the reserve does not establish an unconditional lead floor.
 
 ## Queue-depth experiment
 
+The aaeb50e sweep on 17 (radio off, Wi-Fi off, 10 s per count,
+`notes/eight-lofty-round16/`) measured:
+
+| Pages | Data frames | Steady dummies | Worst fill, cycles |
+| --- | --- | --- | --- |
+| 46 | 9,374 | 17,602 | 39,018 |
+| 50 | 11,238 | 5,180 | 39,007 |
+| 54 | 12,015 | 0 | 38,551 |
+| 58 | 12,015 | 0 | 38,509 |
+
+This establishes 54 pages for that measured 17 case. It does not yet qualify
+Wi-Fi-up or keyed playback. The caps for 13 and 15 are also 54; 13 previously
+ran with that depth, while 15's new depth needs the gate below.
+
 `dvbpace 17 26m667 10 128 0 pages=58 nowifi` selects an explicit internal
 queue and the existing radio-off timer without starting Wi-Fi. `pages=44..64`
-is accepted only for 8PSK 26m667. Omitting it retains 54/50/46 pages for
-13/15/17. Omitting `nowifi` retains Wi-Fi-up pacing. Neither flag changes
+is accepted only for 8PSK 26m667. With `nowifi`, omitting it retains 54/50/46
+pages for 13/15/17. Omitting `nowifi` retains Wi-Fi-up pacing, now with automatic
+queue sizing when no explicit `pages` override is given. Neither flag changes
 admission, bank-end wakes, producer work or the renderer. `nowifi` excludes
 the interrupt observer, whose hooks belong to the Wi-Fi-up worker. No trace
 or observer is enabled by the sweep.
@@ -115,6 +130,65 @@ without late fills or queue faults, and reports fill maxima without applying
 the separate 40,137-cycle qualification ceiling. Compare dummy counts only
 among complete runs. Falling counts support a queue-depth/burst interaction;
 unchanged counts would direct the next measurement toward admission/wakes.
+
+## Internal RAM and automatic queues
+
+The repeated pace reference keeps its store prefix but moves its heap tail
+to mandatory PSRAM. The encoder still copies the same bytes, in 1,316-byte
+chunks, into its existing internal payload scratch. Keyed runs have no
+reference allocation and retain the original contiguous xorshift stream.
+The input and encoder CRC checks cover both layouts. PSRAM-copy timing and
+its shared-cache effects still require silicon measurement.
+
+The new reference tails are 5,066/6,416/6,960 B for 13/15/17, with a 304 B
+prefix in the store. The queue-budget fields share that store's unused tail;
+they add no static internal allocation. All 38 resident queue pages, the
+8,144-byte encoder workspace and reference prefix remain shared with the
+existing 64 KiB store. The 36,864-byte renderer table and 2,560-byte timed
+overlap cache stay internal because the fill uses them. Dummy samples and
+split BCH pair tables already use PSRAM. Moving these hot fill tables or
+encoder caches is not needed to reach the 54-page cap.
+
+Wi-Fi start-up now calls `radio_s3_stream_ready` once before any timed fill or
+TX setup. The encoder has its task, stack, workspace and input driver ready,
+then sleeps on a notification without publishing. The hook allocates the
+final queue and wakes the producer, and waits with `vTaskDelay(1)` until it
+is full. No live queue is resized or copied. The Wi-Fi-only `wifimem` probe
+uses this same keyed-layout hook and returns before RF setup. Explicit-page
+diagnostics, Wi-Fi-off pace, raw dumps and QPSK keep their existing setup.
+
+For actual post-Wi-Fi free 8-bit internal heap F, page size S=528 B and
+38 resident pages, the requested count is:
+
+```
+P = min(54, 38 + floor((F - 20000 - 2048 - 64) / 528))  [pages]
+```
+
+The 20,000 B floor is the user's gate. The 2,048 B guard exceeds the 1,816 B
+free-up versus minimum dip in the round-12 first 13 run. The 64 B allowance
+covers aligned allocator overhead; actual free heap is checked again after
+allocation. Fragmentation can lower P, one page at a time. Fewer than 44
+pages, an already violated startup minimum, or insufficient remaining reserve
+returns an error before playback. Both pace and keyed setup cap at 54 pages
+for each of 13/15/17. Actual selected counts and the floor still need the board.
+
+`queue_sizing` reports automatic/ready, target, floor/guard, free before and
+after allocation, and the pre-allocation minimum. `reference_psram_bytes`
+and `reference_store_bytes` report the fixture footprint. `wifi_free_up`
+retains its meaning before the queue hook; `wifi_min_free` now refreshes after
+playback and cleanup, including the final queue allocation. Historical records
+only sampled that field at Wi-Fi startup.
+
+```sh
+caffeinate -i python3 host/jitter.py notes/eight-lofty-round17 --queue-gate
+```
+
+This collects keyed-layout `wifimem` and 20-second clean Wi-Fi-up `dvbpace`
+records for 13/15/17, without TX, trace or observer. It reports pages for both
+setups, retains faults and continues through all modes. The gate requires
+54 pages, ESP_OK, full playback, no late banks or queue faults, fill at most
+40,137 cycles, zero steady dummies and Wi-Fi minimum at least 20,000 B.
+Startup dummies are reported and allowed. No keyed playback is performed.
 
 ## Fill and dummy waveform
 
@@ -287,7 +361,7 @@ or recorder calls and the same stream allocation footprint.
 It checks forced dummies and equal output checksums with tracing on/off.
 No timing model is used in this check.
 
-Without `--trace` or `--page-sweep`, each mode gets 20 s clean and two 5 s observed runs.
+Without `--trace`, `--page-sweep` or `--queue-gate`, each mode gets 20 s clean and two 5 s observed runs.
 The runner never flashes or transmits; `--plan` opens no port. Clean gates
 remain ESP_OK, complete playback, zero late fills/switches and queue faults,
 fill <=40,137 cycles, Wi-Fi minimum >=20,000 B and stack >=512 B. Startup dummies

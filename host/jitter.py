@@ -14,7 +14,10 @@ import sys
 CASES = ((13,'26m667'),(15,'26m667'),(17,'26m667'),(11,'33m333'))
 
 
-def commands(seconds, observe_seconds=5, trace=False, page_sweep=False):
+def commands(seconds, observe_seconds=5, trace=False, page_sweep=False, queue_gate=False):
+    if queue_gate:
+        return [(mc,'26m667','bank',False,command) for mc in (13,15,17)
+                for command in (f'wifimem {mc} 26m667',f'dvbpace {mc} 26m667 20 128 0')]
     if page_sweep:
         return [(17,'26m667','bank',False,f'dvbpace 17 26m667 10 128 0 pages={pages} nowifi')
                 for pages in (46,50,54,58)]
@@ -185,6 +188,46 @@ def suite(send, firmware, seconds, observe_seconds=5, trace=False, page_sweep=Fa
     return summary
 
 
+def queue_suite(send, firmware):
+    """Unkeyed keyed-layout probe, then the clean 20-second Wi-Fi-up gate."""
+    info, = send('info')
+    assert info['firmware'] == firmware and info['callsign'] == 'N0CALL', 'wrong firmware/callsign'
+    summary = []
+    for mc,rate,policy,observer,command in commands(20,queue_gate=True):
+        row = dict(command=command,modcod=mc,setup='keyed' if command.startswith('wifimem') else 'pace')
+        try:
+            r, = [r for r in send(command) if r.get('cmd') in ('wifimem','dvbpace')]
+            row.update(status=r['status'],queue_pages=r['queue_pages'],wifi_min_free=r['wifi_min_free'],
+                       queue_sizing=r['queue_sizing'],reference_psram_bytes=r['reference_psram_bytes'])
+            if row['setup'] == 'pace':
+                row.update({k:r[k] for k in ('frames_played','dummy_startup','dummy_steady','dummy_alignment',
+                            'max_fill_cycles','min_lead_symbols','encode_cycles_mean')})
+                timing([r],mc,policy,observer)
+                gate(r,mc)
+                assert r['dummy_steady'] == 0, f"steady dummies {r['dummy_steady']} (target 0)"
+                assert r['input_memory'] == 'psram' and r['reference_psram_bytes'] > 0, 'wrong pace reference placement'
+            else:
+                assert r['cmd'] == 'wifimem' and r['modcod'] == mc, 'wrong keyed-layout probe'
+                assert r['status'] == 'ESP_OK', r['status']
+                assert not r['reference_psram_bytes'] and r['input_memory'] == 'none', 'probe has pace fixture'
+            q = r['queue_sizing']
+            assert q['automatic'] and q['ready'] and r['queue_pages'] == q['target_pages'] == 54, 'target queue not available'
+            assert q['floor_bytes'] == 20000 and q['min_before'] >= 20000, 'startup heap below floor'
+            assert q['guard_bytes'] == 2048, 'wrong Wi-Fi reserve'
+            assert q['free_after'] >= q['floor_bytes']+q['guard_bytes'], 'queue consumed heap reserve'
+            assert r['wifi_min_free'] >= 20000, 'Wi-Fi heap below floor'
+            row['verdict'] = 'SETUP' if row['setup'] == 'keyed' else 'PASS'
+        except Exception as e:
+            row.update(verdict='FAIL',detail=str(e))
+        summary.append(row)
+        print(f"{row['verdict']}: {mc} {row['setup']}: "+
+              (f"{row['queue_pages']} pages, Wi-Fi minimum {row['wifi_min_free']} B" if 'queue_pages' in row else '')+
+              (f"; {row['frames_played']} data, {row['dummy_steady']} steady dummies, bank {row['max_fill_cycles']} cycles"
+               if 'frames_played' in row else '')+
+              (f"; {row['detail']}" if 'detail' in row else ''),flush=True)
+    return summary
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('output',type=pathlib.Path)
@@ -194,11 +237,12 @@ def main():
     mode = p.add_mutually_exclusive_group()
     mode.add_argument('--trace',action='store_true',help='15 and 17 only, 10 seconds each, capture-only trace without interrupt observer')
     mode.add_argument('--page-sweep',action='store_true',help='17 only, Wi-Fi off, 46/50/54/58 pages, 10 seconds each, no trace or observer')
+    mode.add_argument('--queue-gate',action='store_true',help='13/15/17 keyed-layout memory probes and clean 20-second Wi-Fi-up gates; no TX, observer or trace')
     p.add_argument('--plan',action='store_true',help='print commands without opening/resetting a port')
     a = p.parse_args()
     if a.plan:
         print('info (reset once)')
-        for *_,command in commands(a.seconds,a.observe_seconds,a.trace,a.page_sweep): print(command)
+        for *_,command in commands(a.seconds,a.observe_seconds,a.trace,a.page_sweep,a.queue_gate): print(command)
         return 0
     import board
     firmware = subprocess.check_output(['git','rev-parse','--short','HEAD'],text=True).strip()
@@ -220,7 +264,7 @@ def main():
         return rows
 
     with board.reserve_port(port,reset=True):
-        summary = suite(send,firmware,a.seconds,a.observe_seconds,a.trace,a.page_sweep)
+        summary = queue_suite(send,firmware) if a.queue_gate else suite(send,firmware,a.seconds,a.observe_seconds,a.trace,a.page_sweep)
     (a.output/'summary.json').write_text(json.dumps(summary,indent=2)+'\n')
     print('Records:',a.output)
     return int(any(r['verdict'] == 'FAIL' for r in summary))

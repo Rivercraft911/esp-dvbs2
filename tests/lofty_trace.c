@@ -45,7 +45,8 @@ static uint32_t capture_trace(unsigned mc, bool trace)
     callsign = "N0CALL";
     event_calls = trace_allocations = 0;
     allocation_count = 0;
-    assert(start_encoder_traced("dvbpace",mc,128,0,3,80000000,trace,0));
+    assert(start_encoder_traced("dvbpace",mc,128,0,3,80000000,trace,0,true));
+    assert(radio_s3_stream_ready() == ESP_OK);
     assert(!__atomic_load_n(&event_calls,__ATOMIC_RELAXED) && !dvb.trace_lane[0].next && !dvb.trace_lane[1].next);
     assert(!trace_allocations && !dvb.trace);
     const uint32_t layout = startup_layout();

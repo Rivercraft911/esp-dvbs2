@@ -137,6 +137,10 @@ void IRAM_ATTR __attribute__((weak)) radio_s3_profile_bank_begin(void) {}
 void IRAM_ATTR __attribute__((weak)) radio_s3_profile_bank_end(uint32_t cycles, unsigned bank, uint64_t first)
 { (void)cycles; (void)bank; (void)first; }
 
+// Final stream allocation/prefill after Wi-Fi and worker allocations exist.
+// Runs before either paced deadlines or the first keyed register access.
+esp_err_t __attribute__((weak)) radio_s3_stream_ready(void) { return ESP_OK; }
+
 typedef struct {
     uint32_t freq_mhz;
     uint32_t seconds;
@@ -485,6 +489,7 @@ static void worker(void *arg)
     }
     heap_now(&heap->free_up, &heap->largest_up);
     heap->min_free = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+    if (error == ESP_OK) error = radio_s3_stream_ready();
     if (error == ESP_OK && run->wifi_pace) {
         error = watch_begin(run, &watch_idle, &watch_worker);
         if (error == ESP_OK) {
@@ -555,6 +560,7 @@ cleanup:
         (void)esp_pm_lock_delete(cpu_lock);
     }
 #endif
+    if (initialized) run->stats->wifi.min_free = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
     run->error = error;
     xSemaphoreGive(run->done);
     vTaskDelete(NULL);
