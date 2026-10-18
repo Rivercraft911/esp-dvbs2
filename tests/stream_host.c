@@ -66,6 +66,7 @@ void spi_input_buffers(uint8_t *tail, size_t n, uint8_t *ws, size_t m) {
     if (ws) assert(ws >= (uint8_t *)enc.ws+DVBS2_FAST_WORKSPACE_USED+dvb.win_bytes && ws+m <= (uint8_t *)(enc.ws+1));
 }
 unsigned spi_input_type(void) { return native_input; }
+const char *spi_input_source(void) { return "spi"; }
 esp_err_t spi_input_start(void) {
     if (native_input) {
         input_sim = sim_new(); sim_ring(input_sim)->type = native_input;

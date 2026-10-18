@@ -116,6 +116,10 @@ static inline int spi_device_polling_end(spi_device_handle_t d,unsigned ticks) {
 '''
 APP = r'''
 #include "spi_input.c"
+esp_err_t usb_input_start(unsigned type) { (void)type; return ESP_OK; }
+size_t usb_input_read(uint8_t *dst,size_t n) { (void)dst; (void)n; return 0; }
+void usb_input_stop(void) {}
+void usb_input_print(void) {}
 int spi_device_polling_start(spi_device_handle_t d,spi_transaction_t *t,unsigned ticks) {
     (void)d;(void)ticks;
     assert(t->flags==(raw_wire?0:SPI_TRANS_MODE_QIO) && t->cmd==(raw_wire?0:0x23) && t->addr==0 && t->length==1332*8);
@@ -201,6 +205,14 @@ int main(void) {
     assert(pins.sclk==7 && pins.cs==1 && pins.d0==2 && pins.ready==8);
     spi_input_command("spipins","devkit");
     assert(pins.sclk==12 && pins.cs==10 && pins.d0==11 && pins.ready==8);
+    spi_input_command("spiinput","usb gcs");
+    assert(usb_mode && input_type==PV_GCS && !loop);
+    spi_input_command("spiinput","usb ts extra");
+    assert(usb_mode && input_type==PV_GCS);
+    spi_input_command("spiinput","usb");
+    assert(usb_mode && input_type==PV_TS);
+    spi_input_command("spiinput","on gcs");
+    assert(!usb_mode && input_type==PV_GCS);
     spi_input_command("spiinput","off");
     assert(!pv_mode && !loop && !input_type);
     puts("SPI sender: real scheduler, timer sleeps, 22 Mb/s pacing, fresh READY, CRC and cleanup: ok");

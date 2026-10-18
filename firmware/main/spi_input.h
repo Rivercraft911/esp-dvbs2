@@ -3,6 +3,7 @@
 #include "esp_err.h"
 
 // Preferences apply to the next encoder run. No peripheral is active between commands.
+const char *spi_input_source(void); // "spi" or "usb" for external input
 unsigned spi_input_type(void); // 0: original synthetic source; PV_TS or PV_GCS: external input
 void spi_input_buffers(uint8_t *tail, size_t tail_bytes, uint8_t *workspace, size_t workspace_bytes);
 esp_err_t spi_input_start(void); // encoder core owns SPI2 and its DMA interrupt

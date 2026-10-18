@@ -934,7 +934,7 @@ static void stop_encoder(void)
            dvb.moon ? "moon-queue" : "pie");
     printf(",\"payload_source\":\"%s\",\"input_frames\":%u,\"input_memory\":\"%s\",\"input_prepare_cycles\":%" PRIu32
            ",\"encoder_priority\":%u,\"encoder_pie\":%u,\"encode_frame_work_cycles_mean\":%" PRIu64 ",\"encode_frame_work_cycles_live_max\":%" PRIu32,
-           enc.input ? "internal-frame" : spi_input_type() ? "spi" : "xorshift32",enc.input ? 1 : 0,
+           enc.input ? "internal-frame" : spi_input_type() ? spi_input_source() : "xorshift32",enc.input ? 1 : 0,
            enc.input ? "internal" : "none",enc.input_prepare_cycles,dvb.moon ? MOON_PRIORITY : ENCODER_PRIORITY,dvbs2_fast_pie(enc.fast),
            enc.frames ? enc.frame_work_cycles/enc.frames : 0,enc.frame_work_live_max);
     if (dvb.moon) printf(",\"queue_wait_cycles\":%" PRIu64 ",\"queue_wait_max_cycles\":%u,\"queue_wait_live_max_cycles\":%u,\"prepare_max_ticks\":%u,\"queue_page_gap_max_cycles\":%u,\"queue_page_samples\":%u,\"queue_wake_pages\":%u",

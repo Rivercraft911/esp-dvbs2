@@ -1,5 +1,6 @@
 // General input and radio-off diagnostics. The second S3 runs this same firmware's spisend.
 #include "spi_input.h"
+#include "usb_input.h"
 #include "ingress_spi.h"
 #include "ingress_pattern.h"
 #include <inttypes.h>
@@ -24,7 +25,7 @@ static ingress_spi_config pins = {.sclk=7, .cs=1, .d0=2, .d1=4, .d2=5, .d3=6, .r
 static ingress_spi_config pins = {.sclk=12, .cs=10, .d0=11, .d1=13, .d2=14, .d3=9, .ready=8};
 #endif
 static unsigned input_type;
-static bool loop, replay, pv_mode;
+static bool loop, replay, pv_mode, usb_mode;
 static uint8_t *borrowed[INGRESS_SLOTS];
 static unsigned borrowed_count, saved_borrowed, sender_core;
 static double target;
@@ -55,6 +56,7 @@ static struct {
 } tx;
 
 unsigned spi_input_type(void) { return input_type; }
+const char *spi_input_source(void) { return usb_mode ? "usb" : "spi"; }
 
 static void tx_free(void)
 {
@@ -231,6 +233,7 @@ void spi_input_buffers(uint8_t *tail, size_t tail_bytes, uint8_t *workspace, siz
 
 esp_err_t spi_input_start(void)
 {
+    if (usb_mode) { borrowed_count=0; return usb_input_start(input_type); }
     memset(&saved, 0, sizeof saved); memset(&hw, 0, sizeof hw);
     saved_borrowed=borrowed_count;
     read_bytes=read_calls=read_max=wrong_type=0; read_cycles=copy_cycles=copy_max=0; next_seq=0;
@@ -253,6 +256,7 @@ esp_err_t spi_input_start(void)
 
 size_t spi_input_read(uint8_t *dst, size_t n)
 {
+    if (usb_mode) return usb_input_read(dst,n);
     const uint32_t before=esp_cpu_get_cycle_count();
     const size_t got=ingress_read(rx, dst, n);
     const uint32_t cycles=esp_cpu_get_cycle_count()-before;
@@ -263,6 +267,7 @@ size_t spi_input_read(uint8_t *dst, size_t n)
 
 void spi_input_stop(void)
 {
+    if (usb_mode) { usb_input_stop(); return; }
     if (!rx) { borrowed_count=0; return; }
     if (loop) tx_stop();
     // Stop DMA/interrupts before taking the final counter snapshot.
@@ -277,6 +282,7 @@ void spi_input_print(void)
 {
     printf(",\"input\":\"%s\"", input_type==PV_TS ? "ts" : input_type==PV_GCS ? "gcs" : "synthetic");
     if (!input_type) return;
+    if (usb_mode) { usb_input_print(); return; }
     printf(",\"input_wire\":\"%s\"", pv_mode?"raw":"quad");
     printf(",\"input_fault\":%u,\"input_target\":%.3f,\"input_replay\":%s,\"input_borrowed_slots\":%u", fault, target, replay?"true":"false", saved_borrowed);
     printf(",\"input_loop\":%s,\"input_bytes\":%"PRIu32",\"input_calls\":%"PRIu32
@@ -385,6 +391,15 @@ void spi_input_command(const char *cmd, const char *args)
                cfg.sclk,cfg.cs,cfg.d0,cfg.d1,cfg.d2,cfg.d3,cfg.ready); return;
     }
     if (!strcmp(cmd,"spiinput")) {
+        const int tokens=sscanf(args,"%15s %15s %c",a,b,&extra);
+        if (tokens>=1 && !strcmp(a,"usb")) {
+            if (tokens>2 || (tokens==2 && strcmp(b,"ts") && strcmp(b,"gcs"))) goto usage;
+            input_type=tokens==2 && !strcmp(b,"gcs") ? PV_GCS : PV_TS;
+            usb_mode=true; loop=replay=pv_mode=false; target=0; fault=0;
+            printf("@{\"cmd\":\"spiinput\",\"input\":\"%s\",\"wire\":\"usb\"}\n", input_type==PV_TS?"ts":"gcs");
+            return;
+        }
+        b[0]=0;
         double mbps=0; unsigned f=0;
         unsigned type=0; bool raw=false; const char *rest=NULL; int used=0;
         if (sscanf(args,"%15s %c",a,&extra)==1 && !strcmp(a,"off")) rest="";
@@ -393,6 +408,7 @@ void spi_input_command(const char *cmd, const char *args)
         if (rest[used] || n>3 || (n>0 && strcmp(b,"loop") && strcmp(b,"replay")) ||
             !isfinite(mbps) || mbps<0 || mbps>140 || f>6) goto usage;
         if (!strcmp(b,"replay") && (n!=1 || raw)) goto usage;
+        usb_mode=false;
         input_type=type; loop=n>0 && !strcmp(b,"loop"); replay=n>0 && !strcmp(b,"replay"); target=mbps; fault=f;
         pv_mode=raw;
         printf("@{\"cmd\":\"spiinput\",\"input\":\"%s\",\"wire\":\"%s\",\"loop\":%s,\"replay\":%s,\"mbps\":%.3f,\"fault\":%u}\n",
@@ -423,18 +439,18 @@ void spi_input_command(const char *cmd, const char *args)
         int n=sscanf(rest,"%15s %n%lf %n%u %n%c",b,&used,&mbps,&used,&f,&used,&extra);
         if (rest[used] || n>3 || (n>0 && strcmp(b,"loop")) ||
             !isfinite(mbps) || mbps<0 || mbps>140 || f>6) goto usage;
-        const unsigned old=input_type, oldfault=fault; const bool oldloop=loop, oldreplay=replay, oldpv=pv_mode; const double oldtarget=target;
+        const unsigned old=input_type, oldfault=fault; const bool oldloop=loop, oldreplay=replay, oldpv=pv_mode, oldusb=usb_mode; const double oldtarget=target;
         input_type=type; loop=n>0; replay=false; target=mbps; fault=f;
-        pv_mode=raw;
+        pv_mode=raw; usb_mode=false;
         sender_core=1; // standalone verifier has no timed fill worker on core 1
         const esp_err_t err=spi_input_start();
         if (err==ESP_OK) probe(ms);
         else printf("@{\"cmd\":\"spirx\",\"error\":\"setup failed\",\"status\":\"%s\"}\n",esp_err_to_name(err));
         sender_core=0;
-        input_type=old; loop=oldloop; replay=oldreplay; pv_mode=oldpv; target=oldtarget; fault=oldfault; return;
+        input_type=old; loop=oldloop; replay=oldreplay; pv_mode=oldpv; usb_mode=oldusb; target=oldtarget; fault=oldfault; return;
     }
 usage:
     printf("@{\"cmd\":\"%s\",\"error\":\"usage: spipins devkit|xiao|CLK CS D0 D1 D2 D3 READY; "
-           "spiinput off|on|quad [ts|gcs] [loop [Mb/s [fault 0..6]]]; spisend ms on|quad [ts|gcs] [MHz [Mb/s [fault]]]; "
+           "spiinput usb [ts|gcs] or off|on|quad [ts|gcs] [loop [Mb/s [fault 0..6]]]; spisend ms on|quad [ts|gcs] [MHz [Mb/s [fault]]]; "
            "spirx ms on|quad [ts|gcs] [loop [Mb/s [fault]]]\"}\n",cmd);
 }
