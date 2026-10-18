@@ -53,6 +53,7 @@ static int checked_task(void (*fn)(void *), const char *name, unsigned stack, vo
 #ifdef QUEUE_TEST_PAGES
         assert(QUEUE_TEST_PAGES <= dvb.queue_pages);
         dvb.queue_pages = QUEUE_TEST_PAGES;
+        lofty_mux.resident_limit = dvb.queue_pages < LOFTY_STORED ? dvb.queue_pages : LOFTY_STORED;
 #endif
     }
     if (dvb.moon) dvb.produced = dvb.consumed = UINT32_MAX-15;

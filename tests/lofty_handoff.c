@@ -9,19 +9,23 @@
 #undef lofty_render_pages
 void lofty_samples(uint32_t *, const uint32_t *, unsigned, size_t, const uint32_t *);
 void lofty_render_pages(uint32_t *, const uint32_t *, unsigned, const uint32_t *, uint32_t *);
-static unsigned bulk, singles, bank_switches;
+static unsigned bulk, singles, bank_switches, dummy_samples, page_calls;
 static bool dummy_source;
 
 void checked_pages(uint32_t *dst, const uint32_t *src, unsigned n, const uint32_t *table, uint32_t *consumed)
 {
     assert(!((uintptr_t)dst&15));
     assert(!dvb.page_wake || n == 1);
+    unsigned limit = dvb.get_index < LOFTY_STORED && dvb.queue_pages > LOFTY_STORED ? LOFTY_STORED : dvb.queue_pages;
+    assert(src == lofty_page_at(dvb.get_index)->words && n <= limit-dvb.get_index);
+    ++page_calls;
     bulk += n*LOFTY_BLOCKS;
     lofty_render_pages(dst,src,n,table,consumed);
 }
 
 void checked_samples(uint32_t *dst, const uint32_t *src, unsigned skip, size_t n, const uint32_t *table)
 {
+    if (lofty_mux.filler) dummy_samples += n;
     if (dummy_source != lofty_mux.filler) {
         dummy_source = lofty_mux.filler;
         bank_switches |= dummy_source ? 1 : 2;
@@ -55,14 +59,14 @@ int main(int argc, char **argv)
     assert(id.length == 417600000);
     FILE *out = fopen(argv[2],"wb"); assert(out);
     const bool forced = getenv("FORCE_DUMMY_FRAME") != NULL;
-    const uint64_t start = 417597812, stop = id.length+(forced ? 6 : 2)*22194*3+(forced ? 2*9990 : 0);
+    const uint64_t start = 417597812, stop = id.length+6*22194*3+(forced ? 2*9990 : 0);
     unsigned transitions = 0, all_switches = 0;
     unsigned old_frames = 0, old_dummies = 0;
     for (unsigned bank=0; ; ++bank) {
         uint64_t first = start+(uint64_t)bank*15740;
         size_t offset = first%RADIO_S3_BANK_WORDS, head = RADIO_S3_BANK_WORDS-offset;
         uint32_t *dst = banks[bank&1];
-        bulk = singles = bank_switches = 0;
+        bulk = singles = bank_switches = dummy_samples = page_calls = 0;
         assert(!station_id_fill(dst+offset,first,head,&id));
         assert(!station_id_fill(dst,first+head,offset,&id));
         if (!bank) {
@@ -71,6 +75,10 @@ int main(int argc, char **argv)
             assert(!lofty_mux.startup && !lofty_mux.steady);
         }
         unsigned dummies = lofty_mux.startup+lofty_mux.steady;
+        if (first == 417739472)
+            printf("@{\"test\":\"round17_bank\",\"first\":%llu,\"dummy_samples\":%u,\"bulk\":%u,"
+                   "\"singles\":%u,\"page_calls\":%u,\"data_after\":%u,\"dummy_after\":%u}\n",
+                   (unsigned long long)first,dummy_samples,bulk,singles,page_calls,(unsigned)lofty_mux.frames,dummies);
         if (lofty_mux.frames != old_frames || dummies != old_dummies || bank_switches) {
             printf("@{\"test\":\"transition\",\"first\":%llu,\"relative\":%llu,"
                    "\"data_before\":%u,\"data_after\":%u,\"dummy_before\":%u,\"dummy_after\":%u,"
@@ -94,7 +102,7 @@ int main(int argc, char **argv)
     fclose(out);
     assert(!dvb.queue_empty && !dvb.ring.underruns);
     assert(!forced || (lofty_mux.startup == 2 && !lofty_mux.steady && transitions >= 6 && all_switches == 3));
-    stop_encoder(); printf("}\n");
+    printf("@{\"test\":\"handoff_record\""); stop_encoder(); printf("}\n");
     assert(!live_allocations);
     free(banks);
     return 0;

@@ -2,7 +2,7 @@
 #include "native.h"
 #include <stdbool.h>
 static bool budget_active;
-static size_t budget_base, budget_min, budget_largest;
+static size_t budget_base, budget_min;
 static size_t internal_used(void)
 {
     size_t n = 0;
@@ -25,20 +25,29 @@ static size_t budget_minimum(unsigned caps)
     budget_free(caps);
     return budget_active && (caps & MALLOC_CAP_INTERNAL) ? budget_min : 65536;
 }
-static void *budget_alloc(size_t align, size_t n, unsigned caps)
-{
-    if (budget_active && (caps & MALLOC_CAP_INTERNAL) &&
-        (n > budget_largest || n+32 > budget_free(caps))) return NULL;
-    return heap_caps_aligned_alloc(align,n,caps);
-}
 #define heap_caps_get_free_size budget_free
 #undef heap_caps_get_minimum_free_size
 #define heap_caps_get_minimum_free_size budget_minimum
-#define heap_caps_aligned_alloc budget_alloc
+static void counted_samples(uint32_t *, const uint32_t *, unsigned, size_t, const uint32_t *);
+#define lofty_samples counted_samples
 #define NATIVE_PACE_TEST
 #define main stream_lifecycle_main
 #include "stream_host.c"
 #undef main
+#undef lofty_samples
+void lofty_samples(uint32_t *, const uint32_t *, unsigned, size_t, const uint32_t *);
+static unsigned warm_words;
+
+static void counted_samples(uint32_t *dst, const uint32_t *src, unsigned skip, size_t n, const uint32_t *table)
+{
+    if ((uintptr_t)dst >= (uintptr_t)dvb.samples &&
+        (uintptr_t)dst < (uintptr_t)(dvb.samples+dvb.cached_words)) {
+        assert(!dvb.sample_end && !lofty_mux.output && !dvb.fill_calls);
+        assert(dst+n <= dvb.samples+dvb.cached_words);
+        warm_words += n;
+    }
+    lofty_samples(dst,src,skip,n,table);
+}
 
 static bool expect_wifi;
 static unsigned expect_pages, pace_calls;
@@ -46,9 +55,10 @@ static uint32_t pace_crc;
 static esp_err_t pace(bool, uint32_t, uint32_t, radio_s3_fill_fn, void *, radio_s3_stats_t *);
 
 static uint32_t queue_budget(unsigned mc, bool fixture, bool automatic, size_t available,
-                              size_t largest, unsigned expected, unsigned failure)
+                              unsigned expected, unsigned failure)
 {
     budget_active = false;
+    warm_words = 0;
     const char *cmd = fixture ? "dvbpace" : "dvb";
     assert(start_encoder_traced(cmd,mc,128,0,3,80000000,false,automatic ? 0 : 54,automatic));
     if (fixture) assert(enc.input && esp_ptr_external_ram(enc.input));
@@ -57,13 +67,15 @@ static uint32_t queue_budget(unsigned mc, bool fixture, bool automatic, size_t a
         assert(!enc.block && !dvb.queue_pages && dvb.produced == dvb.consumed && !enc.frames);
         budget_base = internal_used()+available;
         budget_min = failure == 1 ? 19999 : available;
-        budget_largest = largest;
         budget_active = true;
+        const int allocations = allocation_count;
         if (failure == 2) fail_after = 0;
         const esp_err_t rc = radio_s3_stream_ready();
         fail_after = -1;
+        assert(allocation_count == allocations); // no allocation after Wi-Fi
         if (expected) {
             assert(rc == ESP_OK && lofty_mux.queue_ready && dvb.queue_pages == expected);
+            assert(dvb.produced-dvb.consumed == expected && !lofty_mux.output && !lofty_mux.frames && !dvb.sample_end);
             assert(budget_free(MALLOC_CAP_INTERNAL) >= LOFTY_HEAP_FLOOR+LOFTY_HEAP_GUARD);
             assert(budget_minimum(MALLOC_CAP_INTERNAL) >= LOFTY_HEAP_FLOOR);
             assert(radio_s3_stream_ready() == ESP_OK); // no second allocation/prefill
@@ -79,8 +91,9 @@ static uint32_t queue_budget(unsigned mc, bool fixture, bool automatic, size_t a
         assert(pace(automatic,10,80000000,fill,NULL,&stats) == ESP_OK);
         crc = pace_crc;
     }
-    printf("@{\"test\":\"queue_budget\",\"modcod\":%u,\"setup\":\"%s\",\"expected_pages\":%u,\"crc\":%u",
-           mc,cmd,expected,crc);
+    assert(warm_words == (automatic && expected ? 39983u : 0u));
+    printf("@{\"test\":\"queue_budget\",\"modcod\":%u,\"setup\":\"%s\",\"expected_pages\":%u,\"crc\":%u,\"renderer_warm_words\":%u",
+           mc,cmd,expected,crc,warm_words);
     stop_encoder(); puts("}");
     budget_active = false;
     assert(!live_allocations);
@@ -95,7 +108,12 @@ static esp_err_t pace(bool wifi, uint32_t sec, uint32_t rate, radio_s3_fill_fn f
     assert(dvb.queue_pages == expect_pages && !dvb.trace && !dvb.trace_state);
     assert(dvb.page_wake == !dvb.lofty);
     if (dvb.lofty) {
-        assert(heap_caps_get_allocated_size(enc.block) == (expect_pages-LOFTY_STORED)*sizeof(lofty_page));
+        assert(!enc.ws_borrowed && heap_caps_get_allocated_size(enc.ws) == DVBS2_FAST_WORKSPACE_USED);
+        const unsigned extra = expect_pages > LOFTY_STORED ? expect_pages-LOFTY_STORED : 0;
+        if (extra) assert(heap_caps_get_allocated_size(enc.block) == extra*sizeof(lofty_page));
+        else assert(!enc.block);
+        for (unsigned i = 1; i < expect_pages && i < LOFTY_STORED; ++i)
+            assert(lofty_page_at(i) == lofty_page_at(i-1)+1);
         assert(enc.prefill_frames == 1);
     }
     ++pace_calls;
@@ -162,15 +180,15 @@ int main(void)
     fail_after = -1;
     for (unsigned mc = 13; mc <= 17; mc += 2)
         for (unsigned fixture = 0; fixture < 2; ++fixture) {
-            const uint32_t fixed = queue_budget(mc,fixture,false,0,0,54,0);
-            assert(queue_budget(mc,fixture,true,32000,SIZE_MAX,54,0) == fixed);
+            const uint32_t fixed = queue_budget(mc,fixture,false,0,54,0);
+            assert(queue_budget(mc,fixture,true,32000,54,0) == fixed);
         }
-    const uint32_t fixed = queue_budget(17,true,false,0,0,54,0);
-    assert(queue_budget(17,true,true,26500,SIZE_MAX,46,0) == fixed);
-    assert(queue_budget(17,true,true,32000,12*sizeof(lofty_page),50,0) == fixed);
-    queue_budget(17,true,true,23000,SIZE_MAX,0,0); // cannot fit even 44 pages above reserve
-    queue_budget(17,true,true,32000,SIZE_MAX,0,1); // startup low-water mark already below floor
-    queue_budget(17,true,true,32000,SIZE_MAX,0,2); // every candidate allocation fails
+    const uint32_t fixed = queue_budget(17,true,false,0,54,0);
+    assert(queue_budget(17,true,true,26500,54,0) == fixed);
+    assert(queue_budget(17,true,true,22048,54,0) == fixed); // exact reserve
+    queue_budget(17,true,true,22047,0,0); // below reserve
+    queue_budget(17,true,true,32000,0,1); // startup low-water mark already below floor
+    assert(queue_budget(17,true,true,32000,54,2) == fixed); // allocation disabled after Wi-Fi
     free(banks);
     puts("runtime pages: wraps, identical words, allocation cleanup, Wi-Fi routing and defaults: ok");
     return 0;

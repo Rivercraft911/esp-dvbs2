@@ -5,7 +5,7 @@
 // Five-symbol .35 pulse, three samples/symbol, four symbols/block.
 #define LOFTY_TABLE_WORDS 9216
 #define LOFTY_BLOCKS 128
-#define LOFTY_STORED 38
+#define LOFTY_STORED 54
 #define LOFTY_PAGES 50
 #define LOFTY_WAKE 2
 #define LOFTY_PAGE_META (LOFTY_BLOCKS+1) // after the renderer's prefetch guard

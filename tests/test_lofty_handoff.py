@@ -33,7 +33,7 @@ def test(out):
             (out/f'{name}.log').write_text(run.stdout+run.stderr)
             assert run.returncode == 0,(name,run.stdout,run.stderr)
             if before is None:
-                symbols = np.tile(phases,2)
+                symbols = np.tile(phases,6)
             else:
                 symbols = np.concatenate((np.tile(phases,before),np.tile(dvbs2.dummy_phases(),2),
                                           np.tile(phases,6-before)))
@@ -46,6 +46,12 @@ def test(out):
             expected = lofty.iq(lofty.shape(symbols))
             actual = np.fromfile(iq,dtype='<i2').reshape(-1,2)
             np.testing.assert_array_equal(actual,np.column_stack((expected.real,expected.imag)))
+            rows = [json.loads(l[1:]) for l in run.stdout.splitlines() if l.startswith('@{')]
+            bank, = [r for r in rows if r.get('test') == 'round17_bank']
+            record, = [r for r in rows if 'dummy_startup_frame' in r]
+            assert record['dummy_startup_frame'] == (before if before is not None else -1)
+            assert bank['singles'] <= 5, bank
+            assert bank['dummy_samples'] > 0 if before == 2 else bank['dummy_samples'] == 0
             print(name,'ID, EOF, dummy pair and return: every word exact; all slices reach bulk',flush=True)
 
 

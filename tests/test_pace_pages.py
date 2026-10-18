@@ -73,13 +73,23 @@ int main(void) {
             assert pair[0]['crc'] == pair[1]['crc']
             auto = pair[1]
             assert auto['queue_sizing']['free_before'] == 32000
-            assert auto['queue_sizing']['free_after'] == 32000-16*528-32
+            assert auto['queue_sizing']['free_after'] == 32000
+            assert auto['renderer_warm_words'] == 39983 and pair[0]['renderer_warm_words'] == 0
+            assert not auto['ring_heap_bytes'] and auto['workspace_heap_bytes'] == 8144
+            layout = auto['queue_layout']
+            assert layout['contiguous'] and layout['resident_pages'] == 54 and layout['page_bytes'] == 528
+            region, = layout['regions']
+            assert region['first_page'] == 0 and region['pages'] == 54 and not region['dac_overlap']
+            assert int(region['end'],16)-int(region['begin'],16) == 54*528
             if setup == 'dvbpace':
                 assert auto['input_memory'] == 'psram' and auto['reference_psram_bytes'] > 5000
+                assert auto['reference_psram_bytes'] == {13:5370,15:6720,17:7264}[mc]
+                assert not auto['reference_store_bytes'] and int(auto['layout']['reference'],16)
             else: assert auto['input_memory'] == 'none' and not auto['reference_psram_bytes']
-    assert [r['queue_pages'] for r in budget[-5:]] == [46,50,0,0,0]
-    assert all(not r['queue_sizing']['ready'] for r in budget[-3:])
-    print('automatic queues: 13/15/17 pace and keyed setup 54 pages; low heap 46, fragmentation 50; failures stop before publication')
+            assert int(auto['layout']['dummy'],16)
+    assert [r['queue_pages'] for r in budget[-5:]] == [54,54,0,0,54]
+    assert [r['queue_sizing']['ready'] for r in budget[-3:]] == [False,False,True]
+    print('contiguous queues: 13/15/17 pace and keyed setup 54 pages; no post-Wi-Fi allocations; exact reserve and failure cleanup')
     print(run.stdout.splitlines()[-1])
 
 

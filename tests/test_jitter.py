@@ -122,6 +122,10 @@ def main():
         fixture = command.startswith('dvbpace')
         r.update(cmd='dvbpace' if fixture else 'wifimem',queue_pages=54,
                  input_memory='psram' if fixture else 'none',reference_psram_bytes=7000 if fixture else 0,
+                 ring_heap_bytes=0,workspace_heap_bytes=8144,render_warm_cycles=80000,
+                 max_fill_sample=417739472,dummy_startup_frame=2,
+                 queue_layout=dict(contiguous=True,page_bytes=528,resident_pages=54,
+                                   regions=[dict(first_page=0,pages=54,begin='0x3fcab500',end='0x3fcb2460',sram_levels=[4,5],dac_overlap=False)]),
                  dummy_steady=2 if mc == 15 and fixture else 0,max_fill_cycles=40000,
                  queue_sizing=dict(automatic=True,ready=True,target_pages=54,floor_bytes=20000,
                                    guard_bytes=2048,free_before=32000,free_after=23520,min_before=32000))

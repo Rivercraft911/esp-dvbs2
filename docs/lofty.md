@@ -110,8 +110,8 @@ admission, bank-end wakes, producer work or the renderer. `nowifi` excludes
 the interrupt observer, whose hooks belong to the Wi-Fi-up worker. No trace
 or observer is enabled by the sweep.
 
-A `lofty_page` is 528 bytes; 38 pages reside in the existing store. For
-46/50/54/58 pages, the heap allocation is `(pages-38)*528` =
+A `lofty_page` is 528 bytes. In aaeb50e, 38 pages resided in the store; for
+46/50/54/58 pages, its heap allocation was `(pages-38)*528` =
 4,224/6,336/8,448/10,560 bytes. The largest requested queue costs 6,336 bytes
 more than default 17. Allocation failure returns an error with cleanup;
 it never silently reduces the requested queue.
@@ -133,54 +133,55 @@ unchanged counts would direct the next measurement toward admission/wakes.
 
 ## Internal RAM and automatic queues
 
-The repeated pace reference keeps its store prefix but moves its heap tail
-to mandatory PSRAM. The encoder still copies the same bytes, in 1,316-byte
-chunks, into its existing internal payload scratch. Keyed runs have no
-reference allocation and retain the original contiguous xorshift stream.
-The input and encoder CRC checks cover both layouts. PSRAM-copy timing and
-its shared-cache effects still require silicon measurement.
+The f67b83d Wi-Fi-up records (`notes/eight-lofty-round17/`) have 54 pages for
+all three modes, with Wi-Fi minima 27,251/24,755/23,459 B. Queue depth works,
+but worst fills are 45,903/46,215/41,651 cycles and 15 reports a late fill.
+The old queue had two regions by construction: 38 static pages plus one
+8,448-byte heap allocation. A single heap allocation is contiguous, not a
+scatter list. Those records omitted its address, so its SRAM level is unknown.
+The static region was `[0x3fcab500,0x3fcb0360)`.
 
-The new reference tails are 5,066/6,416/6,960 B for 13/15/17, with a 304 B
-prefix in the store. The queue-budget fields share that store's unused tail;
-they add no static internal allocation. All 38 resident queue pages, the
-8,144-byte encoder workspace and reference prefix remain shared with the
-existing 64 KiB store. The 36,864-byte renderer table and 2,560-byte timed
-overlap cache stay internal because the fill uses them. Dummy samples and
-split BCH pair tables already use PSRAM. Moving these hot fill tables or
-encoder caches is not needed to reach the 54-page cap.
-
-Wi-Fi start-up now calls `radio_s3_stream_ready` once before any timed fill or
-TX setup. The encoder has its task, stack, workspace and input driver ready,
-then sleeps on a notification without publishing. The hook allocates the
-final queue and wakes the producer, and waits with `vTaskDelay(1)` until it
-is full. No live queue is resized or copied. The Wi-Fi-only `wifimem` probe
-uses this same keyed-layout hook and returns before RF setup. Explicit-page
-diagnostics, Wi-Fi-off pace, raw dumps and QPSK keep their existing setup.
-
-For actual post-Wi-Fi free 8-bit internal heap F, page size S=528 B and
-38 resident pages, the requested count is:
+All 54 target pages now occupy one static region in the existing store:
 
 ```
-P = min(54, 38 + floor((F - 20000 - 2048 - 64) / 528))  [pages]
+36864 table bytes + 54 * 528 page bytes + 160 mux bytes = 65536 bytes
 ```
 
-The 20,000 B floor is the user's gate. The 2,048 B guard exceeds the 1,816 B
-free-up versus minimum dip in the round-12 first 13 run. The 64 B allowance
-covers aligned allocator overhead; actual free heap is checked again after
-allocation. Fragmentation can lower P, one page at a time. Fewer than 44
-pages, an already violated startup minimum, or insufficient remaining reserve
-returns an error before playback. Both pace and keyed setup cap at 54 pages
-for each of 13/15/17. Actual selected counts and the floor still need the board.
+At the unchanged linked store address, the queue is
+`[0x3fcab500,0x3fcb2460)`. It spans IDF SRAM levels 4 and 5, and excludes
+the reserved DAC levels 6 and 7 at `[0x3fcc0000,0x3fce0000)`.
+These names come from IDF v6.1 `heap/port/esp32s3/memory_layout.c:90-99`.
+One contiguous address range can cross a hardware SRAM boundary; this is not
+a bus-contention measurement.
 
-`queue_sizing` reports automatic/ready, target, floor/guard, free before and
-after allocation, and the pre-allocation minimum. `reference_psram_bytes`
-and `reference_store_bytes` report the fixture footprint. `wifi_free_up`
-retains its meaning before the queue hook; `wifi_min_free` now refreshes after
-playback and cleanup, including the final queue allocation. Historical records
-only sampled that field at Wi-Fi startup.
+The fast FEC workspace moves from the store to an 8,144-byte internal heap
+allocation. The normal queue's old 8,448-byte allocation disappears, saving
+304 requested internal bytes. The pace reference is now entirely PSRAM:
+5,370/6,720/7,264 B. Its former 304-byte prefix makes room for the queue.
+The encoder copies the same bytes in 1,316-byte chunks into internal payload
+scratch. Keyed runs retain their contiguous xorshift stream and no reference.
+Renderer tables, the 2,560-byte timed overlap cache, encoder stack and the
+qualified QPSK allocation policy stay unchanged.
+
+`radio_s3_stream_ready` still checks the actual post-Wi-Fi heap, waits for full
+prefill and runs before timing or TX setup. With all pages resident, it makes
+no allocation. It activates 54 pages only if free 8-bit internal heap is at
+least 20,000+2,048=22,048 B and the startup minimum is at least 20,000 B.
+The 2,048-byte guard exceeds the measured 1,816-byte cold Wi-Fi dip in round
+12. An insufficient budget returns an error before publication. Reducing the
+logical queue cannot reclaim static storage. Explicit 58/64-page diagnostics
+still use a heap tail, and are reported as two regions. Batch limits stop at
+the logical wrap even when fewer than 54 resident slots are active.
+
+`queue_layout` reports region addresses, page extents, SRAM levels and DAC
+overlap after playback. `queue_sizing` retains the before/after heap and floor
+checks. `workspace_heap_bytes` is 8,144 and `ring_heap_bytes` is zero for the
+target queue. `wifi_min_free` includes playback and cleanup. No new bank-time
+address tracing or per-page kernel calls are added. `layout` also reports the
+PSRAM reference and dummy pointers alongside the workspace and encoder tables.
 
 ```sh
-caffeinate -i python3 host/jitter.py notes/eight-lofty-round17 --queue-gate
+caffeinate -i python3 host/jitter.py notes/eight-lofty-round18 --queue-gate
 ```
 
 This collects keyed-layout `wifimem` and 20-second clean Wi-Fi-up `dvbpace`
@@ -189,6 +190,35 @@ setups, retains faults and continues through all modes. The gate requires
 54 pages, ESP_OK, full playback, no late banks or queue faults, fill at most
 40,137 cycles, zero steady dummies and Wi-Fi minimum at least 20,000 B.
 Startup dummies are reported and allowed. No keyed playback is performed.
+
+## Cold-bank evidence
+
+Both 13 and 15 peak at sample 417,739,472, exactly 139,472 samples after the
+417,600,000-sample ID. Their worst callbacks spend 42,632/42,950 cycles in
+shaping, with zero notify cost. Both insert two startup dummies; 17 inserts
+none and peaks later with 3,001 notify cycles in its worst callback. Round
+12's 13 also peaked at that same early bank, at 41,151 total cycles. The new
+regression is not evidence of extra scatter-list handling in f67b83d's fill.
+
+Forced replay of a dummy pair before data frame 2 puts 13,032 dummy samples
+in that exact bank, followed by return to data. Only three scalar edge blocks
+are needed; the rest reach the bulk renderer. A gap before frame 1 instead
+puts no dummy samples there. The supplied records cannot distinguish these
+timelines, so `dummy_startup_frame` now reports the first startup gap, or -1.
+This supports testing cold PSRAM/cache effects, not asserting their cause.
+
+Before playback, after prefill, the worker renders both dummy templates and
+one partial edge into the invalid overlap buffer. Its 39,983 scratch words
+touch no queued ownership or stream history and need no allocation. The next
+fill overwrites the cache before marking it valid. `render_warm_cycles`
+reports this separate startup cost. PSRAM dummy/reference/pair-table storage
+is at most 24,736 B for these modes, below the configured 32 KiB data-cache
+capacity. Other accesses and cache conflicts can still evict it during the ID;
+the warm-up does not establish a silicon fill bound.
+
+Host checks cover the forced cold-bank geometry, all DAC words and fixed versus
+automatic layouts. Heap start, IRAM end and table address match f67b83d.
+The 40,137-cycle gate still requires the coordinator's board run.
 
 ## Fill and dummy waveform
 
@@ -202,8 +232,8 @@ Lead observations use an initial publication snapshot, conservatively ignoring
 new production during a batch. The minimum stays in samples until reporting.
 Its 32-bit accumulator borrows the unused prefetched third splice word; that
 word is never rendered. This keeps the new kernel and control code within the
-same internal heap boundary as daec325. Tables, queue pages, input allocation,
-640-word timed cache and 1,792-byte encoder stack are unchanged. Stack-size
+same internal heap boundary as daec325. The 640-word timed cache and
+1,792-byte encoder stack are unchanged. Stack-size
 reporting now matches the allocation, rather than printing the old 2,048 bytes.
 Raw dumps retain their 768-word initial overlap.
 

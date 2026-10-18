@@ -126,14 +126,17 @@ typedef struct {
     uint32_t queue_free_before, queue_free_after, queue_min_before;
     uint32_t queue_ready;
     bool queue_auto;
+    uint32_t first_dummy_frame;
+    unsigned resident_limit;
+    uint32_t render_warm_cycles;
 } lofty_mux_t;
-// Fast stages stop at byte 8144; the unused store tail owns the mux state.
-#define LOFTY_MUX_AT (4*LOFTY_TABLE_WORDS+LOFTY_STORED*sizeof(lofty_page)+DVBS2_FAST_WORKSPACE_USED)
+// The table, all 54 pages and mux fill the existing store exactly. FEC's
+// 8144-byte workspace is separate, so no active queue page comes from Wi-Fi's heap.
+#define LOFTY_MUX_AT (4*LOFTY_TABLE_WORDS+LOFTY_STORED*sizeof(lofty_page))
 #define lofty_mux (*(lofty_mux_t *)((uint8_t *)shaper_store+LOFTY_MUX_AT))
-_Static_assert(LOFTY_MUX_AT+sizeof(lofty_mux_t) <= sizeof shaper_store, "mux fits the store tail");
+_Static_assert(LOFTY_MUX_AT+sizeof(lofty_mux_t) == sizeof shaper_store, "table, 54 pages and mux fill the store");
 #define LOFTY_INPUT_BYTES ((sizeof shaper_store-LOFTY_MUX_AT-sizeof(lofty_mux_t)) & ~(size_t)15)
 #define lofty_input ((uint8_t *)(&lofty_mux+1))
-_Static_assert(LOFTY_INPUT_BYTES >= 256, "input prefix fits beside mux state");
 #define LOFTY_DUMMY_STRIDE 1672 // pair + two-symbol prefix + prefetch guard, aligned
 #define LOFTY_STARTUP_FRAMES 3
 #define LOFTY_BANK_SAMPLES RADIO_S3_STEP_WORDS_80M
@@ -142,12 +145,9 @@ _Static_assert(LOFTY_INPUT_BYTES >= 256, "input prefix fits beside mux state");
 #define LOFTY_MAX_PAGES 54
 #define LOFTY_HEAP_FLOOR 20000u
 #define LOFTY_HEAP_GUARD 2048u // above the 1816-byte cold Wi-Fi dip in round 12
-#define LOFTY_ALLOC_OVERHEAD 64u // aligned allocator metadata; verify actual heap after allocation
 #define LOFTY_RESERVE_PAGES 9 // 4606 symbols, including the two-symbol prefix
 _Static_assert(LOFTY_BLOCKS == MACHINE_PAGE_BLOCKS && sizeof(lofty_page) == sizeof(machine_page),
                "both queues use the same page geometry");
-_Static_assert(4*LOFTY_TABLE_WORDS+LOFTY_STORED*sizeof(lofty_page)+DVBS2_FAST_WORKSPACE_USED <= 65536,
-               "lofty tables, resident pages and workspace fit the store");
 _Static_assert(MACHINE_PAGE_BLOCKS%4 == 0 && sizeof(machine_page)%16 == 0,
                "queue pages retain prepare and render alignment");
 _Static_assert(sizeof(dvbs2_workspace) - DVBS2_FAST_WORKSPACE_USED >=
@@ -165,7 +165,7 @@ typedef struct {
     bool quads;                     // four QPSK codes/byte, block shaper
     bool packed;                    // all fast rates: packed internal ring
     uint8_t *payload;               // packed: encoder scratch until BB consumes it; raw: PSRAM
-    uint8_t *input;                 // pace reference: lofty PSRAM tail + store prefix; QPSK internal
+    uint8_t *input;                 // pace reference: lofty PSRAM, QPSK internal
     uint32_t input_prepare_cycles;
     bool input_borrowed;
     uint8_t *slot[PACKED_SLOTS];    // packed frames, internal
@@ -542,7 +542,10 @@ static inline __attribute__((always_inline)) void lofty_boundary(uint32_t ready)
         // A partial next frame may have been left asleep at the previous
         // bank's full-queue wait. Dummy playback releases no data pages.
         if (!odd) { moon_wake(); dvb.wake_pending = false; }
-        if (lofty_mux.frames < LOFTY_STARTUP_FRAMES) ++lofty_mux.startup;
+        if (lofty_mux.frames < LOFTY_STARTUP_FRAMES) {
+            if (!lofty_mux.startup) lofty_mux.first_dummy_frame = lofty_mux.frames;
+            ++lofty_mux.startup;
+        }
         else ++lofty_mux.steady;
         // Each cached pair has both possible data-boundary prefixes. The
         // second dummy continues the first one's four-symbol groups.
@@ -614,7 +617,7 @@ static IRAM_ATTR __attribute__((noinline)) esp_err_t lofty_shape(uint32_t *dst, 
                 // Reuse vector setup across adjacent complete pages, retaining
                 // the reserve. Never cross EOF, the store/heap split or wrap.
                 unsigned pages = (count < left ? count : left)/MACHINE_PAGE_SAMPLES;
-                unsigned room = (dvb.get_index < LOFTY_STORED ? LOFTY_STORED : dvb.queue_pages)-dvb.get_index;
+                unsigned room = (dvb.get_index < lofty_mux.resident_limit ? lofty_mux.resident_limit : dvb.queue_pages)-dvb.get_index;
                 if (pages > room) pages = room;
                 unsigned available = !dvb.page_wake && put-get > LOFTY_RESERVE_PAGES ? put-get-LOFTY_RESERVE_PAGES : 1;
                 if (pages > available) pages = available;
@@ -1081,6 +1084,7 @@ static size_t start_encoder_traced(const char *cmd, unsigned modcod, unsigned le
     if (lofty) {
         memset(&lofty_mux,0,sizeof lofty_mux);
         lofty_mux.head[2] = UINT32_MAX;
+        lofty_mux.first_dummy_frame = UINT32_MAX;
         lofty_mux.page_max = UINT32_MAX; // calibrate on the first queued frame
         lofty_mux.admission_gap = UINT32_MAX;
         lofty_mux.admission_pages = LOFTY_FRAME_PAGES | (LOFTY_FRAME_PAGES<<8);
@@ -1090,6 +1094,7 @@ static size_t start_encoder_traced(const char *cmd, unsigned modcod, unsigned le
     dvb.queue_pages = lofty ? (modcod == 17 ? 46 : modcod == 13 ? LOFTY_MAX_PAGES : LOFTY_PAGES) : MACHINE_PAGES;
     if (pages) dvb.queue_pages = pages;
     if (lofty && lofty_mux.queue_auto) dvb.queue_pages = 0; // fixed after Wi-Fi start
+    if (lofty) lofty_mux.resident_limit = dvb.queue_pages < LOFTY_STORED ? dvb.queue_pages : LOFTY_STORED;
     dvb.wake_pages = lofty ? LOFTY_WAKE : MACHINE_WAKE_PAGES;
     dvb.pages = NULL;
     dvb.lofty_pages = NULL;
@@ -1167,8 +1172,6 @@ static size_t start_encoder_traced(const char *cmd, unsigned modcod, unsigned le
                 enc.block = heap_caps_aligned_alloc(16,(dvb.queue_pages-LOFTY_STORED)*sizeof(lofty_page),internal);
                 if (!enc.block) { release(); return 0; }
             }
-            moon_ws = (dvbs2_workspace *)tail;
-            tail += DVBS2_FAST_WORKSPACE_USED;
         } else {
             dvb.pages = (machine_page *)(shaper_store+MACHINE_TABLE_WORDS);
             uint32_t *lut = (uint32_t *)(dvb.pages+MACHINE_PAGES);
@@ -1261,8 +1264,9 @@ static size_t start_encoder_traced(const char *cmd, unsigned modcod, unsigned le
     // Keep its context there too when SPI is selected, reserving internal RAM for Wi-Fi.
     enc.fast = heap_caps_aligned_alloc(16, dvbs2_fast_mode_size(mode),
                                       input && enc.packed && !resident ? MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT : internal);
-    enc.ws_borrowed = quads || moon;
-    enc.ws = moon ? moon_ws : enc.ws_borrowed && sps == 4 ? (dvbs2_workspace *)(shaper_store + QPSK_TABLE_WORDS(4)) :
+    enc.ws_borrowed = quads || (moon && !lofty);
+    enc.ws = lofty ? heap_caps_aligned_alloc(16,DVBS2_FAST_WORKSPACE_USED,internal) :
+        moon ? moon_ws : enc.ws_borrowed && sps == 4 ? (dvbs2_workspace *)(shaper_store + QPSK_TABLE_WORDS(4)) :
         enc.ws_borrowed && sps == 3 ? (dvbs2_workspace *)((uint8_t *)shaper_store+store_used) :
         heap_caps_aligned_alloc(16, sizeof *enc.ws,
                                resident ? internal : MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -1444,6 +1448,41 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
                                 !strcmp(cmd,"dvb") || !strcmp(cmd,"wifimem"));
 }
 
+static void print_queue_region(unsigned first, unsigned pages, const lofty_page *p)
+{
+    const uintptr_t begin = (uintptr_t)p, end = begin+pages*sizeof *p;
+    int low = -1, high = -1;
+#ifdef __XTENSA__
+    // IDF v6.1 esp32s3/memory_layout.c:90-99, levels 2 through 9.
+    if (begin >= 0x3fc88000u && end <= 0x3fcf8000u) {
+        low = (begin-0x3fc80000u)/65536+2;
+        high = (end-1-0x3fc80000u)/65536+2;
+    }
+#endif
+    printf("{\"first_page\":%u,\"pages\":%u,\"begin\":\"0x%"PRIxPTR"\",\"end\":\"0x%"PRIxPTR
+           "\",\"sram_levels\":[%d,%d],\"dac_overlap\":%s}",first,pages,begin,end,low,high,
+           begin < 0x3fce0000u && end > 0x3fcc0000u ? "true" : "false");
+}
+
+static void lofty_warm_renderer(void)
+{
+    // The overlap cache is invalid until the first fill. Borrow it without
+    // changing sample_end, page ownership, frame history or profiling counters.
+    const uint32_t before = esp_cpu_get_cycle_count();
+    const unsigned chunk = dvb.cached_words/12;
+    for (unsigned variant = 0; variant < 2; ++variant) {
+        const uint32_t *src = lofty_mux.dummy+variant*LOFTY_DUMMY_STRIDE;
+        const unsigned words = (2*DVBS2_DUMMY_SYMBOLS+2*variant+3)/4;
+        for (unsigned at = 0; at < words;) {
+            unsigned n = words-at < chunk ? words-at : chunk;
+            lofty_samples(dvb.samples,src+at,0,12*n,shaper_store);
+            at += n;
+        }
+    }
+    lofty_samples(dvb.samples+1,lofty_mux.dummy,1,11,shaper_store);
+    lofty_mux.render_warm_cycles = esp_cpu_get_cycle_count()-before;
+}
+
 esp_err_t radio_s3_stream_ready(void)
 {
     if (!enc.task || !dvb.lofty || !lofty_mux.queue_auto || lofty_mux.queue_ready) return ESP_OK;
@@ -1455,26 +1494,14 @@ esp_err_t radio_s3_stream_ready(void)
     lofty_mux.queue_free_before = free;
     lofty_mux.queue_min_before = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
     if (lofty_mux.queue_min_before < LOFTY_HEAP_FLOOR) return ESP_ERR_NO_MEM;
-    // All 8PSK frames use 44 pages. 17's sweep needs ten spare pages, with no
-    // benefit at 58; use 54 as the cap for 13/15 too, pending Wi-Fi-up gates.
+    // All target pages already occupy one static region. Wi-Fi cannot split
+    // or relocate it. The workspace allocation is included in this heap sample.
     const size_t reserve = LOFTY_HEAP_FLOOR+LOFTY_HEAP_GUARD;
-    unsigned pages = free > reserve+LOFTY_ALLOC_OVERHEAD ?
-        LOFTY_STORED+(free-reserve-LOFTY_ALLOC_OVERHEAD)/sizeof(lofty_page) : LOFTY_STORED;
-    if (pages > LOFTY_MAX_PAGES) pages = LOFTY_MAX_PAGES;
-    // Fragmentation can lower the result. Each failed allocation consumes no
-    // heap; never replace a live queue or move published descriptors.
-    for (; pages >= LOFTY_FRAME_PAGES; --pages) {
-        const size_t bytes = (pages-LOFTY_STORED)*sizeof(lofty_page);
-        enc.block = heap_caps_aligned_alloc(16,bytes,caps);
-        if (enc.block) break;
-    }
-    if (!enc.block) return ESP_ERR_NO_MEM;
-    lofty_mux.queue_free_after = heap_caps_get_free_size(caps);
-    if (lofty_mux.queue_free_after < reserve) {
-        heap_caps_free(enc.block); enc.block = NULL;
-        return ESP_ERR_NO_MEM;
-    }
+    if (free < reserve) return ESP_ERR_NO_MEM;
+    const unsigned pages = LOFTY_MAX_PAGES;
+    lofty_mux.queue_free_after = free;
     dvb.queue_pages = dvb.queue_low = pages;
+    lofty_mux.resident_limit = pages;
     __atomic_store_n(&lofty_mux.queue_ready,true,__ATOMIC_RELEASE);
     xTaskNotifyGive(enc.task);
     const TickType_t limit = xTaskGetTickCount()+pdMS_TO_TICKS(3*(enc.stall_ms+100));
@@ -1482,6 +1509,7 @@ esp_err_t radio_s3_stream_ready(void)
            (int32_t)(xTaskGetTickCount()-limit) < 0) vTaskDelay(1);
     if (enc.failed || dvb.produced-dvb.consumed < pages) return ESP_FAIL;
     enc.prefill_frames = enc.frames;
+    lofty_warm_renderer();
     return ESP_OK;
 }
 
@@ -1539,6 +1567,8 @@ static void stop_encoder(void)
                           (unsigned)lofty_mux.startup,(unsigned)lofty_mux.steady,(unsigned)((lofty_mux.startup+lofty_mux.steady)/2),
                           (unsigned)(lofty_mux.admission_pages&255),(unsigned)(lofty_mux.admission_pages>>8),
                           LOFTY_STARTUP_FRAMES,(unsigned)lofty_mux.page_max,(unsigned)lofty_mux.rate_misses,(unsigned)lofty_mux.streaming,(unsigned)lofty_mux.admission_max);
+    if (dvb.lofty) printf(",\"dummy_startup_frame\":%"PRIi32,(int32_t)lofty_mux.first_dummy_frame);
+    if (dvb.lofty) printf(",\"render_warm_cycles\":%"PRIu32,lofty_mux.render_warm_cycles);
     if (dvb.moon && dvb.queue_empty) printf(",\"queue_fault\":{\"produced\":%"PRIu32",\"consumed\":%"PRIu32
         ",\"producer_phase\":%"PRIu32",\"last_wait_produced\":%"PRIu32",\"last_wait_consumed\":%"PRIu32"}",
         dvb.queue_fault.put,dvb.queue_fault.get,dvb.queue_fault.phase,
@@ -1553,6 +1583,13 @@ static void stop_encoder(void)
                (unsigned)lofty_mux.queue_free_before,(unsigned)lofty_mux.queue_free_after,(unsigned)lofty_mux.queue_min_before,
                enc.input ? (unsigned)heap_caps_get_allocated_size(enc.input) : 0,
                enc.input ? (unsigned)LOFTY_INPUT_BYTES : 0);
+        printf(",\"queue_layout\":{\"contiguous\":%s,\"page_bytes\":%u,\"resident_pages\":%u,\"regions\":[",
+               dvb.queue_pages <= LOFTY_STORED ? "true" : "false",(unsigned)sizeof(lofty_page),LOFTY_STORED);
+        if (dvb.queue_pages) print_queue_region(0,dvb.queue_pages < LOFTY_STORED ? dvb.queue_pages : LOFTY_STORED,dvb.lofty_pages);
+        if (dvb.queue_pages > LOFTY_STORED) {
+            printf(","); print_queue_region(LOFTY_STORED,dvb.queue_pages-LOFTY_STORED,(const lofty_page *)enc.block);
+        }
+        printf("]}");
         printf(",\"handoff\":[");
         for (unsigned i=0; i<2; ++i)
             printf("%s{\"words\":%u,\"shape_cycles\":%u}",i ? "," : "",
@@ -1578,7 +1615,8 @@ static void stop_encoder(void)
     printf(",\"workspace_memory\":\"%s\",\"workspace_bytes\":%u,\"fast_bytes\":%u,"
            "\"workspace_heap_bytes\":%u,\"fast_heap_bytes\":%u,\"bch_cache_heap_bytes\":%u,"
            "\"bch_cache_bytes\":%u,\"bch_variant\":\"%s\",\"packed_mapper\":\"%s\"",
-           enc.packed && (dvb.moon || enc.mode->bits_per_symbol == 2 || dvb.table.n == 4) ? "internal" : "psram", (unsigned)sizeof *enc.ws,
+           enc.packed && (dvb.moon || enc.mode->bits_per_symbol == 2 || dvb.table.n == 4) ? "internal" : "psram",
+           (unsigned)(dvb.lofty ? DVBS2_FAST_WORKSPACE_USED : sizeof *enc.ws),
            (unsigned)dvbs2_fast_mode_size(enc.mode),
            enc.ws_borrowed ? 0 : (unsigned)heap_caps_get_allocated_size(enc.ws),
            (unsigned)heap_caps_get_allocated_size(enc.fast),
@@ -1603,7 +1641,10 @@ static void stop_encoder(void)
     for (unsigned i = 0; i < r->nslots; ++i) {
         printf(i ? ",\"0x%" PRIxPTR "\"" : "\"0x%" PRIxPTR "\"", (uintptr_t)r->slots[i]);
     }
-    printf("]}");
+    printf("]");
+    if (dvb.lofty) printf(",\"reference\":\"0x%"PRIxPTR"\",\"dummy\":\"0x%"PRIxPTR"\"",
+                          (uintptr_t)enc.input,(uintptr_t)lofty_mux.dummy);
+    printf("}");
     if (dvb.profile) {
         printf(",\"profile\":{\"cache_scope\":\"both cores and interrupts; windows overlap\","
                "\"fill_counters\":%s,\"fill_calls\":%" PRIu32 ",\"fill_words\":%" PRIu64

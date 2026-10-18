@@ -198,10 +198,11 @@ def queue_suite(send, firmware):
         try:
             r, = [r for r in send(command) if r.get('cmd') in ('wifimem','dvbpace')]
             row.update(status=r['status'],queue_pages=r['queue_pages'],wifi_min_free=r['wifi_min_free'],
-                       queue_sizing=r['queue_sizing'],reference_psram_bytes=r['reference_psram_bytes'])
+                       queue_sizing=r['queue_sizing'],queue_layout=r['queue_layout'],
+                       reference_psram_bytes=r['reference_psram_bytes'],render_warm_cycles=r['render_warm_cycles'])
             if row['setup'] == 'pace':
                 row.update({k:r[k] for k in ('frames_played','dummy_startup','dummy_steady','dummy_alignment',
-                            'max_fill_cycles','min_lead_symbols','encode_cycles_mean')})
+                            'max_fill_cycles','max_fill_sample','dummy_startup_frame','min_lead_symbols','encode_cycles_mean')})
                 timing([r],mc,policy,observer)
                 gate(r,mc)
                 assert r['dummy_steady'] == 0, f"steady dummies {r['dummy_steady']} (target 0)"
@@ -216,6 +217,13 @@ def queue_suite(send, firmware):
             assert q['guard_bytes'] == 2048, 'wrong Wi-Fi reserve'
             assert q['free_after'] >= q['floor_bytes']+q['guard_bytes'], 'queue consumed heap reserve'
             assert r['wifi_min_free'] >= 20000, 'Wi-Fi heap below floor'
+            layout = r['queue_layout']
+            region, = layout['regions']
+            assert layout['contiguous'] and layout['resident_pages'] == 54 and layout['page_bytes'] == 528, 'queue split'
+            assert region['first_page'] == 0 and region['pages'] == 54 and not region['dac_overlap'], 'wrong queue region'
+            begin, end = int(region['begin'],16), int(region['end'],16)
+            assert end-begin == 54*528 and (end <= 0x3fcc0000 or begin >= 0x3fce0000), 'queue intersects DAC banks'
+            assert r['ring_heap_bytes'] == 0 and r['workspace_heap_bytes'] == 8144, 'wrong workspace/queue layout'
             row['verdict'] = 'SETUP' if row['setup'] == 'keyed' else 'PASS'
         except Exception as e:
             row.update(verdict='FAIL',detail=str(e))
@@ -224,6 +232,9 @@ def queue_suite(send, firmware):
               (f"{row['queue_pages']} pages, Wi-Fi minimum {row['wifi_min_free']} B" if 'queue_pages' in row else '')+
               (f"; {row['frames_played']} data, {row['dummy_steady']} steady dummies, bank {row['max_fill_cycles']} cycles"
                if 'frames_played' in row else '')+
+              (f" at sample {row['max_fill_sample']}; first startup gap at data {row['dummy_startup_frame']}"
+               if 'max_fill_sample' in row else '')+
+              (f"; regions {row['queue_layout']['regions']}" if 'queue_layout' in row else '')+
               (f"; {row['detail']}" if 'detail' in row else ''),flush=True)
     return summary
 
