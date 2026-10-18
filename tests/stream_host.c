@@ -360,13 +360,9 @@ int main(int argc, char **argv)
         assert(pace_allocations == allocations+(int)heap_input);
         assert((enc.input != NULL) == moon);
         if (moon) {
-            if (quads) {
-                assert(!enc.input_borrowed);
-            } else {
-                assert(!enc.input_borrowed);
-                for (unsigned i = 0; i < 64; ++i)
-                    if (native_blocks[i].p == enc.input) assert(native_blocks[i].caps & MALLOC_CAP_INTERNAL);
-            }
+            assert(enc.input_borrowed);
+            assert(enc.input >= (uint8_t *)enc.ws+DVBS2_FAST_WORKSPACE_USED);
+            assert(enc.input+bytes <= (uint8_t *)(shaper_store+SHAPER_STORE_WORDS));
             x = SEED;
             for (size_t i = 0; i < bytes; ++i) assert(enc.input[i] == next_byte(&x));
         }

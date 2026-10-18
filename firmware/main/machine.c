@@ -102,6 +102,26 @@ IRAM_ATTR void machine_render(uint32_t *dst, const uint32_t *signs, unsigned n, 
 #endif
 }
 
+IRAM_ATTR uint32_t machine_expand(uint32_t *dst, const uint32_t *axes, uint32_t history)
+{
+#ifdef __XTENSA__
+    uint32_t dvbs2_qpsk_histories(uint32_t *, const uint8_t *, unsigned, uint32_t);
+    return dvbs2_qpsk_histories(dst,(const uint8_t *)axes,MACHINE_PAGE_BLOCKS/16,history);
+#else
+    unsigned pending = 0;
+    for (unsigned k = 0; k < MACHINE_PAGE_AXIS_WORDS; ++k) {
+        uint32_t w = axes[k];
+        for (int shift = 15; shift >= 0; --shift) {
+            const uint32_t signs = w >> shift;
+            history = ((history << 1) & 0x7ff07ff0) |
+                      (signs & 1) << 4 | (signs & 0x10000) << 4;
+            if (++pending == 5) { *dst++ = history; pending = 0; }
+        }
+    }
+    return history;
+#endif
+}
+
 IRAM_ATTR void machine_samples(uint32_t *dst, const uint32_t *signs, unsigned skip, size_t n,
                               const uint32_t *table)
 {

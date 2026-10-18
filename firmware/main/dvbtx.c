@@ -69,8 +69,10 @@ typedef struct {
     bool moon;                    // core-0 sign mapper / core-1 renderer
     machine_page *pages;           // borrowed shaper-store tail
     uint32_t produced, consumed;   // single writer each; release/acquire ownership
-    unsigned put_index, get_index, page_blocks;
+    unsigned put_index, get_index, page_words;
     dvbs2_sign_state mapper;
+    uint32_t *render_signs;         // former sign lookup storage, core 1 only
+    uint32_t render_history;
     uint64_t queue_wait_cycles;
     uint32_t queue_wait_max, queue_wait_live_max, prepare_ticks, page_clock, page_gap_max;
     uint64_t page_wait;
@@ -80,7 +82,6 @@ typedef struct {
     uint32_t queue_low, queue_empty, queue_wakes;
     uint32_t wake_bank, wake_max;
     bool wake_pending;             // released storage; notify only after the whole bank
-    const uint32_t *sign_lut;
     uint32_t prepare_max;
     uint32_t prepare_tail_max;
     uint64_t prepare_cycles;
@@ -95,7 +96,7 @@ typedef struct {
 } dvb_t;
 
 static DRAM_ATTR dvb_t dvb;
-_Static_assert(MACHINE_PAGE_BLOCKS%4 == 0 && sizeof(machine_page)%16 == 0,
+_Static_assert(MACHINE_PAGE_BLOCKS%16 == 0 && sizeof(machine_page)%16 == 0,
                "queue pages retain prepare and render alignment");
 _Static_assert(sizeof(dvbs2_workspace) - DVBS2_FAST_WORKSPACE_USED >=
                SHAPER_HISTORY + BANK_SYMBOLS + 1, "fast workspace tail holds n4 window");
@@ -186,7 +187,7 @@ static void moon_wait(void)
 
 static IRAM_ATTR __attribute__((noinline)) int moon_map(void)
 {
-    if (dvbs2_fast_sign_start(enc.fast,enc.ws,&dvb.mapper)) return -1;
+    if (dvbs2_fast_axis_start(enc.fast,enc.ws,&dvb.mapper)) return -1;
     while (!enc.stop && dvb.mapper.at < dvb.ring.frame_symbols) {
         while (!enc.stop && dvb.produced-__atomic_load_n(&dvb.consumed,__ATOMIC_ACQUIRE) == MACHINE_PAGES)
             moon_wait();
@@ -194,17 +195,16 @@ static IRAM_ATTR __attribute__((noinline)) int moon_map(void)
         machine_page *page = dvb.pages+dvb.put_index;
         const TickType_t tick = xTaskGetTickCount();
         const uint32_t before = esp_cpu_get_cycle_count();
-        const unsigned n = dvbs2_fast_sign_read(enc.fast,&dvb.mapper,page->signs+dvb.page_blocks,
-                                                MACHINE_PAGE_BLOCKS-dvb.page_blocks,dvb.sign_lut);
+        const unsigned n = dvbs2_fast_axis_read(enc.fast,&dvb.mapper,page->axes+dvb.page_words,
+                                                MACHINE_PAGE_AXIS_WORDS-dvb.page_words);
         const uint32_t cycles = esp_cpu_get_cycle_count()-before;
         if (cycles > dvb.prepare_max) {
             dvb.prepare_max = cycles;
             dvb.prepare_ticks = xTaskGetTickCount()-tick;
         }
         dvb.prepare_cycles += cycles;
-        dvb.page_blocks += n;
-        if (dvb.page_blocks == MACHINE_PAGE_BLOCKS) {
-            page->signs[MACHINE_PAGE_BLOCKS] = 0;
+        dvb.page_words += n;
+        if (dvb.page_words == MACHINE_PAGE_AXIS_WORDS) {
             const uint32_t tail = esp_cpu_get_cycle_count();
             if (dvb.prepare_pages) {
                 const uint32_t gap = tail-dvb.page_clock-(uint32_t)(dvb.queue_wait_cycles-dvb.page_wait);
@@ -212,7 +212,7 @@ static IRAM_ATTR __attribute__((noinline)) int moon_map(void)
             }
             dvb.page_clock = tail;
             dvb.page_wait = dvb.queue_wait_cycles;
-            dvb.page_blocks = 0;
+            dvb.page_words = 0;
             if (++dvb.put_index == MACHINE_PAGES) dvb.put_index = 0;
             __atomic_store_n(&dvb.produced,dvb.produced+1,__ATOMIC_RELEASE);
             const uint32_t spent = esp_cpu_get_cycle_count()-tail;
@@ -235,9 +235,13 @@ static IRAM_ATTR esp_err_t moon_shape(uint32_t *dst, uint64_t first, size_t coun
         if (lead < dvb.ring.min_lead) dvb.ring.min_lead = lead;
         if (!ready) { ++dvb.queue_empty; return ESP_FAIL; }
         machine_page *page = dvb.pages+dvb.get_index;
+        if (!dvb.page_sample) {
+            dvb.render_history = machine_expand(dvb.render_signs,page->axes,dvb.render_history);
+            dvb.render_signs[MACHINE_PAGE_BLOCKS] = 0;
+        }
         const size_t left = MACHINE_PAGE_SAMPLES-dvb.page_sample;
         const size_t take = count < left ? count : left;
-        machine_samples(dst,page->signs+dvb.page_sample/12,dvb.page_sample%12,take,shaper_store);
+        machine_samples(dst,dvb.render_signs+dvb.page_sample/12,dvb.page_sample%12,take,shaper_store);
         dst += take, count -= take, dvb.page_sample += take;
         dvb.queue_sample += take;
         if (dvb.page_sample == MACHINE_PAGE_SAMPLES) {
@@ -653,14 +657,14 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
         dvb.prepare_cycles = 0;
         dvb.prepare_pages = 0;
         machine_build(shaper_store,level);
-        dvb.page_blocks = 0;
+        dvb.page_words = 0;
         dvb.mapper = (dvbs2_sign_state){0};
+        dvb.render_history = 0;
         dvb.queue_wait_cycles = dvb.queue_wait_max = dvb.queue_wait_live_max = dvb.prepare_ticks = 0;
         dvb.page_clock = dvb.page_gap_max = dvb.page_wait = 0;
         dvb.pages = (machine_page *)(shaper_store+MACHINE_TABLE_WORDS);
         uint32_t *lut = (uint32_t *)(dvb.pages+MACHINE_PAGES);
-        machine_lut(lut);
-        dvb.sign_lut = lut;
+        dvb.render_signs = lut;
         dvb.win = NULL;
         dvb.win_bytes = 0;
         moon_ws = (dvbs2_workspace *)(lut+MACHINE_LUT_WORDS);

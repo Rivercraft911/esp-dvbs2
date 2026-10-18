@@ -136,6 +136,15 @@ uint8_t *dvbs2_fast_payload(dvbs2_fast *f) { return f ? f->scratch : NULL; }
 
 static void pack_c(const uint8_t *raw, uint8_t *packed, unsigned symbols);
 
+static void pack_axes(uint32_t *dst, const uint8_t *phases, unsigned symbols)
+{
+    memset(dst,0,4*((symbols+15)/16));
+    for (unsigned j = 0; j < symbols; ++j) {
+        const unsigned c = phases[j] >> 1, shift = 15-(j&15);
+        dst[j/16] |= ((c ^ (c >> 1))&1) << shift | (c >> 1) << (shift+16);
+    }
+}
+
 static void prepare_map(dvbs2_fast *f)
 {
     f->map = f->mode->bits_per_symbol == 3 ? fast_map_3 : fast_map_2;
@@ -146,6 +155,9 @@ static void prepare_map(dvbs2_fast *f)
     if (f->pie & DVBS2_MAP_QUADS) {
         dvbs2_pack_quads(f->header, f->packed_header, 90);
         dvbs2_pack_quads(fast_pilots, f->packed_pilots, 36 * f->pilot_blocks);
+        // Unused tails retain resident axis versions without growing the context.
+        pack_axes((uint32_t *)(f->packed_header+24),f->header,90);
+        pack_axes((uint32_t *)(f->packed_pilots+200),fast_pilots,36*f->pilot_blocks);
         return;
     }
     pack_c(f->header, f->packed_header, 90);
@@ -1008,6 +1020,119 @@ HOT unsigned dvbs2_fast_sign_read(const dvbs2_fast *f, dvbs2_sign_state *s, uint
                       ((c ^ (c >> 1)) & 1) << 4 | (c >> 1) << 20;
             ++at, ++used;
             if (++pending == 5) {
+                dst[done++] = history;
+                pending = 0;
+            }
+        }
+        s->history = history;
+        s->pending = pending;
+        s->at += used;
+    }
+    return done;
+}
+
+/* Axis pages leave the five-symbol window expansion on the renderer core.
+ * Plane words have sixteen chronological signs per axis, oldest at bits 15/31. */
+HOT int dvbs2_fast_axis_start(dvbs2_fast *f, const dvbs2_workspace *ws, dvbs2_sign_state *s)
+{
+    if (!f || !(f->pie & DVBS2_MAP_QUADS)) return -1;
+    if (dvbs2_fast_sign_start(f,ws,s)) return -1;
+#ifdef DVBS2_PIE
+    if (f->pie & DVBS2_PIE_MAP) {
+        void dvbs2_qpsk_planes(uint8_t *, unsigned);
+        dvbs2_qpsk_planes(f->scratch,(f->data_symbols+63)/64);
+        return 0;
+    }
+#endif
+    for (unsigned j = 0; j < f->data_symbols/16; ++j) {
+        uint32_t i = 0, q = 0;
+        for (unsigned b = 0; b < 4; ++b) {
+            const unsigned w = f->scratch[4*j+b];
+            for (int shift = 6; shift >= 0; shift -= 2) {
+                const unsigned c = w >> shift;
+                i = (i << 1) | ((c ^ (c >> 1))&1);
+                q = (q << 1) | ((c >> 1)&1);
+            }
+        }
+        W(f->scratch+4*j) = i | (q << 16);
+    }
+    return 0;
+}
+
+HOT unsigned dvbs2_fast_axis_read(const dvbs2_fast *f, dvbs2_sign_state *s, uint32_t *dst,
+                                  unsigned blocks)
+{
+    unsigned done = 0;
+    const unsigned end = 90+f->data_symbols+36*f->pilot_blocks;
+    while (done < blocks && s->at < end) {
+        const uint8_t *src;
+        unsigned at, n;
+        if (s->at < 90) {
+            src = f->packed_header+24;
+            at = s->at;
+            n = 90-at;
+        } else {
+            const unsigned k = s->at-90;
+            const unsigned run = f->pilots ? k/1476 : 0;
+            const unsigned pos = k-1476*run;
+            if (pos >= 1440 && run < f->pilot_blocks) {
+                src = f->packed_pilots+200;
+                at = 36*run+pos-1440;
+                n = 1476-pos;
+            } else {
+                src = f->scratch;
+                at = k-36*run;
+                const unsigned left = f->data_symbols-at;
+                n = f->pilots && left > 1440-pos ? 1440-pos : left;
+            }
+        }
+        const unsigned room = (blocks-done)*16-s->pending;
+        if (n > room) n = room;
+        uint32_t history = s->history;
+        unsigned pending = s->pending, used = 0;
+        while (used < n) {
+            if (!pending && n-used >= 16) {
+                const unsigned words = (n-used)/16;
+                const uint32_t *p = (const uint32_t *)(src+4*(at/16));
+                const unsigned off = at&15;
+                if (!off) {
+                    memcpy(dst+done,p,4*words);
+                } else {
+#ifdef DVBS2_PIE
+                    if (f->pie & DVBS2_PIE_MAP) {
+                        void dvbs2_qpsk_shift(uint32_t *, const uint32_t *, unsigned, unsigned);
+                        dvbs2_qpsk_shift(dst+done,p,words,off);
+                    } else
+#endif
+                    {
+                        uint32_t prev = *p++;
+                        for (unsigned j = 0; j < words; ++j) {
+                            const uint32_t next = *p++;
+                            const uint32_t i = ((prev << off) | ((next & 0xffff) >> (16-off))) & 0xffff;
+                            const uint32_t q = ((prev >> 16) << off) | (next >> (32-off));
+                            dst[done+j] = i | (q << 16);
+                            prev = next;
+                        }
+                    }
+                }
+                history = dst[done+words-1];
+                at += 16*words, used += 16*words, done += words;
+                continue;
+            }
+            // Append a whole fragment at a PL/page edge, never one symbol at a time.
+            const unsigned off = at&15;
+            unsigned take = 16-pending;
+            if (take > n-used) take = n-used;
+            if (take > 16-off) take = 16-off;
+            const uint32_t w = W(src+4*(at/16));
+            const uint32_t mask = (1u << take)-1;
+            const unsigned shift = 16-off-take;
+            const uint32_t i = (w >> shift)&mask, q = (w >> (shift+16))&mask;
+            const uint32_t old = ((history << take) & (0xffff ^ mask)) |
+                                 (((history >> 16) << take) << 16);
+            history = old | i | (q << 16);
+            at += take, used += take, pending += take;
+            if (pending == 16) {
                 dst[done++] = history;
                 pending = 0;
             }

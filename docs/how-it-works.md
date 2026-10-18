@@ -121,21 +121,28 @@ with OR. For the three vectors in one twelve-sample group, the chronological win
 are [-6..1], [-5..2] and [-3..4]. Table construction sums one whole axis before rounding.
 No addition of independently rounded pulse fragments is needed in the renderer.
 
-The encoder writes eleven-sign histories directly into queue pages, including headers
-and pilots. The renderer selects the appropriate eight-sign window for each vector.
+The encoder queues compact I/Q bit planes, including headers and pilots: forty words
+per page, each holding sixteen signs per axis. Core 1 expands a page into 128 eleven-sign
+histories before rendering it, keeping the expanded page across bank cuts. The renderer
+selects the appropriate eight-sign window for each vector.
 There is no intermediate packed frame ring for this mode. A full queue blocks the
-encoder until the renderer releases eight pages. History survives every frame and bank seam.
+encoder until the renderer releases at least eight pages. One notification at bank end
+wakes it after both callbacks finish. History survives every frame and bank seam.
 
-The 65,536 B shaping store holds `24576 + 54*528 + 4096 + 8144 = 65328 B`:
-axis tables, 54 guarded queue pages, a sign lookup table and the encoder workspace.
+The 65,536 B shaping store holds `24576 + 54*160 + 4096 + 8144 = 45456 B`:
+axis tables, 54 queue page allocations, render scratch and the encoder workspace.
+The former sign lookup storage now holds the expanded page and its readable renderer
+guard. The compact pages also leave room to borrow the radio-off reference input
+from the store instead of allocating it on the heap.
 Each page represents 128 five-symbol groups, or 1,536 samples. Full coverage is
-`54*1536 / 80e6 s = 1.0368 ms`. Internal input and overlap buffers are separate allocations.
+`54*1536 / 80e6 s = 1.0368 ms`. The overlap buffer remains a separate internal allocation.
 Acquire/release counters transfer ownership between cores; physical page cursors remain
 valid through 32-bit counter wrap.
 
 This mode met keyed bank deadlines, but the encoder averaged 237,370 of 239,630 cycles
 per frame. Queue coverage absorbed slower frames. It has not met the proposed 15% reserve,
-and has no demonstrated live-input or RF decode at this rate. [Evidence](measurements.md#40-mhz).
+and has no demonstrated live-input or RF decode at this rate. The compact-queue revision
+still needs board timing qualification. [Evidence](measurements.md#40-mhz).
 
 ## Rates
 

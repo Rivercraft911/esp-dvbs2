@@ -6,10 +6,11 @@
 #define MACHINE_LUT_WORDS 1024
 #define MACHINE_PAGE_BLOCKS 128
 #define MACHINE_PAGE_SAMPLES (12*MACHINE_PAGE_BLOCKS)
+#define MACHINE_PAGE_AXIS_WORDS (5*MACHINE_PAGE_BLOCKS/16)
 #define MACHINE_PAGES 54
 #define MACHINE_WAKE_PAGES 8
 typedef struct {
-    uint32_t signs[MACHINE_PAGE_BLOCKS+1]; // renderer's readable guard belongs to this page
+    uint32_t axes[MACHINE_PAGE_AXIS_WORDS]; // sixteen signs per axis per word
 } __attribute__((aligned(16))) machine_page;
 
 // QPSK sign windows, seven-symbol .20 pulse, twelve samples/five symbols.
@@ -20,6 +21,8 @@ void machine_lut(uint32_t *lut);
 void machine_prepare(uint32_t *dst, const uint8_t *src, unsigned symbol, unsigned blocks,
                      const uint32_t *lut);
 void machine_render(uint32_t *dst, const uint32_t *signs, unsigned blocks, const uint32_t *table);
+// Expand a compact axis page; return rolling eleven-sign history for the next page.
+uint32_t machine_expand(uint32_t *dst, const uint32_t *axes, uint32_t history);
 void machine_samples(uint32_t *dst, const uint32_t *signs, unsigned skip, size_t n,
                      const uint32_t *table);
 void machine_reference(uint32_t *dst, const uint8_t *src, unsigned symbol,
