@@ -1,9 +1,9 @@
 # Pi sender
 
-Send PV-SPI v1 messages from a Linux SBC to the S3's standard raw SPI input.
-See the [message format, wiring, READY rule and commands](../../docs/spi-input.md).
-PigeonVision `pv-capture` works unchanged with `spiinput on` (TS): SPI0/CE0,
-20 MHz, READY on GPIO25. No prefix or bridge is needed.
+Stream a file or stdin from a Linux board (a Raspberry Pi, a CM5) to the S3 over
+single-line SPI, as video packets (TS) or raw bytes (GCS). It wraps the data in the S3's
+1,332-byte messages and waits for READY before each one. The S3 takes it with `spiinput on`.
+See the [wiring, message format and commands](../../docs/spi-input.md).
 
 Enable SPI0 and install Python `spidev` and libgpiod v2 bindings (`gpiod>=2,<3`).
 Use `gpioinfo` to identify the GPIO chip carrying READY; on a CM5 it may be

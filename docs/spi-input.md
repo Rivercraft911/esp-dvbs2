@@ -1,119 +1,152 @@
 # SPI input
 
-Send bytes to the ESP32-S3; it frames, encodes and transmits DVB-S2 on the chip.
-**PV-SPI v1 over raw single-line SPI is the standard input.** PigeonVision's
-`pv-capture` works unchanged: no command, address or dummy prefix.
-TS carries MPEG transport packets; GCS carries arbitrary continuous bytes.
-Choose one stream type per run. TS adaptation is performed by the encoder;
-GCS bytes pass unchanged. No application header is added.
+Give the S3 bytes over SPI and it transmits them: framing, error correction, filler frames
+when the input runs dry, pulse shaping and the radio all happen on the chip. Any board that
+can drive SPI and read one GPIO can be the sender: a Raspberry Pi, another microcontroller,
+an FPGA.
 
-## Message (both wires)
+## Two ways to wire it
 
-Every CS assertion carries exactly **1,332 message bytes**. Multibyte fields
-are little endian; bit order on the wire is MSB first.
+| | Single-line (standard) | Quad |
+|---|---|---|
+| Wires | SCK, CS, MOSI, READY, GND | Single-line plus D1..D3 |
+| Clock | up to 20 MHz | up to 40 MHz |
+| Ideal payload rate | 19.4 Mb/s | 136 Mb/s |
+| Tested on the board | 9 and 12 Mb/s | 46.6 Mb/s |
+| Sender needs | plain SPI writes | a 3-byte command phase + 8 dummy clocks |
+| Select with | `spiinput on` | `spiinput quad` |
 
-| Byte offset | Size | Value |
+Tested rates are the S3 receiving from its own second SPI peripheral (on-chip loopback);
+an external sender at those rates has not been measured on the S3 yet. Ideal rates follow
+from the message size and the gap between messages (below).
+
+## What it carries
+
+| Type | Payload per message | Use |
+|---|---|---|
+| TS | 1 to 7 whole 188-byte MPEG transport-stream packets | Video and audio from any TS source (ffmpeg, a camera pipeline) |
+| GCS | 1 to 1,316 arbitrary bytes | Files, telemetry, anything else |
+| NOP | none | Keep-alive; carries no data |
+
+Choose TS or GCS for a run (`spiinput on ts` or `spiinput on gcs`). TS packets get the
+standard DVB-S2 sync handling; GCS bytes pass through unchanged. When input is slower than
+the mode, the S3 sends DVB-S2 dummy frames and resumes the data in order.
+
+## Which wire for which mode
+
+| Mode | Payload rate | Wire |
 |---|---:|---|
-| 0 | 2 | ASCII `PV` (`50 56`) |
-| 2 | 1 | Version `1` |
-| 3 | 1 | Type: `0` NOP, `1` TS, `2` GCS |
-| 4 | 2 | Sequence; increment for every message, including NOP; wrap at 65536 |
-| 6 | 2 | Valid payload length |
-| 8 | 4 | Reserved, zero |
-| 12 | 1,316 | Payload followed by zero padding |
-| 1328 | 4 | CRC-32 of bytes 0..1327, including padding |
+| 8PSK 2/3, 5 Msym/s | 9.68 Mb/s | Single-line |
+| QPSK 3/4, 10 Msym/s | 14.5 Mb/s | Single-line |
+| 8PSK 2/3, 10 Msym/s | 19.4 Mb/s | Quad (single-line has no headroom) |
+| QPSK 9/10, 26.67 Msym/s | 46.6 Mb/s | Quad, at its tested rate |
+| 8PSK 5/6, 20 Msym/s | 48.4 Mb/s | Quad, above its tested rate |
+| QPSK 9/10, 33.33 Msym/s (40 MHz) | 58.2 Mb/s | Quad, above its tested rate |
 
-NOP has length 0; TS has 1..7 whole 188-byte packets, each starting `0x47`;
-GCS has 1..1,316 bytes. CRC is reflected IEEE CRC-32 (`zlib.crc32`), polynomial
-`0xedb88320`, initial/final XOR `0xffffffff`; `123456789` checks to `0xcbf43926`.
-Check vector: TS sequence 1, one packet `47 01 00 10` followed by bytes 0..183,
-then zero padding, has CRC **`0x51be328d`** (wire bytes `8d 32 be 51`).
+## How messages are framed
 
-Bad headers, lengths, CRCs, TS sync or stream types discard the message.
-Duplicates/backward sequences are discarded; forward gaps are counted (less
-than 32768 missing messages). Start a fresh receiver run when restarting a sender.
+Every CS assertion carries exactly one **1,332-byte message**. Multibyte fields are little
+endian; bits go out MSB first. The format is the one the PigeonVision camera project's
+`pv-capture` sends (hence the `PV` magic and the name PV-SPI v1), so that sender works
+unchanged.
 
-## Wire and READY
+| Bytes | Field | Value |
+|---|---|---|
+| 0..1 | Magic | ASCII `PV` (`50 56`) |
+| 2 | Version | `1` |
+| 3 | Type | `0` NOP, `1` TS, `2` GCS |
+| 4..5 | Sequence | +1 for every message, NOP included; wraps at 65536 |
+| 6..7 | Length | Valid payload bytes |
+| 8..11 | Reserved | zero |
+| 12..1327 | Payload | data, then zero padding to 1,316 bytes |
+| 1328..1331 | CRC-32 | over bytes 0..1327, padding included |
 
-- Mode 0, active-low CS, MSB first. Raw SPI uses D0/MOSI only, up to **20 MHz**;
-  no prefix, exactly 1,332 bytes per CS. MISO is unused.
-- Hold CS setup and hold for at least two SCK periods. After CS rises, wait
-  **at least 10 µs**, then sample READY immediately before the next CS assertion.
-- Send only when READY is high; finish a started message even if it falls.
-  Never queue transfers using an earlier READY sample. READY includes DMA
-  readiness and buffer credit. Low means pause; v1 has no ACK or retry.
-- **Quad option:** up to 40 MHz; send command `0x23`, address `0x00` on D0,
-  then **8 dummy clocks**, then the same 1,332-byte PV message on D0..D3.
-  High nibble first, bit 3 on D3; command/address stay single-line. Same READY rule.
+The CRC is the standard reflected IEEE CRC-32 (`zlib.crc32` in Python): polynomial
+`0xedb88320`, initial and final XOR `0xffffffff`; `123456789` gives `0xcbf43926`.
+Check vector: a TS message with sequence 1 and one packet `47 01 00 10` followed by bytes
+0..183 has CRC **`0x51be328d`** (wire bytes `8d 32 be 51`).
+
+The S3 drops any message with a bad header, length, CRC, TS sync byte or type, and any
+duplicate or backward sequence number. Forward gaps are counted. Restart the S3 run when you
+restart the sender, so sequences start fresh.
+
+## Timing and READY
+
+READY is an S3 output that says it has room for another message.
+
+- SPI mode 0, active-low CS, MSB first. MISO is unused.
+- Hold CS for at least two SCK periods before the first and after the last clock.
+- After CS rises, wait **at least 10 µs**, then read READY right before the next message.
+- Send only while READY is high. Finish a message you started even if READY falls.
+- Never send on an old READY reading. There is no acknowledgement or retry.
+- Quad: send command `0x23` and address `0x00` on D0, then **8 dummy clocks**, then the same
+  1,332-byte message on D0..D3, high nibble first, bit 3 on D3.
+
+The ideal payload rate is one message per transfer plus the 10 µs gap:
+
+```
+R = 8*1316 / ((H + 8*1332/L) / f_SCK + 10e-6)    bit/s
+single-line: H = 0,  L = 1   -> 19.4 Mb/s at 20 MHz
+quad:        H = 24, L = 4   -> 136 Mb/s at 40 MHz
+```
 
 ## Pins
 
-Use 3.3 V logic and common ground.
+3.3 V logic, common ground.
 
-| Signal | DevKit GPIO | XIAO GPIO / label | CM5 IO-board 40-pin header |
+| Signal | DevKit GPIO | XIAO GPIO / label | Raspberry Pi CM5 IO board, 40-pin header |
 |---|---:|---|---|
 | SCK | 12 | 7 / D8 | GPIO11, pin 23 |
 | CS | 10 | 1 / D0 | GPIO8 / CE0, pin 24 |
 | D0 / MOSI | 11 | 2 / D1 | GPIO10, pin 19 |
-| D1 (quad only) | 13 | 4 / D3 | Unconnected for raw SPI |
-| D2 (quad only) | 14 | 5 / D4 | Unconnected |
-| D3 (quad only) | 9 | 6 / D5 | Unconnected |
+| D1 (quad only) | 13 | 4 / D3 | not used |
+| D2 (quad only) | 14 | 5 / D4 | not used |
+| D3 (quad only) | 9 | 6 / D5 | not used |
 | READY (S3 output) | 8 | 8 / D9 | GPIO25 input, pin 22 |
-| GND | GND | GND | Pin 20 or 25 |
-
-Raw SPI needs only SCK, CS, MOSI, READY and GND; leave MISO and D1..D3 disconnected.
+| GND | GND | GND | pin 20 or 25 |
 
 ## Commands
 
 | Console command | Effect |
 |---|---|
-| `spipins devkit` / `spipins xiao` | Choose the pin preset |
-| `spipins SCK CS D0 D1 D2 D3 READY` | Override all seven GPIOs; each must be distinct |
-| `spiinput on [ts\|gcs]` | Standard raw input; TS by default |
-| `spiinput quad [ts\|gcs]` | Quad input, same messages; TS by default |
-| `spiinput off` | Restore synthetic input |
-| `spiinput on [ts\|gcs] loop Mb/s` | On-chip sender for the next run; also works with `quad` |
-| `spirx 3000 on loop 9` | Three-second on-chip receive/pattern check, radio off |
+| `spipins devkit` / `spipins xiao` | Pin preset |
+| `spipins SCK CS D0 D1 D2 D3 READY` | Any seven distinct GPIOs |
+| `spiinput on [ts\|gcs]` | Single-line input for the next run; TS by default |
+| `spiinput quad [ts\|gcs]` | Quad input for the next run |
+| `spiinput off` | Back to the synthetic test payload |
+| `spiinput on [ts\|gcs] loop Mb/s` | On-chip test sender at that rate (also with `quad`) |
+| `spirx 3000 on loop 9` | Three-second receive check with the on-chip sender, radio off |
 
-Input selection applies to the next `dvbdump`, `dvbpace`, `wifimem` or `dvb`;
-it does not start reception or RF. Pin/input choices last until changed or reset.
-
-## Rates
-
-Ideal payload ceiling: `R = 8*1316 / ((H + 8*1332/L)/f_SCK + 10e-6)` bits/s,
-where raw has `(H,L)=(0,1)` and quad `(24,4)`; READY and sender overhead lower it.
-Raw at 20 MHz: **19.396 Mb/s** ideal. Quad at 40 MHz: **136.37 Mb/s** ideal;
-**46.6 Mb/s** was verified standalone, not as an end-to-end encoder rate.
-Encoder payload ceiling: `R = 8*DATA_FIELD_bytes*symbol_rate/PLFRAME_symbols`.
-8PSK 2/3 needs 9.678 Mb/s at 5 Msym/s, 19.357 Mb/s at 10 Msym/s.
-When input runs slower, the S3 emits DVB-S2 dummy frames and resumes data in order.
-At 5 Msym/s, raw loopback polls SPI beside the PSRAM encoder on core 0; the GCS pace test offers 6 Mb/s with dummies.
+Input selection applies to the next `dvbdump`, `dvbpace`, `wifimem` or `dvb`; it does not
+start reception or the radio. Settings last until changed or reset.
 
 ## Test your sender
 
-On the S3 console, select pins, `spiinput on` (or `on gcs`), then
-`dvbpace 13 5m 120` for a radio-off encoder run. Start the sender afterwards
-and stop it several seconds before the S3 run ends so accepted input can drain.
-On a Linux SBC, enable SPI0, install `spidev` and `gpiod>=2,<3`, and use `gpioinfo`
-to find the READY GPIO chip. The [reference sender](../examples/pi-sender/README.md)
-accepts files or stdin, handles short reads and sends one message per transfer:
+On the S3, pick pins, run `spiinput on` (or `spiinput on gcs`), then start a radio-off run
+such as `dvbpace 13 5m 120`. Start the sender after that and stop it a few seconds before the
+run ends so the S3 can drain what it accepted.
+
+The [reference sender](../examples/pi-sender/README.md) runs on a Linux board with SPI0
+enabled, `spidev` and `gpiod>=2,<3` installed (`gpioinfo` finds the READY GPIO chip). It reads
+a file or stdin and sends one message per transfer:
 
 ```sh
-python3 examples/pi-sender/send.py --vector
+python3 examples/pi-sender/send.py --vector            # check the CRC vector, no hardware
 python3 examples/pi-sender/send.py demo.ts --gpiochip /dev/gpiochip4
 python3 examples/pi-sender/send.py bytes.bin --kind gcs --gpiochip /dev/gpiochip4
 ```
 
-Compare sender/S3 `messages`, `payload_bytes`, `next_seq`; for TS also compare
-`ts_packets`, `crc_chain` (CRC-32 chained over each accepted TS message's four CRC
-bytes, initially zero). Require zero protocol/sequence/overrun errors and sender
-timeouts/uncertain writes. A completed write is not an acknowledgement.
+Afterwards the sender's and the S3's `messages`, `payload_bytes` and `next_seq` should match,
+and for TS also `ts_packets` and `crc_chain` (a CRC-32 chained over each accepted message's
+CRC bytes, starting from zero). Protocol, sequence and overrun error counts should be zero.
 
-On-chip loopback needs no jumpers: SPI3 drives SPI2 through the same pads.
-Disconnect external SPI devices before using `loop`. To check the whole input path
-on a flashed board with callsign `N0CALL`, run this radio-off check (about two minutes;
-raw TS/GCS, quad, decoded payloads and synthetic waveform CRCs; logs under `notes/`):
+The on-chip sender needs no jumpers: SPI3 drives SPI2 through the same pads, so disconnect
+external SPI devices before using `loop`. To check the whole input path on a flashed board
+with callsign `N0CALL` (radio off, about two minutes):
 
 ```sh
 PORT=/dev/cu.usbmodem101 PINS=devkit RX=/path/to/leandvb bash host/spi-board.sh
 ```
+
+At 5 Msym/s the on-chip sender shares core 0 with the encoder, which caps it near 8 Mb/s;
+the check offers it 6 Mb/s for raw bytes. External senders don't share that core.
