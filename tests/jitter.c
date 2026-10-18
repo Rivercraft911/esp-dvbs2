@@ -3,11 +3,21 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
+#define MALLOC_CAP_INTERNAL 1
 #define MALLOC_CAP_SPIRAM 4
 #define MALLOC_CAP_8BIT 2
 static int allocation_failed;
-static void *heap_caps_malloc(size_t n, unsigned caps) { (void)caps; return allocation_failed ? NULL : malloc(n); }
-static void heap_caps_free(void *p) { free(p); }
+static unsigned allocation_calls, fail_on_call, allocations, internal_allocations;
+static void *heap_caps_malloc(size_t n, unsigned caps)
+{
+    ++allocation_calls;
+    if (allocation_failed || allocation_calls == fail_on_call) return NULL;
+    if (caps & MALLOC_CAP_INTERNAL) ++internal_allocations;
+    void *p = malloc(n);
+    if (p) ++allocations;
+    return p;
+}
+static void heap_caps_free(void *p) { if (p) --allocations; free(p); }
 #define STREAM_JITTER_HOST
 #define DRAM_ATTR
 #define IRAM_ATTR
@@ -71,7 +81,10 @@ int main(void)
     dispatch_t saved[64]; memcpy(saved,_xt_interrupt_table,sizeof saved);
     for (unsigned i = 0; i < 8; ++i) perf[i] = 17+i;
     uint32_t saved_perf[8]; memcpy(saved_perf,perf,sizeof perf);
+    stream_jitter_enable(0);
+    assert(!allocation_calls && !allocations);
     stream_jitter_enable(1);
+    assert(allocations == 2 && internal_allocations == 1);
     current_core = 1; radio_s3_profile_start(); current_core = 0;
     fire(5);
     assert(cpu[0].irq[0].cycles == 20 && cpu[0].irq[0].max_cycles == 40);
@@ -116,7 +129,7 @@ int main(void)
     assert(!memcmp(saved,_xt_interrupt_table,sizeof saved));
     stream_jitter_enable(0); stream_jitter_core_start(); stream_jitter_core_stop();
     stream_jitter_notify(999);
-    assert(mark.notify_calls == 0);
+    assert(!live);
     assert(!memcmp(saved,_xt_interrupt_table,sizeof saved));
     allocation_failed = 1;
     stream_jitter_enable(1);
@@ -125,5 +138,13 @@ int main(void)
     stream_jitter_notify(999);
     assert(!memcmp(saved,_xt_interrupt_table,sizeof saved));
     stream_jitter_enable(0);
+    assert(!allocations && !live && !report);
+    allocation_failed = 0;
+    fail_on_call = allocation_calls+2; // report succeeds, internal ISR state fails
+    stream_jitter_enable(1);
+    assert(enabled < 0 && !live && !report && !allocations);
+    stream_jitter_core_start(); stream_jitter_core_stop();
+    stream_jitter_enable(0);
+    assert(!allocations);
     return 0;
 }

@@ -11,6 +11,7 @@
 
 #ifdef __XTENSA__
 #include "esp_cpu.h"
+#include "esp_attr.h"
 #include "soc/extmem_reg.h"
 #include "soc/soc.h"
 #endif
@@ -44,7 +45,14 @@ static inline stream_mark_t stream_mark(void)
 #endif
 }
 
-static inline void stream_record(stream_profile_t *p, stream_mark_t a, stream_mark_t b)
+// Keep the repeated 64-bit accumulation out of every fill branch. IRAM shares
+// physical SRAM with the heap on the S3, even when that branch is never used.
+#ifdef __XTENSA__
+#define STREAM_PROFILE_FN static IRAM_ATTR __attribute__((noinline, unused))
+#else
+#define STREAM_PROFILE_FN static inline
+#endif
+STREAM_PROFILE_FN void stream_record(stream_profile_t *p, stream_mark_t a, stream_mark_t b)
 {
     const uint32_t cycles = b.cycles - a.cycles;
     p->cycles += cycles;
@@ -71,7 +79,9 @@ static inline stream_mark_t stream_mark_cycles(void)
 #endif
 }
 
-static inline stream_mark_t stream_mark_for(const stream_profile_t *p)
+STREAM_PROFILE_FN stream_mark_t stream_mark_for(const stream_profile_t *p)
 {
     return p->counters ? stream_mark() : stream_mark_cycles();
 }
+
+#undef STREAM_PROFILE_FN

@@ -514,7 +514,7 @@ static bool lofty_dummy_init(void)
     return true;
 }
 
-static IRAM_ATTR void lofty_splice(uint32_t raw, unsigned skip)
+static LOFTY_TEXT void lofty_splice(uint32_t raw, unsigned skip)
 {
     unsigned bits = 12-skip; // skip is 0 or 6 samples, also 0 or 6 phase bits
     uint32_t h = ((uint32_t)lofty_mux.history<<bits) | ((raw>>12)&((1u<<bits)-1));
@@ -569,8 +569,8 @@ static inline __attribute__((always_inline)) void lofty_boundary(uint32_t ready)
     }
 }
 
-// Dummy rendering and source changes share the data renderer and stay in IRAM.
-static IRAM_ATTR __attribute__((noinline)) unsigned lofty_short(uint32_t *dst, unsigned take)
+// Dummy rendering and source changes share the IRAM vector renderer.
+static LOFTY_TEXT unsigned lofty_short(uint32_t *dst, unsigned take)
 {
     const uint32_t *src;
     unsigned at;
@@ -597,7 +597,7 @@ static __attribute__((noinline)) esp_err_t lofty_fault(uint32_t put, uint32_t ge
     return ESP_FAIL;
 }
 
-static IRAM_ATTR __attribute__((noinline)) esp_err_t lofty_shape(uint32_t *dst, uint64_t first, size_t count)
+static LOFTY_TEXT esp_err_t lofty_shape(uint32_t *dst, uint64_t first, size_t count)
 {
     if (first != lofty_mux.output) return ESP_FAIL;
     const unsigned words = count;
@@ -1048,7 +1048,7 @@ static void release(void)
     heap_caps_free(enc.tables);
     heap_caps_free(enc.table_tail);
     heap_caps_free(enc.pair_bch);
-    if (dvb.lofty) { heap_caps_free(lofty_mux.dummy); lofty_mux.dummy = NULL; }
+    if (dvb.lofty) { heap_caps_free(lofty_mux.dummy); lofty_mux.dummy = NULL; lofty_resident(0); }
     heap_caps_free(enc.fast);
     if (!enc.input_borrowed) heap_caps_free(enc.input);
     enc.input = NULL;
@@ -1190,6 +1190,10 @@ static size_t start_encoder_source(const char *cmd, unsigned modcod, unsigned le
         dvb.prepare_cycles = 0;
         dvb.prepare_pages = 0;
         if (lofty) {
+            if (lofty_resident(1)) {
+                printf("@{\"cmd\":\"%s\",\"error\":\"renderer code residency failed\"}\n",cmd);
+                release(); return 0;
+            }
             // Before the renderer table exists, borrow it to ask the public
             // encoder API for this mode's cache size. Reserve that large block
             // before the context and workspace can split the available heaps.
@@ -1539,7 +1543,10 @@ static void lofty_warm_renderer(void)
 
 esp_err_t radio_s3_stream_ready(void)
 {
-    if (!enc.task || !dvb.lofty || !lofty_mux.queue_auto || lofty_mux.queue_ready) return ESP_OK;
+    if (!enc.task || !dvb.lofty) return ESP_OK;
+    // Wi-Fi setup may have suspended/invalidated cache since prepare.
+    if (lofty_resident(0) || lofty_resident(1)) return ESP_FAIL;
+    if (!lofty_mux.queue_auto || lofty_mux.queue_ready) return ESP_OK;
     const TickType_t started = xTaskGetTickCount()+pdMS_TO_TICKS(100);
     while (!enc.input_started && !enc.failed && (int32_t)(xTaskGetTickCount()-started) < 0) vTaskDelay(1);
     if (!enc.input_started || enc.failed) return ESP_FAIL;
@@ -1623,6 +1630,7 @@ static void stop_encoder(void)
                           LOFTY_STARTUP_FRAMES,(unsigned)lofty_mux.page_max,(unsigned)lofty_mux.rate_misses,(unsigned)lofty_mux.streaming,(unsigned)lofty_mux.admission_max);
     if (dvb.lofty) printf(",\"dummy_startup_frame\":%"PRIi32,(int32_t)lofty_mux.first_dummy_frame);
     if (dvb.lofty) printf(",\"render_warm_cycles\":%"PRIu32,lofty_mux.render_warm_cycles);
+    if (dvb.lofty) printf(",\"renderer_icache_bytes\":%u",(unsigned)lofty_resident_bytes());
     if (dvb.moon && dvb.queue_empty) printf(",\"queue_fault\":{\"produced\":%"PRIu32",\"consumed\":%"PRIu32
         ",\"producer_phase\":%"PRIu32",\"last_wait_produced\":%"PRIu32",\"last_wait_consumed\":%"PRIu32"}",
         dvb.queue_fault.put,dvb.queue_fault.get,dvb.queue_fault.phase,

@@ -8,6 +8,7 @@ idf_component_register(SRCS "${ROOT}/tests/lofty.c"
                            "${ROOT}/firmware/main/lofty.c"
                            "${ROOT}/firmware/main/lofty_pie.S"
                        INCLUDE_DIRS "${ROOT}/firmware/main"
+                       LDFRAGMENTS "${ROOT}/firmware/main/stream.lf"
                        PRIV_REQUIRES dvbs2 esp_system esp_hw_support)
 if(LOFTY_TRACE)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE LOFTY_TRACE=1)

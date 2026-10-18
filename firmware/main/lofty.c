@@ -109,7 +109,7 @@ void lofty_render_pages(uint32_t *dst, const uint32_t *src, unsigned pages,
 }
 #endif
 
-IRAM_ATTR void lofty_samples(uint32_t *dst, const uint32_t *src, unsigned skip, size_t n,
+LOFTY_TEXT void lofty_samples(uint32_t *dst, const uint32_t *src, unsigned skip, size_t n,
                              const uint32_t *table)
 {
     uint32_t tmp[12] __attribute__((aligned(16)));
@@ -125,4 +125,58 @@ IRAM_ATTR void lofty_samples(uint32_t *dst, const uint32_t *src, unsigned skip, 
             n -= take; skip = 0;
         }
     }
+}
+
+#if defined(__XTENSA__) || defined(LOFTY_CACHE_HOST)
+#ifndef LOFTY_CACHE_HOST
+#include "esp32s3/rom/cache.h"
+#include "esp_cpu.h"
+#include "sdkconfig.h"
+_Static_assert(CONFIG_ESP32S3_INSTRUCTION_CACHE_SIZE == 16384 &&
+               CONFIG_ESP32S3_INSTRUCTION_CACHE_LINE_SIZE == 32,
+               "lofty residency requires the qualified 16 KiB / 32-byte cache");
+extern const uint8_t _lofty_text_start[], _lofty_text_end[];
+#endif
+static int resident;
+#endif
+
+size_t lofty_resident_bytes(void)
+{
+#if defined(__XTENSA__) || defined(LOFTY_CACHE_HOST)
+    return resident ? ((uintptr_t)_lofty_text_end-(uintptr_t)_lofty_text_start+31)&~31u : 0;
+#else
+    return 0;
+#endif
+}
+
+int lofty_resident(int on)
+{
+#if defined(__XTENSA__) || defined(LOFTY_CACHE_HOST)
+    if (!!on == resident) return 0;
+    const uint32_t first = (uintptr_t)_lofty_text_start;
+    const uint32_t bytes = ((uintptr_t)_lofty_text_end-(uintptr_t)_lofty_text_start+31)&~31u;
+    if (!on) {
+        int r = Cache_Unlock_Addr(first,bytes);
+        if (!r) resident = 0;
+        return r;
+    }
+    // At most one 4 KiB way of the configured 16 KiB instruction cache.
+    // Load and lock before Wi-Fi/playback; neither task needs a cold flash fetch
+    // at the first data/dummy boundary. The vector renderer remains in IRAM.
+    const uint32_t before = esp_cpu_get_cycle_count();
+    const uint32_t autoload = Cache_Start_ICache_Preload(first,bytes,0);
+    while (!Cache_ICache_Preload_Done()) {
+        if (esp_cpu_get_cycle_count()-before > 240000) {
+            Cache_End_ICache_Preload(autoload);
+            return -1;
+        }
+    }
+    Cache_End_ICache_Preload(autoload);
+    int r = Cache_Lock_Addr(first,bytes);
+    if (!r) resident = 1;
+    return r;
+#else
+    (void)on;
+    return 0;
+#endif
 }

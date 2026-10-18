@@ -2,6 +2,15 @@
 #include <stddef.h>
 #include <stdint.h>
 
+// The small control path is cache-resident only while this mode is active.
+#ifdef __XTENSA__
+#define LOFTY_TEXT __attribute__((section(".lofty"), noinline))
+#else
+#define LOFTY_TEXT __attribute__((noinline))
+#endif
+int lofty_resident(int on);
+size_t lofty_resident_bytes(void);
+
 // Five-symbol .35 pulse, three samples/symbol, four symbols/block.
 #define LOFTY_TABLE_WORDS 9216
 #define LOFTY_BLOCKS 128

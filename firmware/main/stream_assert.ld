@@ -9,3 +9,9 @@ ASSERT(shaper_copy_pie >= 0x40370000 && shaper_copy_pie < 0x403e0000,
        "fractional cut copies must be in IRAM")
 ASSERT(shaper_store >= 0x3fc88000 && shaper_store + 65536 <= 0x3fd00000,
        "fractional tables, queue and scratch must be internal DRAM")
+
+ASSERT((_lofty_text_start & 31) == 0 &&
+       ((_lofty_text_end - _lofty_text_start + 31) & ~31) <= 4096,
+       "lofty control code must fit one aligned instruction-cache way")
+ASSERT(_lofty_text_start >= 0x42000000 && _lofty_text_end < 0x42800000,
+       "lofty control code must have flash backing")

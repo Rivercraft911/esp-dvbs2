@@ -10,3 +10,20 @@ entries:
 archive: libxtensa.a
 entries:
     eri:eri_read (noflash_text)
+
+# Only 8PSK 26m667 loads and locks this control code in instruction cache.
+# Keep the vector renderer in IRAM. All custom literals precede the code.
+[sections:lofty_text]
+entries:
+    .lofty.literal
+    .lofty
+
+[scheme:lofty_text]
+entries:
+    lofty_text -> flash_text
+
+[mapping:lofty_text]
+archive: libmain.a
+entries:
+    * (lofty_text);
+        lofty_text -> flash_text ALIGN(32, pre, post) SURROUND(lofty_text)

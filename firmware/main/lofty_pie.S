@@ -88,7 +88,7 @@ lofty_render_pie:
     .size lofty_render_pages_pie,.-lofty_render_pages_pie
 
 // Eight four-symbol words -> eight offsets. Output aligned; source has 16 guard bytes.
-    .section .iram1.lofty_prepare,"ax"
+    .section .text.lofty_prepare,"ax"
     .global lofty_prepare_pie
     .type lofty_prepare_pie,@function
     .align 4

@@ -37,14 +37,21 @@ typedef struct {
     unsigned used, omitted;
     int installed;
 } cpu_t;
-static DRAM_ATTR cpu_t cpu[2];
 static int enabled;
-static uint32_t perf_saved[5];
 typedef struct {
     uint32_t calls, cycles, data_busy, high_irq_entries;
     uint32_t notify_calls, notify_cycles, notify_max_cycles;
 } mark_t;
-static mark_t mark;
+// ISR-owned state must be internal, but only an observed run needs it.
+typedef struct {
+    cpu_t cpu[2];
+    uint32_t perf_saved[5];
+    mark_t mark;
+} live_t;
+static live_t *live;
+#define cpu (live->cpu)
+#define perf_saved (live->perf_saved)
+#define mark (live->mark)
 typedef struct {
     uint32_t calls, max_cycles, irq_cycles, data_busy, high_irq_entries;
     uint32_t histogram[6];
@@ -92,15 +99,22 @@ static void IRAM_ATTR counted_irq(void *arg)
 void stream_jitter_enable(int on)
 {
     heap_caps_free(report);
+    heap_caps_free(live);
+    live = NULL;
 #if defined(CONFIG_SPIRAM) || defined(STREAM_JITTER_HOST)
     const unsigned caps = MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT;
 #else
     const unsigned caps = MALLOC_CAP_8BIT; // small target-only tests have no PSRAM
 #endif
     report = on ? heap_caps_malloc(sizeof *report,caps) : NULL;
-    enabled = on ? (report ? 1 : -1) : 0;
+    if (report) live = heap_caps_malloc(sizeof *live,MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT);
+    enabled = on ? (report && live ? 1 : -1) : 0;
+    if (enabled < 0) {
+        heap_caps_free(report); report = NULL;
+        heap_caps_free(live); live = NULL;
+    }
     if (report) memset(report,0,sizeof *report);
-    memset(cpu,0,sizeof cpu);
+    if (live) memset(live,0,sizeof *live);
 }
 
 void stream_jitter_core_start(void)
@@ -141,6 +155,7 @@ void stream_jitter_core_start(void)
 
 void stream_jitter_core_stop(void)
 {
+    if (!live) return;
     cpu_t *c = &cpu[esp_cpu_get_core_id()];
     if (!c->installed) return;
     uint32_t mask = portSET_INTERRUPT_MASK_FROM_ISR();
@@ -176,9 +191,10 @@ void radio_s3_profile_stop(void)
     ESP_ERROR_CHECK(esp_ipc_call_blocking(0,stop_other,NULL));
 }
 
-void IRAM_ATTR radio_s3_profile_bank_begin(void)
+// Only an observed run enters the flash bookkeeping. Dormant hooks stay in
+// IRAM without reserving the observer's complete implementation there.
+static __attribute__((noinline)) void bank_begin(void)
 {
-    if (enabled != 1) return;
     cpu_t *c = &cpu[1];
     uint32_t mask = portSET_INTERRUPT_MASK_FROM_ISR();
     mark.calls = c->calls[0]+c->calls[1]+c->calls[2];
@@ -200,9 +216,8 @@ void IRAM_ATTR stream_jitter_notify(uint32_t cycles)
     if (cycles > mark.notify_max_cycles) mark.notify_max_cycles = cycles;
 }
 
-void IRAM_ATTR radio_s3_profile_bank_end(uint32_t cycles, unsigned bank, uint64_t first)
+static __attribute__((noinline)) void bank_end(uint32_t cycles, unsigned bank, uint64_t first)
 {
-    if (enabled != 1) return;
     cpu_t *c = &cpu[1];
     uint32_t mask = portSET_INTERRUPT_MASK_FROM_ISR();
     uint32_t calls = c->calls[0]+c->calls[1]+c->calls[2]-mark.calls;
@@ -230,6 +245,16 @@ void IRAM_ATTR radio_s3_profile_bank_end(uint32_t cycles, unsigned bank, uint64_
         worst.notify_max_cycles = mark.notify_max_cycles;
     }
     portCLEAR_INTERRUPT_MASK_FROM_ISR(mask);
+}
+
+void IRAM_ATTR radio_s3_profile_bank_begin(void)
+{
+    if (enabled == 1) bank_begin();
+}
+
+void IRAM_ATTR radio_s3_profile_bank_end(uint32_t cycles, unsigned bank, uint64_t first)
+{
+    if (enabled == 1) bank_end(cycles,bank,first);
 }
 
 void stream_jitter_print(void)
