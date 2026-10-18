@@ -145,7 +145,7 @@ After setting your assigned callsign, the keyed syntax is:
 
 ```
 tx MHz signal seconds [gain] [40|80]
-dvb MHz MODCOD [5m|10m|20m|26m667|33m333] seconds [gain] [peak]
+dvb MHz MODCOD [5m|10m|20m|26m667|33m333] seconds [gain] [peak] [--fixture]
 ```
 
 `tx` signals are `tone`, `tone1`..`tone511`, `two`, `neg`, `low`, `ionly`, `qonly`,
@@ -154,6 +154,11 @@ dvb MHz MODCOD [5m|10m|20m|26m667|33m333] seconds [gain] [peak]
 Frequencies double at 80 MS/s. `tone128` is the previously measured linear-drive range.
 `dvb` defaults to peak 128, gain 0, and requires at least 16 and at most 508 DAC LSB peak.
 [Rate and MODCOD choices](how-it-works.md#rates).
+
+At QPSK 33m333 or 8PSK 26m667, `--fixture` repeats the prepared synthetic frame
+used by `dvbpace`, with the same payload copy. Payload ingress must be off.
+The record includes `prepared_fixture:true`. This separates encoder/copy time
+from generating the default contiguous xorshift stream.
 
 The automatic transmit-filter selector is retained. Register readbacks do not establish
 filter flatness, radiated power or emission-mask compliance. Historical keyed records in

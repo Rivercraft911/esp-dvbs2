@@ -203,6 +203,8 @@ def queue_suite(send, firmware):
                        queue_sizing=r['queue_sizing'],queue_layout=r['queue_layout'],
                        layout=r['layout'],largest_internal=r['largest_internal'],wifi_largest_up=r['wifi_largest_up'],
                        reference_psram_bytes=r['reference_psram_bytes'],render_warm_cycles=r['render_warm_cycles'])
+            row.update({k:r[k] for k in ('encoder_cache_heap_bytes','encoder_cache_psram_bytes') if k in r})
+            if 'profile' in r: row['fill_phase_cycles'] = r['profile']['fill_phase_cycles']
             if row['setup'] == 'pace':
                 row.update({k:r[k] for k in ('frames_played','dummy_startup','dummy_steady','dummy_alignment',
                             'max_fill_cycles','max_fill_sample','dummy_startup_frame','min_lead_symbols','encode_cycles_mean')})
@@ -239,7 +241,7 @@ def queue_suite(send, firmware):
                if 'max_fill_sample' in row else '')+
               (f"; regions {row['queue_layout']['regions']}" if 'queue_layout' in row else '')+
               (f"; largest after Wi-Fi {row['wifi_largest_up']} B; " +
-               ', '.join(f"{k} {row['layout'][k]}" for k in ('fast','workspace','encoder_tables'))
+               ', '.join(f"{k} {row['layout'][k]}" for k in ('fast','workspace','encoder_tables','encoder_cache_tail') if k in row['layout'])
                if 'queue_sizing' in row else '')+
               (f"; requested {row['requested_bytes']} B, free {row['free_internal']} B, largest {row['largest_internal']} B"
                if 'requested_bytes' in row else '')+

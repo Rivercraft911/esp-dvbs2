@@ -184,9 +184,17 @@ Before building the renderer table, use its existing storage for a temporary
 encoder context and query the public cache-size API. The mode-sized context fits
 inside the 36,864-byte table area. Build the renderer table over it, prepare the
 final context independently and populate the reserved cache through the usual
-API. No pointer from the temporary context survives. This adds no buffer and
-changes no requested live allocation sizes. Cache requests for 13/15/17 remain
-22,960/24,112/24,256 B. QPSK retains its original allocation order.
+API. No pointer from the temporary context survives; no second context buffer
+is allocated. Logical cache sizes for 13/15/17 are 22,960/24,112/24,256 B.
+
+Merging main fbe6d6d brings the qualified compact QPSK axis queue and renderer,
+plus USB/SPI work. The combined linker map consumes 3,616 B more internal RAM
+than 547f3e0. The 8PSK cache now uses its existing split API to put the
+program/columns/CRC tail in PSRAM: 2,912/2,720/2,320 B for 13/15/17. Internal
+requests fall to 20,048/21,392/21,936 B. Mapper, scrambling and BCH tables stay
+internal. The temporary-context allocation order and 54-page queue remain.
+No encoder kernel is edited. QPSK uses main's full resident cache and allocation
+order. Records include `encoder_cache_psram_bytes` and the tail address.
 
 The bounded host fixture has three priority-ordered regions of 16,000, 31,744
 and 19,000 B, with 32 B overhead per allocation. This is a fragmentation
@@ -203,13 +211,28 @@ PSRAM reference and dummy pointers alongside the workspace and encoder tables.
 The coordinator summary now retains that layout, `wifi_largest_up` (with Wi-Fi
 running) and `largest_internal` (after Wi-Fi stops), even when the timing gate
 fails. Cache reservation failure reports the requested size and the current
-free and largest blocks before cleanup. Runtime addresses and largest blocks
-for the new order still need the board. The remaining 303-cycle fill reduction
-is not established by host checks; the fill code and 40,137-cycle gate stay as
-they were.
+free and largest blocks before cleanup.
+
+Round 19 (`notes/eight-lofty-round19/`, 547f3e0, 20 s, radio off, Wi-Fi up)
+measures all three at 54 pages:
+
+| MODCOD | Data frames | Steady dummies | Worst fill, cycles | Encoder mean, cycles | Wi-Fi minimum, B |
+| --- | --- | --- | --- | --- | --- |
+| 13 | 24,028 | 14 | 41,067 | 168,419 | 27,263 |
+| 15 | 24,024 | 36 | 40,974 | 172,772 | 24,803 |
+| 17 | 24,030 | 0 | 40,137 | 152,075 | 23,507 |
+
+Timed 8PSK now skips the per-callback phase marks and profile accumulators.
+`profile.fill_phase_cycles:false` makes their absence explicit. The fill's
+overall timer, the radio's outer bank timer, deadline/late counters, encoder
+stage profiling, handoff timing and notify timing remain. Dumps retain the
+phase profile; QPSK keeps its phase measurements. This removes diagnostic work
+inside the actual fill window. Neither the remaining fill reduction nor the
+PSRAM tail's timing and heap effects have been qualified on the board. Admission
+thresholds and dummy fallback are unchanged.
 
 ```sh
-caffeinate -i python3 host/jitter.py notes/eight-lofty-round19 --queue-gate
+caffeinate -i python3 host/jitter.py notes/eight-lofty-round20 --queue-gate
 ```
 
 This collects keyed-layout `wifimem` and 20-second clean Wi-Fi-up `dvbpace`
@@ -224,6 +247,22 @@ The coordinator's sibling comparison with the same prepared QPSK input measured
 33m333. The earlier apparent radio cost included synthetic xorshift generation.
 Do not subtract a presumed 38,000-cycle radio cost from the 8PSK budget.
 Prepared-input 8PSK keyed timing remains a board measurement to collect.
+
+The prepared source from 40fa63d is available as `dvb ... --fixture` for
+8PSK 26m667 and QPSK 33m333, with payload ingress off. It repeats exactly
+`dvbpace`'s prepared frame, including its copy granularity, through the same
+producer and fill. The record says `prepared_fixture:true`. Native tests replace
+the radio with the dry fill and check every keyed sample against the same
+independent oracle. The default contiguous synthetic stream and golden dump
+CRCs are unchanged. After the radio-off gate, the coordinator's closed-box
+collection at 2412 MHz, gain 0 and peak 128 is:
+
+```sh
+for mc in 13 15 17; do
+  python3 host/board.py "dvb 2412 $mc 26m667 30 0 128 --fixture" \
+    --timeout 75 --out notes/eight-lofty-round20/keyed.jsonl
+done
+```
 
 ## Cold-bank evidence
 

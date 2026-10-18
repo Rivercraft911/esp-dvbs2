@@ -86,6 +86,8 @@ int main(void) {
     assert len(pace) == 9 and all(r['status'] == 'ESP_OK' for r in pace)
     assert all(not r['paced_wifi_up'] and 'wifi_min_free' not in r for r in pace[:7])
     assert all(r['paced_wifi_up'] for r in pace[7:])
+    assert all(not r['profile']['fill_phase_cycles'] and not r['profile']['fill']['whole']['calls'] for r in pace[:8])
+    assert pace[8]['profile']['fill_phase_cycles'] and pace[8]['profile']['fill']['whole']['calls'] > 0
     budget = [r for r in rows if r.get('test') == 'queue_budget']
     assert len(budget) == 18
     for mc in (13,15,17):
@@ -110,6 +112,9 @@ int main(void) {
                 assert not auto['reference_store_bytes'] and int(auto['layout']['reference'],16)
             else: assert auto['input_memory'] == 'none' and not auto['reference_psram_bytes']
             assert int(auto['layout']['dummy'],16)
+            assert int(auto['layout']['encoder_cache_tail'],16)
+            assert auto['encoder_cache_psram_bytes'] == {13:2912,15:2720,17:2320}[mc]
+            assert auto['encoder_cache_heap_bytes']+auto['encoder_cache_psram_bytes'] == auto['encoder_cache_bytes']
     assert [r['queue_pages'] for r in budget[-5:]] == [54,54,0,0,54]
     assert [r['queue_sizing']['ready'] for r in budget[-3:]] == [False,False,True]
     fragmented = [r for r in rows if r.get('test') == 'queue_fragmentation']

@@ -79,6 +79,7 @@ def check(out, receiver=None):
         dumps = [r for r in rows if 'crc32' in r]
         assert len(dumps) == 2 and dumps[0]['crc32'] == dumps[1]['crc32']
         r = dumps[0]
+        assert r['profile']['fill_phase_cycles'] and r['profile']['fill']['whole']['calls'] > 0
         assert r['fill_kernel'] == 'lofty-queue' and r['ring_format'] == 'words'
         assert r['warmup_frames'] == 3 and r['bch_variant'] == ('resident-pair' if mc == 17 else 'split-pair')
         assert r['queue_wake_policy'] == 'bank' and r['queue_wakes'] > 0

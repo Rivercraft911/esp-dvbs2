@@ -186,6 +186,7 @@ typedef struct {
     uint32_t input_frame_cycles_max;
     SemaphoreHandle_t exited;
     uint32_t frames;                // encoded and published
+    uint8_t *table_tail;            // lofty: program/columns/CRC in PSRAM; uses alignment padding
     uint64_t cycles;                // per frame: payload and encoding, raw
     uint32_t min_cycles, max_cycles, live_max_cycles; // live excludes the initial ring prefill
     uint64_t kernel_cycles;        // same-frame interval after payload generation
@@ -719,8 +720,11 @@ static void synthetic_payload(encoder_t *e, size_t bytes, uint32_t *seed)
 static IRAM_ATTR esp_err_t fill(uint32_t *dst, uint64_t first, size_t count, void *ctx)
 {
     (void)ctx;
+    // Keep the bank timer and encoder profiling. Per-phase marks and 64-bit
+    // accumulators belong to untimed 8PSK dumps, not its playback deadline.
+    const bool phases = dvb.profile && (!dvb.lofty || dvb.copy.counters);
     const uint32_t before = esp_cpu_get_cycle_count();
-    const stream_mark_t mark = dvb.profile ? stream_mark_for(&dvb.copy) : (stream_mark_t){0};
+    const stream_mark_t mark = phases ? stream_mark_for(&dvb.copy) : (stream_mark_t){0};
     const size_t requested = count;
     const size_t cache_words = dvb.cached_words;
     // radio_s3 calls this once to the physical bank end, then for the wrapped
@@ -757,24 +761,24 @@ static IRAM_ATTR esp_err_t fill(uint32_t *dst, uint64_t first, size_t count, voi
                     dvb.history, RADIO_S3_BANK_WORDS*dvb.den) < 0) return ESP_FAIL;
     const uint32_t copied = esp_cpu_get_cycle_count() - before;
     const uint64_t w0 = dvb.whole.cycles, p0 = dvb.partial.cycles;
-    if (dvb.profile) stream_record(&dvb.copy, mark, stream_mark_for(&dvb.copy));
+    if (phases) stream_record(&dvb.copy, mark, stream_mark_for(&dvb.copy));
     uint32_t notified = 0, saved = 0;
     if (dvb.moon) {
-        const stream_mark_t whole = dvb.profile ? stream_mark_for(&dvb.whole) : (stream_mark_t){0};
+        const stream_mark_t whole = phases ? stream_mark_for(&dvb.whole) : (stream_mark_t){0};
         if (count && (dvb.lofty ? lofty_shape(dst,first,count) : moon_shape(dst,first,count)) != ESP_OK) return ESP_FAIL;
-        if (dvb.profile) stream_record(&dvb.whole, whole, stream_mark_for(&dvb.whole));
+        if (phases) stream_record(&dvb.whole, whole, stream_mark_for(&dvb.whole));
     } else if (enc.quads) {
-        const stream_mark_t whole = dvb.profile ? stream_mark_for(&dvb.whole) : (stream_mark_t){0};
+        const stream_mark_t whole = phases ? stream_mark_for(&dvb.whole) : (stream_mark_t){0};
         shaper_qpsk_samples(dst, win + 2, first % (4*sps), count, dvb.table.blocks, sps);
-        if (dvb.profile) stream_record(&dvb.whole, whole, stream_mark_for(&dvb.whole));
+        if (phases) stream_record(&dvb.whole, whole, stream_mark_for(&dvb.whole));
     } else (enc.packed ? shaper_samples_codes_profile : shaper_samples_profile)(dst,
         win + SHAPER_HISTORY, first % sps, count, &dvb.table,
-        dvb.profile ? &dvb.whole : NULL, dvb.profile ? &dvb.partial : NULL);
+        phases ? &dvb.whole : NULL, phases ? &dvb.partial : NULL);
     if (enc.packed && count) {
         // The completed bank retains exactly cache_words fresh samples in total.
         // Between callbacks the cache may be incomplete; the second is contiguous
         // and cannot re-read any sample after a first callback that shaped words.
-        const stream_mark_t save = dvb.profile ? stream_mark_for(&dvb.save) : (stream_mark_t){0};
+        const stream_mark_t save = phases ? stream_mark_for(&dvb.save) : (stream_mark_t){0};
         const size_t keep = count < save_words ? count : save_words;
         const uint32_t *suffix = dst + count - keep;
         if (keep == cache_words) {
@@ -789,7 +793,7 @@ static IRAM_ATTR esp_err_t fill(uint32_t *dst, uint64_t first, size_t count, voi
             if (dvb.sample_at >= cache_words) dvb.sample_at -= cache_words;
         }
         dvb.sample_end = first + count;
-        if (dvb.profile) {
+        if (phases) {
             const stream_mark_t after = stream_mark_for(&dvb.save);
             stream_record(&dvb.save, save, after);
             saved = after.cycles - save.cycles;
@@ -799,11 +803,11 @@ static IRAM_ATTR esp_err_t fill(uint32_t *dst, uint64_t first, size_t count, voi
     // notification until both callbacks finish; preserve it across callbacks.
     if (dvb.ring.freed != freed && enc.packed && !dvb.moon) dvb.wake_pending = true;
     if (dvb.wake_pending && bank_done) {
-        const stream_mark_t wake = dvb.profile ? stream_mark_for(&dvb.notify) : (stream_mark_t){0};
+        const stream_mark_t wake = phases ? stream_mark_for(&dvb.notify) : (stream_mark_t){0};
         if (dvb.moon) moon_wake();
         else xTaskNotifyGive(enc.task);
         dvb.wake_pending = false;
-        if (dvb.profile) {
+        if (phases) {
             const stream_mark_t after = stream_mark_for(&dvb.notify);
             stream_record(&dvb.notify, wake, after);
             notified = after.cycles - wake.cycles;
@@ -1042,6 +1046,7 @@ static void release(void)
     heap_caps_free(dvb.samples);
     dvb.samples = NULL;
     heap_caps_free(enc.tables);
+    heap_caps_free(enc.table_tail);
     heap_caps_free(enc.pair_bch);
     if (dvb.lofty) { heap_caps_free(lofty_mux.dummy); lofty_mux.dummy = NULL; }
     heap_caps_free(enc.fast);
@@ -1058,7 +1063,7 @@ static void release(void)
         heap_caps_free(enc.slots);
         heap_caps_free(enc.filler);
     }
-    enc.tables = enc.pair_bch = NULL;
+    enc.tables = enc.table_tail = enc.pair_bch = NULL;
     enc.fast = NULL, enc.ws = NULL, enc.bch = enc.block = enc.payload = enc.slots = enc.filler = NULL;
     enc.task = NULL;
 }
@@ -1194,9 +1199,11 @@ static size_t start_encoder_source(const char *cmd, unsigned modcod, unsigned le
                 printf("@{\"cmd\":\"%s\",\"error\":\"encoder cache sizing failed\"}\n",cmd);
                 release(); return 0;
             }
-            const size_t bytes = dvbs2_fast_cache_size(probe)+DVBS2_LOFTY_CACHE_BYTES;
+            const size_t tail = dvbs2_fast_cache_tail_size(probe);
+            const size_t bytes = dvbs2_fast_cache_size(probe)-tail+DVBS2_LOFTY_CACHE_BYTES;
             enc.tables = heap_caps_aligned_alloc(16,bytes,internal);
-            if (!enc.tables) {
+            if (enc.tables) enc.table_tail = heap_caps_aligned_alloc(16,tail,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+            if (!enc.tables || !enc.table_tail) {
                 printf("@{\"cmd\":\"%s\",\"error\":\"encoder cache allocation failed\",\"modcod\":%u,"
                        "\"requested_bytes\":%u,\"free_internal\":%u,\"largest_internal\":%u}\n",
                        cmd,modcod,(unsigned)bytes,(unsigned)heap_caps_get_free_size(internal),
@@ -1352,9 +1359,10 @@ static size_t start_encoder_source(const char *cmd, unsigned modcod, unsigned le
     }
     if (moon) {
         const size_t cache = dvbs2_fast_cache_size(enc.fast);
+        const size_t heap = cache-(lofty ? dvbs2_fast_cache_tail_size(enc.fast) : 0);
         if (!lofty) enc.tables = heap_caps_aligned_alloc(16,cache,internal);
-        if (!enc.tables || dvbs2_fast_cache_tables(enc.fast,enc.tables) ||
-            (lofty && dvbs2_fast_lofty_cache(enc.fast,(uint32_t *)(enc.tables+cache)))) {
+        if (!enc.tables || dvbs2_fast_cache_split(enc.fast,enc.tables,enc.table_tail) ||
+            (lofty && dvbs2_fast_lofty_cache(enc.fast,(uint32_t *)(enc.tables+heap)))) {
             heap_caps_free(taps); release();
             printf("@{\"cmd\":\"%s\",\"error\":\"encoder cache allocation failed\"}\n",cmd);
             return 0;
@@ -1656,10 +1664,9 @@ static void stop_encoder(void)
                          (unsigned)dvb.prepare_pages,(unsigned)dvb.prepare_max,(unsigned)dvb.prepare_tail_max,dvb.prepare_cycles,(dvb.lofty ? LOFTY_TABLE_WORDS : MACHINE_TABLE_WORDS)*4,
                          (unsigned)(dvbs2_fast_cache_size(enc.fast)+(dvb.lofty ? DVBS2_LOFTY_CACHE_BYTES : 0)));
     if (dvb.moon) {
-        const size_t total = dvbs2_fast_cache_size(enc.fast)+(dvb.lofty ? DVBS2_LOFTY_CACHE_BYTES : 0);
         const size_t heap = heap_caps_get_allocated_size(enc.tables);
-        printf(",\"encoder_cache_heap_bytes\":%u,\"encoder_cache_store_bytes\":%u",
-               (unsigned)heap,(unsigned)(total-heap));
+        printf(",\"encoder_cache_heap_bytes\":%u,\"encoder_cache_store_bytes\":0,\"encoder_cache_psram_bytes\":%u",
+               (unsigned)heap,enc.table_tail ? (unsigned)dvbs2_fast_cache_tail_size(enc.fast) : 0);
     }
     printf(",\"workspace_memory\":\"%s\",\"workspace_bytes\":%u,\"fast_bytes\":%u,"
            "\"workspace_heap_bytes\":%u,\"fast_heap_bytes\":%u,\"bch_cache_heap_bytes\":%u,"
@@ -1691,16 +1698,17 @@ static void stop_encoder(void)
         printf(i ? ",\"0x%" PRIxPTR "\"" : "\"0x%" PRIxPTR "\"", (uintptr_t)r->slots[i]);
     }
     printf("]");
-    if (dvb.lofty) printf(",\"reference\":\"0x%"PRIxPTR"\",\"dummy\":\"0x%"PRIxPTR"\"",
-                          (uintptr_t)enc.input,(uintptr_t)lofty_mux.dummy);
+    if (dvb.lofty) printf(",\"reference\":\"0x%"PRIxPTR"\",\"dummy\":\"0x%"PRIxPTR"\",\"encoder_cache_tail\":\"0x%"PRIxPTR"\"",
+                          (uintptr_t)enc.input,(uintptr_t)lofty_mux.dummy,(uintptr_t)enc.table_tail);
     printf("}");
     if (dvb.profile) {
         printf(",\"profile\":{\"cache_scope\":\"both cores and interrupts; windows overlap\","
-               "\"fill_counters\":%s,\"fill_calls\":%" PRIu32 ",\"fill_words\":%" PRIu64
+               "\"fill_counters\":%s,\"fill_phase_cycles\":%s,\"fill_calls\":%" PRIu32 ",\"fill_words\":%" PRIu64
                ",\"fill_cycles\":%" PRIu64 ",\"worst_call\":{\"copy\":%" PRIu32 ",\"whole\":%" PRIu32
                ",\"partial\":%" PRIu32 ",\"save\":%" PRIu32 ",\"notify\":%" PRIu32 "},"
                "\"shaped_words\":%" PRIu64 ",\"reused_words\":%" PRIu64 ",\"fill\":{",
-               dvb.copy.counters ? "true" : "false", dvb.fill_calls, dvb.fill_words,
+               dvb.copy.counters ? "true" : "false", !dvb.lofty || dvb.copy.counters ? "true" : "false",
+               dvb.fill_calls, dvb.fill_words,
                dvb.fill_cycles, dvb.worst_copy, dvb.worst_whole, dvb.worst_partial,
                dvb.worst_save, dvb.worst_notify, dvb.shaped_words, dvb.reused_words);
         print_profile("copy", &dvb.copy); printf(",");

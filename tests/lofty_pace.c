@@ -147,14 +147,15 @@ static void fragmented_order(unsigned mc)
     void *ws = heap_caps_aligned_alloc(16,DVBS2_FAST_WORKSPACE_USED,caps);
     assert(fast && ws && !dvbs2_fast_prepare(fast,mode,1,15));
     const size_t bytes = dvbs2_fast_cache_size(fast)+DVBS2_LOFTY_CACHE_BYTES;
-    void *cache = heap_caps_aligned_alloc(16,bytes,caps);
+    const size_t tail = dvbs2_fast_cache_tail_size(fast);
+    void *cache = heap_caps_aligned_alloc(16,bytes-tail,caps);
     assert(!!cache == (mc == 13)); // old order reproduces the mode-dependent failure
     heap_caps_free(cache); heap_caps_free(ws); heap_caps_free(fast);
     assert(!live_allocations && !memcmp(region_free,region_size,sizeof region_free));
     for (unsigned fixture = 0; fixture < 2; ++fixture) {
         first_request = 0;
         queue_budget(mc,fixture,true,32000,54,0); // actual producer, fill and teardown
-        assert(first_request == bytes); // cache reserved before context or workspace
+        assert(first_request == bytes-tail); // resident prefix precedes context/workspace
         assert(!memcmp(region_free,region_size,sizeof region_free));
     }
     fragmented = false;
@@ -168,6 +169,7 @@ static esp_err_t pace(bool wifi, uint32_t sec, uint32_t rate, radio_s3_fill_fn f
     assert(dvb.queue_pages == expect_pages && !dvb.trace && !dvb.trace_state);
     assert(!dvb.page_wake);
     if (dvb.lofty) {
+        assert(enc.table_tail && esp_ptr_external_ram(enc.table_tail));
         assert(!enc.ws_borrowed && heap_caps_get_allocated_size(enc.ws) == DVBS2_FAST_WORKSPACE_USED);
         const unsigned extra = expect_pages > LOFTY_STORED ? expect_pages-LOFTY_STORED : 0;
         if (extra) assert(heap_caps_get_allocated_size(enc.block) == extra*sizeof(lofty_page));
@@ -187,6 +189,11 @@ static esp_err_t pace(bool wifi, uint32_t sec, uint32_t rate, radio_s3_fill_fn f
     }
     assert(!dvb.queue_empty && !dvb.ring.underruns);
     if (dvb.lofty) assert(lofty_mux.frames == 8 && !lofty_mux.startup && !lofty_mux.steady);
+    if (dvb.lofty) {
+        assert(!dvb.copy.calls && !dvb.whole.calls && !dvb.save.calls && !dvb.notify.calls);
+        assert(dvb.fill_calls);
+        if (dvb.profile) assert(enc.stage[0].calls && enc.stage[4].calls);
+    } else assert(dvb.copy.calls && dvb.whole.calls);
     memset(stats,0,sizeof *stats);
     return ESP_OK;
 }
