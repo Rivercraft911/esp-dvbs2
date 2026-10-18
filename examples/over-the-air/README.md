@@ -143,3 +143,38 @@ planned two samples/symbol, decoded in the existing LeanDVB build with exact pay
 and zero LDPC/BCH corrections. QPSK 3/4 at 5 and 10 Msym/s and QPSK 9/10 at 10 Msym/s
 recovered 15/16 frames; 8PSK 2/3 at 10 Msym/s recovered 13/16. A historical USB dump
 without callsign headers was rejected. These checks did not access hardware or RF.
+
+## E200 mixed VCM with axis tables
+
+`e200_vcm.py` adapts the conventional VCM coordinator for `exp/modswap`.
+For the coordinator in the closed Faraday box, with the E200 TX inhibited:
+
+```sh
+python3 examples/over-the-air/e200_vcm.py notes/e200-axis5m-ota \
+  --axes --pattern 4,11,13,17 --hold 1 --rate 5m \
+  --fs 10000000 --burst 0 --seconds 30 --key --keep
+```
+
+Use a fresh output directory. Add `--plan` to print the commands without accessing
+either device. `--burst 0` streams int16 I/Q at 10 MS/s, with a two-second receiver
+preroll and 340,000,000 complex samples total. `--keep` retains successful captures.
+The E200 TX LO remains powered down and DDS channels zeroed.
+
+Mixed 5m requires `--axes`; this build rejects axes at other symbol rates. Before
+keying, the script requires acknowledgment of `vcm axes on` and the complete
+`vcm 1 4 11 13 17` pattern. It attempts both `vcm off` and `vcm axes off` in a
+`finally` block after preparation/capture, including failures, and records their
+acknowledgments in `cleanup.json`. Failed cleanup prevents a passing verdict.
+
+LeanDVB verification checks every recovered BBHEADER and payload byte against the
+host model at consecutive frame indices, with matching ordered PLS MODCODs and
+counts for all four modes. Acquisition can lose capture edges; interior loss,
+corruption, failed FEC attempts, board dummies, late fills/switches, fatal errors,
+or the wrong axis renderer fail. `--decode-only` and `--recheck` use saved evidence
+without device access. Device-free regression tests cover setup, streaming,
+strict verification and cleanup, including failure paths:
+
+```sh
+python3 tests/test_e200_vcm.py
+python3 tests/test_vcm_decode.py
+```
