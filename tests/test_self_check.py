@@ -55,7 +55,8 @@ def row(mc, token):
     return dict(status="ESP_OK", encoder_failed=False, encoder_timed=True,
                 modcod=mc, callsign="N0CALL", sps=num/den, symbol_rate=rate*den//num,
                 rolloff=.20 if den == 5 else .35, frame_symbols=33282 if mc < 12 else 22194,
-                pulse_symbols=7 if den == 5 else 6 if mc >= 12 and rate == 80000000 else 9,
+                pulse_symbols=7 if den == 5 else 5 if mc >= 12 and num == 3 else
+                              6 if mc >= 12 and rate == 80000000 else 9,
                 underruns=0, stall_ms=0, dac_rate=rate, seconds=10,
                 late_fills=0, late_switches=0, fatal_late=0, min_fill_slack_cycles=1,
                 frames_played=1, encoder_pie=15, frames_encoded=20, prefill_frames=3,
@@ -81,6 +82,39 @@ def test_pace_and_crc():
         rejects(check.check_dump, rows, path, "11/4/80/16", {"11/4/80/16": crc^1})
         path.write_bytes(data[:-4])
         rejects(check.check_dump, rows, path, "11/4/80/16", {"11/4/80/16": crc})
+
+
+def test_8psk_gates():
+    records = ROOT/"docs/measurements"
+    pace = [json.loads(line) for line in
+            (records/"2026-10-18-8psk-26m667-pace.jsonl").read_text().splitlines()]
+    assert {r["modcod"] for r in pace} == {13, 15, 17}
+    for r in pace:
+        mc = r["modcod"]
+        keyed = next(json.loads(line) for line in
+            (records/"2026-10-18-8psk-26m667-keyed.jsonl").read_text().splitlines()
+            if json.loads(line)["modcod"] == mc)
+        assert check.PSK8_KEYED[mc] == tuple(keyed[k] for k in
+            ("max_fill_cycles", "encode_cycles_mean", "encode_cycles_live_max"))
+        check.check_pace([r], mc, "26m667", 20)
+        fill, mean, live = check.PSK8_KEYED[mc]
+        for key, value in (("max_fill_cycles", fill + check.FILL_OVERHEAD + 1),
+                           ("encode_cycles_mean", mean + check.ENCODER_OVERHEAD + 1),
+                           ("encode_cycles_live_max", live + check.ENCODER_OVERHEAD + 1),
+                           ("dummy_steady", 20 * check.PSK8_DUMMIES_PER_SECOND[mc] + 1),
+                           ("dummy_startup", 5), ("queue_stream_bound_misses", 2),
+                           ("frames_played", 10), ("queue_pages", 50),
+                           ("wifi_min_free", 19999), ("queue_empty", 1),
+                           ("queue_sizing", dict(automatic=True, ready=False))):
+            rejects(check.check_pace, [dict(r, **{key: value})], mc, "26m667", 20)
+        # Ten-second self-check runs scale dummy and data limits, not timing ceilings.
+        short = dict(r, seconds=10, dummy_steady=r["dummy_steady"]//2,
+                     frames_played=r["frames_played"]//2)
+        check.check_pace([short], mc, "26m667", 10)
+        rejects(check.check_pace, [dict(short, dummy_steady=10*check.PSK8_DUMMIES_PER_SECOND[mc]+1)],
+                mc, "26m667", 10)
+    assert "17/3/80/16" in check.DUMPS
+    assert all((mc, "26m667", 10) in check.PACES for mc in (13, 15, 17))
 
 
 def test_keep_going():
@@ -149,6 +183,7 @@ def test_tones():
 if __name__ == "__main__":
     test_decode()
     test_pace_and_crc()
+    test_8psk_gates()
     test_keep_going()
     test_tones()
     print("self-check: corrupt samples/status rejected, plan needs no devices, failures keep going; no TX commands")

@@ -1,6 +1,6 @@
 # Radio-off self-check
 
-Pass means the firmware revision matches the checkout, all six sample dumps match their
+Pass means the firmware revision matches the checkout, all seven sample dumps match their
 original CRCs and decode as contiguous exact payloads in LeanDVB, every paced run keeps
 its bank deadlines, and Wi-Fi startup retains its measured heap floor. A failure makes
 the final exit status nonzero. The script prints the complete criteria before any command,
@@ -56,13 +56,14 @@ the board helper also detects one unambiguous native USB port when that default 
 `LEANDVB` can supply the receiver path instead of `--receiver`.
 
 The expected duration is about five minutes, depending on USB and receiver speed.
-There are six 16-frame dumps, nine paces (eight 10 s and one 20 s) and one heap check.
+There are seven 16-frame dumps, twelve paces (eight 5 s and four 10 s) and one heap check.
 Each pace adds the stored callsign's start/end IDs to its payload time. N0CALL adds
-10.44 s per pace, so pacing alone accounts for about 194 s. Dump transport and decoding
+10.44 s per pace, so pacing alone accounts for about 205 s. Dump transport and decoding
 make up the rest. A failing or stalled device can take longer because each command times out.
 
 The selected modes cover 1 Msym/s QPSK, 5 Msym/s 8PSK, 20 Msym/s QPSK/8PSK,
-26.67 Msym/s QPSK and 33.33 Msym/s QPSK. Paces also cover QPSK at 5/10 Msym/s
+26.67 Msym/s QPSK/8PSK and 33.33 Msym/s QPSK. The new 8PSK dump uses MODCOD 17;
+10 s paces cover 13, 15 and 17 at `26m667`. Paces also cover QPSK at 5/10 Msym/s
 and 8PSK at 10 Msym/s. CI checks every supported modulation/rate combination on the host.
 
 For N dumped frames, LeanDVB must return at least N-2 contiguous QPSK frames.
@@ -73,13 +74,32 @@ CRC fixtures use peak 128, pilots on and callsign N0CALL.
 
 All paces require ESP_OK, zero underruns/late fills/late switches/fatal lateness, positive
 slack, a live encoder with all four PIE stages, at least 512 B encoder stack headroom,
-and `shaped_words + reused_words == fill_words`. The 40 MHz queue must not starve and
+and `shaped_words + reused_words == fill_words`. The 36 MHz 8PSK and 40 MHz QPSK queues must not starve and
 must retain at least 20,000 B internal RAM with Wi-Fi up. The separate 8PSK 9/10 `5m`
 heap check retains the original 22,351 B Wi-Fi-up and command-minimum floors.
 
-This enforces functional deadlines rather than a reserve threshold. The 40 MHz mode met
-15% reserve on both cores in one 30 s keyed run ([e96795b](../../docs/measurements.md#40-mhz)).
-Compare saved timing and heap records when evaluating a performance change.
+8PSK `26m667` additionally checks the keyed eee5153 figures with explicit profiling
+allowances of 4,500 fill cycles and 10,000 encoder cycles:
+
+| MODCOD | Max fill, cycles | Encoder mean / live max, cycles | Max steady dummies/s |
+|---|---:|---:|---:|
+| 13 | 43,919 | 182,076 / 249,463 | 180 |
+| 15 | 43,303 | 186,477 / 261,019 | 220 |
+| 17 | 43,463 | 168,719 / 223,647 | 6 |
+
+The measured 20 s paces added up to 3,894 fill and 7,023 mean encoder cycles,
+with 173.6 / 213.1 / 5.0 steady dummies per second. These limits bound that cost;
+they do not assert zero dummies or full-rate payload in a profiled pace. At most
+four startup dummies and one cold production-bound miss are allowed. All 54 pages
+must pass automatic heap admission. For payload duration T and steady-dummy cap C,
+at least `floor((T*80e6/3 - (C+4)*3330)/22194)-1` data frames must play. The extra
+frame accounts for the ending partial frame. This rejects excessive lost airtime
+independently of the dummy counters. [Keyed and pace evidence](../../docs/measurements.md#8psk-at-36-mhz).
+
+Other modes enforce functional deadlines. These checks do not enforce a 15% reserve.
+The 40 MHz mode met 15% reserve on both cores in one 30 s keyed run
+([e96795b](../../docs/measurements.md#40-mhz)). Compare saved timing and heap records
+when evaluating a performance change.
 
 The output contains the host commit and expected firmware revision, the board's actual
 `info` record, raw command JSON lines, IQ dumps, receiver logs/JSON and a pass/fail summary.

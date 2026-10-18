@@ -15,10 +15,23 @@ import zlib
 
 ROOT = Path(__file__).resolve().parents[2]
 DUMPS = ("4/40/40/16", "13/8/40/16", "11/4/80/16",
-         "15/4/80/16", "11/3/80/16", "11/12/80/16")
-PACES = ((4, "", 10), (11, "5m", 10), (11, "10m", 10),
-         (11, "20m", 10), (11, "26m667", 10), (11, "33m333", 20),
-         (17, "5m", 10), (13, "10m", 10), (15, "20m", 10))
+         "15/4/80/16", "11/3/80/16", "11/12/80/16", "17/3/80/16")
+PACES = ((4, "", 5), (11, "5m", 5), (11, "10m", 5),
+         (11, "20m", 5), (11, "26m667", 5), (11, "33m333", 10),
+         (17, "5m", 5), (13, "10m", 5), (15, "20m", 5),
+         (13, "26m667", 10), (15, "26m667", 10), (17, "26m667", 10))
+
+# eee5153 keyed records: longest bank fill, encoder mean and live maximum.
+# Wi-Fi-up pace records add <=3894 fill cycles and <=7023 encoder mean cycles.
+# Fixed allowances stay below a bank deadline / frame duration; no 15% claim.
+PSK8_KEYED = {13: (39419, 172076, 239463),
+              15: (38803, 176477, 251019),
+              17: (38963, 158719, 213647)}
+FILL_OVERHEAD = 4500
+ENCODER_OVERHEAD = 10000
+# Steady dummies/s observed over 20 s: 173.6, 213.1, 5.0. Bound both their
+# count and the resulting data throughput; losing arbitrary airtime must fail.
+PSK8_DUMMIES_PER_SECOND = {13: 180, 15: 220, 17: 6}
 
 
 def mode(token):
@@ -45,7 +58,9 @@ def stream(rows, mc, token):
     assert r["encoder_timed"] and r["modcod"] == mc and r["callsign"] == "N0CALL", r
     assert r["sps"] == num / den and r["symbol_rate"] == rate * den // num, r
     assert r["rolloff"] == (.20 if den == 5 else .35), r
-    assert r["pulse_symbols"] == (7 if den == 5 else 6 if mc >= 12 and rate == 80000000 else 9), r
+    assert r["pulse_symbols"] == (7 if den == 5 else
+                                  5 if mc >= 12 and num == 3 else
+                                  6 if mc >= 12 and rate == 80000000 else 9), r
     assert r["underruns"] == r["stall_ms"] == 0, r
     return r
 
@@ -77,7 +92,7 @@ def check_decode(r, mc, frames):
 
 def check_pace(rows, mc, token, seconds):
     r = stream(rows, mc, token)
-    _, den, rate = mode(token)
+    num, den, rate = mode(token)
     assert r["seconds"] == seconds and r["dac_rate"] == rate, r
     assert all(r[k] == 0 for k in ("late_fills", "late_switches", "fatal_late")), r
     assert r["min_fill_slack_cycles"] > 0 and r["frames_played"] > 0, r
@@ -85,9 +100,21 @@ def check_pace(rows, mc, token, seconds):
     assert r["encoder_stack_min_free"] >= 512, r
     profile = r["profile"]
     assert profile["shaped_words"] + profile["reused_words"] == profile["fill_words"], r
-    if den == 5:
+    if den == 5 or (mc >= 12 and num == 3):
         assert r["paced_wifi_up"] and r["wifi_free_up"] >= 20000 and r["wifi_min_free"] >= 20000, r
         assert r["queue_empty"] == 0 and r["queue_low_pages"] > 0, r
+    if mc >= 12 and num == 3:
+        fill, mean, live = PSK8_KEYED[mc]
+        assert 0 < r["max_fill_cycles"] <= fill + FILL_OVERHEAD < 47220, r
+        assert 0 < r["encode_cycles_mean"] <= mean + ENCODER_OVERHEAD < 199746, r
+        assert 0 < r["encode_cycles_live_max"] <= live + ENCODER_OVERHEAD, r
+        assert r["queue_pages"] == 54 and r["queue_sizing"]["automatic"] and r["queue_sizing"]["ready"], r
+        assert r["queue_stream_bound_misses"] <= 1, r  # one observed cold calibration miss
+        dummy_limit = PSK8_DUMMIES_PER_SECOND[mc] * seconds
+        assert 0 <= r["dummy_startup"] <= 4 and 0 <= r["dummy_steady"] <= dummy_limit, r
+        # Subtract the entire allowed dummy airtime, plus one partial data frame.
+        minimum = (seconds * rate // num - (dummy_limit + 4) * 3330) // 22194 - 1
+        assert r["frames_played"] >= minimum, r
 
 
 def main():
@@ -98,7 +125,7 @@ def main():
     p.add_argument("--receiver", default=os.environ.get("LEANDVB", "leandvb"))
     a = p.parse_args()
     golden = {}
-    for name in ("waveform_crcs.json", "moon_stream_crcs.json"):
+    for name in ("waveform_crcs.json", "moon_stream_crcs.json", "psk8_26m667_crcs.json"):
         golden.update(json.loads((ROOT/"tests/data"/name).read_text()))
     revision = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, text=True).strip()
     if subprocess.run(["git", "diff", "--quiet", "HEAD"], cwd=ROOT).returncode:
@@ -117,7 +144,18 @@ def main():
     for mc, token, seconds in PACES:
         command = f"dvbpace {mc} {token} {seconds}".replace("  ", " ")
         print(f"  {command}" + ("  # 1 Msym/s" if not token else ""))
-    print("These gates enforce functional deadlines, not reserve thresholds.")
+    print("8PSK 26m667: 54 ready pages; no empty queue; Wi-Fi free/min >=20000 B;")
+    print("  <=4 startup dummies, <=1 cold bound miss; bounded steady dummies and data throughput.")
+    for mc, (fill, mean, live) in PSK8_KEYED.items():
+        dummy_limit = 10 * PSK8_DUMMIES_PER_SECOND[mc]
+        minimum = (10 * 80000000 // 3 - (dummy_limit + 4) * 3330) // 22194 - 1
+        print(f"  {mc}: fill <= {fill+FILL_OVERHEAD}, encoder mean/live <= "
+              f"{mean+ENCODER_OVERHEAD}/{live+ENCODER_OVERHEAD} cycles; "
+              f"steady dummies <= {PSK8_DUMMIES_PER_SECOND[mc]}/s; "
+              f">={minimum} data frames in 10 s.")
+    print("8PSK ceilings: eee5153 keyed +4500 fill / +10000 encoder cycles for profiling;")
+    print("  pace dummies are measured overhead, not evidence of full-rate keyed throughput.")
+    print("Other modes enforce functional deadlines. These are not 15% reserve gates.")
     print("40 MHz met 15% reserve on both cores in one 30 s keyed run (e96795b); see docs/measurements.md.")
     print("wifimem 17 5m: Wi-Fi startup succeeds; free/up and command minimum both >=22351 B.")
     print("Keep going after failures; save IQ, logs, revision and summary; any failure exits 1.", flush=True)
