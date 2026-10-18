@@ -14,6 +14,9 @@ jobs:
       - run: python tests/test_dvbs2_8psk.py
       - run: python tests/test_dvbs2_c.py
       - run: python tests/test_stream.py
+      - run: python tests/test_shaper_axes.py
+      - run: python tests/test_vcm.py
+      - run: python tests/test_vcm_decode.py
       - run: python tests/test_rational.py
       - run: python tests/test_8psk_26m667.py
       - run: python tests/test_8psk_queue.py
@@ -24,6 +27,7 @@ jobs:
       - run: python tests/test_self_check.py
       - run: python tests/test_live_video.py
       - run: python tests/test_ota.py
+      - run: python tests/test_ota_vcm.py
       - name: SPI input
         run: |
           python tests/test_ingress.py

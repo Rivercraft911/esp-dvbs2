@@ -30,7 +30,22 @@ RATES = {"1m": 1e6, "5m": 5e6, "10m": 10e6, "20m": 20e6,
          "26m667": 80e6 / 3, "33m333": 100e6 / 3}
 
 
+def vcm_command(a):
+    return f"vcm {a.hold} " + " ".join(map(str, a.pattern))
+
+
 def settings(a):
+    if a.pattern:
+        if (not 1 <= len(a.pattern) <= 16 or any(mc not in range(4, 18) for mc in a.pattern)
+                or not 1 <= a.hold <= 65535):
+            raise ValueError("need 1..16 MODCODs in 4..17 and --hold 1..65535")
+        mixed = any(mc < 12 for mc in a.pattern) and any(mc >= 12 for mc in a.pattern)
+        if mixed and a.rate == "10m":
+            raise ValueError("mixed VCM 10m exceeds encoder budget; use 5m (automatic axes)")
+        if (a.rate not in ("1m", "5m", "10m") or (mixed and a.rate != "5m")
+                or (a.rate == "1m" and any(mc >= 12 for mc in a.pattern))):
+            raise ValueError("VCM needs 1m QPSK or 5m/10m same modulation; mixed needs 5m")
+        a.modcod = a.pattern[0]
     rs = RATES[a.rate]
     fs = 2 * rs
     if not 2390 <= a.mhz <= 2450 or not 1 <= a.seconds <= 60:
@@ -70,7 +85,7 @@ def settings(a):
             raise ValueError("libiio streaming above 10 MS/s is refused; use --burst 16000000")
         if not math.isfinite(a.burst_margin) or a.burst_margin < 2:
             raise ValueError("--burst-margin must be finite and >= 2 seconds")
-        return dict(backend="libiio", uri=a.uri, sample_rate=fs, symbol_rate=rs,
+        return dict(pattern=a.pattern, hold_frames=a.hold, backend="libiio", uri=a.uri, sample_rate=fs, symbol_rate=rs,
                     bandwidth=bw, occupied_hz=1.35 * rs, frequency=a.mhz * 1e6,
                     gain=a.rx_gain, wire_format="sc16_le", file_format="cf32_le",
                     burst_samples=a.burst, burst_margin=a.burst_margin, upsample=a.upsample,
@@ -88,7 +103,7 @@ def settings(a):
         raise ValueError("this check requires master_clock_rate=40000000")
     if "master_clock_rate" not in fields:
         device_args += ",master_clock_rate=40000000"
-    return dict(backend="uhd", args=device_args, sample_rate=fs, symbol_rate=rs, master_clock_rate=40e6,
+    return dict(pattern=a.pattern, hold_frames=a.hold, backend="uhd", args=device_args, sample_rate=fs, symbol_rate=rs, master_clock_rate=40e6,
                 bandwidth=fs, occupied_hz=1.35 * rs, frequency=a.mhz * 1e6,
                 gain=a.rx_gain, antenna=a.antenna, wire_format="sc16", file_format="cf32_le",
                 pre_seconds=1, post_seconds=1, capture_limit_seconds=a.seconds + 12)
@@ -113,7 +128,7 @@ def capture_bytes(s):
 
 def plan(a, s):
     width = s["occupied_hz"] / 1e6
-    result = dict(mode=MODES[a.modcod], rf=s,
+    result = dict(mode=MODES.get(a.modcod, f"MODCOD {a.modcod}"), rf=s,
                 occupied_mhz=[a.mhz - width / 2, a.mhz + width / 2],
                 board_command=tx_command(a), port=a.port,
                 key_authorized=a.key, receiver=a.receiver,
@@ -149,6 +164,10 @@ def plan(a, s):
             "Save native-rate spectrum; optionally upsample offline; same LeanDVB exact-byte verification and report.",
             "Keep capture.json, iio.log and TX inhibit readbacks; no TX settings are restored.",
         ]
+    if a.pattern:
+        result.update(pattern=list(a.pattern), hold_frames=a.hold,
+                      board_setup=["vcm axes off", vcm_command(a)],
+                      board_cleanup=["vcm off", "vcm axes off"])
     if a.dry_run is not None:
         result.update(source=str(a.dry_run), dump_sample_rate=a.dump_rate, callsign=a.callsign,
                       steps=["Read saved USB int16 I/Q; scale by 512; append 4096 decoder lookahead samples.",
@@ -180,6 +199,12 @@ def board_result(rows, a, call):
                     freq_mhz=a.mhz, seconds=a.seconds, gain=a.gain, peak_level=a.peak)
     if "error" in r or any(r.get(k) != v for k, v in expected.items()):
         raise ValueError("board mode/payload/status mismatch; see board.jsonl")
+    if a.pattern:
+        axes = a.rate == "5m" and any(mc < 12 for mc in a.pattern) and any(mc >= 12 for mc in a.pattern)
+        if (r.get("vcm") is not True or r.get("vcm_axes") is not axes or
+                (axes and r.get("fill_kernel") != "pie-axes5") or
+                any(r.get(k) != 0 for k in ("fatal_late", "late_fills", "late_switches"))):
+            raise ValueError("board VCM renderer/deadline mismatch; see board.jsonl")
     if a.phy_solo:
         state, after = r.get("session", {}), r.get("after", {})
         if (not r.get("phy_solo") or state.get("wifi_initialized") is not False or
@@ -252,6 +277,13 @@ def hardware(a, s, out):
         command("spiinput off")
         (out / "settings.json").write_text(json.dumps(s, indent=2) + "\n")
         try:
+            if a.pattern:
+                if command("vcm axes off")[-1].get("axes") is not False:
+                    raise RuntimeError("board did not disable manual axis override")
+                configured = command(vcm_command(a))[-1]
+                if (configured.get("pattern") != list(a.pattern) or configured.get("hold_frames") != a.hold
+                        or configured.get("enabled") is not True):
+                    raise RuntimeError("board VCM configuration differs")
             process = subprocess.Popen(capture_command(a, out / "settings.json"),
                                        stdout=diagnostics, stderr=subprocess.STDOUT)
             wait_ready(process, out, s)
@@ -286,6 +318,18 @@ def hardware(a, s, out):
         finally:
             (out / "stop").touch()
             stop(process)  # Same bounded terminate/kill cleanup as live-video/receive.py.
+            if a.pattern:
+                cleanup = []
+                for text, field in (("vcm off", "enabled"), ("vcm axes off", "axes")):
+                    try:
+                        if command(text)[-1].get(field) is not False:
+                            raise RuntimeError("missing cleanup acknowledgement")
+                        cleanup.append(dict(command=text, passed=True))
+                    except Exception as exc:
+                        cleanup.append(dict(command=text, passed=False, error=str(exc)))
+                (out / "cleanup.json").write_text(json.dumps(cleanup, indent=2) + "\n")
+                if not all(row["passed"] for row in cleanup):
+                    raise RuntimeError("VCM cleanup failed; see cleanup.json")
 
 
 def convert_dump(source, target):
@@ -349,6 +393,26 @@ def spectrum(source, fs, s, out, flush_samples=0):
 
 
 def analyze(source, fs, frames, call, a, s, out):
+    if a.pattern:
+        bb = out / "frames.bbf"
+        r, _ = decode.decode(source, sample_rate=fs, symbol_rate=s["symbol_rate"], alpha=.35,
+                             receiver=a.receiver, output=out / "payload.bin", bb_output=bb,
+                             log=out / "leandvb.log", timeout=a.timeout)
+        recovered = decode.parse_bbframes(bb.read_bytes())
+        r.update(decode.vcm_match(recovered, r["frame_modcods"], pattern=a.pattern,
+                                 hold_frames=a.hold, max_frames=frames, callsign=call))
+        checks = decode.vcm_checks(r)
+        checks["enough_frames"] = r["payload_frames"] >= a.min_frames
+        if a.dry_run is not None:
+            checks["dump_coverage"] = r["payload_frames"] >= a.frames - 2
+            checks["dump_fec_clean"] = all(r.get(k) == 0 for k in (
+                "ldpc_bit_flips", "bch_corrected_bits", "bch_failed_frames"))
+        r.update(passed=all(checks.values()), checks=checks,
+                 failed_checks=[k for k, passed in checks.items() if not passed],
+                 pattern=list(a.pattern), hold_frames=a.hold, reference_frames=frames, callsign=call,
+                 payload_bit_errors=0 if r["host_model_exact"] else None,
+                 evidence="usb-dump" if a.dry_run is not None else "rf-capture")
+        return r
     r, got = decode.decode(source, sample_rate=fs, symbol_rate=s["symbol_rate"], alpha=.35,
                            receiver=a.receiver, output=out / "payload.bin", log=out / "leandvb.log",
                            timeout=a.timeout)
@@ -389,6 +453,9 @@ def parser():
     p.add_argument("--mhz", type=int, default=2420)
     p.add_argument("--modcod", type=int, choices=MODES, default=7)
     p.add_argument("--rate", choices=RATES, default="5m")
+    p.add_argument("--pattern", type=lambda value: tuple(map(int, value.split(","))),
+                   help="VCM MODCOD pattern; first entry selects starting MODCOD")
+    p.add_argument("--hold", type=int, default=4, help="VCM frames per pattern entry")
     p.add_argument("--seconds", type=int, default=30, help="keyed window INCLUDING both IDs")
     p.add_argument("--gain", type=int, default=0, help="S3 vendor gain index")
     p.add_argument("--peak", type=int, default=128)
@@ -432,7 +499,7 @@ def main():
             coordinator=subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
             dirty=bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True)),
             receiver=str(Path(shutil.which(a.receiver)).resolve())), indent=2) + "\n")
-        print(f"Center {a.mhz} MHz; {MODES[a.modcod]} {a.rate}; occupied {s['occupied_hz']/1e6:g} MHz; "
+        print(f"Center {a.mhz} MHz; {MODES.get(a.modcod, a.modcod)} {a.rate}; occupied {s['occupied_hz']/1e6:g} MHz; "
               f"{a.mhz-s['occupied_hz']/2e6:g}..{a.mhz+s['occupied_hz']/2e6:g} MHz", flush=True)
         result = dict(passed=False, evidence="usb-dump" if a.dry_run else "rf-capture")
         try:

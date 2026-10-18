@@ -139,7 +139,7 @@ def main():
     if subprocess.run(["git", "diff", "--quiet", "HEAD"], cwd=ROOT).returncode:
         revision += "-dirty"
     print(f"Pass criteria: flashed firmware {revision}, stored N0CALL, SPI input off after reset.")
-    print("No flash, NVS writes or TX. Only info, dvbdump, dvbpace and wifimem are sent.")
+    print("No flash, NVS writes or TX. Only info, vcm, dvbdump, dvbpace and wifimem are sent.")
     print("Every stream: ESP_OK, correct mode/pulse, healthy timed encoder, no underruns or injected stalls.")
     print("Dumps: exact byte count, zero overlap errors, firmware/USB/file/golden CRC32 all equal.")
     for key in DUMPS:
@@ -172,6 +172,9 @@ def main():
     print("Other modes enforce functional deadlines. These are not 15% reserve gates.")
     print("40 MHz met 15% reserve on both cores in one 30 s keyed run (e96795b); see docs/measurements.md.")
     print("wifimem 17 5m: Wi-Fi startup succeeds; free/up and command minimum both >=22351 B.")
+    print("VCM: vcm 1 4 11 13 17; dvbdump 4 5m 32 128 1; vcm off. Automatic axes;")
+    print("  dvbpace 4 5m 5: Wi-Fi up, heap >=20000 B, original functional deadline/stack gates.")
+    print("  CRC/geometry agree, >=30 exact contiguous BBFRAMEs, every MODCOD, clean FEC; no golden changes.")
     print("Keep going after failures; save IQ, logs, revision and summary; any failure exits 1.", flush=True)
     if a.plan:
         return 0
@@ -202,7 +205,7 @@ def main():
         print(f"{verdict}: {label}" + (f" {detail}" if detail else ""), flush=True)
 
     def command(text, save=None, reset=False):
-        assert text.split()[0] in ("info", "dvbdump", "dvbpace", "wifimem"), text
+        assert text.split()[0] in ("info", "vcm", "dvbdump", "dvbpace", "wifimem"), text
         rows = board.run(a.port, text, timeout=120, reset=reset, save=save)
         with (out/"runs.jsonl").open("a") as f:
             for row in rows:
@@ -219,6 +222,43 @@ def main():
         path = out/(key.replace("/", "-")+".iq")
         rows = command(f"dvbdump {mc} {token} {frames} 128 {decim}".replace("  ", " "), save=path)
         check_dump(rows, path, key, golden)
+
+    def vcm_dump():
+        path = out / "vcm.iq"
+        try:
+            assert command("vcm axes off")[-1].get("axes") is False
+            configured = command("vcm 1 4 11 13 17")[-1]
+            assert configured.get("pattern") == [4, 11, 13, 17] and configured.get("hold_frames") == 1
+            rows = command("dvbdump 4 5m 32 128 1", save=path)
+            r = stream(rows, 4, "5m")
+            assert r.get("vcm_axes") is True and r.get("fill_kernel") == "pie-axes5", r
+            assert r["overlap_mismatches"] == 0 and r["frames"] == 32 and r["decimation"] == 1, r
+            samples = 16 * (33282 + 22194) * 8
+            raw = path.read_bytes()
+            binary = next(row for row in rows if "binary_bytes" in row)
+            assert r["samples"] == samples and len(raw) == binary["binary_bytes"] == samples*4
+            assert zlib.crc32(raw) == r["crc32"] == binary["host_crc32"]
+            pace = command("dvbpace 4 5m 5")
+            check_pace(pace, 4, "5m", 5)
+            r = stream(pace, 4, "5m")
+            assert r.get("vcm_axes") is True and r["paced_wifi_up"], r
+            assert r["wifi_free_up"] >= 20000 and r["wifi_min_free"] >= 20000, r
+        finally:
+            try:
+                assert command("vcm off")[-1].get("enabled") is False
+            finally:
+                assert command("vcm axes off")[-1].get("axes") is False
+
+    def vcm_decode():
+        result = subprocess.run([sys.executable, str(ROOT/"host/decode.py"), str(out/"vcm.iq"),
+            "--rate", "40000000", "--symbol-rate", "5000000", "--modcod", "4", "--stream", "32",
+            "--pattern", "4,11,13,17", "--hold", "1", "--callsign", "N0CALL", "--receiver", a.receiver,
+            "--log", str(out/"vcm.receiver.log")], capture_output=True, text=True, timeout=150)
+        (out/"vcm.decode.json").write_text(result.stdout)
+        (out/"vcm.decode.stderr").write_text(result.stderr)
+        assert result.returncode == 0, result.stdout + result.stderr
+        r = json.loads(result.stdout)
+        assert r["passed"] and r["pattern_complete"] and r["payload_frames"] >= 30, r
 
     def memory():
         r = stream(command("wifimem 17 5m"), 17, "5m")
@@ -260,6 +300,8 @@ def main():
             step(text, lambda mc=mc, token=token, seconds=seconds, text=text:
                  check_pace(command(text), mc, token, seconds))
         step("Wi-Fi startup heap", memory)
+        step("VCM dump", vcm_dump)
+        step("VCM decode", vcm_decode)
     failed = sum(row[0] == "FAIL" for row in outcomes)
     print(f"{len(outcomes)-failed}/{len(outcomes)} passed. Records: {out}")
     return int(failed != 0)

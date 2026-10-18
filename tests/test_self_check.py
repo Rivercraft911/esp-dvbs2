@@ -49,6 +49,11 @@ def test_decode():
     for mc in range(4,18):
         rate = dvbs2.RATES[mc-1] if mc < 12 else dvbs2.PSK8_RATES[mc-12]
         assert len(decode.payload(mc, 1, "N0CALL")) == (dvbs2.code(rate).kbch-80)//8
+    # Count accepted FEC frames by their decoded PLHEADER, not the requested mode.
+    status = ''.join(f'S2FEC modcod={mc} short=0 pilots=1 ldpc_flips=0 '
+                     f'ldpc_checks_before=0 ldpc_checks_after=0 bch_errors={bch}\n'
+                     for mc, bch in ((4, 0), (7, 0), (4, 0), (13, -1)))
+    assert decode.summarize(status, [], b'')['frames_per_modcod'] == {4: 2, 7: 1}
 
 
 def test_dummy_decode():
@@ -179,6 +184,8 @@ def test_keep_going():
             return [dict(firmware=revision, callsign="N0CALL")]
         if command.startswith("dvbdump"):
             raise RuntimeError("simulated USB dump failure")
+        if command.startswith("vcm"):
+            return [dict(cmd="vcm", axes=False, enabled=False, pattern=[4, 11, 13, 17], hold_frames=1)]
         parts = command.split()
         mc, token = int(parts[1]), parts[2] if len(parts) == 4 or parts[0] == "wifimem" else ""
         r = row(mc, token)
@@ -196,8 +203,8 @@ def test_keep_going():
         assert check.main() == 1
         summary = (Path(tmp)/"out/summary.tsv").read_text()
         assert "PASS\tWi-Fi startup heap" in summary and "FAIL\tdump" in summary
-    assert len(sent) == 1+len(check.DUMPS)+len(check.PACES)+1
-    assert all(s.split()[0] in ("info", "dvbdump", "dvbpace", "wifimem") for s in sent)
+    assert len(sent) == 1+len(check.DUMPS)+len(check.PACES)+1+5
+    assert all(s.split()[0] in ("info", "vcm", "dvbdump", "dvbpace", "wifimem") for s in sent)
 
 
 def test_tones():
