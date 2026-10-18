@@ -11,12 +11,12 @@ leaves through the S3's own Wi-Fi radio. No PC doing the encoding, no external D
 
 It started with the goal of live video, 8PSK 2/3 at 5 Msym/s, 9.68 Mb/s. Then it kept going:
 the same $5 chip now pushes **58.2 Mb/s in 40 MHz**, the widest channel its Wi-Fi radio was
-ever built for. [How it got here](docs/story.md), wrong turns included.
+ever built for. Read [How it got here](docs/story.md), to learn about the tumultuous journery.
 
 ## What it can do
 
 The best measured configurations, fastest first. **Keyed** means the S3 really transmitted for
-30 s (into a shielded box) and met every bank deadline; **radio off** means the same encoder and
+30 s and met every bank deadline; **radio off** means the same encoder and
 bank schedule ran in real time with the DAC output going nowhere. Slack is how much of each bank
 period the busiest core had left over.
 
