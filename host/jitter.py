@@ -26,8 +26,7 @@ def commands(seconds, observe_seconds=5, trace=False, page_sweep=False, queue_ga
                 for mc in (15,17)]
     rows = []
     for mc,rate in CASES:
-        default = 'page' if mc == 11 else 'bank'
-        comparison = 'bank' if mc == 11 else 'page'
+        default, comparison = 'bank', 'page'
         for policy,observer,duration in ((default,False,seconds),(default,True,observe_seconds),
                                          (comparison,True,observe_seconds)):
             flag = '' if policy == default else ' '+policy+'wake'

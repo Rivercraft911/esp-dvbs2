@@ -28,7 +28,7 @@ def main():
     def send(command):
         sent.append(command)
         if command == 'info': return [dict(firmware='abc1234',callsign='N0CALL')]
-        args = command.split(); mc = int(args[1]); policy = 'bank' if 'bankwake' in args else 'page' if 'pagewake' in args or mc == 11 else 'bank'
+        args = command.split(); mc = int(args[1]); policy = 'page' if 'pagewake' in args else 'bank'
         observer = 'observe' in args
         if mc == 15 and not observer and 'trace' not in args: raise TimeoutError('injected timeout')
         r = dict(cmd='dvbpace',modcod=mc,queue_wake_policy=policy,paced_wifi_up=True,encoder_pie=15,

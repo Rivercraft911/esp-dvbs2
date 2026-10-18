@@ -1,4 +1,5 @@
-// Nine-symbol QPSK pulse, factored by four-symbol input blocks. The original oracle is archived host/qpsk_fill.py.
+// Nine-symbol QPSK pulse, factored by four-symbol input blocks. Checked by tests/test_stream.py.
+// Oracle: archive/dev-2026-10-17:host/qpsk_fill.py; docs/how-it-works.md#table-provenance.
 #include "shaper_qpsk.h"
 #include "shaper_qpsk_taps.h"
 #include "shaper_taps.h"

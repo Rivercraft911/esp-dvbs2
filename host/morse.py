@@ -99,12 +99,13 @@ def main() -> int:
     p.add_argument("capture", type=pathlib.Path)
     p.add_argument("--rate", type=float, required=True)
     p.add_argument("--tone", type=float, default=1e6)
-    p.add_argument("--format", choices=("i16", "f32"), default="i16")
+    p.add_argument("--format", choices=("i16", "s16", "cf32", "f32"), default="i16")
     p.add_argument("--wpm", type=float, default=20)
     p.add_argument("--start", type=float, default=0)
     p.add_argument("--seconds", type=float)
     p.add_argument("--expect")
     args = p.parse_args()
+    args.format = {"s16": "i16", "cf32": "f32"}.get(args.format, args.format)
     try:
         if args.start < 0 or (args.seconds is not None and args.seconds <= 0):
             raise ValueError("invalid capture window")

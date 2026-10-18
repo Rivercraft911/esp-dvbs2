@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import statistics
 import subprocess
 import tempfile
 
@@ -22,7 +23,7 @@ DEFAULT_RECEIVER = "leandvb"
 FEC_STATUS = re.compile(
     r"S2FEC modcod=(\d+) short=(\d+) pilots=(\d+) ldpc_flips=(\d+) "
     r"ldpc_checks_before=(\d+) ldpc_checks_after=(\d+) bch_errors=(-?\d+)")
-MODCODS = {4: "QPSK 1/2", 6: "QPSK 2/3", 7: "QPSK 3/4",
+MODCODS = {4: "QPSK 1/2", 6: "QPSK 2/3", 7: "QPSK 3/4", 11: "QPSK 9/10",
            13: "8PSK 2/3", 15: "8PSK 5/6",
            18: "16APSK 2/3", 19: "16APSK 3/4", 20: "16APSK 4/5", 21: "16APSK 5/6",
            22: "16APSK 8/9", 23: "16APSK 9/10", 24: "32APSK 3/4", 25: "32APSK 4/5",
@@ -138,6 +139,22 @@ def summarize(status, frames, payload, expected=None):
                       status_complete=bool(bch) and len(ldpc) == len(bch))
     # fd-bbf contains valid headers only. Count receiver-side rejection messages too.
     report["bbheader_rejected_frames"] = status.count("Bad bbframe")
+    # fd-info FREQ is in Hz (LeanDVB scales its normalized estimate by Fs).
+    # Exclude unlocked acquisition, silence and the station-ID windows.
+    locked, metrics = False, {"MER": [], "FREQ": []}
+    for line in status.splitlines():
+        if re.fullmatch(r"FRAMELOCK [01]", line):
+            locked = line.endswith("1")
+        match = re.fullmatch(r"(MER|FREQ) ([-+\d.eE]+)", line)
+        if locked and match:
+            value = float(match[2])
+            if math.isfinite(value):
+                metrics[match[1]].append(value)
+    for token, name in (("MER", "mer_db"), ("FREQ", "frequency_offset_hz")):
+        values = metrics[token]
+        report[name] = ({"count": len(values), "min": min(values),
+                         "median": statistics.median(values), "max": max(values),
+                         "last": values[-1]} if values else None)
     if expected is not None:
         if not expected:
             raise ValueError("expected payload must not be empty")
@@ -149,6 +166,17 @@ def summarize(status, frames, payload, expected=None):
                        "compared_bits": len(expected) * 8 if match >= 0 else 0,
                        "payload_bit_errors": 0 if match >= 0 else None})
     return report
+
+
+def receiver_command(executable, fs, rs, alpha, bb_fd, *, tune=0.0, rrc_rej=20):
+    """Shared executable argv, with a placeholder BB descriptor allowed for plans."""
+    command = [str(executable), "--standard", "DVB-S2", "--f32", "-f", str(fs),
+               "--sr", str(rs), "--sampler", "rrc", "--rrc-rej", str(rrc_rej), "--fastdrift",
+               "--roll-off", str(alpha), "--ldpc-bf", "100",
+               "--fd-bbf", str(bb_fd), "--fd-info", "2", "-d", "-d"]
+    if tune:
+        command += ["--tune", str(tune)]
+    return command
 
 
 def decode(capture, *, sample_rate=None, symbol_rate=None, alpha=None,
@@ -168,12 +196,7 @@ def decode(capture, *, sample_rate=None, symbol_rate=None, alpha=None,
         raise ValueError("tune must be finite; timeout and RRC rejection must be positive")
     with tempfile.TemporaryFile() as bb, tempfile.TemporaryFile() as ts, \
             tempfile.TemporaryFile() as diagnostics, path.open("rb") as source:
-        command = [executable, "--standard", "DVB-S2", "--f32", "-f", str(fs),
-                   "--sr", str(rs), "--sampler", "rrc", "--rrc-rej", str(rrc_rej), "--fastdrift",
-                   "--roll-off", str(alpha), "--ldpc-bf", "100",
-                   "--fd-bbf", str(bb.fileno()), "--fd-info", "2", "-d", "-d"]
-        if tune:
-            command += ["--tune", str(tune)]
+        command = receiver_command(executable, fs, rs, alpha, bb.fileno(), tune=tune, rrc_rej=rrc_rej)
         result = subprocess.run(command, stdin=source, stdout=ts, stderr=diagnostics,
                                 pass_fds=(bb.fileno(),), timeout=timeout, check=False)
         diagnostics.seek(0)
@@ -239,7 +262,7 @@ def main():
     p.add_argument("--symbol-rate", type=float, required=True, help="symbols/s")
     p.add_argument("--rolloff", type=float, choices=(.20, .35), default=.35)
     p.add_argument("--scale", type=float, default=512, help="int16 full scale, board=512")
-    p.add_argument("--format", choices=("i16", "cf32"), default="i16")
+    p.add_argument("--format", choices=("i16", "s16", "cf32", "f32"), default="i16")
     p.add_argument("--modcod", type=int, default=4)
     p.add_argument("--stream", type=int, required=True, help="number of dumped test frames")
     p.add_argument("--callsign", default="N0CALL", help="callsign in the dumped payload")
@@ -247,6 +270,7 @@ def main():
     p.add_argument("--log", type=Path)
     p.add_argument("--output", type=Path, help="save recovered bytes")
     a = p.parse_args()
+    a.format = {"s16": "i16", "f32": "cf32"}.get(a.format, a.format)
     try:
         import numpy as np
         expected = payload(a.modcod, a.stream, a.callsign)

@@ -1,4 +1,4 @@
-# Local agent instructions (see AGENTS.md on your machine; not published)
+# Local instructions and working notes
 AGENTS.md
 CLAUDE.md
 notes/
@@ -8,6 +8,9 @@ firmware/build/
 firmware/sdkconfig
 firmware/sdkconfig.old
 firmware/managed_components/
+
+# Latest standalone USB sender diagnostic report
+usb-send-report.json
 
 # Python
 __pycache__/

@@ -1,6 +1,6 @@
 set(srcs "dvbs2.c" "fast.c")
 if(IDF_TARGET STREQUAL "esp32s3")
-    list(APPEND srcs "pie.S")
+    list(APPEND srcs "pie.S" "qpsk_signs.S")
 endif()
 idf_component_register(SRCS ${srcs} INCLUDE_DIRS "include")
 # The plain oracle is never used by the live transmitter. Keep it in flash.

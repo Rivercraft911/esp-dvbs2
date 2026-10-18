@@ -4,6 +4,10 @@ The [README](../README.md) shows where the transmitter stands now. This page is 
 what it measured and what went wrong. Raw links point to the preserved development archive.
 All runs used one ESP32-S3 at 240 MHz.
 
+![Payload rate at each development milestone, with its mode and symbol rate](img/rate-history.png)
+
+Figures use [recorded points with per-point provenance](measurements/plot-data.json).
+
 ## The budget
 
 The S3's radio contains a test engine that plays a 16,380-sample bank from internal RAM into
@@ -63,7 +67,7 @@ stream. When the encoder was slowed on purpose, filler frames kept the stream va
 
 Station identification came first. The firmware refuses to key without a stored callsign,
 sends 20 WPM Morse at the start and end of a run and every nine minutes, and puts the callsign
-in every frame. ([station ID](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/results/2026-10-16-station-id/README.md))
+in every synthetic test frame. ([station ID](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/results/2026-10-16-station-id/README.md))
 
 The first keyed attempt stopped before keying with `ESP_ERR_NO_MEM` in Wi-Fi start-up: the
 encoder context and station ID had left 8.5 KB of internal RAM. Shrinking Wi-Fi's buffers and
@@ -103,6 +107,8 @@ Keyed in the box, 8PSK 2/3 and 5/6 ran at 20 Msym/s from the 80 MS/s DAC, 38.7 a
 for 30 s each with every deadline met.
 ([keyed at 20 Msym/s](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/results/2026-10-16-keyed-20m/README.md))
 
+![Encoder cycles across the 8PSK optimisation rounds and the later keyed QPSK reserve work](img/encoder-history.png)
+
 ## QPSK at 26.67 Msym/s
 
 Four-symbol QPSK tables and a packed ring brought the complete 9/10 stream to
@@ -127,10 +133,31 @@ no late fill and no underrun, and every older mode still passed the regression g
 uses 99% of a frame keyed, so the mode works without the 15% reserve. 8PSK at 40 MHz does not fit yet.
 ([40 MHz](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/results/2026-10-17-moonshot/README.md))
 
+The margin came the same day. The encoder now queues compact I/Q bit planes instead of sign
+histories, core 1 pulls the sign windows straight out of them while rendering, and the encoder
+is woken once per bank instead of once per page. Two frames are queued before playback so the
+first data banks never wait. Keyed again in the box, the encoder averaged 198,879 cycles of a
+239,630-cycle frame (17% spare, from 1%) and the longest bank fill was 39,548 of 47,220 (16%
+spare): the 15% reserve, met on both cores. ([record](measurements.md#40-mhz))
+
+The next morning brought a twist. Keyed runs had always looked about 47k cycles per frame
+slower than radio-off paces, and everyone blamed the radio. It was the test payload: keyed
+`dvb` runs generated fresh pseudo-random bytes for every frame, while paces copied a prepared
+one. Given the same prepared payload, keyed and radio-off runs agreed, 150,667 against 152,754
+cycles per frame, so keying costs core 0 essentially nothing. With real input the 40 MHz mode
+has 37% encoder headroom. ([records](measurements.md#40-mhz))
+
+![Longest bank-fill time and its deadline at the development milestones, including the failed 10 Msym/s attempt](img/fill-history.png)
+
+Somewhere along the way the $5 chip outgrew the SDR on the bench: the E200's AD9363 sees at
+most 20 MHz, so watching the whole 40 MHz signal takes a wider receiver.
+
 ## Now
 
-The next measurement is a receiver decoding the signal over a cabled RF path, then live
-video arriving over SPI. The current [implementation](how-it-works.md),
-[small evidence set](measurements.md) and [radio-off example](../examples/self-check/README.md)
-are the starting point. All development records remain in the
-[archive tag](https://github.com/Rivercraft911/esp-dvbs2/tree/archive/dev-2026-10-17).
+Payload now arrives over [SPI or USB](spi-input.md), a [live-video example](../examples/live-video/README.md)
+carries a camera's transport stream, and an [over-the-air check](../examples/over-the-air/README.md)
+waits for an E200 in a bigger Faraday box: the next measurement is a receiver decoding the signal
+over the air. 8PSK at 26.67 Msym/s (36 MHz) is being finished, and 40 MHz stays QPSK.
+The current [implementation](how-it-works.md), [evidence](measurements.md) and
+[radio-off example](../examples/self-check/README.md) are the starting point. All development
+records remain in the [archive tag](https://github.com/Rivercraft911/esp-dvbs2/tree/archive/dev-2026-10-17).

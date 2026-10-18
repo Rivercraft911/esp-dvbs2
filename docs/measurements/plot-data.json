@@ -1,0 +1,508 @@
+{
+  "description": "Recorded points for host/plots.py. Line numbers are 1-based. Values are exact JSON fields; cycles.total is the five-frame sample used for the isolated median. No models or projected points.",
+  "cpu_hz": 240000000,
+  "cpu_source": {
+    "ref": "archive/dev-2026-10-17",
+    "path": "results/2026-10-16-encoder/README.md",
+    "quote": "ESP-IDF v6.1, 240 MHz"
+  },
+  "deadlines": {
+    "early": {
+      "cycles": 85608,
+      "source": {
+        "ref": "archive/dev-2026-10-17",
+        "path": "results/2026-10-16-buildout/README.md",
+        "quote": "A bank is due every 85,608 cycles."
+      }
+    },
+    "fast": {
+      "cycles": 47220,
+      "source": {
+        "ref": "archive/dev-2026-10-17",
+        "path": "results/2026-10-16-keyed-20m/README.md",
+        "quote": "| 8PSK 2/3, 20 Msym/s | 80 MS/s | 45,092 | 47,220 |"
+      }
+    }
+  },
+  "sources": {
+    "stream": {
+      "ref": "archive/dev-2026-10-17",
+      "path": "results/2026-10-16-stream/runs.jsonl",
+      "sha256": "faea52524a2f024c8a6bb6342cb2b253ccf2c68023ffa7ccfa940b14f40f1cc5"
+    },
+    "first_keyed": {
+      "ref": "archive/dev-2026-10-17",
+      "path": "results/2026-10-16-keyed-box/runs.jsonl",
+      "sha256": "32a272f4847c3f47737c76cc47e7f810eeb8d37794eab7fcdfc87d87e6eeeb14"
+    },
+    "keyed_10m": {
+      "ref": "archive/dev-2026-10-17",
+      "path": "results/2026-10-16-keyed-10m/runs.jsonl",
+      "sha256": "8bfa566400ff0a7b10fd2b8f70e9dcfcbf9e161d32d15285b70ccccda7b1bd49"
+    },
+    "buildout_main": {
+      "ref": "archive/dev-2026-10-17",
+      "path": "results/2026-10-16-buildout/main.jsonl",
+      "sha256": "d768a02c922d5d65282085c3d3bc65a7bde587079069a07c3eb9fafaecfa7094"
+    },
+    "buildout": {
+      "ref": "archive/dev-2026-10-17",
+      "path": "results/2026-10-16-buildout/runs.jsonl",
+      "sha256": "0aa0c1cd2f924f98379fd4d6df4cd516e1b5ed0648c51ec5e0e3ec377ed10f80"
+    },
+    "next2": {
+      "ref": "archive/dev-2026-10-17",
+      "path": "results/2026-10-16-next2/runs.jsonl",
+      "sha256": "68cb404a4f9a7c56b7878a6e0a594a07d01f12705cbf7ca43e0266b737c486fa"
+    },
+    "first_encoder": {
+      "ref": "archive/dev-2026-10-17",
+      "path": "results/2026-10-16-encoder/runs.jsonl",
+      "sha256": "d817b74d6ff27308842b2c0d41bf855f63aedeba946d4c9823e0daa4d16f9755"
+    },
+    "keyed_20m": {
+      "ref": null,
+      "path": "docs/measurements/2026-10-16-keyed-20m-runs.jsonl",
+      "sha256": "8a98715196874db905f8ec53a0d518236beffdec416dad93fc8b3513aef4627d"
+    },
+    "keyed_qpsk": {
+      "ref": null,
+      "path": "docs/measurements/2026-10-17-keyed-qpsk-runs.jsonl",
+      "sha256": "3117790ca96a8500af83b08640a586e1a0751120059bdef3e338485e1d0080fe"
+    },
+    "moonshot": {
+      "ref": null,
+      "path": "docs/measurements/2026-10-17-moonshot-keyed.jsonl",
+      "sha256": "06d5c411e025cad0fb2309526b5c38c7daa98ee6af29ecde37e4dc4f46a6a2ef"
+    },
+    "reserve": {
+      "ref": null,
+      "path": "docs/measurements/2026-10-17-qpsk-reserve-keyed.jsonl",
+      "sha256": "19d097e6ea8145e468a6b27782e98c3a1431e8abfffbd75446569a79935008ce"
+    }
+  },
+  "figures": {
+    "rate-history": [
+      "first_stream",
+      "first_keyed",
+      "packed_5m",
+      "keyed_10m_23",
+      "keyed_10m_56",
+      "keyed_20m_23",
+      "keyed_20m_56",
+      "keyed_qpsk_26m",
+      "moonshot",
+      "reserve"
+    ],
+    "fill-history": [
+      "first_stream",
+      "first_keyed",
+      "failed_10m",
+      "packed_5m",
+      "keyed_10m_23",
+      "encoder_ram",
+      "keyed_20m_23",
+      "keyed_qpsk_26m",
+      "moonshot",
+      "reserve"
+    ],
+    "encoder-history": {
+      "8psk": [
+        "encoder_c",
+        "encoder_psram",
+        "encoder_packed",
+        "encoder_ram"
+      ],
+      "qpsk": [
+        "moonshot",
+        "reserve"
+      ]
+    },
+    "fill": [
+      "reserve",
+      "keyed_qpsk_26m",
+      "keyed_qpsk_20m",
+      "keyed_20m_23",
+      "keyed_20m_56"
+    ],
+    "payload": [
+      "reserve",
+      "keyed_qpsk_26m",
+      "keyed_qpsk_20m",
+      "keyed_20m_23",
+      "keyed_20m_56"
+    ]
+  },
+  "points": {
+    "first_stream": {
+      "label": "First stream",
+      "mode": "QPSK 1/2",
+      "rate_label": "1",
+      "test": "radio off",
+      "source": "stream",
+      "lines": [
+        16
+      ],
+      "deadline": "early",
+      "values": {
+        "command": "dvbpace 4 60",
+        "cmd": "dvbpace",
+        "modcod": 4,
+        "symbol_rate": 1000000,
+        "frame_symbols": 33282,
+        "payload_bytes_per_frame": 4016,
+        "max_fill_cycles": 41723,
+        "encode_cycles_mean": 2875083,
+        "status": "ESP_OK"
+      }
+    },
+    "first_keyed": {
+      "label": "First keyed run",
+      "mode": "8PSK 2/3",
+      "rate_label": "5",
+      "test": "keyed",
+      "source": "first_keyed",
+      "lines": [
+        5
+      ],
+      "deadline": "early",
+      "values": {
+        "command": "dvb 2420 13 5m 30 4 128",
+        "cmd": "dvb",
+        "modcod": 13,
+        "symbol_rate": 5000000,
+        "frame_symbols": 22194,
+        "payload_bytes_per_frame": 5370,
+        "max_fill_cycles": 78948,
+        "encode_cycles_mean": 704720,
+        "status": "ESP_OK"
+      }
+    },
+    "packed_5m": {
+      "label": "Packed ring",
+      "mode": "8PSK 2/3",
+      "rate_label": "5",
+      "test": "keyed",
+      "source": "keyed_10m",
+      "lines": [
+        2
+      ],
+      "deadline": "early",
+      "values": {
+        "command": "dvb 2420 13 5m 30 4 128",
+        "cmd": "dvb",
+        "modcod": 13,
+        "symbol_rate": 5000000,
+        "frame_symbols": 22194,
+        "payload_bytes_per_frame": 5370,
+        "max_fill_cycles": 42597,
+        "encode_cycles_mean": 261354,
+        "status": "ESP_OK"
+      }
+    },
+    "keyed_10m_23": {
+      "label": "10 Msym/s",
+      "mode": "8PSK 2/3",
+      "rate_label": "10",
+      "test": "keyed",
+      "source": "keyed_10m",
+      "lines": [
+        4
+      ],
+      "deadline": "early",
+      "values": {
+        "command": "dvb 2420 13 10m 30 4 128",
+        "cmd": "dvb",
+        "modcod": 13,
+        "symbol_rate": 10000000,
+        "frame_symbols": 22194,
+        "payload_bytes_per_frame": 5370,
+        "max_fill_cycles": 56746,
+        "encode_cycles_mean": 261261,
+        "status": "ESP_OK"
+      }
+    },
+    "keyed_10m_56": {
+      "label": "10 Msym/s",
+      "mode": "8PSK 5/6",
+      "rate_label": "10",
+      "test": "keyed",
+      "source": "keyed_10m",
+      "lines": [
+        5
+      ],
+      "deadline": "early",
+      "values": {
+        "command": "dvb 2420 15 10m 30 4 128",
+        "cmd": "dvb",
+        "modcod": 15,
+        "symbol_rate": 10000000,
+        "frame_symbols": 22194,
+        "payload_bytes_per_frame": 6720,
+        "max_fill_cycles": 56976,
+        "encode_cycles_mean": 289943,
+        "status": "ESP_OK"
+      }
+    },
+    "keyed_20m_23": {
+      "label": "20 Msym/s",
+      "mode": "8PSK 2/3",
+      "rate_label": "20",
+      "test": "keyed",
+      "source": "keyed_20m",
+      "lines": [
+        1
+      ],
+      "deadline": "fast",
+      "values": {
+        "command": "dvb 2420 13 20m 30 4 128",
+        "cmd": "dvb",
+        "modcod": 13,
+        "symbol_rate": 20000000,
+        "dac_rate": 80000000,
+        "frame_symbols": 22194,
+        "payload_bytes_per_frame": 5370,
+        "max_fill_cycles": 45092,
+        "encode_cycles_mean": 166233,
+        "status": "ESP_OK"
+      }
+    },
+    "keyed_20m_56": {
+      "label": "20 Msym/s",
+      "mode": "8PSK 5/6",
+      "rate_label": "20",
+      "test": "keyed",
+      "source": "keyed_20m",
+      "lines": [
+        2
+      ],
+      "deadline": "fast",
+      "values": {
+        "command": "dvb 2420 15 20m 30 4 128",
+        "cmd": "dvb",
+        "modcod": 15,
+        "symbol_rate": 20000000,
+        "dac_rate": 80000000,
+        "frame_symbols": 22194,
+        "payload_bytes_per_frame": 6720,
+        "max_fill_cycles": 45068,
+        "encode_cycles_mean": 184201,
+        "status": "ESP_OK"
+      }
+    },
+    "keyed_qpsk_26m": {
+      "label": "QPSK at 80/3",
+      "mode": "QPSK 9/10",
+      "rate_label": "26.67",
+      "test": "keyed",
+      "source": "keyed_qpsk",
+      "lines": [
+        1
+      ],
+      "deadline": "fast",
+      "values": {
+        "command": "dvb 2420 11 26m667 30 4 128",
+        "cmd": "dvb",
+        "modcod": 11,
+        "symbol_rate": 26666666,
+        "dac_rate": 80000000,
+        "sps": 3,
+        "frame_symbols": 33282,
+        "payload_bytes_per_frame": 7264,
+        "max_fill_cycles": 38810,
+        "encode_cycles_mean": 226587,
+        "status": "ESP_OK"
+      }
+    },
+    "moonshot": {
+      "label": "First 40 MHz",
+      "mode": "QPSK 9/10",
+      "rate_label": "33.33",
+      "test": "keyed",
+      "source": "moonshot",
+      "lines": [
+        1
+      ],
+      "deadline": "fast",
+      "values": {
+        "command": "dvb 2420 11 33m333 30 4 128",
+        "cmd": "dvb",
+        "modcod": 11,
+        "symbol_rate": 33333333,
+        "dac_rate": 80000000,
+        "sps": 2.4,
+        "sps_num": 12,
+        "sps_den": 5,
+        "frame_symbols": 33282,
+        "payload_bytes_per_frame": 7264,
+        "max_fill_cycles": 41130,
+        "encode_cycles_mean": 237370,
+        "status": "ESP_OK"
+      }
+    },
+    "reserve": {
+      "label": "40 MHz + reserve",
+      "mode": "QPSK 9/10",
+      "rate_label": "33.33",
+      "test": "keyed",
+      "source": "reserve",
+      "lines": [
+        1
+      ],
+      "deadline": "fast",
+      "values": {
+        "command": "dvb 2420 11 33m333 30 4 128",
+        "cmd": "dvb",
+        "modcod": 11,
+        "symbol_rate": 33333333,
+        "dac_rate": 80000000,
+        "sps": 2.4,
+        "sps_num": 12,
+        "sps_den": 5,
+        "frame_symbols": 33282,
+        "payload_bytes_per_frame": 7264,
+        "max_fill_cycles": 39548,
+        "encode_cycles_mean": 198879,
+        "status": "ESP_OK"
+      }
+    },
+    "failed_10m": {
+      "label": "10 Msym/s attempt (failed)",
+      "mode": "8PSK 2/3",
+      "rate_label": "10",
+      "test": "radio off",
+      "source": "buildout_main",
+      "lines": [
+        16
+      ],
+      "deadline": "early",
+      "values": {
+        "command": "dvbpace 13 10m 60",
+        "cmd": "dvbpace",
+        "modcod": 13,
+        "symbol_rate": 10000000,
+        "frame_symbols": 22194,
+        "payload_bytes_per_frame": 5370,
+        "max_fill_cycles": 107158,
+        "encode_cycles_mean": 666529,
+        "status": "ESP_ERR_TIMEOUT"
+      }
+    },
+    "encoder_psram": {
+      "label": "PSRAM ring",
+      "mode": "8PSK 2/3",
+      "rate_label": "5",
+      "test": "radio off",
+      "source": "buildout_main",
+      "lines": [
+        13
+      ],
+      "deadline": "early",
+      "values": {
+        "command": "dvbpace 13 5m 60",
+        "cmd": "dvbpace",
+        "modcod": 13,
+        "symbol_rate": 5000000,
+        "frame_symbols": 22194,
+        "payload_bytes_per_frame": 5370,
+        "max_fill_cycles": 79937,
+        "encode_cycles_mean": 704700,
+        "status": "ESP_OK"
+      }
+    },
+    "encoder_packed": {
+      "label": "Packed ring",
+      "mode": "8PSK 2/3",
+      "rate_label": "10",
+      "test": "radio off",
+      "source": "buildout",
+      "lines": [
+        6
+      ],
+      "deadline": "early",
+      "values": {
+        "command": "dvbpace 13 10m 60",
+        "cmd": "dvbpace",
+        "modcod": 13,
+        "symbol_rate": 10000000,
+        "frame_symbols": 22194,
+        "payload_bytes_per_frame": 5370,
+        "max_fill_cycles": 57164,
+        "encode_cycles_mean": 257361,
+        "status": "ESP_OK"
+      }
+    },
+    "encoder_ram": {
+      "label": "RAM workspace",
+      "mode": "8PSK 2/3",
+      "rate_label": "10",
+      "test": "radio off",
+      "source": "next2",
+      "lines": [
+        35
+      ],
+      "deadline": "early",
+      "values": {
+        "command": "dvbpace 13 10m 30",
+        "cmd": "dvbpace",
+        "modcod": 13,
+        "symbol_rate": 10000000,
+        "frame_symbols": 22194,
+        "payload_bytes_per_frame": 5370,
+        "max_fill_cycles": 43780,
+        "encode_cycles_mean": 167113,
+        "status": "ESP_OK"
+      },
+      "fill_label": "Reuse overlap + cache"
+    },
+    "encoder_c": {
+      "label": "C loops",
+      "mode": "8PSK 2/3",
+      "test": "isolated benchmark",
+      "source": "first_encoder",
+      "lines": [
+        93,
+        94,
+        95,
+        96,
+        97
+      ],
+      "values": {
+        "cmd": "fecbench",
+        "modcod": 13,
+        "input": "gcs",
+        "cycles.total": [
+          2360351,
+          2346962,
+          2347178,
+          2346836,
+          2347430
+        ]
+      }
+    },
+    "keyed_qpsk_20m": {
+      "label": "QPSK at 20 Msym/s",
+      "mode": "QPSK 9/10",
+      "rate_label": "20",
+      "test": "keyed",
+      "source": "keyed_qpsk",
+      "lines": [
+        2
+      ],
+      "deadline": "fast",
+      "values": {
+        "command": "dvb 2420 11 20mq4 30 4 128",
+        "cmd": "dvb",
+        "modcod": 11,
+        "symbol_rate": 20000000,
+        "dac_rate": 80000000,
+        "sps": 4,
+        "frame_symbols": 33282,
+        "payload_bytes_per_frame": 7264,
+        "max_fill_cycles": 36620,
+        "encode_cycles_mean": 226682,
+        "status": "ESP_OK"
+      }
+    }
+  }
+}

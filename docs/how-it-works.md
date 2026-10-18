@@ -22,7 +22,8 @@ A MODCOD number selects a modulation and error-correction rate (Table 12).
    rotation sequence (§5.5). A normal frame with pilots has 33,282 QPSK symbols or
    22,194 8PSK symbols.
 
-`host/dvbs2.py` is the independent bit-level reference. `dvbs2.c` is a portable C encoder;
+`host/dvbs2.py` and `host/dvbs2_tables.py` are importable reference libraries, not command-line
+tools. `dvbs2.c` is a portable C encoder;
 `fast.c` uses packed bits and tables, with S3 PIE assembly for the hot stages. PIE is the
 S3's 128-bit vector instruction extension. Every C stage is compared against Python,
 including transport-stream (TS) packet continuation and generic continuous stream (GCS)
@@ -121,21 +122,31 @@ with OR. For the three vectors in one twelve-sample group, the chronological win
 are [-6..1], [-5..2] and [-3..4]. Table construction sums one whole axis before rounding.
 No addition of independently rounded pulse fragments is needed in the renderer.
 
-The encoder writes eleven-sign histories directly into queue pages, including headers
-and pilots. The renderer selects the appropriate eight-sign window for each vector.
+The encoder queues compact I/Q bit planes, including headers and pilots: forty words
+per page, each holding sixteen signs per axis. Before playback starts, the queue holds two
+complete frames. Core 1 extracts the three eight-sign windows directly from rolling I/Q
+bit streams while rendering. A fixed 80-symbol schedule combines table loads with
+packed I/Q addition and stores; the disjoint DAC fields make addition exactly equal
+to OR. There is no intermediate expanded history page.
 There is no intermediate packed frame ring for this mode. A full queue blocks the
-encoder until the renderer releases eight pages. History survives every frame and bank seam.
+encoder until the renderer releases at least eight pages. One notification at bank end
+wakes it after both callbacks finish. History survives every frame and bank seam.
 
-The 65,536 B shaping store holds `24576 + 54*528 + 4096 + 8144 = 65328 B`:
-axis tables, 54 guarded queue pages, a sign lookup table and the encoder workspace.
+The 65,536 B shaping store holds `24576 + 105*160 + 768 + 8144 = 50288 B`:
+axis tables, 105 queue pages, a 192-sample scratch chunk and the encoder workspace.
+The headline radio-off pace also borrows its 7,264-byte reference input: 57,552 B
+total, without additional heap. At a physical bank cut, only a partial chunk uses
+scratch and a word copy; full chunks render directly to the bank. The last sixteen
+signs carry across pages. Linker assertions keep the live kernel, cut wrapper and
+copy kernel in IRAM, and the complete shaping store in internal DRAM.
 Each page represents 128 five-symbol groups, or 1,536 samples. Full coverage is
-`54*1536 / 80e6 s = 1.0368 ms`. Internal input and overlap buffers are separate allocations.
+`105*1536 / 80e6 s = 2.016 ms`. The overlap buffer remains a separate internal allocation.
 Acquire/release counters transfer ownership between cores; physical page cursors remain
 valid through 32-bit counter wrap.
 
-This mode met keyed bank deadlines, but the encoder averaged 237,370 of 239,630 cycles
-per frame. Queue coverage absorbed slower frames. It has not met the proposed 15% reserve,
-and has no demonstrated live-input or RF decode at this rate. [Evidence](measurements.md#40-mhz).
+Firmware e96795b met the 15% reserve on both cores in one 30 s keyed run: encoder mean
+198,879 of 239,630 cycles/frame, maximum fill 39,548 of 47,220 cycles/bank.
+Live input and RF decode at this rate remain unmeasured. [Evidence](measurements.md#40-mhz).
 
 ## Rates
 
@@ -153,6 +164,31 @@ QPSK MODCODs 4..11 select rates 1/2, 3/5, 2/3, 3/4, 4/5, 5/6, 8/9, 9/10.
 8PSK MODCODs 12..17 select 3/5, 2/3, 3/4, 5/6, 8/9, 9/10. Fractional names are
 exact ratios: 80/3 and 100/3 Msym/s. Integer telemetry truncates those rates.
 
+## Table provenance
+
+Current waveform coverage is `tests/test_stream.py`; `tests/test_rational.py` also checks
+fractional samples against independent convolution. To recover the original generators
+without changing this checkout, extract the archive into a new directory:
+
+```sh
+mkdir -p notes
+TABLE_SRC=$(mktemp -d "$PWD/notes/table-source.XXXXXX")
+git archive archive/dev-2026-10-17 | tar -x -C "$TABLE_SRC"
+```
+
+Run these with the host Python. Outputs stay inside that extracted directory.
+
+| Table or oracle | Exact invocation |
+|---|---|
+| DVB-S2 tables | `python3 "$TABLE_SRC/host/gen_tables.py" /path/to/en_30230701v010401p.pdf` |
+| Ordinary pulse taps | `python3 "$TABLE_SRC/host/shaper.py" header` |
+| QPSK pulse taps | `python3 "$TABLE_SRC/host/qpsk_fill.py" --header` |
+| Six-symbol pulse derivation and check | `python3 "$TABLE_SRC/tests/test_shaper_short.py"` |
+
+The ETSI generator checks PDF SHA-256
+`19077f80420eb17519fcf6f83e2847d7a877940b134c5306814b8c6f60d8475d` and requires
+Poppler's `pdftotext`. Keep retained fixtures unchanged unless waveform behavior changes.
+
 ## Checking changes
 
 The compact CI suite tests the Python reference against standard vectors and independent
@@ -162,3 +198,18 @@ fractional stream is also checked sample by sample against independent integer c
 Allocation failures, repeated commands, frame seams, bank wraps and counter wrap are covered.
 Host clocks and heaps are synthetic; only [the board example](../examples/self-check/README.md)
 can check deadlines and startup memory. RF decoding and spectral measurements remain separate work.
+
+```sh
+python3 -m pip install numpy scipy pyserial
+for test in tests/test_*.py; do python3 "$test" || exit 1; done
+(. ~/.espressif/tools/activate_idf_v6.1.sh && cd firmware && idf.py build)
+python3 examples/self-check/check.py --plan
+python3 examples/pi-sender/send.py --vector
+python3 examples/self-check/build_receiver.py
+python3 examples/live-video/dry_run.py notes/video-dry --receiver "$PWD/notes/leansdr/src/apps/leandvb"
+```
+
+Use the [host shell and IDF setup](../README.md#quick-start); no board is needed for these
+commands. CI runs all fourteen host scripts and a firmware build. The receiver build and
+video dry run are separate integration checks. If a sandbox blocks ESP-IDF's unused
+component manager, use `IDF_COMPONENT_MANAGER=0 idf.py build`; no managed dependencies are needed.

@@ -180,6 +180,11 @@ typedef struct {
 int dvbs2_fast_sign_start(dvbs2_fast *f, const dvbs2_workspace *ws, dvbs2_sign_state *s);
 unsigned dvbs2_fast_sign_read(const dvbs2_fast *f, dvbs2_sign_state *s, uint32_t *dst,
                               unsigned blocks, const uint32_t *lut);
+/* QPSK axis queue variant: requires MAP_QUADS; separate start/read pair with the same state lifetime.
+ * Each output word holds sixteen I-negative bits in 15:0 and Q in 31:16,
+ * oldest first. pending counts symbols modulo sixteen. Do not mix the two APIs. */
+int dvbs2_fast_axis_start(dvbs2_fast *, const dvbs2_workspace *, dvbs2_sign_state *);
+unsigned dvbs2_fast_axis_read(const dvbs2_fast *, dvbs2_sign_state *, uint32_t *, unsigned words);
 
 // 8PSK: four chronological phases per 12-bit word. Partial groups survive EOF.
 // table is 1024 caller-owned internal bytes; prepare first, then cache once.

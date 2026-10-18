@@ -19,6 +19,7 @@
 
 #include "dvbtx.h"
 #include "spi_input.h"
+#include "usb_input.h"
 #include "radio_s3.h"
 #include "radio_signals.h"
 #include "shaper.h"
@@ -301,6 +302,7 @@ void app_main(void)
         } else {
             printf("@{\"error\":\"unknown command\",\"line\":\"%.40s\"}\n", line);
         }
+        usb_input_finish();
         printf("@{\"cmd\":\"%.40s\",\"done\":true}\n", line);
     }
 }

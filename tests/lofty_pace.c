@@ -166,7 +166,7 @@ static esp_err_t pace(bool wifi, uint32_t sec, uint32_t rate, radio_s3_fill_fn f
     assert(wifi == expect_wifi && sec == 10 && rate == 80000000 && fn == fill);
     if (wifi) assert(radio_s3_stream_ready() == ESP_OK);
     assert(dvb.queue_pages == expect_pages && !dvb.trace && !dvb.trace_state);
-    assert(dvb.page_wake == !dvb.lofty);
+    assert(!dvb.page_wake);
     if (dvb.lofty) {
         assert(!enc.ws_borrowed && heap_caps_get_allocated_size(enc.ws) == DVBS2_FAST_WORKSPACE_USED);
         const unsigned extra = expect_pages > LOFTY_STORED ? expect_pages-LOFTY_STORED : 0;

@@ -1,35 +1,51 @@
 # Pi sender
 
-Native PigeonVision `pv-capture` works directly with `spiinput pv`. Keep its
-existing `spi` config: `/dev/spidev0.0`, 20 MHz, READY on RP1 GPIO25. No bridge
-or change to pv-capture is needed. Start a fresh S3 receiver run first; every
-sender begins at sequence zero. See [wiring and coordinator check](../../docs/spi-input.md).
+Stream a file or stdin from a Linux board (a Raspberry Pi, a CM5) to the S3 over
+single-line SPI, as video packets (TS) or raw bytes (GCS). It wraps the data in the S3's
+1,332-byte messages and waits for READY before each one. The S3 takes it with `spiinput on`.
+See the [wiring, message format and commands](../../docs/spi-input.md).
 
-For a file or ffmpeg stdin, install Python `spidev` and libgpiod v2 bindings
-(`gpiod>=2,<3`). Enable SPI0 and grant access to SPI and the RP1 GPIO chip.
-Use `gpioinfo` to identify that chip; it may be `/dev/gpiochip4` instead of 0.
+Enable SPI0 and install Python `spidev` and libgpiod v2 bindings (`gpiod>=2,<3`).
+Use `gpioinfo` to identify the GPIO chip carrying READY; on a CM5 it may be
+`/dev/gpiochip4`. The sender needs access to that chip and `/dev/spidev0.0`.
+
+First, on the S3 console:
+
+```text
+spipins devkit
+spiinput on
+dvbpace 13 5m 120
+```
+
+Then on the SBC, start a TS sender (file or ffmpeg stdin):
 
 ```sh
 python3 examples/pi-sender/send.py --vector
-# 1332 bytes, CRC 0x51be328d, no hardware opened
+# 1332 bytes, CRC 0x51be328d; no hardware opened
 python3 examples/pi-sender/send.py demo.ts --gpiochip /dev/gpiochip4
 ffmpeg -re -i demo.ts -c copy -muxrate 9000000 -f mpegts pipe:1 |
   python3 examples/pi-sender/send.py - --gpiochip /dev/gpiochip4
 ```
 
-The script sends raw 1,332-byte messages, mode 0, MSB first, at 20 MHz by default.
-`--hz 1000000` is useful for initial wiring checks. File input defaults to a
-9 Mb/s offered ceiling (`--mbps`); READY can reduce the actual rate. It sends
-1..7 complete 188-byte packets, accumulates short stdin reads and rejects partial
-TS tails or bad sync. No TS null packets are added. READY low for 2 seconds stops
-it. Failed or short transfers are never retried. MISO is unused.
+For arbitrary bytes, select `spiinput on gcs` before starting the S3 run, then:
 
-At exit it prints JSON counts and CRC chain to stderr. Compare `messages`,
-`ts_packets`, `payload_bytes`, `crc_chain`, `next_seq` with the S3's `spi` fields
-after stopping the sender and allowing several seconds for input to drain.
-The S3 run must outlast the sender. A successful SPI write is not an ACK.
-At 9 Mb/s, dummy DVB-S2 frames between data frames are expected.
+```sh
+python3 examples/pi-sender/send.py bytes.bin --kind gcs --gpiochip /dev/gpiochip4
+```
 
-The implementation is independent. Protocol and vector were checked against
-PigeonVision's Python `spi_transport.py`, native `pv/spi_protocol.hpp`, and the
-[RP2350 contract](https://github.com/Rivercraft911/RP2350_IQ_Benchmark/blob/main/docs/pv-spi-spec.md).
+The sender uses mode 0, MSB first, one raw 1,332-byte message per CS at 20 MHz.
+`--hz 1000000` selects a slower clock. `--mbps` sets the offered payload ceiling
+(default 9 Mb/s); READY can reduce the actual rate. It accumulates short reads,
+zero pads the final message, and rejects partial TS packets or bad sync.
+GCS accepts any nonempty batch of up to 1,316 bytes. No TS null packets are added.
+After every CS release it waits at least 10 µs, then samples READY immediately
+before the transfer. READY low for two seconds stops the sender. Failed or short
+transfers are never retried. MISO is unused; this script sends raw SPI only.
+
+Stop the sender several seconds before the S3 run ends. Compare its stderr JSON
+with S3 `spi`: `messages`, `payload_bytes`, `next_seq`, and, for TS, `ts_packets`
+and `crc_chain`. The latter chains each accepted TS message's four wire CRC bytes
+through `zlib.crc32`, initially zero. Require zero receiver protocol errors and
+sender timeouts/uncertain writes. A completed SPI transfer is not an ACK.
+Restart the S3 run for each new sender (sequence starts at zero).
+At 9 Mb/s the encoder may insert DVB-S2 dummy frames; payload bytes remain in order.

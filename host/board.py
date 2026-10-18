@@ -41,9 +41,9 @@ def resolve_port(port: str = DEFAULT_PORT) -> str:
 
 
 def reserve_port(port: str, reset: bool = False):
-    """Lock across worktrees and reject existing cu/tty users before any reset/open.
+    """Lock the port and reject existing cu/tty users before any reset/open.
 
-    A coordinator can pass this locked descriptor to its board.py children.
+    A parent process can pass this locked descriptor to its board.py children.
     lsof also catches tools that do not participate in our advisory lock.
     """
     device = os.path.realpath(port).replace('/dev/tty.', '/dev/cu.')

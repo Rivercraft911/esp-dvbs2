@@ -2,6 +2,12 @@
   "archive": "archive/dev-2026-10-17",
   "records": [
     {
+      "file": "2026-10-17-qpsk-reserve-keyed.jsonl",
+      "source": "board run 2026-10-18T02:54Z UTC (2026-10-17 PDT), firmware e96795b",
+      "records": 1,
+      "sha256": "19d097e6ea8145e468a6b27782e98c3a1431e8abfffbd75446569a79935008ce"
+    },
+    {
       "file": "2026-10-17-moonshot-keyed.jsonl",
       "source": "results/2026-10-17-moonshot/keyed.jsonl",
       "records": 1,
@@ -24,6 +30,30 @@
       "source": "results/2026-10-17-qpsk-fill-board/decodes.jsonl",
       "records": 1,
       "sha256": "9e98ddb69ecfa994a2f69fc9a3f4fcfb9953bf81814fd77577f1c710a34743c6"
+    },
+    {
+      "file": "2026-10-16-keyed-qpsk-1m.jsonl",
+      "source": "results/2026-10-16-keyed-next2/runs.jsonl (QPSK 1/2 record)",
+      "records": 1,
+      "sha256": "87df0a3b85a12a56d400e7ed4d29fd4a4aa1aba6c9514c05bbc143c75357df60"
+    },
+    {
+      "file": "2026-10-18-qpsk-fixture-pace.jsonl",
+      "source": "board run 2026-10-18, firmware 40fa63d on exp/phy-solo",
+      "records": 1,
+      "sha256": "6fc2fbb22cbed6a49afccdd668c078f9d5f6c5b7c756ebdf5d63aa7ebce84040"
+    },
+    {
+      "file": "2026-10-18-qpsk-fixture-keyed-wifi.jsonl",
+      "source": "board run 2026-10-18, firmware 40fa63d on exp/phy-solo",
+      "records": 1,
+      "sha256": "df209d589aaa6746b33aa651733d1b2ac60a30f0254be69405f7348b68732be3"
+    },
+    {
+      "file": "2026-10-18-qpsk-fixture-keyed-solo.jsonl",
+      "source": "board run 2026-10-18, firmware 40fa63d on exp/phy-solo",
+      "records": 1,
+      "sha256": "3bd3de61ed0d9d9eeb26705d13aa0d5010d05069f1a2423977786c1da8bec56d"
     }
   ]
 }

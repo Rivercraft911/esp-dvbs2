@@ -20,14 +20,22 @@ jobs:
       - run: python tests/test_lofty_handoff.py /tmp/lofty-handoff
       - run: python tests/test_jitter.py
       - run: python tests/test_check.py
+      - run: python tests/test_qpsk_axes.py
       - run: python tests/test_self_check.py
-      - name: SPI input (maintained with the SPI implementation)
+      - run: python tests/test_live_video.py
+      - name: SPI input
         run: |
           python tests/test_ingress.py
-          python tests/test_cm5_spi.py
+          python tests/test_pi_sender.py
           python tests/test_spi_input.py
-          python tests/test_spi_in_board.py
+          python tests/test_spi_pv.py
+          python tests/test_spi_board.py
           python tests/test_spi_sender.py
+
+      - name: USB payload input (no hardware)
+        run: |
+          python tests/test_usb_input.py
+          python tests/test_usb_send.py
 
   firmware:
     runs-on: ubuntu-latest
