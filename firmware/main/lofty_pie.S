@@ -82,8 +82,7 @@ lofty_prepare_pie:
     ee.vld.128.ip q1,a3,0
     ee.src.q q0,q0,q1
     wur.sar_byte a8
-    ee.src.q q1,q4,q0
-    ee.orq q4,q0,q0
+    ee.src.q.qup q1,q4,q0
     ssai 4
     ee.vsl.32 q2,q1
     ee.andq q2,q2,q6

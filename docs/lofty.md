@@ -1,6 +1,8 @@
 # 8PSK at 80/3 Msym/s
 
-The candidate keeps the encoder's hot GCS tables in internal RAM. All three
+The candidate keeps the base GCS tables in internal RAM. The round-three
+t=10/12 BCH path adds 24 KiB of generated tables in cached PSRAM. Its cache
+cost and bank-end wake policy still need a board run. All three
 16-frame waveforms retain their CRCs and decode without corrections. Board
 admission is pending. The coordinator's `3cbf37c` image decoded correctly but
 starved its queue under flash-cache pressure. This round accessed no board or
@@ -75,6 +77,13 @@ The bank deadline is `15740*3 = 47220 cycles`, with a 40,137-cycle ceiling.
 Frame sizes follow EN 302 307-1 clause 5.5; bank geometry is in `radio_s3.h`.
 Trace replay excludes cache/bus stalls and interrupt delays. It establishes
 neither silicon timing nor admission; the full 15% goal remains open.
+
+For the round-three interrupt/bus diagnosis, use
+`caffeinate -i python3 host/jitter.py notes/eight-lofty-round3` after flashing.
+It compares page wakes with bank-end wakes on the same encoder, about 55 s
+per mode, and records per-core C interrupt handlers, per-bank histograms,
+SRAM busy cycles and higher-priority interrupt entries. `--plan` opens no
+device. Only coordinator measurements can establish the cause or timing win.
 
 After the coordinator builds/flashes the committed revision with N0CALL:
 

@@ -87,6 +87,10 @@ void dvbs2_plframe(const dvbs2_mode *mode, int pilots, uint8_t *output);
  * header and pilots. output: dvbs2_frame_symbols(mode, pilots) bytes, any
  * alignment. */
 typedef struct dvbs2_fast dvbs2_fast;
+// Optional four-byte BCH recurrence for t=10/12. Caller owns 24 KiB, aligned
+// to 16 B; NULL disables it. Cached PSRAM is an experiment, not a timing bound.
+#define DVBS2_BCH_SLICE_BYTES 24576
+int dvbs2_fast_bch_slices(dvbs2_fast *f, uint8_t *tables);
 /* NIBBLE uses register-based BCH rows for PSRAM workspaces; default t=10/12
  * byte rows are cached internally, while t=8 uses paired byte rows in flash.
  * MAP_SPARSE keeps the

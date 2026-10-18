@@ -142,6 +142,10 @@ static void bank_fill(radio_s3_fill_fn fn, void *ctx, unsigned b, uint64_t first
             else assert(!dvb.wake_pending);
         }
         if (dvb.moon) {
+            if (!dvb.page_wake && !getenv("EARLY_WAKE")) {
+                if (offset && !p) assert(enc.task->notifications_sent == sent);
+                else assert(enc.task->notifications_sent-sent <= 1 && !dvb.wake_pending);
+            }
             // The independent Python block/convolution oracle checks the whole
             // output, including both cores and every bank/frame seam.
             at += count;

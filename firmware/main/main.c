@@ -128,12 +128,12 @@ static void cmd_dvbpace(char *args)
     uint32_t seconds, top = 128, stall = 0;
     if (!mode_ok || !number(duration, 1, 600, &seconds) ||
         (peak && !number(peak, 16, 508, &top)) || (pause && !number(pause, 0, 2000, &stall)) ||
-        extra) {
+        (extra && strcmp(extra,"pagewake")) || strtok_r(NULL," \t",&save)) {
         printf("@{\"cmd\":\"dvbpace\",\"error\":\"usage: dvbpace <modcod 4..17> [5m|10m|20m|26m667|33m333] <1..600 seconds> "
-               "[16..508 peak] [0..2000 ms encoder stall]\"}\n");
+               "[16..508 peak] [0..2000 ms encoder stall] [pagewake]\"}\n");
         return;
     }
-    dvbtx_pace(modcod, seconds, top, stall, sps, rate);
+    dvbtx_pace(modcod, seconds, top, stall, sps, rate,extra != NULL);
 }
 
 static void cmd_wifimem(char *args)

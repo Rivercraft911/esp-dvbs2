@@ -24,6 +24,17 @@ def checksum(data):
 
 def kernels(text):
     rows = [json.loads(l[1:]) for l in text.splitlines() if l.startswith('@{')]
+    jitter = [r['jitter'] for r in rows if r.get('test') == 'jitter_target']
+    rows = [r for r in rows if r.get('test') != 'jitter_target']
+    if jitter:
+        assert len(jitter) == 2
+        for r in jitter:
+            assert r['worst_bank']['cycles'] == 12345 and r['worst_bank']['irqs'] >= 1
+            assert all(sum(p['calls'] for p in c) >= 1 for c in r['cores'])
+            for core,c in enumerate(r['cores']):
+                assert any(f'FROM_CPU_INTR{core}' in p['sources'] for p in c)
+            assert sum(b['calls'] for b in r['banks_by_irq_count']) == 1
+        print('real per-core ISR dispatch, original arguments and repeat teardown: ok')
     assert len(rows) == 11,len(rows)
     assert "sign mapper: 96 frames" in text and "machine add: 4095 blocks" in text
     for r in rows[:9]:

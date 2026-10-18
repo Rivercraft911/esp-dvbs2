@@ -223,6 +223,58 @@ dvbs2_pie_bch_byte:
     retw
     .size dvbs2_pie_bch_byte, . - dvbs2_pie_bch_byte
 
+// R' = (R << 32) XOR T3[R0] XOR T2[R1] XOR T1[R2] XOR T0[R3].
+// Each byte index already includes its message byte. T0 is resident, the
+// other three tables may be cached PSRAM. Same canonical remainder as byte.
+    .align 4
+    .global dvbs2_pie_bch_quad
+    .type dvbs2_pie_bch_quad,@function
+    .macro bch_quad_row shift,base
+    extui a8,a12,\shift,8
+    slli a8,a8,4
+    add a8,a8,\base
+    ee.vld.128.xp q2,a8,a9
+    ee.vld.128.ip q3,a8,0
+    ee.xorq q0,q0,q2
+    ee.xorq q1,q1,q3
+    .endm
+dvbs2_pie_bch_quad:
+    entry a1,32
+    mov a14,a6
+    ee.zero.q q0
+    ee.zero.q q1
+    movi a9,4096
+    movi a10,8192
+    add a10,a10,a5
+    movi a11,16384
+    add a11,a11,a5
+    srli a7,a3,4
+    extui a3,a3,0,4
+    beqz a7,.Lbch_quad_tail
+.Lbch_quad_vector:
+    ee.vld.128.ip q4,a2,16
+    ee.xorq q0,q0,q4
+    .rept 4
+    ee.movi.32.a q0,a12,0
+    ee.srci.2q q1,q0,3
+    bch_quad_row 0,a11
+    bch_quad_row 8,a10
+    bch_quad_row 16,a5
+    bch_quad_row 24,a4
+    .endr
+    addi a7,a7,-1
+    bnez a7,.Lbch_quad_vector
+.Lbch_quad_tail:
+    // Byte tail uses the resident T0 and the same macro as the byte kernel.
+    loopnez a3,.Lbch_quad_tail_end
+    bch_byte_step 0
+    addi a2,a2,1
+.Lbch_quad_tail_end:
+    ee.vst.128.ip q0,a14,16
+    ee.vst.128.ip q1,a14,16
+    retw
+    .size dvbs2_pie_bch_quad,.-dvbs2_pie_bch_quad
+
 /* LDPC doubled groups: u2 = u u u[0..5] per 360-bit group u (45 bytes), 96
  * bytes each. U0 = u[0..15], U1 = u[16..31], U2 = u[32..47], X = u[29..44];
  * u2 blocks: U0, U1, {X,U0}>>3, {U0,U1}>>3, {U1,U2}>>3, {X,U0}>>6 (bytes).
