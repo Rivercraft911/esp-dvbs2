@@ -133,6 +133,22 @@ def summarize(status, frames, payload, expected=None):
         "payload_sha256": hashlib.sha256(payload).hexdigest(),
         "status_complete": bool(attempts),
     }
+    # CW, silence and acquisition can produce arbitrary failed FEC hypotheses.
+    # Keep whole-capture totals above; assess the recovered interval separately.
+    accepted = [i for i, a in enumerate(attempts) if a[6] >= 0]
+    report["payload_fec"] = None
+    if accepted:
+        first, last = accepted[0], accepted[-1]
+        interval = attempts[first:last + 1]
+        report["payload_fec"] = {
+            "first_attempt": first, "last_attempt": last,
+            "attempted_frames": len(interval),
+            "bch_failed_frames": sum(a[6] < 0 for a in interval),
+            "bch_corrected_bits": sum(max(a[6], 0) for a in interval),
+            "ldpc_bit_flips": sum(a[3] for a in interval),
+            "failed_before": sum(a[6] < 0 for a in attempts[:first]),
+            "failed_after": sum(a[6] < 0 for a in attempts[last + 1:]),
+        }
     if not attempts:
         ldpc = [int(n) for n in re.findall(r"LDPCCORR = (-?\d+)", status)]
         bch = [int(n) for n in re.findall(r"BCHCORR = (-?\d+)", status)]
@@ -292,6 +308,23 @@ def vcm_match(frames, modcods, *, pattern, hold_frames, max_frames, callsign):
     return dict(failed, payload_match=True, host_model_exact=True, contiguous=True,
                 first_frame=first, last_frame=first+len(frames)-1,
                 compared_bytes=count, compared_bits=count*8)
+
+
+def vcm_checks(report):
+    """Strict recovered-data verdict; capture edges retain separate diagnostics.
+
+    Exact BBHEADER/data and ordered PLS matching must already have succeeded.
+    Failed FEC attempts *between* recovered frames still fail this check.
+    This does not establish transmitter throughput or absence of dummy frames.
+    """
+    interval = report.get("payload_fec")
+    return dict(frame_lock=bool(report.get("frame_lock")),
+                fec_status_complete=bool(report.get("status_complete") and interval),
+                host_model_exact=bool(report.get("host_model_exact")),
+                contiguous=bool(report.get("contiguous")),
+                pattern_complete=bool(report.get("pattern_complete")),
+                bbheaders_valid=report.get("bbheader_rejected_frames") == 0,
+                payload_fec_valid=bool(interval and interval["bch_failed_frames"] == 0))
 
 
 def stream_match(expected, got, per_frame):

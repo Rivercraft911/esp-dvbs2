@@ -172,6 +172,29 @@ wrong pattern phase fail. A passing pattern test must observe every requested
 MODCOD. The local coordinator E200 helper is `notes/e200_vcm.py`; its `--plan`
 and `--decode-only` paths access no devices. Both capture paths require `--key`.
 
+The coordinator's `c5d6754` E200 OTA QPSK run at 5 Msym/s recovers frames
+0..2937 exactly and contiguously: MODCOD 4/7/11 counts 980/980/978,
+16,960,052 payload bytes. Its initial false verdict counted 1,375 failed FEC
+hypotheses outside that interval (837 before, 538 after), over the station IDs,
+acquisition and silence. The interval has no BCH failures. Whole-capture totals
+remain in the report; `payload_fec` scopes diagnostics between the first and
+last BCH-valid attempts. In-interval FEC failures still fail, along with gaps,
+wrong PLS modes or BBHEADER/data mismatches. The local helper's `--recheck`
+uses saved BBFRAMEs/logs without IQ or devices and reports named failed checks.
+
+The equal-duty mixed 10 Msym/s OTA run is **not sustainable** with this encoder:
+783,071 mean cycles/frame exceeds its 665,712-cycle pattern budget at 240 MHz.
+The 719,913-cycle kernel alone exceeds that budget; removing xorshift generation
+would not suffice. DAC fills/switches were on time, but starvation inserted
+10,353 physical dummy frames. The captured burst recovers 71 exact individual
+payloads with gaps and 51 in-interval BCH failures. `--fixture` is currently only
+for the fixed 33m333/26m667 paths and rejects VCM. A diagnostic mixed rerun can
+space individual 8PSK frames among QPSK frames with `hold=1`; it is a lower-duty
+test, not evidence for the original four-frames-per-mode throughput. The helper
+now decodes complete captures even when board timing/starvation checks fail,
+preserving separate payload and transmitter verdicts. Dummies remain a failed
+throughput check; late/fatal checks are unchanged.
+
 Only the coordinator runs board steps. After flashing, keep the radio off:
 
 ```sh

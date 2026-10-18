@@ -55,6 +55,29 @@ def run():
     report = decode.summarize(status, rows, b''.join(row['payload'] for row in rows))
     assert report['frame_modcods'] == modes
     assert report['frames_per_modcod'] == {6: 8, 13: 4}
+    failed = ('S2FEC modcod=28 short=1 pilots=0 ldpc_flips=100 '
+              'ldpc_checks_before=200 ldpc_checks_after=50 bch_errors=-1\n')
+    # Station IDs/acquisition/silence may create failed FEC hypotheses around
+    # otherwise exact data. Retain totals and distinguish the recovered interval.
+    edge = decode.summarize('FRAMELOCK 1\n' + failed*2 + status + '\n' + failed + 'FRAMELOCK 0\n',
+                            rows, b''.join(row['payload'] for row in rows))
+    edge.update(decode.vcm_match(rows, modes, pattern=(6, 13), hold_frames=4,
+                                 max_frames=12, callsign='N0CALL'))
+    assert edge['bch_failed_frames'] == 3 and not edge['lock_at_end']
+    assert edge['payload_fec']['failed_before'] == 2 and edge['payload_fec']['failed_after'] == 1
+    assert edge['payload_fec']['bch_failed_frames'] == 0
+    assert edge['payload_fec']['ldpc_bit_flips'] == 0
+    assert all(decode.vcm_checks(edge).values())
+    # A failed attempt within that same interval must remain a failure, even
+    # when every emitted BBFRAME matches (for example, a false PLS candidate).
+    lines = status.splitlines()
+    internal = decode.summarize('FRAMELOCK 1\n' + '\n'.join(lines[:4]) + '\n' + failed + '\n'.join(lines[4:]),
+                                rows, b''.join(row['payload'] for row in rows))
+    internal.update({k: edge[k] for k in ('host_model_exact', 'contiguous', 'pattern_complete')})
+    assert internal['payload_fec']['bch_failed_frames'] == 1
+    assert not decode.vcm_checks(internal)['payload_fec_valid']
+    assert not all(decode.vcm_checks(internal).values())
+    assert not decode.vcm_checks(dict(edge, host_model_exact=False))['host_model_exact']
     print('VCM decode: continuous PRNG, BBHEADER/model, PLS order and gap/corruption rejection pass')
 
 
