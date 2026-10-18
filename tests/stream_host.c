@@ -20,8 +20,10 @@ static uint32_t checked_load(const volatile uint32_t *p, int order)
         // Host-only producer pacing at admission, without changing physical
         // bank callbacks. The hardware consumer never waits here.
         if (!lofty_mux.output) forced_mask = 0;
-        unsigned bit = lofty_mux.frames == 0 ? 1 : lofty_mux.frames == 1 ? 2 : lofty_mux.frames == 5 ? 4 : 0;
-        if (getenv("FORCE_DUMMIES") && bit && !(forced_mask&bit)) {
+        const char *frame = getenv("FORCE_DUMMY_FRAME");
+        unsigned bit = frame ? lofty_mux.frames == strtoul(frame,NULL,0) :
+                       lofty_mux.frames == 0 ? 1 : lofty_mux.frames == 1 ? 2 : lofty_mux.frames == 5 ? 4 : 0;
+        if ((frame || getenv("FORCE_DUMMIES")) && bit && !(forced_mask&bit)) {
             forced_mask |= bit;
             return lofty_mux.frames; // force a not-ready admission snapshot
         }

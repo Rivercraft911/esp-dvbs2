@@ -83,7 +83,7 @@ def check(out, receiver=None):
         assert r['dummy_startup'] == r['dummy_steady'] == 0
         assert r['admission_pages'] == 44 and r['dummy_startup_frames'] == 3
         assert r['sps_num'] == 3 and r['sps_den'] == 1 and r['rolloff'] == .35
-        assert r['pulse_symbols'] == 5 and r['table_bytes'] == 36864
+        assert r['pulse_symbols'] == 5 and r['table_bytes'] == 36352
         assert r['queue_pages'] == {13:54,15:50,17:46}[mc] and r['queue_empty'] == r['underruns'] == r['overlap_mismatches'] == 0
         symbols = onair.symbols(mc,17,callsign='N0CALL')
         phases = np.rint(np.angle(symbols)*4/np.pi).astype(int)%8

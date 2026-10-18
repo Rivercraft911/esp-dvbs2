@@ -12,8 +12,9 @@ software interrupt handlers on both CPUs twice, including same-bank notify
 accounting. Its synthetic observer lengths are not timing measurements.
 
 `python3 tests/test_lofty_handoff.py /tmp/lofty-handoff` replays the supplied
-ID-to-data bank through the real station mux and overlap cache. It checks the
-8,100/6,092-sample callbacks, bulk-render eligibility and two exact data frames.
+ID-to-data bank and both supplied data-to-dummy banks through the real station
+mux and overlap cache. It checks the8,100/6,092-sample callbacks, dummy pairing,
+return-to-data, every slice's bulk eligibility and all samples against Python.
 
 With ESP-IDF v6.1 active:
 

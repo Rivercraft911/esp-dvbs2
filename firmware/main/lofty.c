@@ -39,7 +39,10 @@ int lofty_build(uint32_t *table, unsigned peak)
     const unsigned counts[] = {3,2,3,2,2}, widths[] = {4,8,12,4,4};
     for (unsigned v = 0; v < 5; ++v) {
         unsigned part = parts[v], count = counts[v], width = widths[v];
-        for (unsigned w = 0; w < (1u<<(3*count)); ++w)
+        // C's first vector ignores the newest phase. Keep four copies per
+        // older phase, enough to halve its address with one PIE instruction.
+        unsigned rows = (1u<<(3*count)) >> (v == 3);
+        for (unsigned w = 0; w < rows; ++w)
             for (unsigned p = 0; p < width; ++p) {
                 uint32_t packed = 0;
                 for (unsigned axis = 0; axis < 2; ++axis) {
@@ -47,7 +50,7 @@ int lofty_build(uint32_t *table, unsigned peak)
                     for (unsigned j = 0; j < count; ++j) {
                         int position = part == 0 ? -1-(int)count+(int)j : -4+(int)(3*part+j);
                         int h = (int)(first[v]+p)-3*position;
-                        unsigned phase = w>>(3*(count-1-j))&7;
+                        unsigned phase = (v == 3 ? 2*w : w)>>(3*(count-1-j))&7;
                         if (h >= 0 && h < 15)
                             sum += (int64_t)(axis ? shaper_level_q[phase] : shaper_level_i[phase])*taps[h];
                     }
@@ -57,7 +60,7 @@ int lofty_build(uint32_t *table, unsigned peak)
                 }
                 table[width*w+p] = packed;
             }
-        table += width*(1u<<(3*count));
+        table += width*rows;
     }
     return 0;
 }
@@ -94,7 +97,7 @@ IRAM_ATTR void lofty_render(uint32_t *dst, const uint32_t *src, unsigned n, cons
         for (unsigned p = 0; p < 12; ++p) {
             uint32_t av = p < 4 ? table[4*a+p] : table[2048+8*(a&63)+p-4];
             *dst++ = (av+table[2560+4*b+p]+(p < 4 ? 0 :
-                table[8704+256*(p/4-1)+4*c+(p&3)]))^0x80200;
+                table[(p < 8 ? 8704+4*(c/2) : 8832+4*c)+(p&3)]))^0x80200;
         }
     }
 #endif
@@ -104,17 +107,16 @@ IRAM_ATTR void lofty_samples(uint32_t *dst, const uint32_t *src, unsigned skip, 
                              const uint32_t *table)
 {
     uint32_t tmp[12] __attribute__((aligned(16)));
-    while (n && (skip || ((uintptr_t)dst&15) || n < 12)) {
-        lofty_render(tmp,src++,1,table);
-        size_t take = n < 12-skip ? n : 12-skip;
-        for (size_t i = 0; i < take; ++i) *dst++ = tmp[skip+i];
-        n -= take, skip = 0;
-    }
-    unsigned blocks = n/12;
-    if (blocks) lofty_render(dst,src,blocks,table);
-    dst += 12*blocks, src += blocks, n -= 12*blocks;
-    if (n) {
-        lofty_render(tmp,src,1,table);
-        for (size_t i = 0; i < n; ++i) dst[i] = tmp[i];
+    while (n) {
+        if (!skip && !((uintptr_t)dst&15) && n >= 12) {
+            unsigned blocks = n/12;
+            lofty_render(dst,src,blocks,table);
+            dst += 12*blocks; src += blocks; n -= 12*blocks;
+        } else {
+            lofty_render(tmp,src++,1,table);
+            size_t take = n < 12-skip ? n : 12-skip;
+            for (size_t i = 0; i < take; ++i) *dst++ = tmp[skip+i];
+            n -= take; skip = 0;
+        }
     }
 }

@@ -111,7 +111,7 @@ typedef struct {
     uint32_t head[8] __attribute__((aligned(16)));
     uint64_t output;
     uint32_t published, samples, frames, at, length;
-    uint32_t startup, steady, alignment;
+    uint32_t startup, steady;
     unsigned skip, head_at, head_left;
     uint16_t history, dummy_history;
     bool filler, splice;
@@ -231,6 +231,11 @@ static void moon_wait(void)
     __atomic_store_n(&dvb.producer_phase,QUEUE_MAP,__ATOMIC_RELEASE);
 }
 
+static uint32_t lofty_phases(uint32_t w)
+{
+    return (((w>>4)&511)<<15) | ((((w>>13)&2047)/3)<<6) | ((w>>24)&63);
+}
+
 static __attribute__((noinline)) void lofty_publish(unsigned end)
 {
     lofty_page *p = lofty_page_at(dvb.put_index);
@@ -238,6 +243,9 @@ static __attribute__((noinline)) void lofty_publish(unsigned end)
     p->words[LOFTY_PAGE_META] = end | (lofty_mux.skip<<16);
     lofty_mux.samples += end-lofty_mux.skip;
     p->words[LOFTY_PAGE_META+1] = lofty_mux.samples;
+    if (end == MACHINE_PAGE_SAMPLES)
+        p->words[LOFTY_PAGE_META+2] = ((lofty_phases(p->words[0])&4095)<<12) |
+                                    (lofty_phases(p->words[1])&4095);
     lofty_mux.skip = 0;
     const uint32_t tail = esp_cpu_get_cycle_count();
     if (dvb.prepare_pages) {
@@ -380,12 +388,7 @@ static IRAM_ATTR esp_err_t moon_shape(uint32_t *dst, uint64_t first, size_t coun
     return ESP_OK;
 }
 
-static uint32_t lofty_phases(uint32_t w)
-{
-    return (((w>>4)&511)<<15) | ((((w>>13)&2047)/3)<<6) | ((w>>24)&63);
-}
-
-static uint32_t lofty_descriptor(uint32_t h)
+static inline __attribute__((always_inline)) uint32_t lofty_descriptor(uint32_t h)
 {
     return (((h>>15)&511)<<4) | (((h>>6)&511)*3<<13) | ((h&63)<<24);
 }
@@ -408,54 +411,58 @@ static bool lofty_dummy_init(void)
             *dst++ = lofty_descriptor(h);
         }
     }
+    // Only head[0..2] feed the splice renderer. Keep both raw dummy heads
+    // in its unused tail, so source selection never fetches PSRAM.
+    uint32_t head = 0;
+    for (unsigned k = 0; k < 8; ++k) head = (head<<3)|phases[k];
+    lofty_mux.head[4] = head;
+    lofty_mux.head[5] = ((head>>18)<<12) | ((head>>6)&4095);
     for (unsigned k = DVBS2_DUMMY_SYMBOLS-4; k < DVBS2_DUMMY_SYMBOLS; ++k)
         lofty_mux.dummy_history = (lofty_mux.dummy_history<<3) | phases[k];
     return true;
 }
 
-static void lofty_splice(uint32_t a, uint32_t b, unsigned skip)
+static IRAM_ATTR void lofty_splice(uint32_t raw, unsigned skip)
 {
     unsigned bits = 12-skip; // skip is 0 or 6 samples, also 0 or 6 phase bits
-    uint32_t h = ((uint32_t)lofty_mux.history<<bits) | (lofty_phases(a)&((1u<<bits)-1));
+    uint32_t h = ((uint32_t)lofty_mux.history<<bits) | ((raw>>12)&((1u<<bits)-1));
     lofty_mux.head[0] = lofty_descriptor(h);
-    lofty_mux.head[1] = lofty_descriptor((h<<12) | (lofty_phases(b)&4095));
+    lofty_mux.head[1] = lofty_descriptor((h<<12) | (raw&4095));
     lofty_mux.head_at = skip;
-    lofty_mux.head_left = skip ? 18 : 12;
+    lofty_mux.head_left = 12+skip;
 }
 
 // Admit a complete frame, never a promise about future encoder CPU time.
 // With no older frame left at the head, all 44 next-frame pages fit, including
 // any already queued prefix. Completion needs no consumer progress.
-static __attribute__((noinline)) void lofty_boundary(uint32_t ready)
+static inline __attribute__((always_inline)) void lofty_boundary(uint32_t ready)
 {
     bool odd = (lofty_mux.startup+lofty_mux.steady)&1;
     lofty_mux.filler = odd || ready == lofty_mux.frames;
     lofty_mux.at = 0;
-    lofty_mux.length = 3*(lofty_mux.filler ? DVBS2_DUMMY_SYMBOLS : dvb.ring.frame_symbols);
+    lofty_mux.length = lofty_mux.filler ? 3*DVBS2_DUMMY_SYMBOLS : 3*LOFTY_FRAME_SYMBOLS;
     if (lofty_mux.filler) {
         // A partial next frame may have been left asleep at the previous
         // bank's full-queue wait. Dummy playback releases no data pages.
         if (!odd) { moon_wake(); dvb.wake_pending = false; }
         if (lofty_mux.frames < LOFTY_STARTUP_FRAMES) ++lofty_mux.startup;
         else ++lofty_mux.steady;
-        lofty_mux.alignment += odd;
         // Each cached pair has both possible data-boundary prefixes. The
         // second dummy continues the first one's four-symbol groups.
-        unsigned prefix = (lofty_mux.frames*dvb.ring.frame_symbols)&3;
-        const uint32_t *p = lofty_mux.dummy+(prefix ? LOFTY_DUMMY_STRIDE : 0);
-        if (!odd) lofty_splice(p[0],p[1],3*prefix);
+        unsigned prefix = 2*(lofty_mux.frames&1);
+        if (!odd) lofty_splice(lofty_mux.head[4+(prefix != 0)],3*prefix);
+        lofty_mux.head[6] = 3*prefix+(odd ? 3*DVBS2_DUMMY_SYMBOLS : 0);
         lofty_mux.splice = true;
     } else if (lofty_mux.splice) {
         unsigned meta = lofty_page_at(dvb.get_index)->words[LOFTY_PAGE_META];
         lofty_page *p = lofty_page_at(dvb.get_index);
-        lofty_splice(p->words[0],p->words[1],meta>>16);
+        lofty_splice(p->words[LOFTY_PAGE_META+2],meta>>16);
         lofty_mux.splice = false;
     }
 }
 
-// Source changes and fault snapshots are rare. Keep their cold code out of
-// the per-page data loop; a complete data frame needs only the IRAM path.
-static __attribute__((noinline)) unsigned lofty_short(uint32_t *dst, unsigned take)
+// Dummy rendering and source changes share the data renderer and stay in IRAM.
+static IRAM_ATTR __attribute__((noinline)) unsigned lofty_short(uint32_t *dst, unsigned take)
 {
     const uint32_t *src;
     unsigned at;
@@ -464,10 +471,9 @@ static __attribute__((noinline)) unsigned lofty_short(uint32_t *dst, unsigned ta
         src = lofty_mux.head; at = lofty_mux.head_at;
         lofty_mux.head_at += take; lofty_mux.head_left -= take;
     } else {
-        unsigned prefix = (lofty_mux.frames*dvb.ring.frame_symbols)&3;
-        unsigned second = ((lofty_mux.startup+lofty_mux.steady)&1) ? 0 : 3*DVBS2_DUMMY_SYMBOLS;
+        unsigned prefix = 2*(lofty_mux.frames&1);
         src = lofty_mux.dummy+(prefix ? LOFTY_DUMMY_STRIDE : 0);
-        at = 3*prefix+second+lofty_mux.at;
+        at = lofty_mux.head[6]+lofty_mux.at;
     }
     lofty_samples(dst,src+at/12,at%12,take,shaper_store);
     return take;
@@ -489,13 +495,7 @@ static IRAM_ATTR __attribute__((noinline)) esp_err_t lofty_shape(uint32_t *dst, 
     const unsigned words = count;
     const uint32_t before = esp_cpu_get_cycle_count();
     while (count) {
-        if (!lofty_mux.length) {
-            uint32_t ready = __atomic_load_n(&lofty_mux.published,__ATOMIC_ACQUIRE);
-            if (ready != lofty_mux.frames && !((lofty_mux.startup+lofty_mux.steady)&1) && !lofty_mux.splice) {
-                lofty_mux.filler = false; lofty_mux.at = 0;
-                lofty_mux.length = 3*dvb.ring.frame_symbols;
-            } else lofty_boundary(ready);
-        }
+        if (!lofty_mux.length) lofty_boundary(__atomic_load_n(&lofty_mux.published,__ATOMIC_ACQUIRE));
         unsigned left = lofty_mux.length-lofty_mux.at;
         unsigned take = count < left ? count : left;
         if (lofty_mux.filler) take = lofty_short(dst,take);
@@ -1306,7 +1306,7 @@ static void stop_encoder(void)
                          dvb.queue_wait_cycles,(unsigned)dvb.queue_wait_max,(unsigned)dvb.queue_wait_live_max,(unsigned)dvb.prepare_ticks,(unsigned)dvb.page_gap_max,MACHINE_PAGE_SAMPLES,dvb.wake_pages);
     if (dvb.moon) printf(",\"queue_wake_policy\":\"%s\"",dvb.page_wake ? "page" : "bank");
     if (dvb.lofty) printf(",\"dummy_startup\":%u,\"dummy_steady\":%u,\"dummy_alignment\":%u,\"admission_pages\":%u,\"dummy_startup_frames\":%u",
-                          (unsigned)lofty_mux.startup,(unsigned)lofty_mux.steady,(unsigned)lofty_mux.alignment,LOFTY_FRAME_PAGES,LOFTY_STARTUP_FRAMES);
+                          (unsigned)lofty_mux.startup,(unsigned)lofty_mux.steady,(unsigned)((lofty_mux.startup+lofty_mux.steady)/2),LOFTY_FRAME_PAGES,LOFTY_STARTUP_FRAMES);
     if (dvb.moon && dvb.queue_empty) printf(",\"queue_fault\":{\"produced\":%"PRIu32",\"consumed\":%"PRIu32
         ",\"producer_phase\":%"PRIu32",\"last_wait_produced\":%"PRIu32",\"last_wait_consumed\":%"PRIu32"}",
         dvb.queue_fault.put,dvb.queue_fault.get,dvb.queue_fault.phase,

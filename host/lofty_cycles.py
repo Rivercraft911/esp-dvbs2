@@ -134,11 +134,11 @@ def report(trace,disassembly):
     step = group/2
     # The executed 1365-block trace includes 682 two-block groups and one
     # single-block tail. Calls, loop setup and memory stalls are separate.
-    prologue = r['cycles']-682*group-24
-    assert group == 47 and 0 <= prologue < 256,(group,prologue)
+    prologue = r['cycles']-682*group-25
+    assert group == 49 and 0 <= prologue < 256,(group,prologue)
     yield dict(kind='render_model',cycles_per_block=step,cycles_per_sample=step/12,
-               prologue_cycles=prologue,previous_cycles_per_block=24,
-               issue_saving_per_15740_sample_bank=math.ceil(15740/12)*(24-step),
+               prologue_cycles=prologue,previous_cycles_per_block=23.5,
+               issue_saving_per_15740_sample_bank=math.ceil(15740/12)*(23.5-step),
                ceiling_cycles=40137,deadline_cycles=47220,measured=False)
 
 

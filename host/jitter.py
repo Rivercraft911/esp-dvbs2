@@ -2,7 +2,7 @@
 """Radio-off clean gate plus bank/page wake diagnosis, about one minute per mode.
 
 No flashing or transmitter commands. Keep the Mac awake, for example:
-  caffeinate -i python3 host/jitter.py notes/eight-lofty-round9
+  caffeinate -i python3 host/jitter.py notes/eight-lofty-round10
 """
 import argparse
 import datetime as dt

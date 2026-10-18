@@ -3,7 +3,10 @@
     .macro lofty_word offset,advance
     extui a10,a8,0,13
     extui a11,a8,9,15
-    extui a12,a8,20,10
+    // C0 ignores the last phase. Half its rows; double the raw offset
+    // after the load to reach C1. Both vector loads discard address bits0..3.
+    extui a12,a8,21,9
+    addmi a15,a12,512
     add a10,a10,a5
     add a11,a11,a6
     add a12,a12,a7
@@ -45,7 +48,6 @@ lofty_render_pie:
     movi a7,34816
     add a7,a7,a5
     addmi a13,a5,8192
-    movi a15,1024
     l32i a8,a3,0
     // Two words keep the hardware loop short and leave IRAM for the mux.
     extui a14,a4,0,1

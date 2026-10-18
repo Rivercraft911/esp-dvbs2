@@ -69,7 +69,7 @@ roundings. Rounded-table ideal DAC-hold mask margins remain +0.250 dB upper,
 +0.225 dB lower and +6.970 dB far. Analog response still needs measurement.
 
 The separately rounded pulse parts occupy
-`512*4*4 + 64*8*4 + 512*12*4 + 2*64*4*4 = 36864 B`.
+`512*4*4 + 64*8*4 + 512*12*4 + 32*4*4 + 64*4*4 = 36352 B`.
 For chronological eight-phase history h:
 
 ```
@@ -77,36 +77,40 @@ A = (h >> 15) & 511; B = (h >> 6) & 511; C = h & 63
 descriptor = (A << 4) | (3*B << 13) | (C << 24)
 ```
 
-Two renderer words share one source-pointer advance. The loop takes 47
-model cycles per 24 samples, or 23.5 cycles/twelve samples, versus 24.
-The shorter loop uses less IRAM than the four-word version. Calls, tails,
-cache/bus contention and interrupts are additional. This does not establish
-the 40,137-cycle silicon ceiling.
+At samples4..7 the newest C phase has no causal tap: its tap indices are
+p-9 < 0. Adjacent rows are identical, checked by the Python reference.
+Halving that vector's rows saves512B. PIE loads C0 at offset8*C, aligned
+down to16B, then adds512+8*C to reach C1 at512+16*C. Low address bits from
+other descriptor fields are discarded by the vector loads. All three
+integer roundings and every output word remain unchanged.
 
-The supplied ea1b8be records stop at the first ID/data bank, starting at
-sample 417,597,812, with a 2,188-sample ID tail. The payload callbacks shape
-8,100 and 6,092 samples. Their shaping times are 31,707 and 13,259 cycles
-on clean MODCOD13, versus 50,144 cycles for the complete physical bank.
-The observed worst bank has no interrupt and a 679-cycle notify. Admission
-is one counter load, and no dummy or splice is selected. Host replay checks
-1,182 bulk render blocks plus one partial block, with no alignment fallback.
+Two renderer words share one source-pointer advance. The compact table adds
+one instruction per twelve samples:49modelcycles per24samples, or24.5 per
+block, versus23.5. This adds about1312issuecycles per15740-sample bank.
+Calls, tails, cache/bus stalls and interrupts are additional.
 
-The new per-page mux was in flash. The normal data path now runs entirely
-in IRAM, including the complete-frame counter check. Boot loads that code
-before playback. EOF filter history is published in the page's last metadata
-word by the producer. Dummy selection/splicing and fault handling retain
-small flash helpers. Cold instruction fetch is the supported explanation for
-the first-call excess, not a measured cache-miss attribution. The new
-`handoff` record captures words and shaping cycles for the first two payload
-callbacks so the coordinator can check the change against `worst_bank`.
+Supplied fa185d2 records show the first data-to-dummy banks failing.
+For13/15, worst_bank starts at ID end+123732samples and spans the second
+EOF at+133164. For17 it starts at+60772, crosses the first EOF at+66582
+and the pair's second dummy at+76572. Return-to-data is later. The13 observed
+bank has zero IRQs and zero notifications. EOF history was already a single
+metadata load. The remaining dummy selection, splice and rendering helpers
+were flash code first called in those banks.
 
-The fixed table/page/workspace layout remains
-`36864 + 38*528 + 8144 = 65072 B`. Its 464-byte tail now holds mux state,
-handoff counters and the prefix of the paced input fixture. Remaining input
-bytes stay in the original internal allocation. The copied payload is
-unchanged. Queue page counts and sizes, and encoder kernels are unchanged;
-QPSK retains its existing input storage and renderer. Heap placement still
-needs the 20,000 B Wi-Fi gate on silicon.
+All valid source transitions now execute in IRAM. The producer publishes
+raw head phases on full pages; EOF pages retain final filter history in the
+same metadata word. Setup prepares both raw dummy heads in the existing
+internal splice buffer. Pair offset is set once at selection, and alignment
+count is derived from total dummy choices. Only fault reporting remains in
+flash. Dummy body descriptors retain the existing PSRAM buffer and use the
+same bulk renderer, without conversion at the boundary.
+
+The table/page/workspace layout is now
+`36352 + 38*528 + 8144 = 64560 B`. Its976B tail holds128B mux state and848B
+paced input on Xtensa. The input allocation shrinks512B while linked static
+RAM grows512B: no net paced SRAM increase. Queue counts54/50/46, page sizes,
+stack sizes, QPSK kernels and components/dvbs2 are unchanged. Hardware must
+confirm fill<=40137cycles and the20000B Wi-Fi minimum over complete runs.
 
 ## Checks and collection
 
@@ -121,12 +125,14 @@ and sequence wraps. These host checks do not establish hardware deadlines.
 Xtensa checks retain guarded slices, mapper frames and ISR teardown.
 `tests/test_lofty_handoff.py` replays the observed ID/data bank and following
 banks through the real station mux, page queue and overlap cache. Every data
-word across two frames equals Python, including the repeated paced input.
+word equals Python across the initial ID handoff and six-frame runs with a
+forced dummy pair after either one or two data frames. It checks both supplied
+late banks, pair alignment, return-to-data and bulk eligibility of every slice.
 
 After the coordinator builds/flashes the final revision with N0CALL:
 
 ```sh
-caffeinate -i python3 host/jitter.py notes/eight-lofty-round9
+caffeinate -i python3 host/jitter.py notes/eight-lofty-round10
 ```
 
 Each mode gets 20 s clean, 5 s observed default and 5 s observed comparison,

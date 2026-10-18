@@ -32,7 +32,7 @@ static void reference(uint32_t *dst, unsigned blocks)
         for (unsigned p = 0; p < 12; ++p)
             *dst++ = ((p < 4 ? table[4*((h>>15)&511)+p] : table[2048+8*((h>>15)&63)+p-4]) +
                       table[2560+12*((h>>6)&511)+p] +
-                      (p < 4 ? 0 : table[8704+256*(p/4-1)+4*(h&63)+(p&3)]))^0x80200;
+                      (p < 4 ? 0 : table[(p < 8 ? 8704+4*((h&63)/2) : 8832+4*(h&63))+(p&3)]))^0x80200;
     }
 }
 
