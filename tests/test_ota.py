@@ -274,9 +274,17 @@ def test_iio_guards():
 
 def test_iio_worker():
     import numpy as np
+    assert iio_capture.number("-89.750000 dB", "dB") == -89.75
+    assert iio_capture.number(" 30.000000 dB\n", "dB") == 30
+    assert iio_capture.number("1\n") == 1
+    for value in ("", "nan dB", "inf dB", "-89.75 dBm", "-89.75 dB extra"):
+        rejects(iio_capture.number, value, "dB")
+    rejects(iio_capture.number, "1 dB")  # Powerdown/raw do not carry gain units.
     # Exercise the actual worker against a fake pylibiio context. Every attempt to
     # create a buffer asserts the TX state and RX device, including additional TX channels.
-    for fault in (None, "lo", "gain", "dds", "write", "nan", "missing", "rx_rate", "manual", "format", "short", "refill", "post_tx", "burst"):
+    success = (None, "burst", "ad9364")
+    for fault in (*success, "lo", "gain", "dds", "write", "nan", "missing", "missing_tx0",
+                  "missing_gain0", "missing_gain1", "rx_rate", "manual", "format", "short", "refill", "post_tx"):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
             s = ota.settings(ota.parser().parse_args(["--backend", "libiio", "--uri", "ip:fake"]))
@@ -301,11 +309,16 @@ def test_iio_worker():
                         return "slow_attack"
                     if fault == "post_tx" and created and self.name == "lo":
                         return "0"
+                    if self.name in ("tx0", "gain", "hardwaregain"):
+                        return f"{float(self.stored):.6f} dB"
                     return self.stored
                 @value.setter
                 def value(self, value):
                     if fault == "write" and self.name == "lo":
                         raise OSError("injected attribute write failure")
+                    if self.name == "hardwaregain":
+                        assert value != "-89.75", "TX attenuation must never target the RX input channel"
+                    assert not self.name.startswith("aux"), "auxiliary DACs must remain untouched"
                     self.stored = value
 
             class Channel:
@@ -331,9 +344,22 @@ def test_iio_worker():
                 Channel("voltage0", True, {"hardwaregain": "tx0"}),
                 Channel("voltage1", True, {"hardwaregain": "gain"}),
                 Channel("voltage0", False, {k: k for k in
-                        ("sampling_frequency", "rf_bandwidth", "hardwaregain", "gain_control_mode")})])
+                        ("sampling_frequency", "rf_bandwidth", "hardwaregain", "gain_control_mode")}),
+                # AD936x exposes auxiliary DACs with output voltage IDs too.
+                Channel("voltage2", True, {"raw": "aux2_raw", "scale": "aux2_scale"}),
+                Channel("voltage3", True, {"raw": "aux3_raw", "scale": "aux3_scale"}),
+                Channel("voltage2", False, {"raw": "aux_adc_raw", "scale": "aux_adc_scale"})])
+            attrs["hardwaregain"].stored = "47.25"  # Distinguish input voltage0 from TX voltage0.
+            if fault == "ad9364":
+                # Pluto v0.34 in AD9364 mode: one RF TX channel, four DDS tones.
+                phy.channels = [c for c in phy.channels if not (c.output and c.id == "voltage1")]
+            if fault == "missing_tx0":
+                phy.channels = [c for c in phy.channels if not (c.output and c.id == "voltage0")]
+            if fault in ("missing_gain0", "missing_gain1"):
+                phy.find_channel("voltage" + fault[-1], True).attrs.pop("hardwaregain")
+            tone_count = 4 if fault == "ad9364" else 8
             dds = Device("cf-ad9361-dds-core-lpc", [Channel(f"altvoltage{i}", True,
-                {"raw": "dds" if i == 7 else f"dds{i}"}) for i in range(8)])
+                {"raw": "dds" if i == tone_count - 1 else f"dds{i}"}) for i in range(tone_count)])
             rx = Device("cf-ad9361-lpc", [Channel(f"voltage{i}", False, {}, i, True) for i in range(4)])
             devices = {d.name: d for d in (phy, dds, rx)}
             if fault == "missing":
@@ -370,22 +396,29 @@ def test_iio_worker():
                     (out / "trigger").touch()
             module = types.SimpleNamespace(Context=lambda uri: context, Buffer=Buffer, version=(0, 26, "fake"))
             with patch.dict(sys.modules, iio=module), patch.object(iio_capture, "write_json", side_effect=write):
-                assert iio_capture.capture(s, out) == (0 if fault in (None, "burst") else 1), fault
+                assert iio_capture.capture(s, out) == (0 if fault in success else 1), fault
             report = json.loads((out / "capture.json").read_text())
             assert report["overflows"] is None  # Do not invent a zero hardware overflow count.
-            if fault in (None, "burst"):
+            if fault in success:
                 assert report["samples"] == (1024 if fault == "burst" else 262144)
                 z = np.fromfile(out / "capture.cfile", dtype="<c8")
                 assert np.all(z == -1 + .5j) and created[-1] == "cancel"
-                assert report["tx_after_capture"]["dds_raw"]["altvoltage7"] == 0
+                assert report["tx_after_capture"]["dds_raw"][f"altvoltage{tone_count-1}"] == 0
+                assert report["tx_final"]["hardwaregain"] == (
+                    {"voltage0": -89.75} if fault == "ad9364" else {"voltage0": -89.75, "voltage1": -89.75})
+                assert report["actual"]["gain"] == s["gain"]
             elif fault not in ("short", "refill", "post_tx"):
                 assert not created and not (out / "ready.json").exists(), fault
+                if fault in ("missing_gain0", "missing_gain1"):
+                    assert f"output voltage{fault[-1]}.hardwaregain" in report["error"]
+                    assert attrs["lo"].stored == "1"
             else:
                 assert created[-1] == "cancel"
             # No failure cleanup ever re-enables the SDR transmitter.
             assert attrs["lo"].stored in ("0", "1")
             if created:
-                assert attrs["lo"].stored == "1" and attrs["gain"].stored == "-89.75"
+                assert attrs["lo"].stored == "1" and attrs["tx0"].stored == "-89.75"
+                assert attrs["gain"].stored == ("0" if fault == "ad9364" else "-89.75")
 
 
 def test_upsample():

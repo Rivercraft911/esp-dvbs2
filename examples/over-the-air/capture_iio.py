@@ -9,9 +9,12 @@ import time
 from capture import write_json
 
 
-def number(value):
-    # AD9361 hardwaregain reads back as e.g. '30.000000 dB'.
-    result = float(value.split()[0])
+def number(value, unit=None):
+    # Gain may include 'dB'; do not silently ignore other units or trailing text.
+    fields = value.split()
+    if not fields or (len(fields) > 1 and (unit is None or fields[1:] != [unit])):
+        raise ValueError(f"invalid numeric IIO attribute: {value!r}")
+    result = float(fields[0])
     if not math.isfinite(result):
         raise ValueError("nonfinite IIO attribute")
     return result
@@ -26,9 +29,15 @@ class Radio:
         if any(device is None for device in (self.phy, self.dds, self.rx)):
             raise ValueError("need Pluto-firmware AD9361 PHY, DDS and RX devices")
         self.tx_lo = self.channel(self.phy, "altvoltage1", True)
-        self.tx_gain = [c for c in self.phy.channels if c.output and c.id.startswith("voltage")]
+        # Match iio_attr -o -c ad9361-phy voltage0 hardwaregain. Output
+        # voltage2/voltage3 are auxiliary DACs, not RF TX attenuation channels.
+        # Require TX0; a present TX1 must also expose a working hardwaregain.
+        self.tx_gain = [self.channel(self.phy, "voltage0", True)]
+        tx1 = self.phy.find_channel("voltage1", True)
+        if tx1 is not None:
+            self.tx_gain.append(tx1)
         self.tones = [c for c in self.dds.channels if c.output and c.id.startswith("altvoltage")]
-        if not self.tx_gain or len(self.tones) < 4:
+        if len(self.tones) < 4:
             raise ValueError("cannot identify every TX gain / DDS tone inhibit")
 
     @staticmethod
@@ -38,19 +47,27 @@ class Radio:
             raise ValueError(f"missing IIO channel {device.name}/{name}")
         return channel
 
+    @staticmethod
+    def attribute(channel, name):
+        try:
+            return channel.attrs[name]
+        except KeyError:
+            direction = "output" if channel.output else "input"
+            raise ValueError(f"missing IIO attribute: {direction} {channel.id}.{name}") from None
+
     def inhibit_tx(self):
         # Set LO powerdown first. Never restore previous TX settings, even on failure.
-        self.tx_lo.attrs["powerdown"].value = "1"
+        self.attribute(self.tx_lo, "powerdown").value = "1"
         for channel in self.tx_gain:
-            channel.attrs["hardwaregain"].value = "-89.75"
+            self.attribute(channel, "hardwaregain").value = "-89.75"
         for channel in self.tones:
-            channel.attrs["raw"].value = "0"
+            self.attribute(channel, "raw").value = "0"
         return self.verify_tx()
 
     def verify_tx(self):
-        state = dict(lo_powerdown=number(self.tx_lo.attrs["powerdown"].value),
-                     hardwaregain={c.id: number(c.attrs["hardwaregain"].value) for c in self.tx_gain},
-                     dds_raw={c.id: number(c.attrs["raw"].value) for c in self.tones})
+        state = dict(lo_powerdown=number(self.attribute(self.tx_lo, "powerdown").value),
+                     hardwaregain={c.id: number(self.attribute(c, "hardwaregain").value, "dB") for c in self.tx_gain},
+                     dds_raw={c.id: number(self.attribute(c, "raw").value) for c in self.tones})
         if (state["lo_powerdown"] != 1 or
                 any(v != -89.75 for v in state["hardwaregain"].values()) or
                 any(v != 0 for v in state["dds_raw"].values())):
@@ -69,7 +86,7 @@ class Radio:
         actual = dict(frequency=number(lo.attrs["frequency"].value),
                       sample_rate=number(rx.attrs["sampling_frequency"].value),
                       bandwidth=number(rx.attrs["rf_bandwidth"].value),
-                      gain=number(rx.attrs["hardwaregain"].value),
+                      gain=number(rx.attrs["hardwaregain"].value, "dB"),
                       gain_control_mode=rx.attrs["gain_control_mode"].value)
         for key in ("frequency", "sample_rate", "bandwidth", "gain"):
             if abs(actual[key] - settings[key]) > (.5 if key == "gain" else 1):
