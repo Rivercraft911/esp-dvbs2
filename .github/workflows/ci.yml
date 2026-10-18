@@ -17,11 +17,13 @@ jobs:
       - run: python tests/test_rational.py
       - run: python tests/test_qpsk_axes.py
       - run: python tests/test_self_check.py
+      - run: python tests/test_live_video.py
       - name: SPI input
         run: |
           python tests/test_ingress.py
           python tests/test_pi_sender.py
           python tests/test_spi_input.py
+          python tests/test_spi_pv.py
           python tests/test_spi_board.py
           python tests/test_spi_sender.py
 

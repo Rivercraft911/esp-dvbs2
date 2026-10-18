@@ -1,4 +1,4 @@
-"""Run the real coordinator shell with fake board/decode tools. No hardware access."""
+"""Run the SPI check shell with fake board/decode tools. No hardware access."""
 import os
 import pathlib
 import subprocess

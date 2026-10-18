@@ -23,11 +23,11 @@ ever built for. Read [How it got here](docs/story.md) to learn about the tumultu
 CM5 + cameras --SPI, 9 Mb/s TS--> ESP32-S3 --DVB-S2--> SDR --> LeanDVB --> video player
 ```
 
-A Raspberry Pi CM5 encodes its cameras to H.264 and sends a 9 Mb/s MPEG transport stream over
-SPI. The S3 frames, codes and shapes it as QPSK 3/4 at 10 Msym/s, 14.5 Mb/s in 13.5 MHz, and
-transmits it. An SDR and LeanDVB turn it back into a transport stream for any video player.
-The whole chain already runs end to end without RF in the
-[live-video example](examples/live-video/README.md); the over-the-air demo is next.
+The [live-video example](examples/live-video/README.md) targets a 9 Mb/s MPEG transport
+stream over SPI, QPSK 3/4 at 10 Msym/s (14.5 Mb/s capacity in 13.5 MHz), and an SDR running
+LeanDVB. Its working dry run is **host-model TS → DVB-S2 IQ → LeanDVB → TS**, using MPEG-2
+video. S3 USB sample dumps decode independently, and SPI has on-chip loopback tests.
+External camera/SPI input, H.264 playback and RF reception still need validation.
 
 ## What it can do
 
@@ -44,28 +44,45 @@ real time with the DAC output going nowhere.
 | QPSK 9/10 | 20 Msym/s | 27 MHz | 34.9 Mb/s | keyed |
 | 8PSK 5/6 | 10 Msym/s | 13.5 MHz | 24.2 Mb/s | keyed |
 | QPSK 9/10 | 10 Msym/s | 13.5 MHz | 17.5 Mb/s | radio off |
+| QPSK 3/4, current video example | 10 Msym/s | 13.5 MHz | 14.5 Mb/s | host-model TS dry run |
 | 8PSK 9/10 | 5 Msym/s | 6.75 MHz | 13.1 Mb/s | radio off |
-| 8PSK 2/3, the video mode | 5 Msym/s | 6.75 MHz | 9.68 Mb/s | keyed |
+| 8PSK 2/3 | 5 Msym/s | 6.75 MHz | 9.68 Mb/s | keyed |
 | QPSK 1/2 | 1 Msym/s | 1.35 MHz | 0.97 Mb/s | keyed |
 
 Roll-off is 0.35 unless noted. Data rates follow from the DVB-S2 normal frame with pilots and
 exclude station-ID time. Every mode's samples decode bit-exact in LeanDVB, an independent
 receiver; a receiver decoding the signal over the air is not shown yet.
 \*Keyed with an earlier, longer pulse; the current pulse has radio-off evidence.
-Margins, raw records and limits: [measurements](docs/measurements.md). The 40 MHz mode keeps
-a 15% reserve on both cores while keyed.
+Margins, raw records and limits: [measurements](docs/measurements.md). One 30 s keyed run
+of the 40 MHz mode met a 15% reserve on both cores.
 
-Somewhere along the way the $5 chip outgrew the SDR on my bench: the E200's AD9363 sees at
-most 20 MHz, so watching the full 40 MHz signal takes a wider receiver.
+![Calculated payload rates from selected historical keyed records](docs/img/payload.png)
 
 ## Quick start
 
-You need an ESP32-S3 with 8 MB octal PSRAM and 16 MB flash (an N16R8 module), ESP-IDF v6.1,
-and Python 3.12+ with numpy, scipy and pyserial. Nothing below turns the radio on.
+Use Python 3.12+ in a **host shell separate from ESP-IDF**; IDF activation selects its
+own Python and can hide numpy/scipy. Run all host and example commands in this shell:
 
 ```sh
-. ~/.espressif/tools/activate_idf_v6.1.sh
-(cd firmware && idf.py build flash)
+python3 -m venv .venv
+. .venv/bin/activate
+python3 -m pip install numpy scipy pyserial
+python3 -c 'import numpy, scipy, serial; print("Host dependencies OK")'
+```
+
+Install ESP-IDF v6.1 using [Espressif's ESP32-S3 setup guide](https://docs.espressif.com/projects/esp-idf/en/v6.1/esp32s3/get-started/index.html).
+The activation path below is the tested macOS EIM path; substitute your installation's
+activation/export script. Parentheses keep IDF's Python inside the build subshell.
+Without a board, run the [host suite and build](docs/how-it-works.md#checking-changes),
+the self-check `--plan`, the [sender vector](examples/pi-sender/README.md), and the
+[video dry run](examples/live-video/README.md#rf-free-dry-run).
+
+For board checks, the measured module is N16R8 (8 MB octal PSRAM, 16 MB flash).
+The optional 8 MB flash XIAO uses a [separate configuration](docs/transmitting.md#board-and-usb).
+Nothing below turns the radio on.
+
+```sh
+(. ~/.espressif/tools/activate_idf_v6.1.sh && cd firmware && idf.py build flash)
 python3 host/board.py info --reset
 python3 host/board.py "callsign N0CALL"      # placeholder for radio-off tests only
 ```
@@ -90,8 +107,9 @@ Wi-Fi memory check. All console commands are in [transmitting](docs/transmitting
 
 The S3 takes its payload over SPI. The sender clocks fixed 1,332-byte messages: a 12-byte
 header (`PV`, version, type, sequence, length), up to seven 188-byte MPEG-TS packets and a
-CRC-32. A READY pin tells the sender when the S3 has room. Single-line SPI at 20 MHz carries
-about 19 Mb/s; a four-line mode measured 46.6 Mb/s. Payload is MPEG-TS for video or any
+CRC-32. A READY pin tells the sender when the S3 has room. Single-line SPI has a 19.4 Mb/s
+ideal ceiling at 20 MHz; quad SPI demonstrated 46.6 Mb/s with on-chip loopback.
+External-sender and live-video throughput remain unmeasured. Payload is MPEG-TS for video or any
 bytes as a generic stream. The S3 does the rest: framing, coding, filler frames when the
 input runs dry, and transmission. Select it with `spiinput on` before a run; the
 [reference sender](examples/pi-sender/README.md) streams a file from a Linux board.
@@ -108,10 +126,10 @@ The S3's radio hides a test engine that plays samples from internal RAM straight
 DAC. It loops one bank of 16,380 samples while the CPU fills the other and switches them on time.
 At 80 MS/s a fresh bank is due every 196.75 µs, or 47,220 cycles at 240 MHz.
 Core 0 encodes frames into a small ring; core 1 shapes them into samples. At 40 MHz, core 0
-instead publishes sign histories into a queue, which core 1 renders directly.
+queues compact I/Q sign bit planes, from which core 1 extracts windows while rendering.
 
 To pulse shape with such speed and tenacity I went a similar path to my
-[RP2350 version](https://github.com/Rivercraft911/RP2350_IQ_Benchmark): every possible output of
+[RP2350 version](https://github.com/Rivercraft911/RP2350_IQ_Benchmark/tree/88ab018e65a51805ff562842177a4d47b1b04b2e): every possible output of
 the shaping filter is computed once into a table, so producing samples is copying table rows
 instead of doing filter math. At 40 MHz the trick goes one further: QPSK's I and Q are two BPSK
 streams, so each four-sample vector comes from small sign-indexed tables and one OR.
@@ -122,7 +140,8 @@ streams, so each four-sample vector comes from small sign-indexed tables and one
 Only a licensed operator should key the radio on an authorized amateur frequency, in a
 shielded setup or into a dummy load, or through at least 30 dB attenuation into a receiver.
 Set your assigned callsign first. The firmware sends 20 WPM Morse before and after a run;
-payload frames also carry the callsign. [Setup and limitations](docs/transmitting.md).
+synthetic test payloads also carry the callsign. External SPI/USB payload bytes are preserved
+without an added callsign header; Morse ID remains separate. [Setup and limitations](docs/transmitting.md).
 
 ## More
 
@@ -134,12 +153,12 @@ payload frames also carry the callsign. [Setup and limitations](docs/transmittin
 | `tests/` | Standard vectors, C/Python agreement and stream CRCs ([running them](docs/how-it-works.md#checking-changes)) |
 | `docs/` | [How it works](docs/how-it-works.md), [transmitting](docs/transmitting.md), [SPI input](docs/spi-input.md), [measurements](docs/measurements.md), [story](docs/story.md), [credits](docs/prior-art.md) |
 
-The full development history, experiments and raw results live in
+Additional experiments and raw results live in
 [archive/dev-2026-10-17](https://github.com/Rivercraft911/esp-dvbs2/tree/archive/dev-2026-10-17).
 
 ## Licence
 
-Apache-2.0. Independently written; findings from other projects are credited in
+[Apache-2.0](LICENSE). Copyright 2026 River Dowdy; see [NOTICE](NOTICE). Findings from other projects are credited in
 [prior-art.md](docs/prior-art.md).
 
 A receiver decoding it over the air is next. Coming soon to a repo near you!

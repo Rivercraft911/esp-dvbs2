@@ -239,7 +239,7 @@ def main():
     p.add_argument("--symbol-rate", type=float, required=True, help="symbols/s")
     p.add_argument("--rolloff", type=float, choices=(.20, .35), default=.35)
     p.add_argument("--scale", type=float, default=512, help="int16 full scale, board=512")
-    p.add_argument("--format", choices=("i16", "cf32"), default="i16")
+    p.add_argument("--format", choices=("i16", "s16", "cf32", "f32"), default="i16")
     p.add_argument("--modcod", type=int, default=4)
     p.add_argument("--stream", type=int, required=True, help="number of dumped test frames")
     p.add_argument("--callsign", default="N0CALL", help="callsign in the dumped payload")
@@ -247,6 +247,7 @@ def main():
     p.add_argument("--log", type=Path)
     p.add_argument("--output", type=Path, help="save recovered bytes")
     a = p.parse_args()
+    a.format = {"s16": "i16", "f32": "cf32"}.get(a.format, a.format)
     try:
         import numpy as np
         expected = payload(a.modcod, a.stream, a.callsign)

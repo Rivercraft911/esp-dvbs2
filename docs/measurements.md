@@ -16,20 +16,25 @@ The complete evidence remains in
 This is the README's capability table. Values are rounded; exact selected runs follow.
 Keyed means 30 s including station ID in the shielded box. Radio off means the encoder
 and bank schedule ran in real time without DAC playback. Different rows can refer to
-different firmware versions; these are historical capabilities, not a new acceptance run.
+different firmware versions. The video-example row is a host-model check only.
 
-| Mode | Symbol rate | Bandwidth | Data rate | Tested | Slack |
+| Mode | Symbol rate | Bandwidth | Data rate | Tested | Fill headroom |
 |---|---:|---:|---:|---|---|
-| QPSK 9/10, roll-off 0.20 | 33.33 Msym/s | 40 MHz | 58.2 Mb/s | keyed | 16% fill, 17% encoder ([record](#40-mhz)) |
-| 8PSK 5/6 | 20 Msym/s | 27 MHz | 48.4 Mb/s | keyed | 14% [radio off, current pulse](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/results/2026-10-17-next4/README.md); 4% keyed, [earlier pulse](#8psk-at-20-msyms) |
+| QPSK 9/10, roll-off 0.20 | 33.33 Msym/s | 40 MHz | 58.2 Mb/s | keyed | 16% ([record](#40-mhz)); encoder 17% |
+| 8PSK 5/6 | 20 Msym/s | 27 MHz | 48.4 Mb/s | keyed | 14% [radio off, current pulse](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/results/2026-10-17-next4/README.md); 5% keyed, [earlier pulse](#8psk-at-20-msyms) |
 | QPSK 9/10 | 26.67 Msym/s | 36 MHz | 46.6 Mb/s | keyed | 18% ([record](#qpsk-at-2667-msyms)) |
 | 8PSK 2/3 | 20 Msym/s | 27 MHz | 38.7 Mb/s | keyed | 14% radio off, current pulse |
 | QPSK 9/10 | 20 Msym/s | 27 MHz | 34.9 Mb/s | keyed | 22% ([record](#qpsk-at-2667-msyms)) |
 | 8PSK 5/6 | 10 Msym/s | 13.5 MHz | 24.2 Mb/s | keyed | 49% ([archive](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/results/2026-10-16-keyed-next2/README.md)) |
 | QPSK 9/10 | 10 Msym/s | 13.5 MHz | 17.5 Mb/s | radio off | 48% ([archive](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/results/2026-10-17-cleanup/README.md)) |
+| QPSK 3/4, current video example | 10 Msym/s | 13.5 MHz | 14.5 Mb/s | host-model TS dry run | — ([example](../examples/live-video/README.md#rf-free-dry-run)) |
 | 8PSK 9/10 | 5 Msym/s | 6.75 MHz | 13.1 Mb/s | radio off | 55% ([archive](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/results/2026-10-17-qpsk-goal/README.md)) |
-| 8PSK 2/3, the video mode | 5 Msym/s | 6.75 MHz | 9.68 Mb/s | keyed | 57% ([archive](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/results/2026-10-16-keyed-next2/README.md)) |
-| QPSK 1/2 | 1 Msym/s | 1.35 MHz | 0.97 Mb/s | keyed | 52% ([archive](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/results/2026-10-16-keyed-box/README.md)) |
+| 8PSK 2/3 | 5 Msym/s | 6.75 MHz | 9.68 Mb/s | keyed | 57% ([archive](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/results/2026-10-16-keyed-next2/README.md)) |
+| QPSK 1/2 | 1 Msym/s | 1.35 MHz | 0.97 Mb/s | keyed | 52% ([record](measurements/2026-10-16-keyed-qpsk-1m.jsonl), [report](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/results/2026-10-16-keyed-next2/README.md)) |
+
+Fill headroom is `100 * (1 - max_fill_cycles / bank_deadline_cycles)`, rounded to the
+nearest percent. Encoder headroom is `100 * (1 - mean_encoder_cycles / frame_duration_cycles)`.
+Recorded minimum slack also includes scheduling overhead and is reported separately below.
 
 Roll-off α is 0.35 unless noted. For symbol rate Rs in symbols/s, payload bytes B
 and Ns symbols per normal frame with pilots:
@@ -56,19 +61,19 @@ shielded box with `dvb 2420 11 33m333 30 4 128` (firmware revision read with `in
 before the run). Status was ESP_OK, with zero late fills, late switches, fatal lateness,
 underruns or empty-queue events.
 [Copied keyed record](measurements/2026-10-17-qpsk-reserve-keyed.jsonl).
-The first keyed run of this mode, firmware 51764f0, is kept for comparison
-([record](measurements/2026-10-17-moonshot-keyed.jsonl),
-[report](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/results/2026-10-17-moonshot/README.md)).
 
-| Quantity | 51764f0, first keyed run | e96795b, keyed | 15% reserve line |
-|---|---:|---:|---:|
-| Bank deadline | 47,220 cycles | 47,220 cycles | |
-| Longest bank fill | 41,130 cycles | 39,548 cycles | 40,137 |
-| Minimum fill slack | 5,810 cycles | 7,394 cycles | |
-| Encoder mean / live maximum, cycles/frame | 237,370 / 265,333 | 198,879 / 222,440 | 203,686 mean |
-| Frame duration, derived | 239,630.4 cycles | 239,630.4 cycles | |
-| Minimum queued lead | 5,120 symbols | 34,901 symbols | |
-| Free internal RAM with Wi-Fi up | 28,667 B | 30,395 B | 20,000 B |
+| Quantity | e96795b, keyed | 15% reserve line |
+|---|---:|---:|
+| Bank deadline | 47,220 cycles | |
+| Longest bank fill | 39,548 cycles | 40,137 |
+| Minimum fill slack | 7,394 cycles | |
+| Encoder mean / live maximum, cycles/frame | 198,879 / 222,440 | 203,686 mean |
+| Frame duration, derived | 239,630.4 cycles | |
+| Minimum queued lead | 34,901 symbols | |
+| Minimum free internal RAM during command | 30,395 B | 20,000 B |
+
+RAM columns use `wifi_min_free`, the low-water mark since command start, including Wi-Fi
+startup. They are not the instantaneous `wifi_free_up` measurement after Wi-Fi starts.
 
 The same build ran radio off for 30 s with an encoder mean of 152,128 cycles/frame, so keying
 the radio costs core 0 about 46.8k cycles per frame. The reserve is now met on both cores, in
@@ -83,7 +88,7 @@ switches, fatal lateness or underruns. The duration includes both IDs.
 [Copied records](measurements/2026-10-17-keyed-qpsk-runs.jsonl),
 [original report](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/results/2026-10-17-keyed-qpsk/README.md).
 
-| Symbol rate | Longest fill | Minimum slack | Encoder mean / maximum | Free RAM, Wi-Fi up |
+| Symbol rate | Longest fill | Minimum slack | Encoder mean / maximum | Minimum free internal RAM during command |
 |---|---:|---:|---:|---:|
 | 26.67 Msym/s | 38,810 cycles | 8,131 cycles | 226,587 / 524,436 cycles | 41,387 B |
 | 20 Msym/s | 36,620 cycles | 10,318 cycles | 226,682 / 312,494 cycles | 30,579 B |
@@ -98,7 +103,7 @@ closed Faraday box. All late-fill, late-switch, fatal and underrun counters were
 [Copied records](measurements/2026-10-16-keyed-20m-runs.jsonl),
 [original report](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/results/2026-10-16-keyed-20m/README.md).
 
-| Code rate | Longest fill | Minimum slack | Encoder mean / maximum | Free RAM, Wi-Fi up |
+| Code rate | Longest fill | Minimum slack | Encoder mean / maximum | Minimum free internal RAM during command |
 |---|---:|---:|---:|---:|
 | 2/3 | 45,092 cycles | 1,842 cycles | 166,233 / 488,765 cycles | 21,211 B |
 | 5/6 | 45,068 cycles | 1,869 cycles | 184,201 / 429,293 cycles | 21,691 B |
@@ -129,14 +134,17 @@ on the host. Neither check substitutes for an RF receiver measurement.
 
 ```sh
 python3 -m pip install matplotlib
+git fetch origin tag archive/dev-2026-10-17  # if the archive tag is absent
 python3 host/plots.py
+python3 host/plots.py --check               # verify sources without rendering
 ```
 
-Both figures are generated from the copied keyed records. Cycle time uses the recorded
-240 MHz CPU and bank period uses `15740/(80e6 samples/s) = 196.75 µs` from
-`radio_s3.h`. The script validates the copied-file hashes before drawing. No chart
-uses hand-entered measured values. Historical records are never relabeled as new runs.
+All five figures use the point table, checked against exact JSONL lines and file hashes
+before drawing. Archived sources are read with `git show`; copied records retain their
+[original provenance](measurements/sources.json). Cycle time uses 240 MHz; bank periods
+are 85,608 cycles (356.7 µs) early and 47,220 (196.75 µs) later, from the archived reports
+quoted in the table. Payload rates follow the formula above and exact sample ratios.
+Historical records are never relabeled as new runs. No board connection is needed.
 
-The early memory, encoder, signal-quality, station-ID and test-tone measurements in
-the [story](story.md) link directly to the archive. Findings and licences from the
-projects this work builds on are credited in [prior-art.md](prior-art.md).
+Findings and licences from the projects this work builds on are credited in
+[prior-art.md](prior-art.md).

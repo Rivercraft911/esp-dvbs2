@@ -13,7 +13,8 @@ mode; no samples play through the DAC. No SDR is needed.
 
 ## Prepare
 
-Use Python 3.12 or later with numpy, scipy and pyserial. Build and flash the committed
+Use Python 3.12 or later with numpy, scipy and pyserial in the [separate host shell](../../README.md#quick-start).
+Build and flash the committed
 ESP-IDF v6.1 firmware separately. The contained-test callsign **N0CALL must already be stored**;
 the example refuses that criterion if a different callsign is present. Never use N0CALL
 as an assigned callsign for a radiating transmission. A reset selects synthetic payload
@@ -43,7 +44,7 @@ and an exact payload. [LeanDVB manual](https://www.pabr.org/radio/leandvb/leandv
 
 ## Run
 
-After the coordinator has flashed the committed revision and released the board:
+After you flash the committed revision, close other serial clients and run:
 
 ```sh
 python3 examples/self-check/check.py notes/public-check \
@@ -76,14 +77,14 @@ and `shaped_words + reused_words == fill_words`. The 40 MHz queue must not starv
 must retain at least 20,000 B internal RAM with Wi-Fi up. The separate 8PSK 9/10 `5m`
 heap check retains the original 22,351 B Wi-Fi-up and command-minimum floors.
 
-This checks functional deadlines. It does not impose the archived research candidate's
-2% cycle ceilings or claim that the 40 MHz mode meets the unachieved 15% reserve target.
+This enforces functional deadlines rather than a reserve threshold. The 40 MHz mode met
+15% reserve on both cores in one 30 s keyed run ([e96795b](../../docs/measurements.md#40-mhz)).
 Compare saved timing and heap records when evaluating a performance change.
 
 The output contains the host commit and expected firmware revision, the board's actual
 `info` record, raw command JSON lines, IQ dumps, receiver logs/JSON and a pass/fail summary.
 Preserve a completed directory before changing firmware. The example is the ongoing
-board regression check; the old coordinator runner lives only in the archive.
+board regression check.
 
 ## Decode one dump
 

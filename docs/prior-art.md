@@ -1,9 +1,8 @@
 # Prior art
 
 The radio tricks this project relies on were found by others. Their findings are cited here;
-none of their code is incorporated into this repository, since several licences do not allow
-reuse in an Apache-2.0 project. Independent receivers run as separate, locally installed tools.
-Facts below were read from each project's source and documents on 2026-10-16.
+third-party radio code is not incorporated into this repository. Independent receivers run as
+separate, locally installed tools. Links pin the source and licence snapshots used here.
 
 The reference was checked against separate transmitter harnesses using
 [GNU Radio gr-dtv at aee9fd3](https://github.com/gnuradio/gnuradio/tree/aee9fd3f79389c4282a98e8d62c8405c73fd91df/gr-dtv)
@@ -13,14 +12,14 @@ stage digests, numerical symbol comparisons and file-loopback evidence are docum
 
 | Project | Chip | What it showed | Licence |
 |---|---|---|---|
-| [ESP32-DATV](https://github.com/SP8ESA/ESP32-DATV) (SP8ESA) | C3 | DVB-S and DVB-S2 on 2300–2450 MHz up to 1 Msym/s. The CPU rewrites one held DAC word every 20 cycles (8 MS/s); a PC does the coding and sends symbols over USB. | PolyForm Noncommercial 1.0.0 |
-| [ESP32-DATV-SA](https://github.com/barisdinc/ESP32-DATV-SA) | C3 | A stand-alone fork that encodes beacon frames on the chip. | PolyForm Noncommercial 1.0.0 |
-| [ESP-SDR](https://github.com/ESPARGOS/esp-sdr) (ESPARGOS) | most ESP32s | Raw I/Q capture from the receiver through an undocumented debug path, up to 80 MS/s. | GPL-3.0-or-later |
-| [esp-sdr-zephyr](https://github.com/cyber-murmel/esp-sdr-zephyr) | S3 | Arbitrary I/Q transmit through the dump/DAC engine at 40 or 80 MS/s, gapless streaming from two banks, 20 Mbaud QAM at about 31.5 dB MER S3 to S3 through 30 dB. Register notes for the S3. | GPL-3.0-or-later |
-| [eSpDR](https://github.com/h0m3us3r/eSpDR) | S3 | Receiver; [issue 3](https://github.com/h0m3us3r/eSpDR/issues/3) documents the DAC channel and the PLL tuning register. | 0BSD |
-| [esp32-sdr-trx](https://github.com/jochenhammes/esp32-sdr-trx) (DA2JH) | S3 | Receiver for SDR++, and FM/SSB voice on 13 cm by steering the test tone 40,000 times per second. | 0BSD |
-| [ESP32SDR](https://github.com/lozaning/ESP32SDR) | S3 | Tone keying (OOK/FSK); reported that DAC replay did not radiate, which later work explains as a setup issue. | none stated |
-| [LeanSDR / LeanDVB](https://github.com/pabr/leansdr/tree/84c59e1c7a1a79338d5722d63f28640cc9d350f3) (pabr) | host | Independent DVB-S2 IQ receiver. `host/decode.py` runs a separate local executable; its BBFRAME output supports GCS payload comparison. Receiver source stays outside this repository; the self-check supports stock debug output and extended status. | GPL-3.0-or-later |
+| [ESP32-DATV](https://github.com/SP8ESA/ESP32-DATV/tree/cd6246b62861ff2e20dfa91af51e7fab24804cd0) (SP8ESA) | C3 | DVB-S and DVB-S2 on 2300–2450 MHz up to 1 Msym/s. The CPU rewrites one held DAC word every 20 cycles (8 MS/s); a PC does the coding and sends symbols over USB. | [PolyForm Noncommercial 1.0.0](https://github.com/SP8ESA/ESP32-DATV/blob/cd6246b62861ff2e20dfa91af51e7fab24804cd0/LICENSE) |
+| [ESP32-DATV-SA](https://github.com/barisdinc/ESP32-DATV-SA/tree/970b5611c909cb7741bfe9274b659953ddf97070) | C3 | A stand-alone fork that encodes beacon frames on the chip. | [PolyForm Noncommercial 1.0.0](https://github.com/barisdinc/ESP32-DATV-SA/blob/970b5611c909cb7741bfe9274b659953ddf97070/LICENSE) |
+| [ESP-SDR](https://github.com/ESPARGOS/esp-sdr/tree/f86da81807b7f6e850742f6b789d9468c190ad41) (ESPARGOS) | most ESP32s | Raw I/Q capture from the receiver through an undocumented debug path, up to 80 MS/s. | [GPL-3.0-or-later](https://github.com/ESPARGOS/esp-sdr/blob/f86da81807b7f6e850742f6b789d9468c190ad41/LICENSE) |
+| [esp-sdr-zephyr](https://github.com/cyber-murmel/esp-sdr-zephyr/tree/3214c16a7c9f136414cc5ae9d245ea290c98a6ce) | S3 | Arbitrary I/Q transmit through the dump/DAC engine at 40 or 80 MS/s, gapless streaming from two banks, 20 Mbaud QAM at about 31.5 dB MER S3 to S3 through 30 dB. Register notes for the S3. | [GPL-3.0-or-later](https://github.com/cyber-murmel/esp-sdr-zephyr/blob/3214c16a7c9f136414cc5ae9d245ea290c98a6ce/LICENSE) |
+| [eSpDR](https://github.com/h0m3us3r/eSpDR/tree/f279bf823eee41796dfd1ac21f13e1ed9b418c82) | S3 | Receiver; [issue 3](https://github.com/h0m3us3r/eSpDR/issues/3) documents the DAC channel and the PLL tuning register. | [0BSD](https://github.com/h0m3us3r/eSpDR/blob/f279bf823eee41796dfd1ac21f13e1ed9b418c82/LICENSE) |
+| [esp32-sdr-trx](https://github.com/jochenhammes/esp32-sdr-trx/tree/e1aebbf2ef508c7199a9b6c6c277b57fe0b51aa9) (DA2JH) | S3 | Receiver for SDR++, and FM/SSB voice on 13 cm by steering the test tone 40,000 times per second. | [0BSD](https://github.com/jochenhammes/esp32-sdr-trx/blob/e1aebbf2ef508c7199a9b6c6c277b57fe0b51aa9/LICENSE) |
+| [ESP32SDR](https://github.com/lozaning/ESP32SDR/tree/dbff7bb8ca8470e92e18de9cfd3f81aabe55f6f1) | S3 | Tone keying (OOK/FSK); reported that DAC replay did not radiate, which later work explains as a setup issue. | none stated |
+| [LeanSDR / LeanDVB](https://github.com/pabr/leansdr/tree/84c59e1c7a1a79338d5722d63f28640cc9d350f3) (pabr) | host | Independent DVB-S2 IQ receiver. `host/decode.py` runs a separate local executable; its BBFRAME output supports GCS payload comparison. Receiver source stays outside this repository; the self-check supports stock debug output and extended status. | [GPL-3.0-or-later](https://github.com/pabr/leansdr/blob/84c59e1c7a1a79338d5722d63f28640cc9d350f3/LICENSE.txt) |
 
 ## What this project takes from them
 
@@ -56,5 +55,11 @@ stage digests, numerical symbol comparisons and file-loopback evidence are docum
 ## Our own earlier work
 
 The DVB-S2 reference model, its tests and the table-driven pulse shaping come from the
-[RP2350 I/Q benchmark](https://github.com/Rivercraft911/RP2350_IQ_Benchmark), where the same
+[RP2350 I/Q benchmark at 88ab018](https://github.com/Rivercraft911/RP2350_IQ_Benchmark/tree/88ab018e65a51805ff562842177a4d47b1b04b2e), where the same
 chain ran at 16 Msym/s on an RP2350 driving a TI AFE7071 DAC.
+
+That same-author snapshot supplies reference-model, test and shaping code, and
+`reference/plotstyle.py` supplies the figure style. It has no standalone licence file;
+the code carried into esp-dvbs2 is published here by River Dowdy under
+[Apache-2.0](../LICENSE), with the project notice in [NOTICE](../NOTICE).
+This provenance statement does not relicense separately installed third-party tools.

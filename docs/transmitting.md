@@ -13,9 +13,24 @@ inside your authorized band. Gain 0..17 is an uncalibrated vendor index, not dBm
 
 ## Board and USB
 
-The measured board is an ESP32-S3 rev 0.2 with two 240 MHz cores, 8 MB octal PSRAM
-and 16 MB flash. Use ESP-IDF v6.1 and `firmware/sdkconfig.defaults`; the optional
-`sdkconfig.xiao` selects the XIAO SPI pins.
+Use ESP-IDF v6.1; [install it with Espressif's ESP32-S3 guide](https://docs.espressif.com/projects/esp-idf/en/v6.1/esp32s3/get-started/index.html).
+
+| Board | PSRAM | Flash | Configuration |
+|---|---|---|---|
+| Measured S3 rev 0.2, N16R8 | 8 MB octal | 16 MB | `sdkconfig.defaults` |
+| Optional XIAO ESP32-S3 | 8 MB octal | 8 MB | defaults + `sdkconfig.xiao`; changes flash size and SPI pins |
+
+Apply the XIAO overlay to a fresh, separate configuration and build directory:
+
+```sh
+(. ~/.espressif/tools/activate_idf_v6.1.sh && cd firmware && \
+  idf.py -B ../notes/build-xiao -D SDKCONFIG="$PWD/../notes/sdkconfig.xiao" \
+  -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.xiao' build)
+```
+
+Use new output paths for the first overlay build; this preserves an existing `firmware/sdkconfig`.
+The activation path shown is the tested macOS EIM path; use your own activation/export script
+if installed elsewhere. The defaults already select `esp32s3`.
 
 | Port on the measured board | Purpose |
 |---|---|
@@ -28,12 +43,13 @@ bootloader. `--reset` uses the bridge's EN reset, or esptool's watchdog reset wh
 is present, then opens native USB without a reset transition.
 
 ```sh
-. ~/.espressif/tools/activate_idf_v6.1.sh >/dev/null 2>&1
-(cd firmware && idf.py build flash)
+(. ~/.espressif/tools/activate_idf_v6.1.sh && cd firmware && idf.py build flash)
 python3 host/board.py info --reset
 ```
 
-Flashing itself does not start a transmission. The firmware waits for a command.
+Run host tools in the [separate host shell](../README.md#quick-start). Flashing itself does
+not start a transmission. The firmware waits for a command. For a build without a board,
+omit `flash`.
 
 ## Console
 
@@ -47,6 +63,8 @@ Flashing itself does not start a transmission. The firmware waits for a command.
 | `dvbpace MODCOD [rate] seconds [peak] [stall_ms]` | Live encoder and bank deadlines, no playback |
 | `spiinput on\|quad\|off [ts\|gcs]` | Select [SPI payload input](spi-input.md) for the next run |
 | `spipins devkit\|xiao` | Select the SPI pin preset |
+| `spirx ms on\|quad [ts\|gcs] [loop [Mb/s [fault]]]` | Radio-off SPI receive diagnostic |
+| `spisend ms on\|quad [ts\|gcs] [MHz [Mb/s [fault]]]` | SPI test sender on a second S3; no RF |
 | `wifimem MODCOD [rate]` | Radio-off Wi-Fi startup and heap check |
 | `iddump [CALL] [40\|80]` | Morse ID samples at 10 kS/s, radio off |
 | `tx MHz signal seconds [gain] [40\|80]` | Transmit a test tone |
@@ -56,6 +74,15 @@ MODCOD selects modulation and code rate: QPSK 4..11, 8PSK 12..17. The
 [rate table](how-it-works.md#rates) gives the exact choices. QPSK defaults to 1 Msym/s.
 Both modulations accept `5m`, `10m`, `20m`; `26m667` and `33m333` are QPSK only.
 Dumps are little-endian int16 I/Q with full scale 512. Golden CRCs use peak 128 and N0CALL.
+SPI argument ranges, custom pins and fault/replay options: [diagnostics](spi-input.md#diagnostics).
+
+All three IQ helpers (`host/decode.py`, `host/morse.py`, `examples/live-video/receive.py`)
+accept these `--format` aliases. Each pair is I followed by Q, little endian.
+
+| Sample type | Aliases | Bytes per complex sample |
+|---|---|---:|
+| Signed int16, S3 dumps (full scale 512) | `i16`, `s16` | 4 |
+| Float32 | `cf32`, `f32` | 8 |
 
 ```sh
 python3 host/board.py "dvbdump 15 20m 16 128 1" --save fast.iq
@@ -85,7 +112,9 @@ At 20 WPM, `60 s/(20*50) = 60 ms/dot`; edges use a 5 ms raised cosine.
 The ID tone is +1 MHz from center at 40 MS/s, +2 MHz at 80 MS/s.
 N0CALL, used only for contained tests, takes 5.22 s per ID.
 
-Every nonempty synthetic payload has a 40-byte callsign header. To inspect ID without RF
+Every nonempty synthetic payload has a 40-byte callsign header. External SPI/USB payloads
+receive no added callsign header; their bytes are preserved, with normal DVB-S2 TS sync
+handling. Start/end Morse ID still runs independently. To inspect ID without RF
 or a storage change, substitute your callsign:
 
 ```sh
