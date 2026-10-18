@@ -115,8 +115,10 @@ def main():
     print("Paces: zero late fills/switches/fatal lateness, positive slack, PIE mask 15, stack >=512 B,")
     print("  live encoder and conserved fill words. 33m333: queue never empty, Wi-Fi free/min >=20000 B.")
     for mc, token, seconds in PACES:
-        print(f"  dvbpace {mc} {token or '(1m)'} {seconds}")
-    print("These are functional deadline gates. The 40 MHz mode has not met a 15% reserve target.")
+        command = f"dvbpace {mc} {token} {seconds}".replace("  ", " ")
+        print(f"  {command}" + ("  # 1 Msym/s" if not token else ""))
+    print("These gates enforce functional deadlines, not reserve thresholds.")
+    print("40 MHz met 15% reserve on both cores in one 30 s keyed run (e96795b); see docs/measurements.md.")
     print("wifimem 17 5m: Wi-Fi startup succeeds; free/up and command minimum both >=22351 B.")
     print("Keep going after failures; save IQ, logs, revision and summary; any failure exits 1.", flush=True)
     if a.plan:

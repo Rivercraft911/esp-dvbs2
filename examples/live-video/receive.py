@@ -17,7 +17,7 @@ import tempfile
 
 
 def commands(a, fifo="IQ_FIFO"):
-    fmt = "s16" if a.args is not None else a.format
+    fmt = "s16" if a.args is not None else {"i16": "s16", "cf32": "f32"}.get(a.format, a.format)
     rx = [a.receiver, "--standard", "DVB-S2", "--" + fmt,
           "-f", str(a.rate), "--sr", str(a.symbol_rate),
           "--roll-off", str(a.rolloff), "--sampler", "rrc", "--rrc-rej", "20",
@@ -115,7 +115,7 @@ def main():
     p.add_argument("--symbol-rate", type=float, default=10e6)
     p.add_argument("--rolloff", type=float, choices=(.20, .25, .35), default=.35)
     p.add_argument("--modcod", type=int, choices=range(4, 18), default=7)
-    p.add_argument("--format", choices=("f32", "s16"), default="f32", help="saved IQ format")
+    p.add_argument("--format", choices=("f32", "cf32", "s16", "i16"), default="f32", help="saved IQ format")
     p.add_argument("--output", default="-", help="new TS file, or - for stdout")
     p.add_argument("--player", help="player command reading TS on stdin (no shell)")
     p.add_argument("--plan", action="store_true", help="print commands without opening anything")

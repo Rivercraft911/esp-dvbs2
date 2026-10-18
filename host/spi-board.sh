@@ -1,6 +1,11 @@
 #!/bin/bash
 # Radio-off check, already flashed. About two minutes; keep going after failures.
 set -uo pipefail
+usage() {
+    printf 'Usage: bash host/spi-board.sh [NEW_OUTPUT_DIRECTORY]\nRadio-off board check; requires flashed firmware and N0CALL.\nEnvironment: PY=python3 RX=leandvb PORT=/dev/cu.usbmodem101 PINS=devkit\n'
+}
+if [[ ${1:-} == --help || ${1:-} == -h ]]; then usage; exit 0; fi
+if (( $# > 1 )) || [[ ${1:-} == -* ]]; then usage >&2; exit 2; fi
 cd "$(dirname "$0")/.."
 PY=${PY:-python3}
 RX=${RX:-leandvb}
