@@ -123,20 +123,21 @@ No addition of independently rounded pulse fragments is needed in the renderer.
 
 The encoder queues compact I/Q bit planes, including headers and pilots: forty words
 per page, each holding sixteen signs per axis. Before playback starts, the queue holds two
-complete frames and the first bank's eleven pages are expanded into sign histories.
-Core 1 expands later pages into 128 eleven-sign histories before rendering them,
-keeping the expanded page across bank cuts. The renderer
-selects the appropriate eight-sign window for each vector.
+complete frames. Core 1 extracts the three eight-sign windows directly from rolling I/Q
+bit streams while rendering. A fixed 80-symbol schedule combines table loads with
+packed I/Q addition and stores; the disjoint DAC fields make addition exactly equal
+to OR. There is no intermediate expanded history page.
 There is no intermediate packed frame ring for this mode. A full queue blocks the
 encoder until the renderer releases at least eight pages. One notification at bank end
 wakes it after both callbacks finish. History survives every frame and bank seam.
 
-The 65,536 B shaping store holds `24576 + 105*160 + 528 + 8144 = 50048 B`:
-axis tables, 105 queue pages, one expanded page with a renderer guard and the encoder
-workspace. The headline radio-off pace also borrows its 7,264-byte reference input
-and eleven 528-byte startup history pages: 63,120 B total, without additional heap.
-Startup expansion does not advance the consumer or drop any payload. Its separate
-cycle count is reported outside the paced fill timing.
+The 65,536 B shaping store holds `24576 + 105*160 + 768 + 8144 = 50288 B`:
+axis tables, 105 queue pages, a 192-sample scratch chunk and the encoder workspace.
+The headline radio-off pace also borrows its 7,264-byte reference input: 57,552 B
+total, without additional heap. At a physical bank cut, only a partial chunk uses
+scratch and a word copy; full chunks render directly to the bank. The last sixteen
+signs carry across pages. Linker assertions keep the live kernel, cut wrapper and
+copy kernel in IRAM, and the complete shaping store in internal DRAM.
 Each page represents 128 five-symbol groups, or 1,536 samples. Full coverage is
 `105*1536 / 80e6 s = 2.016 ms`. The overlap buffer remains a separate internal allocation.
 Acquire/release counters transfer ownership between cores; physical page cursors remain

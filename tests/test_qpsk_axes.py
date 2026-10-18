@@ -1,12 +1,14 @@
 """Guarded QPSK axis mapper and page expansion; also reusable in ESP32-S3 QEMU."""
 import pathlib
 import subprocess
+import sys
 import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 def test():
+    subprocess.run([sys.executable, str(ROOT / "tests/reference/gen_machine_axis.py"), "--check"], check=True)
     with tempfile.TemporaryDirectory() as tmp:
         folder = pathlib.Path(tmp)
         (folder / "esp_attr.h").write_text("#define IRAM_ATTR\n")

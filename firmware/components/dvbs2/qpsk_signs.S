@@ -50,6 +50,7 @@ dvbs2_qpsk_planes:
 
 /* Sixteen histories / eighty symbols. Source and output need only word
  * alignment. Carries the six prior signs through five plane words. */
+    .section .iram1.qpsk_histories,"ax"
     .align 4
     .global dvbs2_qpsk_histories
     .type dvbs2_qpsk_histories,@function
@@ -181,6 +182,7 @@ dvbs2_qpsk_histories:
 
 /* Shift a run of sixteen-sign plane words by 1..15 symbols. The extra
  * source word is inside the same PL span. dst/src only need word alignment. */
+    .section .iram1.qpsk_signs,"ax"
     .align 4
     .global dvbs2_qpsk_shift
     .type dvbs2_qpsk_shift,@function

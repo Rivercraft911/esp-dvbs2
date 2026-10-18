@@ -100,6 +100,44 @@ void machine_expand_check(void)
     puts("axis expansion: 100 pages, persistent history, word alignment, guards: ok");
 }
 
+
+void machine_axis_check(void)
+{
+    uint32_t *table = buffer(MACHINE_TABLE_WORDS*4);
+    uint32_t *expected = buffer(MACHINE_PAGE_SAMPLES*4);
+    uint32_t *out = buffer((MACHINE_PAGE_SAMPLES+8)*4);
+    uint32_t *scratch = buffer(MACHINE_AXIS_CHUNK_SAMPLES*4);
+    assert(table && expected && out && scratch);
+    assert(!machine_build(table,128));
+    uint32_t x = 123, previous = 0, axes[MACHINE_PAGE_AXIS_WORDS], signs[MACHINE_PAGE_BLOCKS+1];
+    unsigned cases = 0;
+    for (unsigned page = 0; page < 4; ++page) {
+        for (unsigned j = 0; j < MACHINE_PAGE_AXIS_WORDS; ++j) {
+            x ^= x<<13; x ^= x>>17; x ^= x<<5; axes[j] = x;
+        }
+        machine_expand(signs,axes,(previous << 4)&0x7ff07ff0);
+        signs[MACHINE_PAGE_BLOCKS] = 0;
+        machine_render(expected,signs,MACHINE_PAGE_BLOCKS,table);
+        const unsigned skips[] = {0,1,4,11,12,188,191,192,193,384,1020,1344,1535};
+        const unsigned counts[] = {0,1,4,11,12,191,192,193,511,768,1536};
+        for (unsigned at = 0; at < sizeof skips/sizeof *skips; ++at)
+            for (unsigned c = 0; c < sizeof counts/sizeof *counts; ++c)
+                for (unsigned offset = 1; offset <= 4; ++offset) {
+                    unsigned n = counts[c], skip = skips[at];
+                    if (n > MACHINE_PAGE_SAMPLES-skip) n = MACHINE_PAGE_SAMPLES-skip;
+                    for (unsigned j = 0; j < MACHINE_PAGE_SAMPLES+8; ++j) out[j] = 0xdeadbeef;
+                    machine_axis_samples(out+offset,axes,previous,skip,n,table,scratch);
+                    for (unsigned j = 0; j < n; ++j) assert(out[offset+j] == expected[skip+j]);
+                    for (unsigned j = 0; j < offset; ++j) assert(out[j] == 0xdeadbeef);
+                    for (unsigned j = offset+n; j < MACHINE_PAGE_SAMPLES+8; ++j) assert(out[j] == 0xdeadbeef);
+                    ++cases;
+                }
+        previous = axes[MACHINE_PAGE_AXIS_WORDS-1];
+    }
+    free(scratch); free(out); free(expected); free(table);
+    printf("direct axis renderer: %u guarded slices, all alignments/cuts, persistent history: ok\n",cases);
+}
+
 #ifdef QPSK_AXES_HOST
-int main(void) { qpsk_axes_check(); machine_expand_check(); return 0; }
+int main(void) { qpsk_axes_check(); machine_expand_check(); machine_axis_check(); return 0; }
 #endif
