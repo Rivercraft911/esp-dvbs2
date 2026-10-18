@@ -404,7 +404,10 @@ int main(int argc, char **argv)
                     if (native_blocks[i].p == enc.input) assert(native_blocks[i].caps & MALLOC_CAP_INTERNAL);
             }
             x = SEED;
-            for (size_t i = 0; i < bytes; ++i) assert(enc.input[i] == next_byte(&x));
+            for (size_t i = 0; i < bytes; ++i) {
+                size_t prefix = dvb.lofty ? LOFTY_INPUT_BYTES : 0;
+                assert((i < prefix ? lofty_input[i] : enc.input[i-prefix]) == next_byte(&x));
+            }
         }
         radio_s3_dry_stats_t stats;
         assert(!radio_s3_dry_run_rate(fill,NULL,((uint64_t)frames*length*sps+dvb.den-1)/dvb.den,

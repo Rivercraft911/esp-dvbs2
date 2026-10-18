@@ -11,6 +11,10 @@ checks resident BCH against canonical parity and installs/restores real
 software interrupt handlers on both CPUs twice, including same-bank notify
 accounting. Its synthetic observer lengths are not timing measurements.
 
+`python3 tests/test_lofty_handoff.py /tmp/lofty-handoff` replays the supplied
+ID-to-data bank through the real station mux and overlap cache. It checks the
+8,100/6,092-sample callbacks, bulk-render eligibility and two exact data frames.
+
 With ESP-IDF v6.1 active:
 
 ```sh

@@ -11,7 +11,7 @@
 #define LOFTY_PAGE_META (LOFTY_BLOCKS+1) // after the renderer's prefetch guard
 #define LOFTY_FRAME_PAGES 44           // ceil(22194/512), including partial EOF
 typedef struct {
-    uint32_t words[LOFTY_BLOCKS+4]; // owned trailing prefetch guard
+    uint32_t words[LOFTY_BLOCKS+4]; // guard, extent/skip, cumulative end, EOF history
 } __attribute__((aligned(16))) lofty_page;
 // Four phases -> three scaled offsets. Previous is the preceding four phases.
 // Source has 16 readable guard bytes. Arbitrary destination word alignment.

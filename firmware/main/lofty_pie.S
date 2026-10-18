@@ -47,13 +47,12 @@ lofty_render_pie:
     addmi a13,a5,8192
     movi a15,1024
     l32i a8,a3,0
-    extui a14,a4,0,2
-    srli a4,a4,2
+    // Two words keep the hardware loop short and leave IRAM for the mux.
+    extui a14,a4,0,1
+    srli a4,a4,1
     loopnez a4,.Lend
     lofty_word 4,0
-    lofty_word 8,0
-    lofty_word 12,0
-    lofty_word 0,16
+    lofty_word 0,8
 .Lend:
     loopnez a14,.Ltail
     lofty_word 0,4

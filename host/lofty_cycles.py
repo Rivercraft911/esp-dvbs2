@@ -131,11 +131,11 @@ def report(trace,disassembly):
     end = next(i for i,(_,ins) in enumerate(f) if re.match(r'loopnez\s+a14,',ins))
     while f[end-1][1].startswith('nop'): end -= 1 # assembler padding after LEND
     group = replay(f[begin:end])['cycles']
-    step = group/4
-    # The executed 1365-block trace includes 341 four-block groups and one
+    step = group/2
+    # The executed 1365-block trace includes 682 two-block groups and one
     # single-block tail. Calls, loop setup and memory stalls are separate.
-    prologue = r['cycles']-341*group-24
-    assert group == 93 and 0 <= prologue < 256,(group,prologue)
+    prologue = r['cycles']-682*group-24
+    assert group == 47 and 0 <= prologue < 256,(group,prologue)
     yield dict(kind='render_model',cycles_per_block=step,cycles_per_sample=step/12,
                prologue_cycles=prologue,previous_cycles_per_block=24,
                issue_saving_per_15740_sample_bank=math.ceil(15740/12)*(24-step),

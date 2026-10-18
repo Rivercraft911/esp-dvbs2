@@ -2,7 +2,7 @@
 """Radio-off clean gate plus bank/page wake diagnosis, about one minute per mode.
 
 No flashing or transmitter commands. Keep the Mac awake, for example:
-  caffeinate -i python3 host/jitter.py notes/eight-lofty-round8
+  caffeinate -i python3 host/jitter.py notes/eight-lofty-round9
 """
 import argparse
 import datetime as dt
@@ -37,6 +37,10 @@ def timing(rows, mc, policy, observer):
     assert r['jitter_enabled'] == observer and ('jitter' in r) == observer, 'wrong observer state'
     if mc != 11:
         assert r['admission_pages'] == 44, 'wrong frame admission'
+        assert len(r['handoff']) == 2, 'missing handoff record'
+        if r['status'] == 'ESP_OK':
+            assert [p['words'] for p in r['handoff']] == [8100,6092], 'wrong ID/data handoff'
+            assert all(p['shape_cycles'] > 0 for p in r['handoff']), 'missing handoff timing'
         assert all(r[k] >= 0 for k in ('dummy_startup','dummy_steady','dummy_alignment')), 'bad dummy counts'
     if observer:
         j = r['jitter']
@@ -82,6 +86,7 @@ def suite(send, firmware, seconds, observe_seconds=5):
             if 'queue_fault' in r: row['queue_fault'] = r['queue_fault']
             if mc != 11:
                 row.update({k:r[k] for k in ('dummy_startup','dummy_steady','dummy_alignment')})
+                if 'handoff' in r: row['handoff'] = r['handoff']
                 row['steady_dummy_target_met'] = r['dummy_steady'] == 0
             if observer: row['worst_bank'] = r['jitter']['worst_bank']
             # Instrumented runs diagnose the lock; only the clean default run is
@@ -97,6 +102,7 @@ def suite(send, firmware, seconds, observe_seconds=5):
               (f"; data frames {row['frames_played']}, lead {row['min_lead_symbols']} symbols, {row['status']}" if 'status' in row else '')+
               (f"; dummies startup {row['dummy_startup']}, steady {row['dummy_steady']} (target 0), alignment {row['dummy_alignment']}"
                if 'dummy_startup' in row else '')+
+              (f"; handoff {row['handoff']}" if 'handoff' in row else '')+
               (f"; notify max {row['worst_bank']['notify_max_cycles']} cycles in worst bank"
                if 'worst_bank' in row else '')+
               (f"; {row['detail']}" if 'max_fill_cycles' in row and 'detail' in row else ''),flush=True)

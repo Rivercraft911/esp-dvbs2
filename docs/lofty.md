@@ -77,18 +77,36 @@ A = (h >> 15) & 511; B = (h >> 6) & 511; C = h & 63
 descriptor = (A << 4) | (3*B << 13) | (C << 24)
 ```
 
-Four renderer words now share one source-pointer advance. The loop takes
-93 model cycles per 48 samples, or 23.25 cycles/twelve samples, versus 24.
-Calls, tails, cache/bus contention and interrupts are additional. This saves
-about 984 issue cycles over a 15,740-sample bank, before changed wrapper cost.
-It does not establish the 40,137-cycle silicon ceiling.
+Two renderer words share one source-pointer advance. The loop takes 47
+model cycles per 24 samples, or 23.5 cycles/twelve samples, versus 24.
+The shorter loop uses less IRAM than the four-word version. Calls, tails,
+cache/bus contention and interrupts are additional. This does not establish
+the 40,137-cycle silicon ceiling.
 
-The fixed store remains `36864 + 38*528 + 8144 = 65072 B`. Queue heap remains
-8,448/6,336/4,224 B for 13/15/17. Resident encoder data remains
-22,960/24,112/24,256 B, with the existing 4,096 B PSRAM BCH extension on 13/15.
-The target context scratch stays at offset 608 B. The new mux control stays
-in flash to limit internal RAM growth. Heap placement must still be checked
-against the 20,000 B Wi-Fi minimum on silicon.
+The supplied ea1b8be records stop at the first ID/data bank, starting at
+sample 417,597,812, with a 2,188-sample ID tail. The payload callbacks shape
+8,100 and 6,092 samples. Their shaping times are 31,707 and 13,259 cycles
+on clean MODCOD13, versus 50,144 cycles for the complete physical bank.
+The observed worst bank has no interrupt and a 679-cycle notify. Admission
+is one counter load, and no dummy or splice is selected. Host replay checks
+1,182 bulk render blocks plus one partial block, with no alignment fallback.
+
+The new per-page mux was in flash. The normal data path now runs entirely
+in IRAM, including the complete-frame counter check. Boot loads that code
+before playback. EOF filter history is published in the page's last metadata
+word by the producer. Dummy selection/splicing and fault handling retain
+small flash helpers. Cold instruction fetch is the supported explanation for
+the first-call excess, not a measured cache-miss attribution. The new
+`handoff` record captures words and shaping cycles for the first two payload
+callbacks so the coordinator can check the change against `worst_bank`.
+
+The fixed table/page/workspace layout remains
+`36864 + 38*528 + 8144 = 65072 B`. Its 464-byte tail now holds mux state,
+handoff counters and the prefix of the paced input fixture. Remaining input
+bytes stay in the original internal allocation. The copied payload is
+unchanged. Queue page counts and sizes, and encoder kernels are unchanged;
+QPSK retains its existing input storage and renderer. Heap placement still
+needs the 20,000 B Wi-Fi gate on silicon.
 
 ## Checks and collection
 
@@ -101,11 +119,14 @@ errors, BCH corrections or LDPC flips. The stress test pauses the producer
 while the consumer plays dummies, then checks 24,576 pages across physical
 and sequence wraps. These host checks do not establish hardware deadlines.
 Xtensa checks retain guarded slices, mapper frames and ISR teardown.
+`tests/test_lofty_handoff.py` replays the observed ID/data bank and following
+banks through the real station mux, page queue and overlap cache. Every data
+word across two frames equals Python, including the repeated paced input.
 
 After the coordinator builds/flashes the final revision with N0CALL:
 
 ```sh
-caffeinate -i python3 host/jitter.py notes/eight-lofty-round8
+caffeinate -i python3 host/jitter.py notes/eight-lofty-round9
 ```
 
 Each mode gets 20 s clean, 5 s observed default and 5 s observed comparison,

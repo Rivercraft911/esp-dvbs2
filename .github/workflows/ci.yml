@@ -17,6 +17,7 @@ jobs:
       - run: python tests/test_rational.py
       - run: python tests/test_lofty.py
       - run: python tests/test_lofty_dummy.py /tmp/lofty-dummy
+      - run: python tests/test_lofty_handoff.py /tmp/lofty-handoff
       - run: python tests/test_jitter.py
       - run: python tests/test_check.py
       - run: python tests/test_self_check.py
