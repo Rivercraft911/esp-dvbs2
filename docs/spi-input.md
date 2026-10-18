@@ -162,5 +162,10 @@ Its console protocol:
   send messages. USB pacing replaces READY, and messages may arrive split anywhere.
 - A NOP message means **end of stream** on USB. On `usbinput stop:true`, finish the current
   message, send a NOP, and send nothing more until the command's `done:true` record.
-- A missing NOP stops the run with an error after three seconds. After an interrupted write,
-  reset the S3 before a new session rather than retrying.
+- RX uses the hardware FIFO directly while its driver interrupt is masked. When the encoder
+  pauses, the endpoint applies USB backpressure; resumption polls FIFO availability rather
+  than waiting for another packet interrupt. Console TX remains with the driver.
+- After a run, a missing NOP prints an error and restarts the S3 within three seconds, with
+  RF already off. Partial binary data is never passed to the console parser. The sender keeps
+  reading after write failures to save the board counters and restart status in its report,
+  then its next `info` probe handles USB re-enumeration. Uncertain writes are never retried.

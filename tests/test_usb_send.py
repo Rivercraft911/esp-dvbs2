@@ -75,18 +75,39 @@ def test_pv():
 
 class Peer:
     """Partial writes, idle writes, fragmented reads; ready precedes data."""
-    def __init__(self, dump=False, stop_early=False):
+    def __init__(self, dump=False, stop_early=False, fail_after=None):
         self.condition = threading.Condition(); self.rx = bytearray(); self.tx = bytearray()
         self.started = False; self.nop = False; self.dump = dump; self.stop_early = stop_early
         self.messages = self.payload_bytes = self.ts_packets = self.crc_chain = 0
         self.iq = b'@{"done":true}\n\xff\0'*11  # JSON-looking binary is never a console record
-        self.writes = 0
+        self.writes = 0; self.fail_after = fail_after
+
+    def __enter__(self): return self
+    def __exit__(self, *args): pass
+
+    def finish(self, recovery=False):
+        u = dict(messages=self.messages, payload_bytes=self.payload_bytes, nops=0 if recovery else 1, short=0,
+                 header=0, crc=0, sync=0, lost=0, back=0, wrong_type=0, partial_bytes=13 if recovery else 0,
+                 ended=not recovery, next_seq=(self.messages+(not recovery)) & 65535,
+                 ts_packets=self.ts_packets, crc_chain=self.crc_chain, us=18000000, mbps=4.0)
+        self.emit(dict(cmd=self.cmd, usb=u, status="ESP_OK", encoder_failed=False,
+                       frames_encoded=20, underruns=1, late_fills=0, late_switches=0,
+                       fatal_late=0, min_fill_slack_cycles=1, input_bytes=self.payload_bytes, seconds=20,
+                       payload_bytes_per_frame=4016, symbol_rate=1000000, frame_symbols=33282,
+                       crc32=zlib.crc32(self.iq), overlap_mismatches=0))
+        self.emit(dict(cmd="usbinput", stop=True))
+        self.emit(dict(cmd="usbinput", ended=not recovery, **(dict(recovery="restart", error="missing terminal PV NOP") if recovery else {})))
+        if not recovery:
+            self.emit(dict(cmd=self.cmd, done=True))
 
     def emit(self, row):
         self.rx.extend(b'@'+json.dumps(row).encode()+b'\n')
 
     def write(self, data):
         with self.condition:
+            if self.started and self.fail_after is not None and self.messages >= self.fail_after:
+                self.tx.extend(data[:13]); self.finish(recovery=True)
+                raise TimeoutError('USB transport stalled after an uncertain partial write')
             self.writes += 1
             if self.writes % 7 == 0:
                 return 0
@@ -106,17 +127,7 @@ class Peer:
                 assert int.from_bytes(wire[4:6], 'little') == self.messages & 65535
                 if kind == 0:
                     self.nop = True
-                    u = dict(messages=self.messages, payload_bytes=self.payload_bytes, nops=1, short=0,
-                             header=0, crc=0, sync=0, lost=0, back=0, wrong_type=0, partial_bytes=0,
-                             ended=True, next_seq=(self.messages+1) & 65535, ts_packets=self.ts_packets, crc_chain=self.crc_chain,
-                             us=18000000, mbps=4.0)
-                    self.emit(dict(cmd=self.cmd, usb=u, status='ESP_OK', encoder_failed=False,
-                                   frames_encoded=20, underruns=1, late_fills=0, late_switches=0,
-                                   fatal_late=0, min_fill_slack_cycles=1, input_bytes=self.payload_bytes, seconds=20,
-                                   payload_bytes_per_frame=4016, symbol_rate=1000000, frame_symbols=33282,
-                                   crc32=zlib.crc32(self.iq), overlap_mismatches=0))
-                    self.emit(dict(cmd='usbinput', stop=True)); self.emit(dict(cmd='usbinput', ended=True))
-                    self.emit(dict(cmd=self.cmd, done=True))
+                    self.finish()
                 else:
                     self.messages += 1; self.payload_bytes += size
                     if kind == 1:
@@ -168,15 +179,12 @@ def test_stream():
             raise OSError('source disappeared')
     stats, _ = send.stream(Peer(), BrokenSource(), cmd='dvbpace 4 20', kind=2, seconds=20)
     assert stats['terminal_nop'] and stats['errors'] == ['source disappeared']
-    class UncertainWrite(Peer):
-        def write(self, data):
-            if self.started:
-                self.tx.extend(data[:13])
-                raise OSError('uncertain USB write')
-            return super().write(data)
-    peer = UncertainWrite()
-    rejects(send.stream, peer, io.BytesIO(bytes(4000)), cmd='dvbpace 4 20', kind=2, seconds=20)
-    assert not peer.nop and len(peer.tx) == 13  # no retry or NOP at an unknown boundary
+    peer = Peer(fail_after=0)
+    stats, rows = send.stream(peer, io.BytesIO(bytes(4000)), cmd='dvbpace 4 20', kind=2, seconds=20)
+    assert not peer.nop and len(peer.tx) == 13
+    assert stats['write_uncertain'] and stats['recovery'] == 'restart' and stats['errors']
+    assert any('usb' in r for r in rows), 'writer failure lost the final board counters'
+    rejects(send.check_run, stats, rows)
     # A blocked stdin/ffmpeg read cannot prevent a timed end-of-run NOP.
     unblock = threading.Event()
     class Blocked:
@@ -206,12 +214,15 @@ def test_safety():
             def __enter__(self): return self
             def __exit__(self, *args): pass
         calls = []
-        def collect(link, cmd):
-            calls.append(cmd); return [dict(cmd='info', callsign='')]
+        def collect(link, cmd, timeout=10, records=None):
+            calls.append(cmd)
+            result = [dict(cmd='info', callsign='', firmware='mock')]
+            if records is not None: records.extend(result)
+            return result
         with patch.object(send, 'open_port', return_value=Link()), patch.object(send, 'collect', side_effect=collect):
             with contextlib.redirect_stderr(io.StringIO()):
                 try:
-                    send.main(['send', str(source), '--key'])
+                    send.main(['send', str(source), '--key', '--report', str(Path(tmp)/'key.json')])
                 except SystemExit as e:
                     assert e.code == 1
                 else:
@@ -220,12 +231,101 @@ def test_safety():
     print('defaults radio-off; keyed duration, mode validation and stored-callsign gate: ok')
 
 
+def test_failure_reports():
+    # Run the actual CLI twice: the first connection fails mid-write and still
+    # saves firmware counters/recovery. The next connection can send normally.
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp); source = folder/'input.bin'; source.write_bytes(bytes(4000))
+        peers = [Peer(fail_after=0), Peer()]
+        def collect(link, cmd, timeout=10, records=None):
+            assert cmd in ('info', 'spiinput usb gcs', 'spiinput off')
+            result = [dict(cmd=cmd.split()[0], firmware='mock', callsign='N0CALL'),
+                      dict(cmd=cmd.split()[0], done=True)]
+            if records is not None: records.extend(result)
+            return result
+        for index in range(2):
+            report = folder/f'{index}.json'
+            with patch.object(send, 'open_port', return_value=peers[index]), \
+                    patch.object(send, 'collect', side_effect=collect), contextlib.redirect_stderr(io.StringIO()):
+                try:
+                    send.main(['send', str(source), '--kind', 'gcs', '--report', str(report)])
+                except SystemExit as e:
+                    assert index == 0 and e.code == 1
+                else:
+                    assert index == 1
+            result = json.loads(report.read_text())
+            assert result['board_counters_available']
+            assert bool(result['errors']) == (index == 0)
+            assert result['sender']['recovery'] == ('restart' if index == 0 else None)
+            assert any('usb' in r for r in result['records'])
+        # Even a preflight/open failure must create the requested report.
+        report = folder/'open-failure.json'
+        with patch.object(send, 'open_port', side_effect=OSError('port unavailable')), contextlib.redirect_stderr(io.StringIO()):
+            try:
+                send.main(['send', str(source), '--report', str(report)])
+            except SystemExit as e:
+                assert e.code == 1
+        assert json.loads(report.read_text())['errors'] == ['port unavailable']
+    class Writer:
+        write_timeout = 0
+        def write(self, data):
+            assert self.write_timeout > 0, 'nonblocking pyserial can spin on EAGAIN'
+            return len(data)
+    send.write_all(Writer(), b'abc')
+    print('CLI failures: finite serial timeout, retained board counters, report on every exit, next session usable: ok')
+
+
+def test_reenumeration_and_cancel():
+    class Reenumerating:
+        is_open = True
+        opens = closes = 0
+        def close(self): self.is_open = False; self.closes += 1
+        def open(self):
+            self.opens += 1
+            if self.opens < 3: raise OSError('USB device re-enumerating')
+            self.is_open = True
+    link = Reenumerating(); probes = []
+    def info(port, command, timeout, records):
+        assert command == 'info'
+        probes.append(command)
+        if len(probes) == 1:
+            records.append(dict(cmd='usbinput', recovery='restart'))
+            raise OSError('old descriptor disconnected')
+        row = dict(cmd='info', firmware='new', callsign='N0CALL')
+        records.append(row)
+        return [row]
+    rows = []
+    with patch.object(send, 'collect', side_effect=info), patch.object(send.time, 'sleep'):
+        result = send.console_info(link, rows)
+    assert result[0]['firmware'] == 'new' and link.opens == 3 and len(probes) == 2
+    assert rows[0]['recovery'] == 'restart' and link.rts is False and link.dtr is False
+
+    class BlockingWrite(Peer):
+        def __init__(self):
+            super().__init__(); self.cancelled = threading.Event(); self.purged = False
+        def reset_output_buffer(self): self.purged = True
+        def write(self, data):
+            if not self.started: return super().write(data)
+            with self.condition:
+                self.tx.extend(data[:13]); self.finish(recovery=True)
+                self.condition.notify_all()
+            assert self.cancelled.wait(2), 'writer was not cancelled on recovery'
+            raise OSError('write cancelled after board restart')
+        def cancel_write(self): self.cancelled.set()
+    peer = BlockingWrite()
+    stats, rows = send.stream(peer, io.BytesIO(bytes(4000)), cmd='dvbpace 4 20', kind=2, seconds=20)
+    assert peer.cancelled.is_set() and peer.purged and stats['output_purged']
+    assert stats['recovery'] == 'restart' and stats['errors']
+    assert any('usb' in r for r in rows)
+    print('recovery: stale descriptors reopened, read-only info retried, blocked writer cancelled and joined: ok')
+
+
 def test_coordinator():
     for fail_rate in (False, True):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)/'check'
             calls = []
-            def run(folder, name, source, *args):
+            def run(folder, name, source, *args, expect_failure=False):
                 calls.append(name)
                 assert '--key' not in args
                 if '--dump' in args:
@@ -234,6 +334,8 @@ def test_coordinator():
                 elif name == 'saturation':
                     assert args[args.index('--kind')+1] == 'gcs'
                     assert args[args.index('--modcod')+1] == '13' and '--mbps' not in args
+                elif name == 'recovery':
+                    assert expect_failure and '--abort-after' in args and args[args.index('--seconds')+1] == '3'
                 else:
                     assert args[args.index('--kind')+1] == 'ts' and '--mbps' in args
                 u = dict(messages=3, payload_bytes=3948, nops=1, next_seq=4, short=0, header=0,
@@ -247,7 +349,9 @@ def test_coordinator():
                 stats = dict(errors=[], terminal_nop=True, source_eof=True, messages=3,
                              payload_bytes=3948, next_seq=3, ts_packets=0, crc_chain=0,
                              binary_bytes=0, host_crc32=0)
-                return dict(sender=stats, records=[row])
+                if name == 'recovery':
+                    stats['recovery'] = 'restart'; u.update(messages=1, partial_bytes=17)
+                return dict(sender=stats, records=[row], exit_code=1 if expect_failure else 0)
             def decode(capture, **kwargs):
                 assert kwargs['sample_rate'] == 4000000 and kwargs['symbol_rate'] == 1000000
                 with send.container(io.BytesIO((out/'input.bin').read_bytes()), 'input.bin', 4016) as stream:
@@ -265,7 +369,7 @@ def test_coordinator():
                     assert not fail_rate
             summary = json.loads((out/'summary.json').read_text())
             assert len(summary['failures']) == int(fail_rate)
-            assert calls == ['file', 'saturation', 'pace']
+            assert calls == ['file', 'saturation', 'recovery', 'pace']
             assert (out/'input.bin').read_bytes() == (out/'recovered.bin').read_bytes()
     print('coordinator: radio-off commands, actual unpack/hash, throughput gate and continuation after failure: ok')
 
@@ -314,6 +418,6 @@ if __name__ == '__main__':
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--receiver', type=Path)
     a = p.parse_args()
-    test_container(); test_pv(); test_stream(); test_safety(); test_coordinator()
+    test_container(); test_pv(); test_stream(); test_safety(); test_failure_reports(); test_reenumeration_and_cancel(); test_coordinator()
     if a.receiver:
         test_decode(a.receiver)

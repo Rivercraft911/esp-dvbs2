@@ -146,18 +146,49 @@ def command(a):
     return f'dvbpace {a.modcod} {named}{a.seconds}'
 
 
-def write_all(link, data, timeout=5):
-    # Nonblocking serial writes expose short writes, including USB backpressure.
-    # Never retry an uncertain timed-out write: its byte count is unknown.
+def sender_stats():
+    return dict(messages=0, payload_bytes=0, ts_packets=0, crc_chain=0, next_seq=0,
+                source_eof=False, errors=[], terminal_nop=False, complete=False,
+                recovery=None, write_calls=0, wire_bytes_written=0, short_writes=0,
+                zero_writes=0, write_uncertain=False, output_purged=False)
+
+
+def write_all(link, data, timeout=5, stats=None, cancel=None):
+    # pyserial's POSIX write_timeout=0 path can busy-loop on EAGAIN inside
+    # Serial.write(), bypassing our deadline and cancellation. Use its bounded
+    # select-based writer, and never retry a timeout with an unknown byte count.
+    if hasattr(link, 'write_timeout') and link.write_timeout != timeout:
+        link.write_timeout = timeout
     offset, deadline = 0, time.monotonic()+timeout
     while offset < len(data):
-        n = link.write(data[offset:])
+        if cancel is not None and cancel.is_set():
+            raise InterruptedError('USB write cancelled')
+        started = time.monotonic()
+        if stats is not None:
+            stats['last_write'] = dict(bytes=len(data), confirmed=offset, requested=len(data)-offset)
+        try:
+            n = link.write(data[offset:])
+        except Exception:
+            if stats is not None:
+                stats['write_uncertain'] = True
+            raise
+        elapsed = time.monotonic()-started
         if n is None or n < 0 or n > len(data)-offset:
             raise OSError('invalid serial write count')
+        if stats is not None:
+            stats['write_calls'] += 1
+            stats['wire_bytes_written'] += n
+            stats['short_writes'] += 0 < n < len(data)-offset
+            stats['zero_writes'] += n == 0
+            stats['max_write_seconds'] = max(stats.get('max_write_seconds', 0), elapsed)
         offset += n
-        if time.monotonic() >= deadline:
+        if stats is not None:
+            stats['last_write']['confirmed'] = offset
+        if n:
+            deadline = time.monotonic()+timeout
+        elif time.monotonic() >= deadline:
             raise TimeoutError('USB write stalled; session incomplete')
-        if not n:
+        else:
             time.sleep(.001)
 
 
@@ -194,9 +225,10 @@ class Records:
         return rows
 
 
-def collect(link, cmd, timeout=10):
+def collect(link, cmd, timeout=10, records=None):
     write_all(link, cmd.encode()+b'\n')
-    records, parser = [], Records()
+    records = [] if records is None else records
+    parser = Records()
     deadline = time.monotonic()+timeout
     while time.monotonic() < deadline:
         for row in parser.feed(link.read(8192)):
@@ -208,12 +240,14 @@ def collect(link, cmd, timeout=10):
     raise TimeoutError(f'no completion for {cmd}')
 
 
-def stream(link, source, *, cmd, kind, seconds, dump=False, sink=None, mbps=0):
+def stream(link, source, *, cmd, kind, seconds, dump=False, sink=None, mbps=0,
+           stats=None, rows=None, abort_after=None):
     stop, ready, done = threading.Event(), threading.Event(), threading.Event()
+    cancel = threading.Event()
     chunks = queue.Queue(8)
-    stats = dict(messages=0, payload_bytes=0, ts_packets=0, crc_chain=0, next_seq=0,
-                 source_eof=False, errors=[], terminal_nop=False)
-    rows, parser = [], Records(sink)
+    stats = sender_stats() if stats is None else stats
+    rows = [] if rows is None else rows
+    parser = Records(sink)
 
     def produce():
         try:
@@ -235,6 +269,7 @@ def stream(link, source, *, cmd, kind, seconds, dump=False, sink=None, mbps=0):
                 pass
 
     def transmit():
+        started = None
         try:
             while not ready.wait(.05):
                 if done.is_set():
@@ -254,8 +289,11 @@ def stream(link, source, *, cmd, kind, seconds, dump=False, sink=None, mbps=0):
                 if isinstance(data, Exception):
                     stats['errors'].append(str(data)); break
                 wire = message(data, stats['next_seq'], kind)
+                if abort_after is not None and stats['messages'] >= abort_after:
+                    write_all(link, wire[:17], stats=stats)
+                    raise OSError('injected partial USB message for radio-off recovery check')
                 # Opening Morse ID/calibration can hold the encoder queue full.
-                write_all(link, wire, timeout=seconds+5 if cmd.startswith('dvb ') else 5)
+                write_all(link, wire, timeout=seconds+5 if cmd.startswith('dvb ') else 5, stats=stats, cancel=cancel)
                 stats['messages'] += 1; stats['payload_bytes'] += len(data)
                 stats['ts_packets'] += len(data)//188 if kind == 1 else 0
                 if kind == 1:
@@ -264,27 +302,34 @@ def stream(link, source, *, cmd, kind, seconds, dump=False, sink=None, mbps=0):
                 if mbps:
                     next_send = max(next_send, time.monotonic()-len(data)*8/(mbps*1e6)) + len(data)*8/(mbps*1e6)
                     stop.wait(max(0, min(next_send, limit)-time.monotonic()))
-            stats['send_seconds'] = time.monotonic()-started
-            stats['mbps'] = stats['payload_bytes']*8/max(stats['send_seconds'], 1e-9)/1e6
-            write_all(link, message(b'', stats['next_seq'], 0))
+            write_all(link, message(b'', stats['next_seq'], 0), stats=stats, cancel=cancel)
             stats['terminal_nop'] = True
         except Exception as e:
             # A write failure has an uncertain byte count. Never retry or append
             # a NOP at an unknown boundary; close and report the incomplete session.
             stats['errors'].append(str(e))
+            if abort_after is None and hasattr(link, 'reset_output_buffer'):
+                try:
+                    link.reset_output_buffer()
+                    stats['output_purged'] = True
+                except Exception as purge_error:
+                    stats['errors'].append(f'cannot discard pending USB output: {purge_error}')
         finally:
+            stats['send_seconds'] = time.monotonic()-started if started is not None else 0
+            stats['mbps'] = stats['payload_bytes']*8/max(stats['send_seconds'], 1e-9)/1e6
             done.set()
 
     producer = threading.Thread(target=produce, daemon=True)
     sender = threading.Thread(target=transmit, daemon=True)
-    write_all(link, cmd.encode()+b'\n'); producer.start(); sender.start()
-    deadline = time.monotonic() + (120 if dump else seconds+30)
-    complete = False
+    launched = False
     try:
+        write_all(link, cmd.encode()+b'\n')
+        producer.start(); sender.start(); launched = True
+        deadline = time.monotonic() + (120 if dump else seconds+30)
         while time.monotonic() < deadline:
             data = link.read(8192)
-            if data:
-                deadline = time.monotonic() + (120 if dump else seconds+30)
+            if data and dump:
+                deadline = time.monotonic()+120
             for row in parser.feed(data):
                 rows.append(row)
                 if row.get('cmd') == 'usbinput':
@@ -292,21 +337,30 @@ def stream(link, source, *, cmd, kind, seconds, dump=False, sink=None, mbps=0):
                         ready.set()
                     if row.get('stop'):
                         stop.set()
+                    if row.get('recovery'):
+                        stats['recovery'] = row['recovery']
                 if row.get('done') and row.get('cmd') == cmd.split()[0]:
-                    complete = True; break
-            if complete:
+                    stats['complete'] = True
+            # A failed writer must KEEP READING through the timed run. The
+            # firmware prints its counters before its bounded recovery/reboot.
+            if stats['complete'] or stats['recovery']:
                 break
-            if done.is_set() and stats['errors'] and not stats['terminal_nop']:
-                raise RuntimeError('; '.join(stats['errors']))
-        if not complete:
-            raise TimeoutError('no run completion (do not send another command into an incomplete session)')
+        else:
+            stats['errors'].append('no run completion or recovery record')
+    except Exception as e:
+        stats['errors'].append(str(e))
     finally:
-        stop.set(); done.set(); sender.join(6)
+        stop.set(); done.set(); cancel.set()
+        if launched:
+            if sender.is_alive() and hasattr(link, 'cancel_write'):
+                link.cancel_write()
+            sender.join(6)
+            if sender.is_alive():
+                stats['errors'].append('USB writer did not stop after cancellation')
+        stats.update(binary_bytes=parser.binary_bytes, host_crc32=parser.crc,
+                     binary_remaining=parser.left, console_partial_bytes=len(parser.pending))
     if not ready.is_set():
-        raise RuntimeError('firmware did not start USB input')
-    if sender.is_alive():
-        raise TimeoutError('USB sender did not stop')
-    stats.update(binary_bytes=parser.binary_bytes, host_crc32=parser.crc)
+        stats['errors'].append('firmware did not start USB input')
     for row in rows:
         if row.get('error'):
             stats['errors'].append(row['error'])
@@ -322,7 +376,7 @@ def check_run(stats, rows, dump=False, require_eof=False):
     r = runs[0]; u = r['usb']
     if r.get('status') != 'ESP_OK' or r.get('encoder_failed') or not r.get('frames_encoded'):
         raise ValueError('encoder failed or encoded no data')
-    if any(u[k] for k in ('short', 'header', 'crc', 'sync', 'lost', 'back', 'wrong_type', 'partial_bytes')):
+    if u.get('timer_errors', 0) or any(u[k] for k in ('short', 'header', 'crc', 'sync', 'lost', 'back', 'wrong_type', 'partial_bytes')):
         raise ValueError(f'USB protocol errors: {u}')
     # A run can end before a live source. Accepted bytes must never exceed sent
     # bytes; finite input must be entirely consumed, including the terminal NOP.
@@ -343,6 +397,8 @@ def check_run(stats, rows, dump=False, require_eof=False):
             raise ValueError('dump CRC or overlap mismatch')
     elif any(r[k] for k in ('late_fills', 'late_switches', 'fatal_late')) or r['min_fill_slack_cycles'] <= 0:
         raise ValueError('paced output missed a bank deadline')
+    if r.get('encoder_stack_min_free', 256) < 256:
+        raise ValueError('encoder stack reserve below 256 bytes')
     capacity = 8*r['payload_bytes_per_frame']*r['symbol_rate']/r['frame_symbols']/1e6
     return dict(payload_mbps=u['mbps'], run_mbps=u['payload_bytes']*8/r['seconds']/1e6 if 'seconds' in r else None,
                 mode_mbps=capacity, frames=r['frames_encoded'], dummies=r['underruns'], usb=u)
@@ -352,19 +408,57 @@ def open_port(port):
     import serial
     if not port:
         from serial.tools import list_ports
-        ports = [p.device for p in list_ports.comports() if p.vid == 0x303a and p.pid == 0x1001]
-        if len(ports) != 1:
-            raise ValueError('specify --port (need one native ESP32-S3 USB-Serial-JTAG port)')
-        port = ports[0]
+        discovery_deadline = time.monotonic()+10
+        while True:
+            ports = [p.device for p in list_ports.comports() if p.vid == 0x303a and p.pid == 0x1001]
+            if len(ports) == 1:
+                port = ports[0]; break
+            if ports or time.monotonic() >= discovery_deadline:
+                raise ValueError('specify --port (need one native ESP32-S3 USB-Serial-JTAG port)')
+            time.sleep(.2)
     link = serial.Serial()
-    link.port, link.baudrate, link.timeout, link.write_timeout = port, 115200, .05, 0
+    link.port, link.baudrate, link.timeout, link.write_timeout = port, 115200, .05, 5
     link.rts = link.dtr = True
-    try:
-        link.open()
-        link.rts = False; link.dtr = link.dtr; link.dtr = False
-    except BaseException:
-        link.close(); raise
-    return link
+    deadline = time.monotonic()+10
+    while True:
+        try:
+            link.rts = link.dtr = True
+            link.open()
+            link.rts = False; link.dtr = link.dtr; link.dtr = False
+            return link
+        except OSError:
+            link.close()
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(.2)  # native USB can re-enumerate after firmware recovery
+        except BaseException:
+            link.close(); raise
+
+
+def console_info(link, observations):
+    # Reopen a stale descriptor if a recovery reboot overlaps this connection.
+    # Retry only info: RF commands are never sent until this probe succeeds.
+    deadline = time.monotonic()+15
+    last_error = None
+    while time.monotonic() < deadline:
+        rows = []
+        try:
+            if not getattr(link, 'is_open', True):
+                link.rts = link.dtr = True
+                link.open()
+                link.rts = False; link.dtr = link.dtr; link.dtr = False
+            result = collect(link, 'info', timeout=2, records=rows)
+            if any(r.get('cmd') == 'info' and 'firmware' in r for r in result):
+                return result
+        except OSError as e:
+            last_error = e
+            link.close()
+        except (RuntimeError, TimeoutError) as e:
+            last_error = e
+        finally:
+            observations.extend(rows)
+        time.sleep(.2)
+    raise TimeoutError(f'console did not answer info after recovery: {last_error}')
 
 
 def main(argv=None):
@@ -385,8 +479,16 @@ def main(argv=None):
     s.add_argument('--frequency', type=int, default=2400, help='integer MHz, 2390..2450, RF only')
     s.add_argument('--gain', type=int, default=0, help='0..17, RF only')
     s.add_argument('--mbps', type=float, default=0, help='optional payload ceiling; 0 uses USB backpressure')
-    s.add_argument('--report', type=Path, help='write sender stats and complete firmware records as JSON')
+    s.add_argument('--report', type=Path, default=Path('usb-send-report.json'),
+                   help='always save diagnostics, including failures (default: usb-send-report.json)')
+    s.add_argument('--abort-after', type=int, help=argparse.SUPPRESS)
     a = p.parse_args(argv)
+    if a.action == 'send' and ((a.file != '-' and a.report.resolve() == Path(a.file).resolve()) or
+                               (a.dump and a.report.resolve() == a.dump.resolve())):
+        p.error('report must differ from input and IQ output paths')
+    report = dict(command=None, info=[], setup=[], sender=sender_stats(), records=[], errors=[],
+                  board_counters_available=False)
+    failure = None
     try:
         if a.action == 'unpack':
             with contextlib.ExitStack() as stack:
@@ -394,9 +496,13 @@ def main(argv=None):
                 print(json.dumps(unpack(source, a.output)))
             return
         if (not 1 <= a.seconds <= 600 or not 1 <= a.frames <= 256 or not 2390 <= a.frequency <= 2450 or
-                not 0 <= a.gain <= 17 or not math.isfinite(a.mbps) or a.mbps < 0):
-            raise ValueError('invalid duration, frame count, frequency, gain or payload rate')
-        cmd = command(a); frame_bytes, capacity = mode(a.modcod, a.rate)
+                not 0 <= a.gain <= 17 or not math.isfinite(a.mbps) or a.mbps < 0 or
+                (a.abort_after is not None and (a.key or a.dump or a.abort_after < 0))):
+            raise ValueError('invalid duration, frame count, frequency, gain, rate or recovery check')
+        cmd = command(a); report['command'] = cmd
+        a.report.parent.mkdir(parents=True, exist_ok=True)
+        a.report.write_text(json.dumps(report, indent=2)+'\n')
+        frame_bytes, capacity = mode(a.modcod, a.rate)
         kind = a.kind or ('ts' if a.file == '-' or Path(a.file).suffix.lower() == '.ts' else 'file')
         with contextlib.ExitStack() as stack:
             source = sys.stdin.buffer if a.file == '-' else stack.enter_context(Path(a.file).open('rb'))
@@ -404,23 +510,38 @@ def main(argv=None):
                 source = stack.enter_context(container(source, a.name if a.file == '-' else Path(a.file).name, frame_bytes))
             sink = stack.enter_context(a.dump.open('xb')) if a.dump else None
             link = stack.enter_context(open_port(a.port))
-            info = collect(link, 'info')
-            callsign = next((r.get('callsign', '') for r in info if r.get('cmd') == 'info' and not r.get('done')), '')
+            report['info'] = console_info(link, report['setup'])
+            callsign = next((r.get('callsign', '') for r in report['info'] if r.get('cmd') == 'info' and not r.get('done')), '')
             if a.key and not callsign:
                 raise ValueError('no stored callsign; set your assigned callsign with the console first')
-            collect(link, 'spiinput usb '+('ts' if kind == 'ts' else 'gcs'))
+            collect(link, 'spiinput usb '+('ts' if kind == 'ts' else 'gcs'), records=report['setup'])
             print(f'{cmd}; {capacity:.3f} Mb/s mode payload; callsign={callsign or "unset"}', file=sys.stderr)
             stats, rows = stream(link, source, cmd=cmd, kind=1 if kind == 'ts' else 2,
-                                 seconds=a.seconds, dump=bool(a.dump), sink=sink, mbps=a.mbps)
-            report = dict(command=cmd, info=info, sender=stats, records=rows)
-            if a.report:
-                a.report.write_text(json.dumps(report, indent=2)+'\n')
-            print(json.dumps(report), file=sys.stderr)
+                                 seconds=a.seconds, dump=bool(a.dump), sink=sink, mbps=a.mbps,
+                                 stats=report['sender'], rows=report['records'], abort_after=a.abort_after)
+            if stats['complete'] and not stats['recovery']:
+                collect(link, 'spiinput off', records=report['setup'])
             summary = check_run(stats, rows, bool(a.dump), kind == 'file')
-            collect(link, 'spiinput off')
+            report['summary'] = summary
             print(json.dumps(summary), file=sys.stderr)
-    except (OSError, ValueError, RuntimeError, TimeoutError) as e:
-        p.exit(1, f'error: {e}\n')
+    except (Exception, KeyboardInterrupt) as e:
+        if a.action == 'unpack':
+            p.exit(1, f'error: {e}\n')
+        failure = str(e) or type(e).__name__
+        report['errors'].append(failure)
+    finally:
+        if a.action == 'send':
+            # This runs for preflight, write, read, validation and recovery
+            # failures alike. Never lose the board's counters to an exception.
+            report['board_counters_available'] = any('usb' in r for r in report['records']+report['setup'])
+            try:
+                a.report.write_text(json.dumps(report, indent=2)+'\n')
+            except OSError as e:
+                failure = f'{failure+"; " if failure else ""}cannot save report: {e}'
+            print(json.dumps(report), file=sys.stderr)
+            print(f'Report: {a.report}', file=sys.stderr)
+    if failure:
+        p.exit(1, f'error: {failure}\n')
 
 
 if __name__ == '__main__':

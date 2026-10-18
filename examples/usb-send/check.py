@@ -33,13 +33,19 @@ def gates(report, *, saturation=False, paced=False):
     return summary
 
 
-def run(out, name, source, *args):
+def run(out, name, source, *args, expect_failure=False):
     report = out/(name+'.json')
     command = [sys.executable, str(Path(__file__).with_name('send.py')), 'send', str(source),
                '--port', os.environ.get('PORT', '/dev/cu.usbmodem101'), '--report', str(report), *args]
     with (out/(name+'.log')).open('w') as log:
-        subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, timeout=110, check=True)
+        child = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, timeout=110, check=False)
+    if not report.exists():
+        raise ValueError(f'sender exited {child.returncode} without diagnostics; see {out/(name+".log")}')
     result = json.loads(report.read_text())
+    result['exit_code'] = child.returncode
+    if child.returncode and not expect_failure:
+        board = [r['usb'] for r in result.get('records', []) if 'usb' in r]
+        raise ValueError(f'sender failed; report={report}; errors={result.get("errors")}; usb={board}')
     expected = subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD'], cwd=ROOT, text=True).strip()
     if subprocess.run(['git', 'diff', '--quiet', 'HEAD'], cwd=ROOT).returncode:
         expected += '-dirty'
@@ -108,6 +114,16 @@ def main():
         report = run(out, 'saturation', source, '--kind', 'gcs', '--modcod', '13', '--rate', '5m', '--seconds', '20')
         return gates(report, saturation=True)
 
+    def recovery():
+        report = run(out, 'recovery', out/'input.bin', '--kind', 'gcs', '--seconds', '3',
+                     '--abort-after', '1', expect_failure=True)
+        counters = [r['usb'] for r in report['records'] if 'usb' in r]
+        if (report['exit_code'] != 1 or report['sender'].get('recovery') != 'restart' or
+                not counters or counters[0]['messages'] != 1 or counters[0]['partial_bytes'] != 17):
+            raise ValueError(f'partial-write recovery did not retain counters/restart: {report}')
+        return dict(expected_failure=True, recovery='restart', usb=counters[0],
+                    next_step='fresh info and TS pace must succeed')
+
     def pace():
         source = out/'pace.ts'
         packet = bytes((0x47, 0x1f, 0xff, 0x10))+bytes(184)
@@ -120,6 +136,7 @@ def main():
 
     step('file-dump-LeanDVB-unpack', file_check)
     step('sustainable-USB-GCS', saturation)
+    step('partial-write-recovery', recovery)
     step('mode-rate-USB-TS-pace', pace)
     (out/'summary.json').write_text(json.dumps(dict(checks=summaries, failures=failures), indent=2)+'\n')
     if failures:

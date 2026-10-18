@@ -60,19 +60,23 @@ RX=/Users/river/Documents/stanford/SSI/esp-dvbs2/notes/leansdr/src/apps/leandvb 
 python3 examples/usb-send/check.py
 ```
 
-No flashing, reset or RF command. Evidence goes under `notes/usb-board-*`:
+No flashing or RF command. The recovery check deliberately triggers a firmware
+restart after RF-off counters are saved. Evidence goes under `notes/usb-board-*`:
 
 - Send a 2 KiB file, dump 24 frames, verify USB dump CRC, decode with independent
   LeanDVB, run `unpack`, require identical SHA-256 and zero reported FEC errors.
 - Saturate USB GCS for 20 seconds using 8PSK 2/3 at 5 Msym/s (9.678 Mb/s demand).
   Report measured payload Mb/s; require at least 3.5 Mb/s over 15 seconds.
+- Interrupt a PV message after 17 bytes, require a failure report with board
+  counters and an automatic restart, then open a fresh console for the next check.
 - Pace TS for 20 seconds at QPSK 1/2's 0.965 Mb/s payload rate; require at least 98%.
 
 Both paces require matched sender/board counts, zero protocol/sequence errors and
 no missed output bank deadlines. Dummies at startup/end or during saturation
 are expected. Checks continue after failures; `summary.json` records the outcome.
-**USB+encoder throughput is not yet measured on this branch.** Archived USB-only
-intake was 4.6 Mb/s intact; roughly 4 Mb/s with encoding is an expectation.
+**Sustainable USB+encoder throughput still needs a board rerun.** The earlier
+image passed file recovery but stalled on sustained GCS; archived USB-only intake
+was 4.6 Mb/s intact. The revised FIFO reader is not yet measured on hardware.
 
 Host tests never open ports: `python3 tests/test_usb_input.py` and
 `python3 tests/test_usb_send.py`. Add `--receiver "$RX"` to the latter for a C
@@ -80,6 +84,14 @@ encoder → LeanDVB → unpack/hash proof, independent of hardware.
 
 `spiinput usb [ts|gcs]` selects USB for the next run. The sender handles the
 ready/stop/NOP handoff, reads IQ and console results concurrently, and checks
-receiver counters. See the [console protocol](../../docs/spi-input.md#usb-payload-on-the-console).
-After an interrupted or uncertain write, manually reset before a fresh session;
-firmware quarantines unfinished binary input with the radio off.
+receiver counters. See the [console protocol](../../docs/spi-input.md#over-usb-instead).
+A missing NOP triggers an automatic restart three seconds after the run ends,
+with RF already off. The sender keeps reading after a write failure to collect
+final counters and recovery status, and retries its read-only `info` probe across
+USB re-enumeration. It never retries a write with an uncertain byte count.
+
+Every send writes a report, including on failure: `usb-send-report.json` by
+default, or `--report PATH`. Reports include confirmed host write progress,
+uncertain-write status, FIFO/driver byte counts, reader waits, encoder results,
+and recovery status. If the board disconnects before counters can be read,
+`board_counters_available` is false; host diagnostics are still saved.

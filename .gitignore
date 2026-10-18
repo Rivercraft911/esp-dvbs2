@@ -9,6 +9,9 @@ firmware/sdkconfig
 firmware/sdkconfig.old
 firmware/managed_components/
 
+# Latest standalone USB sender diagnostic report
+usb-send-report.json
+
 # Python
 __pycache__/
 *.pyc
