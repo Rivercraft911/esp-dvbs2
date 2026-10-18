@@ -89,6 +89,12 @@ int main(void) {
             assert int(auto['layout']['dummy'],16)
     assert [r['queue_pages'] for r in budget[-5:]] == [54,54,0,0,54]
     assert [r['queue_sizing']['ready'] for r in budget[-3:]] == [False,False,True]
+    fragmented = [r for r in rows if r.get('test') == 'queue_fragmentation']
+    assert [(r['modcod'],r['setup']) for r in fragmented] == [(mc,s) for mc in (13,15,17) for s in ('dvb','dvbpace')]
+    assert all(r['queue_pages'] == 54 for r in fragmented)
+    for r in fragmented:
+        assert r['crc'] == next(b['crc'] for b in budget if (b['modcod'],b['setup']) == (r['modcod'],r['setup']))
+    print('fragmented heap: old order fails 15/17, cache-first order streams all three with identical words in pace and keyed setups')
     print('contiguous queues: 13/15/17 pace and keyed setup 54 pages; no post-Wi-Fi allocations; exact reserve and failure cleanup')
     print(run.stdout.splitlines()[-1])
 

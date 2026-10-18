@@ -1,6 +1,41 @@
 // Runtime queue geometry through the actual pace API. No host timing claims.
 #include "native.h"
 #include <stdbool.h>
+// A finite, priority-ordered heap fixture, not a model of silicon addresses.
+// The old order lets the context and workspace split the only cache-sized
+// region. Match the IDF first-fitting-region policy and charge block overhead.
+static bool fragmented;
+static const size_t region_size[] = {16000,31744,19000};
+static size_t region_free[3], first_request;
+static struct { void *p; unsigned region; size_t bytes; } region_blocks[64];
+static void *fragment_alloc(size_t align, size_t n, unsigned caps)
+{
+    if (!fragmented || !(caps & MALLOC_CAP_INTERNAL)) return heap_caps_aligned_alloc(align,n,caps);
+    if (!first_request) first_request = n;
+    for (unsigned r = 0; r < 3; ++r) {
+        if (n+32 > region_free[r]) continue;
+        void *p = heap_caps_aligned_alloc(align,n,caps);
+        if (p) for (unsigned i = 0; i < 64; ++i) if (!region_blocks[i].p) {
+            region_blocks[i].p = p; region_blocks[i].region = r; region_blocks[i].bytes = n+32;
+            region_free[r] -= n+32;
+            return p;
+        }
+        assert(!p);
+        return NULL;
+    }
+    ++allocation_count;
+    return NULL;
+}
+static void fragment_free(void *p)
+{
+    for (unsigned i = 0; i < 64; ++i) if (p && region_blocks[i].p == p) {
+        region_free[region_blocks[i].region] += region_blocks[i].bytes;
+        region_blocks[i].p = NULL;
+    }
+    heap_caps_free(p);
+}
+#define heap_caps_aligned_alloc fragment_alloc
+#define heap_caps_free fragment_free
 static bool budget_active;
 static size_t budget_base, budget_min;
 static size_t internal_used(void)
@@ -92,12 +127,37 @@ static uint32_t queue_budget(unsigned mc, bool fixture, bool automatic, size_t a
         crc = pace_crc;
     }
     assert(warm_words == (automatic && expected ? 39983u : 0u));
-    printf("@{\"test\":\"queue_budget\",\"modcod\":%u,\"setup\":\"%s\",\"expected_pages\":%u,\"crc\":%u,\"renderer_warm_words\":%u",
-           mc,cmd,expected,crc,warm_words);
+    printf("@{\"test\":\"%s\",\"modcod\":%u,\"setup\":\"%s\",\"expected_pages\":%u,\"crc\":%u,\"renderer_warm_words\":%u",
+           fragmented ? "queue_fragmentation" : "queue_budget",mc,cmd,expected,crc,warm_words);
     stop_encoder(); puts("}");
     budget_active = false;
     assert(!live_allocations);
     return crc;
+}
+
+static void fragmented_order(unsigned mc)
+{
+    assert(!live_allocations);
+    fragmented = true;
+    memcpy(region_free,region_size,sizeof region_free);
+    first_request = 0;
+    const unsigned caps = MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT;
+    const dvbs2_mode *mode = dvbs2_find_mode(mc);
+    dvbs2_fast *fast = heap_caps_aligned_alloc(16,dvbs2_fast_mode_size(mode),caps);
+    void *ws = heap_caps_aligned_alloc(16,DVBS2_FAST_WORKSPACE_USED,caps);
+    assert(fast && ws && !dvbs2_fast_prepare(fast,mode,1,15));
+    const size_t bytes = dvbs2_fast_cache_size(fast)+DVBS2_LOFTY_CACHE_BYTES;
+    void *cache = heap_caps_aligned_alloc(16,bytes,caps);
+    assert(!!cache == (mc == 13)); // old order reproduces the mode-dependent failure
+    heap_caps_free(cache); heap_caps_free(ws); heap_caps_free(fast);
+    assert(!live_allocations && !memcmp(region_free,region_size,sizeof region_free));
+    for (unsigned fixture = 0; fixture < 2; ++fixture) {
+        first_request = 0;
+        queue_budget(mc,fixture,true,32000,54,0); // actual producer, fill and teardown
+        assert(first_request == bytes); // cache reserved before context or workspace
+        assert(!memcmp(region_free,region_size,sizeof region_free));
+    }
+    fragmented = false;
 }
 
 static esp_err_t pace(bool wifi, uint32_t sec, uint32_t rate, radio_s3_fill_fn fn,
@@ -189,6 +249,7 @@ int main(void)
     queue_budget(17,true,true,22047,0,0); // below reserve
     queue_budget(17,true,true,32000,0,1); // startup low-water mark already below floor
     assert(queue_budget(17,true,true,32000,54,2) == fixed); // allocation disabled after Wi-Fi
+    for (unsigned mc = 13; mc <= 17; mc += 2) fragmented_order(mc);
     free(banks);
     puts("runtime pages: wraps, identical words, allocation cleanup, Wi-Fi routing and defaults: ok");
     return 0;

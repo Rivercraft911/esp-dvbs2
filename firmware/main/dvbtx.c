@@ -1158,8 +1158,27 @@ static size_t start_encoder_traced(const char *cmd, unsigned modcod, unsigned le
         dvb.prepare_tail_max = 0;
         dvb.prepare_cycles = 0;
         dvb.prepare_pages = 0;
-        if (lofty) lofty_build(shaper_store,level);
-        else machine_build(shaper_store,level);
+        if (lofty) {
+            // Before the renderer table exists, borrow it to ask the public
+            // encoder API for this mode's cache size. Reserve that large block
+            // before the context and workspace can split the available heaps.
+            dvbs2_fast *probe = (dvbs2_fast *)shaper_store;
+            if (dvbs2_fast_mode_size(mode) > LOFTY_TABLE_WORDS*sizeof *shaper_store ||
+                dvbs2_fast_prepare(probe,mode,PILOTS,15)) {
+                printf("@{\"cmd\":\"%s\",\"error\":\"encoder cache sizing failed\"}\n",cmd);
+                release(); return 0;
+            }
+            const size_t bytes = dvbs2_fast_cache_size(probe)+DVBS2_LOFTY_CACHE_BYTES;
+            enc.tables = heap_caps_aligned_alloc(16,bytes,internal);
+            if (!enc.tables) {
+                printf("@{\"cmd\":\"%s\",\"error\":\"encoder cache allocation failed\",\"modcod\":%u,"
+                       "\"requested_bytes\":%u,\"free_internal\":%u,\"largest_internal\":%u}\n",
+                       cmd,modcod,(unsigned)bytes,(unsigned)heap_caps_get_free_size(internal),
+                       (unsigned)heap_caps_get_largest_free_block(internal));
+                release(); return 0;
+            }
+            lofty_build(shaper_store,level); // discard the sizing context
+        } else machine_build(shaper_store,level);
         dvb.page_blocks = 0;
         dvb.mapper = (dvbs2_sign_state){0};
         dvb.queue_wait_cycles = dvb.queue_wait_max = dvb.queue_wait_live_max = dvb.prepare_ticks = 0;
@@ -1312,7 +1331,7 @@ static size_t start_encoder_traced(const char *cmd, unsigned modcod, unsigned le
         uint8_t *shared = store_used+tail <= sizeof shaper_store ? (uint8_t *)shaper_store+store_used : NULL;
         const size_t heap = cache-(shared ? tail : 0);
         if (shared) store_used += tail;
-        enc.tables = heap_caps_aligned_alloc(16,heap+(lofty ? DVBS2_LOFTY_CACHE_BYTES : 0),internal);
+        if (!lofty) enc.tables = heap_caps_aligned_alloc(16,heap,internal);
         if (!enc.tables || dvbs2_fast_cache_split(enc.fast,enc.tables,shared) ||
             (lofty && dvbs2_fast_lofty_cache(enc.fast,(uint32_t *)(enc.tables+heap)))) {
             heap_caps_free(taps); release();

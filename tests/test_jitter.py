@@ -123,6 +123,8 @@ def main():
         r.update(cmd='dvbpace' if fixture else 'wifimem',queue_pages=54,
                  input_memory='psram' if fixture else 'none',reference_psram_bytes=7000 if fixture else 0,
                  ring_heap_bytes=0,workspace_heap_bytes=8144,render_warm_cycles=80000,
+                 largest_internal=16000,wifi_largest_up=15000,
+                 layout=dict(fast='0x3fce4fb0',workspace='0x3fcbdab0',encoder_tables='0x3fcb5d90'),
                  max_fill_sample=417739472,dummy_startup_frame=2,
                  queue_layout=dict(contiguous=True,page_bytes=528,resident_pages=54,
                                    regions=[dict(first_page=0,pages=54,begin='0x3fcab500',end='0x3fcb2460',sram_levels=[4,5],dac_overlap=False)]),
@@ -135,6 +137,20 @@ def main():
     assert queue_sent == ['info']+expected
     assert [r['verdict'] for r in summary] == ['SETUP','PASS','SETUP','FAIL','SETUP','PASS']
     assert all(r['queue_pages'] == 54 and r['queue_sizing']['free_after'] >= 22048 for r in summary)
+    assert all(r['wifi_largest_up'] == 15000 and 'workspace' in r['layout'] for r in summary)
+    def failed_cache(command):
+        if command.startswith('wifimem 15'):
+            return [dict(cmd='wifimem',error='encoder cache allocation failed',requested_bytes=24112,
+                         free_internal=40000,largest_internal=20000)]
+        records = queue_send(command)
+        if command.startswith('dvbpace 17'):
+            records[0].update(status='ESP_ERR_TIMEOUT',error='paced run failed')
+        return records
+    summary = check.queue_suite(failed_cache,'abc1234')
+    assert summary[2]['detail'] == 'encoder cache allocation failed' and summary[2]['largest_internal'] == 20000
+    assert summary[-2]['verdict'] == 'SETUP'
+    assert summary[-1]['verdict'] == 'FAIL' and summary[-1]['frames_played'] == 24000
+    assert 'workspace' in summary[-1]['layout']
     print('jitter coordinator: clean gate, same-bank notify times, keeps going after timing/transport faults: ok')
 
 

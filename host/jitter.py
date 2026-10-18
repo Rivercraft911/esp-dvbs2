@@ -197,8 +197,12 @@ def queue_suite(send, firmware):
         row = dict(command=command,modcod=mc,setup='keyed' if command.startswith('wifimem') else 'pace')
         try:
             r, = [r for r in send(command) if r.get('cmd') in ('wifimem','dvbpace')]
+            if 'status' not in r and 'error' in r:
+                row.update({k:r[k] for k in ('requested_bytes','free_internal','largest_internal') if k in r})
+                raise RuntimeError(r['error'])
             row.update(status=r['status'],queue_pages=r['queue_pages'],wifi_min_free=r['wifi_min_free'],
                        queue_sizing=r['queue_sizing'],queue_layout=r['queue_layout'],
+                       layout=r['layout'],largest_internal=r['largest_internal'],wifi_largest_up=r['wifi_largest_up'],
                        reference_psram_bytes=r['reference_psram_bytes'],render_warm_cycles=r['render_warm_cycles'])
             if row['setup'] == 'pace':
                 row.update({k:r[k] for k in ('frames_played','dummy_startup','dummy_steady','dummy_alignment',
@@ -235,6 +239,11 @@ def queue_suite(send, firmware):
               (f" at sample {row['max_fill_sample']}; first startup gap at data {row['dummy_startup_frame']}"
                if 'max_fill_sample' in row else '')+
               (f"; regions {row['queue_layout']['regions']}" if 'queue_layout' in row else '')+
+              (f"; largest after Wi-Fi {row['wifi_largest_up']} B; " +
+               ', '.join(f"{k} {row['layout'][k]}" for k in ('fast','workspace','encoder_tables'))
+               if 'queue_sizing' in row else '')+
+              (f"; requested {row['requested_bytes']} B, free {row['free_internal']} B, largest {row['largest_internal']} B"
+               if 'requested_bytes' in row else '')+
               (f"; {row['detail']}" if 'detail' in row else ''),flush=True)
     return summary
 

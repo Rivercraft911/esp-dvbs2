@@ -147,7 +147,7 @@ All 54 target pages now occupy one static region in the existing store:
 36864 table bytes + 54 * 528 page bytes + 160 mux bytes = 65536 bytes
 ```
 
-At the unchanged linked store address, the queue is
+In 0a655e5, the queue is
 `[0x3fcab500,0x3fcb2460)`. It spans IDF SRAM levels 4 and 5, and excludes
 the reserved DAC levels 6 and 7 at `[0x3fcc0000,0x3fce0000)`.
 These names come from IDF v6.1 `heap/port/esp32s3/memory_layout.c:90-99`.
@@ -173,15 +173,43 @@ logical queue cannot reclaim static storage. Explicit 58/64-page diagnostics
 still use a heap tail, and are reported as two regions. Batch limits stop at
 the logical wrap even when fewer than 54 resident slots are active.
 
+Round 18 (`notes/eight-lofty-round18/`) confirms 54 contiguous pages for 13,
+24,028 data frames, ten steady dummies, no late fills and a 40,440-cycle peak.
+Its Wi-Fi-up largest block is 19,456 B. Both 15 and 17 fail before Wi-Fi with
+`encoder cache allocation failed`; their records contain no allocation addresses.
+The internal workspace allocation introduced another large-block competitor.
+
+For 8PSK only, reserve the resident cache before either the context or workspace.
+Before building the renderer table, use its existing storage for a temporary
+encoder context and query the public cache-size API. The mode-sized context fits
+inside the 36,864-byte table area. Build the renderer table over it, prepare the
+final context independently and populate the reserved cache through the usual
+API. No pointer from the temporary context survives. This adds no buffer and
+changes no requested live allocation sizes. Cache requests for 13/15/17 remain
+22,960/24,112/24,256 B. QPSK retains its original allocation order.
+
+The bounded host fixture has three priority-ordered regions of 16,000, 31,744
+and 19,000 B, with 32 B overhead per allocation. This is a fragmentation
+reproducer, not a measured heap map. The original order succeeds for 13 and
+fails for 15/17. Cache-first construction streams all three with 54 pages,
+identical output and full cleanup, in both pace and keyed layouts.
+
 `queue_layout` reports region addresses, page extents, SRAM levels and DAC
 overlap after playback. `queue_sizing` retains the before/after heap and floor
 checks. `workspace_heap_bytes` is 8,144 and `ring_heap_bytes` is zero for the
 target queue. `wifi_min_free` includes playback and cleanup. No new bank-time
 address tracing or per-page kernel calls are added. `layout` also reports the
 PSRAM reference and dummy pointers alongside the workspace and encoder tables.
+The coordinator summary now retains that layout, `wifi_largest_up` (with Wi-Fi
+running) and `largest_internal` (after Wi-Fi stops), even when the timing gate
+fails. Cache reservation failure reports the requested size and the current
+free and largest blocks before cleanup. Runtime addresses and largest blocks
+for the new order still need the board. The remaining 303-cycle fill reduction
+is not established by host checks; the fill code and 40,137-cycle gate stay as
+they were.
 
 ```sh
-caffeinate -i python3 host/jitter.py notes/eight-lofty-round18 --queue-gate
+caffeinate -i python3 host/jitter.py notes/eight-lofty-round19 --queue-gate
 ```
 
 This collects keyed-layout `wifimem` and 20-second clean Wi-Fi-up `dvbpace`
@@ -190,6 +218,12 @@ setups, retains faults and continues through all modes. The gate requires
 54 pages, ESP_OK, full playback, no late banks or queue faults, fill at most
 40,137 cycles, zero steady dummies and Wi-Fi minimum at least 20,000 B.
 Startup dummies are reported and allowed. No keyed playback is performed.
+
+The coordinator's sibling comparison with the same prepared QPSK input measured
+150,667 cycles/frame keyed versus 152,754 cycles/frame in radio-off pace at
+33m333. The earlier apparent radio cost included synthetic xorshift generation.
+Do not subtract a presumed 38,000-cycle radio cost from the 8PSK budget.
+Prepared-input 8PSK keyed timing remains a board measurement to collect.
 
 ## Cold-bank evidence
 
