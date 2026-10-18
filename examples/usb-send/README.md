@@ -1,8 +1,9 @@
 # USB sender
 
 One Python file sends video or files from a laptop to the S3's **native
-USB-Serial-JTAG** port. The S3 frames and encodes them. Copy `send.py` anywhere;
-its only dependency is `pyserial`. Close other serial tools first.
+USB-Serial-JTAG** port. The S3 frames and encodes them. Its only package dependency
+is `pyserial`. For standalone use, copy `send.py`; FEC also needs
+[`host/filelink.py`](../../host/filelink.py) alongside it. Close other serial tools first.
 
 Measured payload intake: **3.23 Mb/s on 2026-10-17 at 5 Msym/s with the PSRAM
 encoder**, radio off. This suits files, telemetry and low-rate video.
@@ -44,6 +45,16 @@ python3 send.py send document.pdf --dump document.iq --frames 24 --report dump.j
 # Decode the int16-LE IQ with LeanDVB; the coordinator below automates this.
 python3 send.py unpack decoded.gcs -o recovered.pdf
 ```
+
+For a one-way link that loses frames, use `send document.pdf --fec 16:4` and
+`unpack decoded.gcs --fec -o recovered.pdf`. Bare `--fec` defaults to `16:4`.
+It implies file mode, also for stdin and `.ts` files; explicitly selecting
+`--kind ts|gcs` with FEC is an error. Each block has 16 source and four repair
+frames; **any four missing frames per block** can be recovered. Identity and
+sequence repeat in each frame. `unpack --bbf` also accepts LeanDVB's raw
+`--fd-bbf` records (from the repository, where `host/decode.py` is available).
+The [file-link protocol and proof](../../docs/file-link.md) document the code,
+overhead, host IQ tests and coordinator-only board-dump commands.
 
 The container is `PVFILE1\n`, little-endian uint16 UTF-8 basename length, uint64
 file length, 32 SHA-256 bytes, basename, then file bytes. Eight zero-filled

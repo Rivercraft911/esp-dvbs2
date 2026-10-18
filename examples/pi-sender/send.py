@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Send raw PV-SPI v1 from a TS/GCS file or stdin. No hardware imports for --vector."""
 import argparse
+import contextlib
+import importlib.util
 import json
 from pathlib import Path
 import struct
@@ -86,7 +88,10 @@ def send(source, spi, ready, stats, *, kind=1, mbps=9., timeout=2., clock=time):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('file', nargs='?', help='input file, or - for stdin')
-    p.add_argument('--kind', choices=('ts', 'gcs'), default='ts')
+    p.add_argument('--kind', choices=('ts', 'gcs', 'file'), help='default ts; --fec implies file')
+    p.add_argument('--fec', nargs='?', const='16:4', metavar='K:M', help='file erasure coding, default 16:4')
+    p.add_argument('--modcod', type=int, default=13, help='must match the S3 run (default 13)')
+    p.add_argument('--name', default='stdin.bin')
     p.add_argument('--vector', action='store_true')
     p.add_argument('--gpiochip', default='/dev/gpiochip0', help='RP1 chip from gpioinfo')
     p.add_argument('--ready', type=int, default=25)
@@ -99,24 +104,37 @@ def main():
         return
     if not a.file or not 1 <= a.hz <= 20000000 or not 0 < a.mbps <= 20:
         p.error('supply a file or -, 1..20000000 Hz, and 0 < Mb/s <= 20')
-    import gpiod
-    from gpiod.line import Direction, Value
-    import spidev
+    kind = a.kind or ('file' if a.fec is not None else 'ts')
+    if a.fec is not None and kind != 'file':
+        p.error('--fec requires --kind file')
+    file_sender = None
+    if kind == 'file':
+        spec = importlib.util.spec_from_file_location('usb_file_sender', Path(__file__).resolve().parents[1]/'usb-send/send.py')
+        file_sender = importlib.util.module_from_spec(spec); spec.loader.exec_module(file_sender)
+        try:
+            frame_bytes, _ = file_sender.mode(a.modcod, '5m')
+            fec = file_sender.fec_codec().parameters(a.fec) if a.fec is not None else None
+        except ValueError as exc:
+            p.error(str(exc))
     stats = dict(messages=0, attempted_messages=0, ts_packets=0, payload_bytes=0,
                  crc_chain=0, next_seq=0, ready_waits=0, ready_timeouts=0,
                  transfer_uncertain=False)
-    with gpiod.request_lines(a.gpiochip, consumer='pv-spi', config={
-            a.ready: gpiod.LineSettings(direction=Direction.INPUT)}) as request:
-        with spidev.SpiDev(0, 0) as spi:
+    # Snapshot/hash/code finite files before acquiring GPIO or SPI resources.
+    with contextlib.ExitStack() as stack:
+        source = sys.stdin.buffer if a.file == '-' else stack.enter_context(Path(a.file).open('rb'))
+        if file_sender:
+            source = stack.enter_context(file_sender.container(source, a.name if a.file == '-' else Path(a.file).name, frame_bytes, fec))
+        import gpiod
+        from gpiod.line import Direction, Value
+        import spidev
+        with gpiod.request_lines(a.gpiochip, consumer='pv-spi', config={
+                a.ready: gpiod.LineSettings(direction=Direction.INPUT)}) as request, spidev.SpiDev(0, 0) as spi:
             spi.mode, spi.bits_per_word, spi.lsbfirst = 0, 8, False
             spi.max_speed_hz = a.hz
-            source = sys.stdin.buffer if a.file == '-' else Path(a.file).open('rb')
             try:
                 send(source, spi, lambda: request.get_value(a.ready) == Value.ACTIVE,
-                     stats, kind=1 if a.kind == 'ts' else 2, mbps=a.mbps)
+                     stats, kind=1 if kind == 'ts' else 2, mbps=a.mbps)
             finally:
-                if source is not sys.stdin.buffer:
-                    source.close()
                 print(json.dumps(stats), file=sys.stderr)
 
 

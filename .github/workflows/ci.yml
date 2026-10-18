@@ -37,6 +37,7 @@ jobs:
         run: |
           python tests/test_usb_input.py
           python tests/test_usb_send.py
+          python tests/test_filelink.py
 
   firmware:
     runs-on: ubuntu-latest
