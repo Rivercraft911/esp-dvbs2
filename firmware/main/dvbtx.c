@@ -224,7 +224,7 @@ static uint32_t next_byte(uint32_t *x)
 
 enum { QUEUE_FEC = 1, QUEUE_MAP, QUEUE_WAIT, QUEUE_PL };
 enum { TRACE_OFF, TRACE_REQUESTED, TRACE_ALLOCATED, TRACE_FAILED };
-_Static_assert(LOFTY_MAX_PAGES < 2*LOFTY_FRAME_PAGES && STREAM_TRACE_ALLOCATE >= 66,
+_Static_assert(DVB_PACE_MIN_PAGES == LOFTY_FRAME_PAGES && DVB_PACE_MAX_PAGES < 2*LOFTY_FRAME_PAGES && STREAM_TRACE_ALLOCATE >= 66,
                "trace allocation follows 64 played frames");
 _Static_assert(STREAM_TRACE_FIRST > STREAM_TRACE_ALLOCATE, "allocate before recording FEC");
 
@@ -1035,7 +1035,7 @@ static size_t packed_bytes(size_t symbols)
 // Build the scaled table and the dummy frame, start the encoder on core 0 and wait until it has
 // filled every slot. Returns the frame length in symbols, or 0 after printing an error for `cmd`.
 static size_t start_encoder_traced(const char *cmd, unsigned modcod, unsigned level, unsigned stall_ms,
-                                   unsigned sps, uint32_t dac_rate, bool trace)
+                                   unsigned sps, uint32_t dac_rate, bool trace, unsigned pages)
 {
     const dvbs2_mode *mode = dvbs2_find_mode(modcod);
     const bool fractional = sps == DVB_SPS_12_5;
@@ -1055,6 +1055,10 @@ static size_t start_encoder_traced(const char *cmd, unsigned modcod, unsigned le
         printf("@{\"cmd\":\"%s\",\"error\":\"trace needs lofty\"}\n",cmd);
         return 0;
     }
+    if (pages && (!lofty || pages < DVB_PACE_MIN_PAGES || pages > DVB_PACE_MAX_PAGES)) {
+        printf("@{\"cmd\":\"%s\",\"error\":\"pages needs 8PSK 26m667 and 44..64 pages\"}\n",cmd);
+        return 0;
+    }
     dvb.trace_state = trace ? TRACE_REQUESTED : TRACE_OFF;
     memset(dvb.trace_lane,0,sizeof dvb.trace_lane);
     dvb.dac_rate = dac_rate;
@@ -1069,6 +1073,7 @@ static size_t start_encoder_traced(const char *cmd, unsigned modcod, unsigned le
     }
     dvb.page_wake = !lofty;
     dvb.queue_pages = lofty ? (modcod == 17 ? 46 : modcod == 13 ? LOFTY_MAX_PAGES : LOFTY_PAGES) : MACHINE_PAGES;
+    if (pages) dvb.queue_pages = pages;
     dvb.wake_pages = lofty ? LOFTY_WAKE : MACHINE_WAKE_PAGES;
     dvb.pages = NULL;
     dvb.lofty_pages = NULL;
@@ -1416,7 +1421,7 @@ static void print_profile(const char *name, const stream_profile_t *p)
 static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, unsigned stall_ms,
                             unsigned sps, uint32_t dac_rate)
 {
-    return start_encoder_traced(cmd,modcod,level,stall_ms,sps,dac_rate,false);
+    return start_encoder_traced(cmd,modcod,level,stall_ms,sps,dac_rate,false,0);
 }
 
 static void stop_encoder(void)
@@ -1630,13 +1635,14 @@ void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, 
 }
 
 void dvbtx_pace(unsigned modcod, uint32_t seconds, unsigned level, unsigned stall_ms,
-                 unsigned sps, uint32_t dac_rate, unsigned wake_policy, bool observer, bool trace)
+                 unsigned sps, uint32_t dac_rate, unsigned wake_policy, bool observer, bool trace,
+                 unsigned pages, bool nowifi)
 {
-    if (trace && observer) {
-        printf("@{\"cmd\":\"dvbpace\",\"error\":\"trace and observe are mutually exclusive\"}\n");
+    if (observer && (trace || nowifi)) {
+        printf("@{\"cmd\":\"dvbpace\",\"error\":\"observe excludes trace and nowifi\"}\n");
         return;
     }
-    const size_t symbols = start_encoder_traced("dvbpace", modcod, level, stall_ms, sps, dac_rate,trace);
+    const size_t symbols = start_encoder_traced("dvbpace", modcod, level, stall_ms, sps, dac_rate,trace,pages);
     if (!symbols) {
         return;
     }
@@ -1646,10 +1652,11 @@ void dvbtx_pace(unsigned modcod, uint32_t seconds, unsigned level, unsigned stal
     }
     stream_jitter_enable(observer && dvb.moon);
     radio_s3_stats_t s;
-    const esp_err_t err = (dvb.moon ? radio_s3_paced_wifi_rate : radio_s3_paced_run_rate)(seconds, dac_rate, fill, NULL, &s);
+    const bool wifi = dvb.moon && !nowifi;
+    const esp_err_t err = (wifi ? radio_s3_paced_wifi_rate : radio_s3_paced_run_rate)(seconds, dac_rate, fill, NULL, &s);
     print_mode("dvbpace", modcod, symbols, level);
-    printf(",\"paced_wifi_up\":%s,\"jitter_enabled\":%s",dvb.moon ? "true" : "false",observer && dvb.moon ? "true" : "false");
-    if (dvb.moon) print_wifi(&s.wifi);
+    printf(",\"paced_wifi_up\":%s,\"jitter_enabled\":%s",wifi ? "true" : "false",observer && dvb.moon ? "true" : "false");
+    if (wifi) print_wifi(&s.wifi);
     printf(",\"seconds\":%" PRIu32 ",\"dac_rate\":%" PRIu32 ",\"step_words\":%u", seconds,
            dac_rate, RADIO_S3_STEP_FOR(dac_rate));
     printf(",\"pulse_symbols\":%u", dvb.moon ? dvb.span : dvb.table.parts == 2 ? 6 : 9);

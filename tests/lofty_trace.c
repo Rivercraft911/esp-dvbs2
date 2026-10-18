@@ -45,7 +45,7 @@ static uint32_t capture_trace(unsigned mc, bool trace)
     callsign = "N0CALL";
     event_calls = trace_allocations = 0;
     allocation_count = 0;
-    assert(start_encoder_traced("dvbpace",mc,128,0,3,80000000,trace));
+    assert(start_encoder_traced("dvbpace",mc,128,0,3,80000000,trace,0));
     assert(!__atomic_load_n(&event_calls,__ATOMIC_RELAXED) && !dvb.trace_lane[0].next && !dvb.trace_lane[1].next);
     assert(!trace_allocations && !dvb.trace);
     const uint32_t layout = startup_layout();
@@ -86,7 +86,7 @@ int main(int argc, char **argv)
 {
     assert(argc == 2);
     unsigned mc = atoi(argv[1]);
-    dvbtx_pace(mc,10,128,0,3,80000000,0,true,true); // rejected before allocation/workers
+    dvbtx_pace(mc,10,128,0,3,80000000,0,true,true,0,false); // rejected before allocation/workers
     assert(!live_allocations);
     assert(capture_trace(mc,false) == capture_trace(mc,true));
     return 0;

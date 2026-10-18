@@ -37,6 +37,8 @@ def main():
                      dummy_startup=4,dummy_steady=2,dummy_alignment=3,
                      handoff=[dict(words=8100,shape_cycles=17000),dict(words=6092,shape_cycles=13000)],
                      fills=1,frames_played=24000,jitter_enabled=observer,seconds=int(args[3]),
+                     queue_pages=int(next((a[6:] for a in args if a.startswith('pages=')),'46')),
+                     free_internal=40000,min_free_internal=30000,
                      elapsed_samples=2400000000,planned_samples=2400000000,
                      status='ESP_ERR_TIMEOUT' if mc == 17 and policy == 'page' else 'ESP_OK',
                      encoder_failed=False,queue_empty=0,underruns=0,late_fills=0,late_switches=0,
@@ -44,6 +46,10 @@ def main():
                      encode_cycles_mean=193848 if mc == 11 else 160000,wifi_min_free=20000,
                      queue_wakes=1,queue_wake_max_cycles=100,
                      min_lead_symbols=3000,encode_cycles_live_max=200000,queue_low_pages=1,prefill_frames=1,encoder_stack_min_free=512)
+        if 'nowifi' in args:
+            r['paced_wifi_up'] = False
+            del r['wifi_min_free']
+            if r['queue_pages'] == 50: r.update(status='ESP_ERR_TIMEOUT',late_fills=1)
         if observer:
             r['jitter'] = dict(complete=True,banks_by_irq_count=[dict(calls=1,histogram=[0,0,0,0,1,0])],
                               worst_bank=dict(cycles=r['max_fill_cycles'],notify_calls=2,
@@ -95,6 +101,14 @@ def main():
     check.trace_summary = trace_summary
     assert all(r['verdict'] == 'CAPTURED' and not r['observer'] for r in summary)
     assert sent[-2:] == ['dvbpace 15 26m667 10 128 0 trace','dvbpace 17 26m667 10 128 0 trace']
+    summary = check.suite(send,'abc1234',20,page_sweep=True)
+    assert [r['queue_pages'] for r in summary] == [46,50,54,58]
+    assert [r['verdict'] for r in summary] == ['SWEEP','FAIL','SWEEP','SWEEP']
+    assert all(not r['paced_wifi_up'] and r['dummy_steady'] == 2 and r['frames_played'] == 24000 for r in summary)
+    assert all('trace' not in r and not r['observer'] for r in summary)
+    plan = subprocess.check_output(['python3',str(ROOT/'host/jitter.py'),'/unused','--page-sweep','--plan'],text=True)
+    assert plan.splitlines() == ['info (reset once)']+[
+        f'dvbpace 17 26m667 10 128 0 pages={pages} nowifi' for pages in (46,50,54,58)]
     print('jitter coordinator: clean gate, same-bank notify times, keeps going after timing/transport faults: ok')
 
 

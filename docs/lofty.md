@@ -85,6 +85,37 @@ new worst live gaps that exceed the previous 2G. Updates happen after each frame
 whose maximum grew. Following-frame FEC can lower lead after EOF is produced;
 the reserve does not establish an unconditional lead floor.
 
+## Queue-depth experiment
+
+`dvbpace 17 26m667 10 128 0 pages=58 nowifi` selects an explicit internal
+queue and the existing radio-off timer without starting Wi-Fi. `pages=44..64`
+is accepted only for 8PSK 26m667. Omitting it retains 54/50/46 pages for
+13/15/17. Omitting `nowifi` retains Wi-Fi-up pacing. Neither flag changes
+admission, bank-end wakes, producer work or the renderer. `nowifi` excludes
+the interrupt observer, whose hooks belong to the Wi-Fi-up worker. No trace
+or observer is enabled by the sweep.
+
+A `lofty_page` is 528 bytes; 38 pages reside in the existing store. For
+46/50/54/58 pages, the heap allocation is `(pages-38)*528` =
+4,224/6,336/8,448/10,560 bytes. The largest requested queue costs 6,336 bytes
+more than default 17. Allocation failure returns an error with cleanup;
+it never silently reduces the requested queue.
+
+The coordinator runs all four counts for 10 seconds each, records data frames,
+startup/steady/alignment dummies, fill timing, actual pages and internal heap,
+and keeps going after failures:
+
+```sh
+caffeinate -i python3 host/jitter.py notes/eight-lofty-round16 --page-sweep
+```
+
+Use `--plan` to inspect commands without opening a port. This is a diagnostic
+sweep, not the Wi-Fi-up 20-second qualification. It requires complete runs
+without late fills or queue faults, and reports fill maxima without applying
+the separate 40,137-cycle qualification ceiling. Compare dummy counts only
+among complete runs. Falling counts support a queue-depth/burst interaction;
+unchanged counts would direct the next measurement toward admission/wakes.
+
 ## Fill and dummy waveform
 
 Consecutive full pages now share vector setup. The kernel releases each page
@@ -127,7 +158,7 @@ are not supported by those records.
 
 The producer now allocates the 491,600-byte ring at frame 66, exclusively in
 PSRAM, and checks `esp_ptr_external_ram`. A frame publishes 44 pages. With at
-most 54 pages queued, 66 produced frames imply at least 66*44-54=2,850 released
+most 64 pages queued, 66 produced frames imply at least 66*44-64=2,840 released
 pages, beyond the 2,816 pages of 64 complete frames. Dummies release no pages.
 This page accounting establishes the allocation point without timing assumptions.
 
@@ -204,8 +235,25 @@ a clean timing qualification. All printing happens after playback stops.
 Dropped events or an incomplete window produce `complete:false`; raw records
 remain available. Unarmed lanes have `armed:false` and empty rows.
 
-The linked internal heap, IRAM end and resident-table address match 964aa73. These are linker values. Wi-Fi minima and actual capture timing still
-need silicon measurements. No board or radio was accessed during development.
+The supplied 16a03b4 runs (`notes/eight-lofty-round15/`) reach capture. Their
+ring addresses are external and allocation changes free internal heap by zero
+bytes. Active capture still misses the bank deadline: 54,722/50,730 cycles for
+15/17. It forces single-page render calls and writes PSRAM from both cores;
+these recordings do not qualify clean fill timing.
+
+The partial traces contain eight/four complete data frames for 15/17. All
+352/176 publication/release pairs match. Every page-wait start finds the queue
+full, at 50/46 pages. Before the final failed bank, the longest recorded waits
+are 201.4/223.4 microseconds; exclude the final shutdown wait, which ends after
+the fill has stopped. Frame 68 of 17 spends 444.2 microseconds in page waits
+and 298.8 microseconds in FEC. At its admission, 42 pages are queued against
+the 43-page waiting threshold, so one dummy is selected. The frame is complete
+at the next decision, but alignment requires another dummy. Frame 69 repeats
+with 38 pages against 43. Both learned bounds are already about 14,670 cycles
+before capture, giving 41 active / 43 waiting pages. These are measured
+backpressure and admission decisions under instrumentation, not evidence of
+lost pages or a clean-run diagnosis. The trace-free depth sweep isolates the
+next variable. No board or radio was accessed during development.
 
 ## Offline checks and collection
 
@@ -239,7 +287,7 @@ or recorder calls and the same stream allocation footprint.
 It checks forced dummies and equal output checksums with tracing on/off.
 No timing model is used in this check.
 
-Without `--trace`, each mode gets 20 s clean and two 5 s observed runs.
+Without `--trace` or `--page-sweep`, each mode gets 20 s clean and two 5 s observed runs.
 The runner never flashes or transmits; `--plan` opens no port. Clean gates
 remain ESP_OK, complete playback, zero late fills/switches and queue faults,
 fill <=40,137 cycles, Wi-Fi minimum >=20,000 B and stack >=512 B. Startup dummies

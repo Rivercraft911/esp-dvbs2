@@ -14,7 +14,10 @@ import sys
 CASES = ((13,'26m667'),(15,'26m667'),(17,'26m667'),(11,'33m333'))
 
 
-def commands(seconds, observe_seconds=5, trace=False):
+def commands(seconds, observe_seconds=5, trace=False, page_sweep=False):
+    if page_sweep:
+        return [(17,'26m667','bank',False,f'dvbpace 17 26m667 10 128 0 pages={pages} nowifi')
+                for pages in (46,50,54,58)]
     if trace:
         return [(mc,'26m667','bank',False,f'dvbpace {mc} 26m667 10 128 0 trace')
                 for mc in (15,17)]
@@ -30,10 +33,10 @@ def commands(seconds, observe_seconds=5, trace=False):
     return rows
 
 
-def timing(rows, mc, policy, observer):
+def timing(rows, mc, policy, observer, wifi=True):
     r, = [r for r in rows if r.get('cmd') == 'dvbpace']
     assert r['modcod'] == mc and r['queue_wake_policy'] == policy, 'wrong mode/policy'
-    assert r['paced_wifi_up'] and r['encoder_pie'] == 15, 'Wi-Fi/PIE missing'
+    assert r['paced_wifi_up'] == wifi and r['encoder_pie'] == 15, 'wrong Wi-Fi/PIE state'
     assert r['bch_variant'] == ('resident-pair' if mc in (11,17) else 'split-pair'), 'wrong BCH variant'
     assert r['encoder_priority'] == 24, 'wrong encoder priority'
     assert r['warmup_frames'] == 3, 'encoder warm-up missing'
@@ -127,21 +130,27 @@ def trace_summary(r):
                                     for p in t['lanes']])
 
 
-def suite(send, firmware, seconds, observe_seconds=5, trace=False):
+def suite(send, firmware, seconds, observe_seconds=5, trace=False, page_sweep=False):
     info, = send('info')
     assert info['firmware'] == firmware and info['callsign'] == 'N0CALL', 'wrong firmware/callsign'
     summary = []
-    for mc,rate,policy,observer,command in commands(seconds,observe_seconds,trace):
+    for mc,rate,policy,observer,command in commands(seconds,observe_seconds,trace,page_sweep):
         row = dict(command=command,modcod=mc,policy=policy,observer=observer)
         try:
-            r = timing(send(command),mc,policy,observer)
+            r = timing(send(command),mc,policy,observer,wifi=not page_sweep)
             row.update(status=r['status'],max_fill_cycles=r['max_fill_cycles'],
                        encode_cycles_mean=r['encode_cycles_mean'],
                        queue_wakes=r['queue_wakes'],queue_low_pages=r['queue_low_pages'],
                        queue_empty=r['queue_empty'],prefill_frames=r['prefill_frames'],
-                       warmup_frames=r['warmup_frames'],wifi_min_free=r['wifi_min_free'],
+                       warmup_frames=r['warmup_frames'],
                        frames_played=r['frames_played'],
                        min_lead_symbols=r['min_lead_symbols'],encode_cycles_live_max=r['encode_cycles_live_max'])
+            if page_sweep:
+                pages = int(next(a[6:] for a in command.split() if a.startswith('pages=')))
+                row.update(queue_pages=r['queue_pages'],paced_wifi_up=r['paced_wifi_up'],
+                           free_internal=r['free_internal'],min_free_internal=r['min_free_internal'])
+                assert r['queue_pages'] == pages, 'wrong page count'
+            else: row['wifi_min_free'] = r['wifi_min_free']
             if 'queue_fault' in r: row['queue_fault'] = r['queue_fault']
             if mc != 11:
                 row.update({k:r[k] for k in ('dummy_startup','dummy_steady','dummy_alignment')})
@@ -151,15 +160,21 @@ def suite(send, firmware, seconds, observe_seconds=5, trace=False):
             if trace: row['trace'] = trace_summary(r)
             # Instrumented runs diagnose the lock; only the clean default run is
             # admitted. Keep faults in the raw records and always finish the suite.
-            if not (observer or trace): gate(r,mc)
-            row['verdict'] = 'CAPTURED' if trace else 'OBSERVED' if observer else 'PASS'
+            if page_sweep:
+                assert r['status'] == 'ESP_OK', r['status']
+                assert r['seconds'] == 10 and r['elapsed_samples'] >= r['planned_samples'], 'incomplete sweep run'
+                assert not r['encoder_failed'] and r['queue_empty'] == r['underruns'] == 0, 'encoder/queue fault'
+                assert r['late_fills'] == r['late_switches'] == r['fatal_late'] == 0, 'late bank'
+            elif not (observer or trace): gate(r,mc)
+            row['verdict'] = 'SWEEP' if page_sweep else 'CAPTURED' if trace else 'OBSERVED' if observer else 'PASS'
         except Exception as e:
             row.update(verdict='FAIL',detail=str(e))
         summary.append(row)
-        print(f"{row['verdict']}: {mc} {rate} {policy} {'trace' if trace else 'observed' if observer else 'clean'}: "+
+        print(f"{row['verdict']}: {mc} {rate} {policy} {'Wi-Fi off sweep' if page_sweep else 'trace' if trace else 'observed' if observer else 'clean'}: "+
               (f"bank {row['max_fill_cycles']} cycles, encoder {row['encode_cycles_mean']} cycles/frame"
                if 'max_fill_cycles' in row else row.get('detail',''))+
               (f"; data frames {row['frames_played']}, lead {row['min_lead_symbols']} symbols, {row['status']}" if 'status' in row else '')+
+              (f"; {row['queue_pages']} pages" if 'queue_pages' in row else '')+
               (f"; dummies startup {row['dummy_startup']}, steady {row['dummy_steady']} (target 0), alignment {row['dummy_alignment']}"
                if 'dummy_startup' in row else '')+
               (f"; handoff {row['handoff']}" if 'handoff' in row else '')+
@@ -176,12 +191,14 @@ def main():
     p.add_argument('--seconds',type=int,default=20,choices=range(20,56),metavar='20..55')
     p.add_argument('--observe-seconds',type=int,default=5,choices=range(1,21),metavar='1..20')
     p.add_argument('--port',default='/dev/cu.usbmodem101')
-    p.add_argument('--trace',action='store_true',help='15 and 17 only, 10 seconds each, capture-only trace without interrupt observer')
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument('--trace',action='store_true',help='15 and 17 only, 10 seconds each, capture-only trace without interrupt observer')
+    mode.add_argument('--page-sweep',action='store_true',help='17 only, Wi-Fi off, 46/50/54/58 pages, 10 seconds each, no trace or observer')
     p.add_argument('--plan',action='store_true',help='print commands without opening/resetting a port')
     a = p.parse_args()
     if a.plan:
         print('info (reset once)')
-        for *_,command in commands(a.seconds,a.observe_seconds,a.trace): print(command)
+        for *_,command in commands(a.seconds,a.observe_seconds,a.trace,a.page_sweep): print(command)
         return 0
     import board
     firmware = subprocess.check_output(['git','rev-parse','--short','HEAD'],text=True).strip()
@@ -203,7 +220,7 @@ def main():
         return rows
 
     with board.reserve_port(port,reset=True):
-        summary = suite(send,firmware,a.seconds,a.observe_seconds,a.trace)
+        summary = suite(send,firmware,a.seconds,a.observe_seconds,a.trace,a.page_sweep)
     (a.output/'summary.json').write_text(json.dumps(summary,indent=2)+'\n')
     print('Records:',a.output)
     return int(any(r['verdict'] == 'FAIL' for r in summary))

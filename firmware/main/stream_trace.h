@@ -14,7 +14,7 @@ enum {
     TRACE_PL_WAIT_START, TRACE_PL_WAIT_END, TRACE_PUBLISH, TRACE_ADMIT,
     TRACE_RELEASE, TRACE_BOUND, TRACE_DATA_END, TRACE_GAP_MAX, TRACE_FRAME_START
 };
-// At producer frame 66, at most two frames remain in the <=54-page queue:
+// At producer frame 66, at most two frames remain in the <=64-page queue:
 // at least 64 data frames have played. Leave two more frames before capture.
 #define STREAM_TRACE_ALLOCATE 66u
 #define STREAM_TRACE_FIRST 68u

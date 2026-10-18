@@ -254,11 +254,13 @@ esp_err_t radio_s3_dry_run_rate(radio_s3_fill_fn fn, void *ctx, uint64_t samples
     return ESP_OK;
 }
 
+#ifndef NATIVE_PACE_TEST
 esp_err_t radio_s3_paced_run_rate(uint32_t sec, uint32_t rate, radio_s3_fill_fn fn, void *ctx,
                                   radio_s3_stats_t *stats)
 { (void)sec; (void)rate; (void)fn; (void)ctx; (void)stats; abort(); }
 esp_err_t radio_s3_paced_wifi_rate(uint32_t sec, uint32_t rate, radio_s3_fill_fn fn, void *ctx, radio_s3_stats_t *stats)
 { (void)sec; (void)rate; (void)fn; (void)ctx; (void)stats; abort(); }
+#endif
 esp_err_t radio_s3_run_bandwidth(uint32_t freq, uint8_t gain, uint32_t sec, uint32_t rate,
                                  uint32_t bandwidth, radio_s3_fill_fn fn, void *ctx, radio_s3_stats_t *stats)
 { (void)freq; (void)gain; (void)sec; (void)rate; (void)bandwidth; (void)fn; (void)ctx; (void)stats; abort(); }
