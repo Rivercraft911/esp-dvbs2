@@ -8,4 +8,5 @@ void usb_input_stop(void);
 void usb_input_print(void);
 // Command task only, after the complete result and before done:true. Drain the
 // binary session through its terminal NOP before allowing another console line.
+// A missing NOP emits recovery diagnostics and restarts with RF already off.
 void usb_input_finish(void);
