@@ -162,3 +162,18 @@ fractional stream is also checked sample by sample against independent integer c
 Allocation failures, repeated commands, frame seams, bank wraps and counter wrap are covered.
 Host clocks and heaps are synthetic; only [the board example](../examples/self-check/README.md)
 can check deadlines and startup memory. RF decoding and spectral measurements remain separate work.
+
+```sh
+python3 -m pip install numpy scipy pyserial
+(. ~/.espressif/tools/activate_idf_v6.1.sh >/dev/null 2>&1 && cd firmware && idf.py build)
+python3 tests/test_dvbs2.py
+python3 tests/test_dvbs2_8psk.py
+python3 tests/test_dvbs2_c.py
+python3 tests/test_stream.py
+python3 tests/test_rational.py
+python3 tests/test_self_check.py
+python3 examples/self-check/check.py --plan
+```
+
+CI runs these, the SPI checks, and a firmware build. If a sandbox blocks ESP-IDF's unused
+component manager, use `IDF_COMPONENT_MANAGER=0 idf.py build`; no managed dependencies are needed.
