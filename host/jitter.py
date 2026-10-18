@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Radio-off clean gate plus page/bank wake diagnosis, about one minute per mode.
+"""Radio-off clean gate plus polling/page/bank wake diagnosis, about one minute per mode.
 
 No flashing or transmitter commands. Keep the Mac awake, for example:
-  caffeinate -i python3 host/jitter.py notes/eight-lofty-round4
+  caffeinate -i python3 host/jitter.py notes/eight-lofty-round5
 """
 import argparse
 import datetime as dt
@@ -15,21 +15,27 @@ CASES = ((13,'26m667'),(15,'26m667'),(17,'26m667'),(11,'33m333'))
 
 
 def commands(seconds, observe_seconds=5):
-    return [(mc,rate,policy,observer,f'dvbpace {mc} {rate} {duration} 128 0'+
-             (' pagewake' if policy == 'page' else '')+(' observe' if observer else ''))
-            for mc,rate in CASES
-            for policy,observer,duration in (('bank',False,seconds),
-                                             ('page',True,observe_seconds),
-                                             ('bank',True,observe_seconds))]
+    rows = []
+    for mc,rate in CASES:
+        default = 'page' if mc == 11 else 'poll'
+        comparison = 'bank' if mc == 11 else 'page'
+        for policy,observer,duration in ((default,False,seconds),(default,True,observe_seconds),
+                                         (comparison,True,observe_seconds)):
+            flag = '' if policy == default else ' '+policy+'wake'
+            rows.append((mc,rate,policy,observer,f'dvbpace {mc} {rate} {duration} 128 0'+
+                         flag+(' observe' if observer else '')))
+    return rows
 
 
 def timing(rows, mc, policy, observer):
     r, = [r for r in rows if r.get('cmd') == 'dvbpace']
     assert r['modcod'] == mc and r['queue_wake_policy'] == policy, 'wrong mode/policy'
     assert r['paced_wifi_up'] and r['encoder_pie'] == 15, 'Wi-Fi/PIE missing'
-    assert r['bch_variant'] == ('resident-pair' if mc in (11,17) else 'resident-byte'), 'wrong BCH variant'
+    assert r['bch_variant'] == ('resident-pair' if mc in (11,17) else 'split-pair'), 'wrong BCH variant'
     assert r['warmup_frames'] == 3, 'encoder warm-up missing'
     assert r['jitter_enabled'] == observer and ('jitter' in r) == observer, 'wrong observer state'
+    if policy == 'poll':
+        assert r['queue_wakes'] == r['queue_wake_max_cycles'] == 0, 'polling called the kernel'
     if observer:
         j = r['jitter']
         assert j['complete'], 'interrupt observer capacity exceeded'
@@ -39,6 +45,7 @@ def timing(rows, mc, policy, observer):
         assert w['cycles'] == r['max_fill_cycles'], 'wrong worst bank'
         assert 0 <= w['notify_max_cycles'] <= w['notify_cycles'] <= w['cycles'], 'bad notify timing'
         assert bool(w['notify_calls']) == bool(w['notify_max_cycles']), 'missing notify timing'
+        if policy == 'poll': assert w['notify_calls'] == 0, 'polling bank notified'
     return r
 
 
@@ -49,7 +56,8 @@ def gate(r, mc):
     assert r['late_fills'] == r['late_switches'] == r['fatal_late'] == 0, 'late bank'
     assert r['min_fill_slack_cycles'] > 0, 'no fill slack'
     assert r['max_fill_cycles'] <= 40137, f"bank {r['max_fill_cycles']} > 40137 cycles"
-    ceiling = 193848 if mc == 11 else 169784
+    assert r['min_lead_symbols'] >= 3000, f"lead {r['min_lead_symbols']} < 3000 symbols"
+    ceiling = 193848 if mc == 11 else 160000
     assert r['encode_cycles_mean'] <= ceiling, f"encoder {r['encode_cycles_mean']} > {ceiling} cycles/frame"
     assert r['wifi_min_free'] >= 20000, f"Wi-Fi minimum {r['wifi_min_free']} < 20000 B"
     assert r['encoder_stack_min_free'] >= 512, 'encoder stack < 512 B'
@@ -67,9 +75,11 @@ def suite(send, firmware, seconds, observe_seconds=5):
                        encode_cycles_mean=r['encode_cycles_mean'],
                        queue_wakes=r['queue_wakes'],queue_low_pages=r['queue_low_pages'],
                        queue_empty=r['queue_empty'],prefill_frames=r['prefill_frames'],
-                       warmup_frames=r['warmup_frames'],wifi_min_free=r['wifi_min_free'])
+                       warmup_frames=r['warmup_frames'],wifi_min_free=r['wifi_min_free'],
+                       min_lead_symbols=r['min_lead_symbols'],encode_cycles_live_max=r['encode_cycles_live_max'])
+            if mc != 11: row['keyed_reserve_target_met'] = r['encode_cycles_mean'] <= 132000
             if observer: row['worst_bank'] = r['jitter']['worst_bank']
-            # Instrumented runs diagnose the lock; only the clean bank run is
+            # Instrumented runs diagnose the lock; only the clean default run is
             # admitted. Keep faults in the raw records and always finish the suite.
             if not observer: gate(r,mc)
             row['verdict'] = 'OBSERVED' if observer else 'PASS'
@@ -79,7 +89,9 @@ def suite(send, firmware, seconds, observe_seconds=5):
         print(f"{row['verdict']}: {mc} {rate} {policy} {'observed' if observer else 'clean'}: "+
               (f"bank {row['max_fill_cycles']} cycles, encoder {row['encode_cycles_mean']} cycles/frame"
                if 'max_fill_cycles' in row else row.get('detail',''))+
-              (f"; {row['status']}" if 'status' in row else '')+
+              (f"; lead {row['min_lead_symbols']} symbols, {row['status']}" if 'status' in row else '')+
+              ('; 132k reserve target '+('met' if row['keyed_reserve_target_met'] else 'open')
+               if 'keyed_reserve_target_met' in row else '')+
               (f"; notify max {row['worst_bank']['notify_max_cycles']} cycles in worst bank"
                if 'worst_bank' in row else '')+
               (f"; {row['detail']}" if 'max_fill_cycles' in row and 'detail' in row else ''),flush=True)

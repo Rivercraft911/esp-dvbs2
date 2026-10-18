@@ -15,6 +15,7 @@ static int checked_task(void (*fn)(void *), const char *name, unsigned stack, vo
 {
     // Cross the 32-bit sequence wrap in every native queue lifecycle. Physical
     // page cursors and the 64-bit symbol timeline must remain continuous.
+    if (dvb.lofty) assert(priority == uxTaskPriorityGet(NULL));
     if (dvb.moon) dvb.produced = dvb.consumed = UINT32_MAX-15;
     return xTaskCreatePinnedToCore(fn,name,stack,arg,priority,task,core);
 }
@@ -142,7 +143,9 @@ static void bank_fill(radio_s3_fill_fn fn, void *ctx, unsigned b, uint64_t first
             else assert(!dvb.wake_pending);
         }
         if (dvb.moon) {
-            if (!dvb.page_wake && !getenv("EARLY_WAKE")) {
+            if (dvb.poll) {
+                assert(enc.task->notifications_sent == sent && !dvb.wake_pending);
+            } else if (!dvb.page_wake && !getenv("EARLY_WAKE")) {
                 if (offset && !p) assert(enc.task->notifications_sent == sent);
                 else assert(enc.task->notifications_sent-sent <= 1 && !dvb.wake_pending);
             }
@@ -324,10 +327,12 @@ int main(int argc, char **argv)
     stop_encoder();
     printf("}\n");
     assert(live_allocations == 0);
+    assert(native_watch_add == native_watch_delete);
     for (int i = 0; i < allocations; ++i) {
         fail_after = i;
         assert(!start_encoder("dvbdump", mc, 128, 0, sps, rate));
         assert(live_allocations == 0);
+        assert(native_watch_add == native_watch_delete);
     }
     fail_after = -1;
     if (*callsign) {
@@ -340,6 +345,7 @@ int main(int argc, char **argv)
         dvbtx_dump(mc, frames, 128, sps == 40 ? 10 : mc < 12 && sps == 8 ? 2 : 1, 0, sps, rate);
         fclose(capture);
         assert(live_allocations == 0);
+        assert(native_watch_add == native_watch_delete);
         for (unsigned i = 0; i < 4; ++i) assert(native_ranges[i] == 0);
     }
     if (!native_input && (mc == 11 || mc == 13 || mc == 15 || mc == 17)) {
@@ -377,10 +383,12 @@ int main(int argc, char **argv)
                                       rate,discard,NULL,&stats));
         stop_encoder(); printf("}\n");
         assert(live_allocations == 0);
+        assert(native_watch_add == native_watch_delete);
         if (heap_input) {
             fail_after = pace_allocations-1;
             assert(!start_encoder("dvbpace",mc,128,0,sps,rate));
             assert(live_allocations == 0);
+            assert(native_watch_add == native_watch_delete);
             fail_after = -1;
         }
     }
@@ -397,6 +405,7 @@ int main(int argc, char **argv)
         assert(!enc.failed && enc.input_partial > 0);
         stop_encoder(); printf("}\n");
         assert(live_allocations == 0);
+        assert(native_watch_add == native_watch_delete);
     }
     free(source); free(phases); free(banks);
 }

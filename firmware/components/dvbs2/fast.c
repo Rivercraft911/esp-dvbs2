@@ -31,7 +31,7 @@
 #define GOLD 2720               /* one 8PSK Gold plane, 169 x 16 bytes rounded */
 
 struct dvbs2_fast {
-    const uint8_t *bch, *gold, *prbs, *byte_bch;
+    const uint8_t *bch, *gold, *prbs, *byte_bch, *pair_bch;
     const uint32_t *map;
     const uint16_t *prog, *cols;
     const uint8_t *crc8;
@@ -167,6 +167,7 @@ int dvbs2_fast_prepare(dvbs2_fast *f, const dvbs2_mode *mode, int pilots, unsign
     f->pilot_blocks = pilots ? (f->data_symbols / 90 - 1) / 16 : 0;
     f->pie = pie & (PIE_MASK | DVBS2_BCH_NIBBLE | DVBS2_MAP_SPARSE | DVBS2_MAP_QUADS | DVBS2_RO_20);
     f->ldxq_bias = 0;
+    f->pair_bch = NULL;
 #ifdef DVBS2_PIE
     if (f->pie & DVBS2_PIE_MAP) {
         /* The TRM gives EE.LDXQ.32 the address as + 4 index; Espressif's QEMU
@@ -205,6 +206,30 @@ int dvbs2_fast_cache_bch(dvbs2_fast *f, uint8_t *table)
     const uint8_t *source = f->mode->t == 12 ? fast_bch_byte_12 : fast_bch_byte_10;
     if (table) memcpy(table, source, DVBS2_BCH_CACHE_BYTES);
     f->byte_bch = table ? table : source;
+    f->pair_bch = NULL;
+    return 0;
+}
+
+/* T1[v] = x^8*T0[v] mod g. Only its low 128 bits need another
+ * table. Its high <=64 bits fit T0's unused high-vector padding.
+ * The caller has already made byte_bch resident and owns both allocations. */
+int dvbs2_fast_cache_bch_pair(dvbs2_fast *f, uint8_t *low)
+{
+    if (!f || !f->mode || !low || ((uintptr_t)low&15) || f->bch_bytes <= 16 ||
+        f->bch_bytes > 24 || f->mode->kbch%16 || (f->pie&DVBS2_BCH_NIBBLE) ||
+        f->byte_bch == fast_bch_byte_12 || f->byte_bch == fast_bch_byte_10) return -1;
+    uint8_t *t = (uint8_t *)f->byte_bch;
+    for (unsigned v = 0; v < 256; ++v) {
+        unsigned head = t[16*v];
+        for (unsigned j = 0; j < 24; ++j) {
+            unsigned next = j+1;
+            uint8_t x = next < 16 ? t[16*v+next] : next < 24 ? t[4096+16*v+next-16] : 0;
+            x ^= j < 16 ? t[16*head+j] : t[4096+16*head+j-16];
+            if (j < 16) low[16*v+j] = x;
+            else t[4096+16*v+8+j-16] = x;
+        }
+    }
+    f->pair_bch = low;
     return 0;
 }
 
@@ -464,7 +489,10 @@ HOT void dvbs2_fast_bch(dvbs2_fast *f, dvbs2_workspace *ws)
             dvbs2_pie_bch_pair(ws->bits, bytes/2, f->byte_bch, (uint8_t *)w);
             words = (bytes + 3) / 4;
         } else if (f->bch_bytes > 16 && !(f->pie & DVBS2_BCH_NIBBLE)) {
-            dvbs2_pie_bch_byte(ws->bits, bytes, f->byte_bch, (uint8_t *)w);
+            if (f->pair_bch) {
+                void dvbs2_pie_bch_pair32(const uint8_t *, unsigned, const uint8_t *, const uint8_t *, uint8_t *);
+                dvbs2_pie_bch_pair32(ws->bits,bytes/2,f->byte_bch,f->pair_bch,(uint8_t *)w);
+            } else dvbs2_pie_bch_byte(ws->bits, bytes, f->byte_bch, (uint8_t *)w);
             words = (bytes + 3) / 4; /* byte kernel already consumed the tail */
         } else {
             (f->bch_bytes > 16 ? dvbs2_pie_bch_regs32 : dvbs2_pie_bch_regs16)(
@@ -473,7 +501,17 @@ HOT void dvbs2_fast_bch(dvbs2_fast *f, dvbs2_workspace *ws)
     } else
 #endif
     {
-        bch_c(f, ws->bits, words, w);
+        if (f->pair_bch) {
+            uint8_t *r = (uint8_t *)w;
+            for (unsigned i = 0; i < bytes; i += 2) {
+                unsigned a = r[0]^ws->bits[i], b = r[1]^ws->bits[i+1];
+                for (unsigned j = 0; j < 24; ++j)
+                    r[j] = (j+2 < 24 ? r[j+2] : 0) ^
+                        (j < 16 ? f->pair_bch[16*a+j] : f->byte_bch[4096+16*a+8+j-16]) ^
+                        f->byte_bch[j < 16 ? 16*b+j : 4096+16*b+j-16];
+            }
+            words = (bytes+3)/4;
+        } else bch_c(f, ws->bits, words, w);
     }
     /* A final partial word: two nibble-table steps per remaining byte. */
     uint8_t *r = (uint8_t *)w;
@@ -968,16 +1006,12 @@ HOT int dvbs2_fast_sign_start(dvbs2_fast *f, const dvbs2_workspace *ws, dvbs2_si
 int dvbs2_fast_lofty_cache(dvbs2_fast *f, uint32_t *table)
 {
     if (!f || !table || ((uintptr_t)table&15) || f->mode->bits_per_symbol != 3) return -1;
+    // One byte -> two chronological four-phase words, one phase bit each.
     for (unsigned i = 0; i < 256; ++i) {
         uint32_t v = 0;
-        for (unsigned j = 0; j < 4; ++j)
-            v |= ((((i>>(3-j))&1)^1) | ((i>>(7-j))&1)<<2)<<(9-3*j);
+        for (unsigned j = 0; j < 8; ++j)
+            v |= ((i>>(7-j))&1)<<(16*(j/4)+9-3*(j&3));
         table[i] = v;
-    }
-    for (unsigned i = 0; i < 16; ++i) {
-        uint32_t v = 0;
-        for (unsigned j = 0; j < 4; ++j) v |= ((i>>(3-j))&1)<<(10-3*j);
-        table[256+i] = v;
     }
     uint16_t *header = (uint16_t *)f->packed_header, *pilots = (uint16_t *)f->packed_pilots;
     memset(header,0,sizeof f->packed_header);
@@ -1133,10 +1167,10 @@ __attribute__((noinline)) int dvbs2_fast_lofty_start(dvbs2_fast *f, const dvbs2_
     if (f->mode->modcod == 12) { a = ws->bits+5400; c = ws->bits; }
 #ifdef DVBS2_PIE
     if (f->pie & DVBS2_PIE_MAP) {
-        void dvbs2_pie_lofty(uint16_t *, const uint32_t *, unsigned);
-        dvbs2_pie_index8(a,b,c,f->gold,(uint16_t *)f->scratch,(f->data_symbols+127)/128);
+        void dvbs2_pie_lofty(const uint8_t *, const uint8_t *, const uint8_t *,
+                              const uint8_t *, uint16_t *, const uint32_t *);
         const uint32_t *table = (const uint32_t *)((const uint8_t *)f->map+f->ldxq_bias);
-        dvbs2_pie_lofty((uint16_t *)f->scratch,table,f->data_symbols/32);
+        dvbs2_pie_lofty(a,b,c,f->gold,(uint16_t *)f->scratch,table);
     } else
 #endif
     {
@@ -1144,10 +1178,9 @@ __attribute__((noinline)) int dvbs2_fast_lofty_start(dvbs2_fast *f, const dvbs2_
         for (unsigned j = 0; j < f->data_symbols/8; ++j) {
             unsigned x = b[j]^c[j], p0 = a[j]^x, p1 = a[j]^f->gold[j];
             unsigned p2 = b[j]^(a[j]&x)^f->gold[GOLD+j]^(a[j]&f->gold[j]);
-            for (int shift = 4; shift >= 0; shift -= 4) {
-                unsigned index = (p0>>shift&15) | (p2>>shift&15)<<4 | (p1>>shift&15)<<8;
-                *out++ = f->map[index&255] | f->map[256+(index>>8)];
-            }
+            uint32_t v = f->map[(~p0)&255] | (f->map[p1&255]<<1) | (f->map[p2&255]<<2);
+            *out++ = v;
+            *out++ = v>>16;
         }
     }
     const unsigned end = 90+f->data_symbols+36*f->pilot_blocks;

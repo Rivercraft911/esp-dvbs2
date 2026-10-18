@@ -31,8 +31,8 @@ else:
         ring_slots=0 if moon else 8 if n==40 else 2 if quads and n==3 else 3 if n<=4 else 2,ring_format='signs' if moon else 'raw' if n==40 else 'quads' if quads else 'packed',
         workspace_memory='internal' if resident else 'psram',
         fill_kernel='moon-queue' if moon else 'pie',paced_wifi_up=moon,
-        wifi_free_up=50000,wifi_min_free=50000,prepare_pages=50,encoder_cache_bytes=25920,queue_pages=50,
-        queue_page_samples=1536,queue_wake_pages=4,queue_page_gap_max_cycles=1,queue_wait_cycles=1,
+        wifi_free_up=50000,wifi_min_free=50000,prepare_pages=50,encoder_cache_bytes=25920,queue_pages=54,
+        queue_page_samples=1536,queue_wake_pages=8,queue_page_gap_max_cycles=1,queue_wait_cycles=1,
         queue_low_pages=1,queue_empty=0,prepare_max_cycles=1,prepare_bank_max_cycles=1,prepare_tail_max_cycles=1,queue_wake_max_cycles=1,
         dispatch_max_cycles=1,encode_work_cycles_mean=1,encode_work_cycles_live_max=1,
         encode_frame_work_cycles_mean=1,encode_frame_work_cycles_live_max=1,
@@ -41,7 +41,7 @@ else:
         packed_mapper='signs' if moon else 'none' if n==40 else 'quads' if quads else 'direct' if resident else 'sparse')
  if mc>=12 and n==3:
   r.update(pulse_symbols=5,ring_format='words',packed_mapper='words',fill_kernel='lofty-queue',
-           queue_pages={13:48,15:49,17:44}[mc],queue_wake_pages=2,encoder_cache_bytes=1088)
+           queue_pages={13:54,15:50,17:46}[mc],queue_wake_pages=1,encoder_cache_bytes={13:22960,15:24112,17:24256}[mc])
  if kind=='dvbdump':
   frames=int(x[3] if named else x[2]); decim=int(x[-1]); size=((frames*symbols*n+den-1)//den+decim-1)//decim*4
   if bad and moon and n==3:size+=4

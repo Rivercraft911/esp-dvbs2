@@ -278,8 +278,8 @@ def pace(mc,token,seconds,limit):
         assert r['queue_empty'] == 0 and r['queue_low_pages'] > 0, r
     if (token == '33m333' and not a.lofty) or (mc >= 12 and token == '26m667'):
         assert r['paced_wifi_up'] and r['wifi_free_up'] >= 20000 and r['wifi_min_free'] >= 20000, r
-        assert r['prepare_pages'] > 0 and r['encoder_cache_bytes'] == (1088 if mc >= 12 else 25920), r
-        assert r['queue_pages'] == ({13:48,15:49,17:44}[mc] if mc >= 12 else 50) and r['queue_page_samples'] == 1536 and r['queue_wake_pages'] == (2 if mc >= 12 else 4) and r['queue_low_pages'] > 0 and r['queue_empty'] == 0, r
+        assert r['prepare_pages'] > 0 and r['encoder_cache_bytes'] == ({13:22960,15:24112,17:24256}[mc] if mc >= 12 else 25920), r
+        assert r['queue_pages'] == ({13:54,15:50,17:46}[mc] if mc >= 12 else 54) and r['queue_page_samples'] == 1536 and r['queue_wake_pages'] == (1 if mc >= 12 else 8) and r['queue_low_pages'] > 0 and r['queue_empty'] == 0, r
         assert r['encode_kernel_cycles_mean']+copy_cycles <= limit['encode_cycles_mean'], r
         assert r['encode_kernel_cycles_live_max']+copy_cycles <= limit['encode_cycles_live_max'], r
         # Sign extraction belongs to MAP, counted once in encoder work. A

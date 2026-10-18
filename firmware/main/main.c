@@ -126,9 +126,11 @@ static void cmd_dvbpace(char *args)
     char *pause = strtok_r(NULL, " \t", &save);
     char *extra = strtok_r(NULL, " \t", &save);
     uint32_t seconds, top = 128, stall = 0;
-    bool page_wake = false, observer = false, flags_ok = true;
+    unsigned wake_policy = 0;
+    bool observer = false, flags_ok = true;
     for (; extra; extra = strtok_r(NULL," \t",&save)) {
-        if (!strcmp(extra,"pagewake") && !page_wake) page_wake = true;
+        if (!strcmp(extra,"pagewake") && !wake_policy) wake_policy = 1;
+        else if (!strcmp(extra,"bankwake") && !wake_policy) wake_policy = 2;
         else if (!strcmp(extra,"observe") && !observer) observer = true;
         else flags_ok = false;
     }
@@ -136,10 +138,10 @@ static void cmd_dvbpace(char *args)
         (peak && !number(peak, 16, 508, &top)) || (pause && !number(pause, 0, 2000, &stall)) ||
         !flags_ok) {
         printf("@{\"cmd\":\"dvbpace\",\"error\":\"usage: dvbpace <modcod 4..17> [5m|10m|20m|26m667|33m333] <1..600 seconds> "
-               "[16..508 peak] [0..2000 ms encoder stall] [pagewake] [observe]\"}\n");
+               "[16..508 peak] [0..2000 ms encoder stall] [pagewake|bankwake] [observe]\"}\n");
         return;
     }
-    dvbtx_pace(modcod, seconds, top, stall, sps, rate,page_wake,observer);
+    dvbtx_pace(modcod, seconds, top, stall, sps, rate,wake_policy,observer);
 }
 
 static void cmd_wifimem(char *args)

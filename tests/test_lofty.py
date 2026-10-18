@@ -76,10 +76,13 @@ def check(out, receiver=None):
         assert len(dumps) == 2 and dumps[0]['crc32'] == dumps[1]['crc32']
         r = dumps[0]
         assert r['fill_kernel'] == 'lofty-queue' and r['ring_format'] == 'words'
-        assert r['warmup_frames'] == 3 and r['bch_variant'] == ('resident-pair' if mc == 17 else 'resident-byte')
+        assert r['warmup_frames'] == 3 and r['bch_variant'] == ('resident-pair' if mc == 17 else 'split-pair')
+        assert r['queue_wake_policy'] == 'poll' and r['queue_wakes'] == r['queue_wake_max_cycles'] == 0
+        assert r['bch_pair_psram_bytes'] == (0 if mc == 17 else 4096)
+        assert r['encoder_priority'] == 1
         assert r['sps_num'] == 3 and r['sps_den'] == 1 and r['rolloff'] == .35
         assert r['pulse_symbols'] == 5 and r['table_bytes'] == 36864
-        assert r['queue_pages'] == {13:48,15:49,17:44}[mc] and r['queue_empty'] == r['underruns'] == r['overlap_mismatches'] == 0
+        assert r['queue_pages'] == {13:54,15:50,17:46}[mc] and r['queue_empty'] == r['underruns'] == r['overlap_mismatches'] == 0
         symbols = onair.symbols(mc,17,callsign='N0CALL')
         phases = np.rint(np.angle(symbols)*4/np.pi).astype(int)%8
         count = 16*onair.frame_symbols(mc)

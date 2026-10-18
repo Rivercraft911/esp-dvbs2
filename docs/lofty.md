@@ -1,13 +1,12 @@
 # 8PSK at 80/3 Msym/s
 
-The candidate keeps the GCS tables in internal RAM and restores resident
-byte BCH after the round-three PSRAM tables were slower on silicon. Bank-end wakes
-remain the default. Three unpublished encoder warm-up frames reuse one queue
-page, then reset the payload seed and framing histories before prefill.
-The interrupt observer is opt-in. All three 16-frame host waveforms retain
-their pinned CRCs. Prior bit-exact dumps decoded without corrections. Board
-admission is pending. This round accessed no board or radio.
-[Records and limits](../results/2026-10-17-lofty-ram/README.md).
+Round five is an offline candidate. 8PSK polls released queue pages on core 0;
+core 1 makes no queue notification calls during fills. MODCODs 13/15/17 have
+54/50/46 pages. The mapper reads bit planes directly, and t=10/12 BCH uses
+pairs with a 4,096 B PSRAM extension. The three pinned 16-frame waveform CRCs
+are unchanged. Host and Xtensa tests pass. Startup, Wi-Fi heap, fill ceilings
+and keyed operation still need the coordinator's measurement. No board or
+radio was accessed and no new `results/` directory was created.
 
 ## Tables and framing
 
@@ -47,11 +46,19 @@ phase groups and descriptor history survive frame boundaries.
 ## RAM and coverage
 
 The fixed store holds `36864 + 38*528 + 8144 = 65072 B`: pulse tables,
-guarded pages and workspace. MODCODs 13/15/17 use 48/49/44 pages, with
-5,280/5,808/3,168 B of additional queue heap. Complete resident encoder data,
-including the mapper, use 23,024/24,176/24,320 B. PRBS storage is sized to the
-active BB frame; BCH, Gold, LDPC program/columns and header CRC stay resident.
-All stage work and input copies remain timed. Only full-queue waits are excluded.
+guarded pages and workspace. MODCODs 13/15/17 use 54/50/46 pages, adding
+8,448/6,336/4,224 B of internal queue heap. Resident encoder data, including
+the 1,024 B mapper table, use 22,960/24,112/24,256 B. MODCODs 13/15 additionally
+use 4,096 B of cached PSRAM for BCH. This is smaller than round three's
+24,576 B PSRAM experiment, but its cache cost remains unmeasured.
+
+For BCH polynomial g of degree r, T0[v] = v*x^r mod g and T1[v] = x^8*T0[v]
+mod g. For the two feedback bytes u0/u1, canonical polynomial state advances as
+`Rnew = (R << 16) XOR T1[u0] XOR T0[u1]`. T1's low 128 bits occupy PSRAM;
+its remaining at-most-64 bits occupy padding in the resident T0 high rows.
+The vector registers store canonical bytes in little-endian register order,
+so the assembly shifts the byte string right. Paired tables are generated at
+setup; all published payload copies and encoder stages remain timed.
 
 Warm-up allocates no additional frame storage. Its frames and cycles are
 reported separately from published encoder work. Both 8PSK halfword offsets
@@ -59,25 +66,31 @@ are exercised; resetting the mapper and descriptor histories preserves the
 first payload and every frame seam. External SPI input skips synthetic warm-up.
 Cache state after Wi-Fi startup and the opening ID still needs a board check.
 
-At 240 MHz and 80 MS/s, each page covers `1536*3 = 4608 cycles`. After the
-two-page wake threshold and a complete 16,380-sample bank burst, coverage is
-`((pages-2)*1536-16380)*3`: 162,828/167,436/144,396 cycles. The gate compares
-this against the measured publication gap plus wake cost. More queue coverage
-does not establish average encoder capacity.
+At 240 MHz and 80 MS/s each page covers `1536*3 = 4608 cycles`. Polling
+responds to the first released page, without waiting for a bank end. Shared
+reads are separated by 32 NOPs, nominally 133 ns at 240 MHz, to reduce SRAM
+traffic. Publication uses release/acquire sequence counters and owns each
+page through rendering. Full-queue polling is reported as backpressure.
+The encoder shares the command task's priority so startup/stop can run;
+Wi-Fi can preempt it. Its watchdog subscription replaces core 0's idle
+subscription and is restored on exit. Sleeping diagnostic policies feed it
+through bounded 100 ms waits, including the opening/closing IDs.
 
-The main merge places allocator code in flash. Linked heap space improves,
-but Wi-Fi allocation and fragmentation still need the coordinator's probe.
-The record estimates internal minima from the previous silicon run and actual
-allocation/linker deltas. No host heap counter is used as a measurement.
+Using a whole 16,380-sample burst conservatively, post-release coverage is
+`((pages-1)*1536-16380)*3` = 195,084/176,652/158,220 cycles. This is coverage,
+not average throughput or a silicon guarantee. The coordinator requires at
+least 3,000 symbols of measured lead and 20,000 B of Wi-Fi minimum free RAM.
 
 ## Main regressions and admission
 
-Synthetic 8PSK 9/10 at 5m uses paired byte BCH instead of register-nibble BCH.
-QPSK uses fused load/add/store for disjoint I/Q fields, and vector prefix
-updates for sign histories. Its 50-page/four-page wake geometry preserves
-`50-4 = 54-8` pages of post-wake coverage and shares 2,320 B of resident
-encoder data with the store. Every original 2% ceiling and heap floor remains
-pinned in `tests/data/lofty_gates.json`.
+QPSK's sign producer kernels are identical to main's. Round four still had
+50 pages, four-page bank wakes and 2,320 B of shared encoder cache, while
+main used 54 pages and eight-page page wakes with the cache on heap.
+Round five restores main's layout and wake policy. The fused I/Q renderer,
+three warm-up frames, optional observer checks and shared producer branches
+remain different. The previous 5.4k-cycle map excess has no proven silicon
+cause; restored layout is a candidate fix. The QPSK ceiling stays 193,848
+cycles/frame. Every historical 2% ceiling remains pinned.
 
 An 8PSK frame lasts `22194*3*240e6/80e6 = 199746 cycles`; 85% is 169,784.
 The bank deadline is `15740*3 = 47220 cycles`, with a 40,137-cycle ceiling.
@@ -85,33 +98,29 @@ Frame sizes follow EN 302 307-1 clause 5.5; bank geometry is in `radio_s3.h`.
 Trace replay excludes cache/bus stalls and interrupt delays. It establishes
 neither silicon timing nor admission; the full 15% goal remains open.
 
-For round four, after the coordinator flashes the committed revision, use:
+The user's keyed estimate scales 46,000 cycles by `199746/239630` to about
+38,344 cycles/frame. Subtracting that from the frame and its 85% ceiling gives
+161,402 and 131,440 cycles/frame, respectively. The coordinator uses the
+requested rounded targets: 160k to hold and 132k for 15% keyed reserve.
+These are planning estimates, not keyed measurements of this candidate.
+
+After the coordinator builds/flashes the final revision with N0CALL:
 
 ```sh
-caffeinate -i python3 host/jitter.py notes/eight-lofty-round4
+caffeinate -i python3 host/jitter.py notes/eight-lofty-round5
 ```
 
-Each mode gets a clean 20 s bank-wake gate, then 5 s page- and bank-wake runs
-with `observe`. Including the opening/closing IDs, this is about one minute
-per mode. Clean records require `jitter_enabled: false` and no observer object.
-The diagnostic records pair each worst bank's fill, IRQ and SRAM counters
-with the number, total cycles and longest `xTaskNotifyGive` call in that same
-bank, summed across both physical callbacks. A long call with no IRQ or SRAM
-stall is evidence consistent with a kernel-lock wait, not proof by itself.
-Only the clean run gates admission; diagnostic failures retain their status.
-The runner keeps going after a fault. `--plan` opens no device. No new board
-timing is claimed here; the coordinator must establish startup and margins.
+Each mode gets a clean 20 s run, a 5 s observed default-policy run and a 5 s
+observed comparison. 8PSK compares polling with page wakes; QPSK compares
+page with bank wakes. Including IDs, collection takes about one minute per
+mode. `--plan` opens no device. Faults are retained and later modes continue.
+The clean gate requires ESP_OK, completed playback, zero queue/deadline
+faults, observer off, fill <=40,137 cycles, lead >=3,000 symbols, Wi-Fi minimum
+>=20,000 B, encoder stack >=512 B, mean <=160,000 cycles/frame for 8PSK or
+<=193,848 for QPSK. The separate 132k reserve target remains visible.
 
-After the coordinator builds/flashes the committed revision with N0CALL:
-
-```sh
-PYTHON=/Library/Frameworks/Python.framework/Versions/3.13/bin/python3 \
-RX=/Users/river/Documents/stanford/SSI/esp-dvbs2/notes/leansdr/src/apps/leandvb \
-  host/check.sh --lofty notes/eight-lofty-round2-board
-```
-
-`--plan` opens no device. The slim runner keeps going, runs main first,
-then dumps/decodes all three candidates and runs 20/20/10 s Wi-Fi-up paces.
-Both cores must retain 15%, free/minimum heap must reach 20,000 B, stack
-must retain 512 B, and queue/overlap/deadline checks must pass. It never
-flashes, writes NVS or transmits. Keyed qualification remains separate.
+Executed-instruction replay predicts 151.7k/156.5k/135.8k cycles/frame for
+13/15/17, including a 4,823-cycle payload allowance. It excludes cache/bus
+stalls, task preemption and live publication overhead. It cannot establish
+any silicon ceiling. The 132k goal, startup of 17 and keyed qualification
+remain open until measured.

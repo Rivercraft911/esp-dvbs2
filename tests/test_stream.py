@@ -27,6 +27,7 @@ NATIVE = r'''
 #define ESP_OK 0
 #define ESP_FAIL -1
 #define ESP_ERR_INVALID_ARG 0x102
+#define ESP_ERR_INVALID_STATE 0x103
 typedef int esp_err_t;
 static inline const char *esp_err_to_name(int e) { return e ? "ESP_FAIL" : "ESP_OK"; }
 #define MALLOC_CAP_INTERNAL 1
@@ -101,6 +102,13 @@ static inline unsigned ulTaskNotifyTake(int clear, unsigned timeout) {
     unsigned n = t->notifications; t->notifications = 0;
     pthread_mutex_unlock(&t->mutex); return n;
 }
+static inline unsigned uxTaskPriorityGet(TaskHandle_t t) { (void)t; return 1; }
+static unsigned native_watch_add, native_watch_delete;
+static inline TaskHandle_t xTaskGetIdleTaskHandleForCore(int core) { assert(core == 0); return NULL; }
+static inline int esp_task_wdt_status(TaskHandle_t t) { (void)t; return ESP_OK; }
+static inline int esp_task_wdt_add(TaskHandle_t t) { (void)t; ++native_watch_add; return ESP_OK; }
+static inline int esp_task_wdt_delete(TaskHandle_t t) { (void)t; ++native_watch_delete; return ESP_OK; }
+static inline int esp_task_wdt_reset(void) { return ESP_OK; }
 static inline void vTaskSuspend(TaskHandle_t t) { (void)t; pthread_exit(NULL); }
 static inline void vTaskDelete(TaskHandle_t t) {
     pthread_join(t->thread, NULL);
@@ -154,7 +162,7 @@ int usb_serial_jtag_write_bytes(const void *, size_t, unsigned);
 def compile_stream(folder):
     tmp = str(folder)
     (folder / "native.h").write_text(NATIVE)
-    for header in ("esp_err.h", "esp_cpu.h", "esp_attr.h", "esp_heap_caps.h", "esp_rom_crc.h",
+    for header in ("esp_err.h", "esp_cpu.h", "esp_task_wdt.h", "esp_attr.h", "esp_heap_caps.h", "esp_rom_crc.h",
                    "driver/usb_serial_jtag.h", "freertos/FreeRTOS.h", "freertos/semphr.h",
                    "freertos/task.h"):
         path = folder / header

@@ -223,6 +223,71 @@ dvbs2_pie_bch_byte:
     retw
     .size dvbs2_pie_bch_byte, . - dvbs2_pie_bch_byte
 
+/* Two-byte t=10/12 reduction. T0 low/high resident, T1 high in T0's
+ * padding and T1 low in the caller's 4 KiB table. High loads preserve their
+ * zero upper halves. R' = R>>16 XOR T1[u0] XOR T0[u1] in byte order.
+ * msg, pairs, T0, T1-low, remainder. */
+    .section .text.bch_pair32,"ax"
+    .align 4
+    .global dvbs2_pie_bch_pair32
+    .type dvbs2_pie_bch_pair32,@function
+    .macro bch_pair32_step input=0
+    ee.movi.32.a q0,a6,0
+    .if \input
+    l16ui a7,a2,0
+    xor a6,a6,a7
+    .endif
+    extui a8,a6,0,8
+    slli a8,a8,4
+    extui a10,a6,8,8
+    slli a10,a10,4
+    add a12,a8,a5
+    add a8,a8,a11
+    add a10,a10,a4
+    ee.srci.2q q1,q0,1
+    ee.vld.128.ip q2,a12,0
+    ee.vld.l.64.ip q3,a8,0
+    ee.vld.128.xp q4,a10,a13
+    ee.vld.l.64.ip q5,a10,0
+    ee.xorq q0,q0,q2
+    ee.xorq q1,q1,q3
+    ee.xorq q0,q0,q4
+    ee.xorq q1,q1,q5
+    .endm
+dvbs2_pie_bch_pair32:
+    entry a1,80
+    s32i a6,a1,16
+    movi a13,4096
+    add a11,a4,a13
+    addi a11,a11,8
+    ee.zero.q q0
+    ee.zero.q q1
+    ee.zero.q q3
+    ee.zero.q q5
+    srli a14,a3,3
+    extui a3,a3,0,3
+    beqz a14,.Lpair32_tail
+.Lpair32_loop:
+    ee.vld.128.ip q6,a2,16
+    ee.xorq q0,q0,q6
+    .rept 8
+    bch_pair32_step
+    .endr
+    addi a14,a14,-1
+    bnez a14,.Lpair32_loop
+.Lpair32_tail:
+    loopnez a3,.Lpair32_end
+    bch_pair32_step 1
+    addi a2,a2,2
+.Lpair32_end:
+    l32i a6,a1,16
+    ee.vst.128.ip q0,a6,16
+    ee.vst.128.ip q1,a6,16
+    retw
+    .size dvbs2_pie_bch_pair32,.-dvbs2_pie_bch_pair32
+
+    .section .iram1,"ax"
+
 /* LDPC doubled groups: u2 = u u u[0..5] per 360-bit group u (45 bytes), 96
  * bytes each. U0 = u[0..15], U1 = u[16..31], U2 = u[32..47], X = u[29..44];
  * u2 blocks: U0, U1, {X,U0}>>3, {U0,U1}>>3, {U1,U2}>>3, {X,U0}>>6 (bytes).
@@ -794,44 +859,71 @@ dvbs2_pie_run8_packed:
     retw
     .size dvbs2_pie_run8_packed, . - dvbs2_pie_run8_packed
 
-/* In-place four-phase words. Small cached instruction loops keep legacy heap floors. */
-    .section .iram1.lofty_mapper,"ax"
+/* Direct bit planes -> four-phase words. Normal 8PSK has 21600 data
+ * symbols; the last 128-symbol chunk is padded inside the owned scratch.
+ * A byte lookup spreads its bits into two halfwords. No index buffer.
+ * A, B, C, Gold, output, 1 KiB spread table (LDXQ bias already applied). */
+    .section .text.lofty_mapper,"ax"
+    .macro lofty_bits p0,p1,p2,first
+    ee.ldxq.32 q6,\p0,a7,0,\first
+    ee.ldxq.32 q6,\p0,a7,1,(\first+1)
+    ee.ldxq.32 q6,\p0,a7,2,(\first+2)
+    ee.ldxq.32 q6,\p0,a7,3,(\first+3)
+    ee.ldxq.32 q7,\p1,a7,0,\first
+    ee.ldxq.32 q7,\p1,a7,1,(\first+1)
+    ee.ldxq.32 q7,\p1,a7,2,(\first+2)
+    ee.ldxq.32 q7,\p1,a7,3,(\first+3)
+    ssai 1
+    ee.vsl.32 q7,q7
+    ee.orq q6,q6,q7
+    ee.ldxq.32 q7,\p2,a7,0,\first
+    ee.ldxq.32 q7,\p2,a7,1,(\first+1)
+    ee.ldxq.32 q7,\p2,a7,2,(\first+2)
+    ee.ldxq.32 q7,\p2,a7,3,(\first+3)
+    ssai 2
+    ee.vsl.32 q7,q7
+    ee.orq q6,q6,q7
+    ee.vst.128.ip q6,a6,16
+    .endm
     .align 4
     .global dvbs2_pie_lofty
     .type dvbs2_pie_lofty,@function
 dvbs2_pie_lofty:
     entry a1,32
-    mov a5,a2
-    splat q6,0x00ff00ff
-    splat q7,0x000f000f
-    movi a6,1024
-    add a6,a6,a3
-    ssai 8
-    loopnez a4,.Llofty_end
-    ee.vld.128.ip q2,a2,16
-    ee.vsr.32 q0,q2
-    ee.andq q2,q2,q6
-    ee.andq q0,q0,q7
-    ee.ldxq.32 q1,q2,a3,0,0
-    ee.ldxq.32 q1,q2,a3,1,1
-    ee.ldxq.32 q1,q2,a3,2,2
-    ee.ldxq.32 q1,q2,a3,3,3
-    ee.ldxq.32 q3,q2,a3,0,4
-    ee.ldxq.32 q3,q2,a3,1,5
-    ee.ldxq.32 q3,q2,a3,2,6
-    ee.ldxq.32 q3,q2,a3,3,7
-    ee.vunzip.16 q1,q3
-    ee.ldxq.32 q4,q0,a6,0,0
-    ee.ldxq.32 q4,q0,a6,1,1
-    ee.ldxq.32 q4,q0,a6,2,2
-    ee.ldxq.32 q4,q0,a6,3,3
-    ee.ldxq.32 q5,q0,a6,0,4
-    ee.ldxq.32 q5,q0,a6,1,5
-    ee.ldxq.32 q5,q0,a6,2,6
-    ee.ldxq.32 q5,q0,a6,3,7
-    ee.vunzip.16 q4,q5
-    ee.orq q1,q1,q4
-    ee.vst.128.ip q1,a5,16
+    movi a8,2720
+    add a8,a8,a5
+    movi a9,169
+    loopnez a9,.Llofty_end
+    ee.ld.128.usar.ip q0,a2,16
+    ee.vld.128.ip q5,a2,0
+    ee.src.q q0,q0,q5
+    ee.ld.128.usar.ip q1,a3,16
+    ee.vld.128.ip q5,a3,0
+    ee.src.q q1,q1,q5
+    ee.ld.128.usar.ip q2,a4,16
+    ee.vld.128.ip q5,a4,0
+    ee.vld.128.ip q3,a5,16
+    ee.vld.128.ip q4,a8,16
+    ee.src.q q2,q2,q5
+    ee.xorq q5,q1,q2
+    ee.xorq q2,q0,q5
+    ee.notq q2,q2                     /* phase bit 0 = ~(A ^ B ^ C) */
+    ee.andq q5,q0,q5
+    ee.xorq q1,q1,q5
+    ee.andq q5,q0,q3
+    ee.xorq q0,q0,q3                  /* phase bit 1 */
+    ee.xorq q1,q1,q4
+    ee.xorq q1,q1,q5                  /* phase bit 2 */
+    ee.zero.q q3
+    ee.zero.q q4
+    ee.zero.q q5
+    ee.vzip.8 q2,q3
+    ee.vzip.8 q0,q4
+    ee.vzip.8 q1,q5
+    lofty_bits q2,q0,q1,0
+    lofty_bits q2,q0,q1,4
+    lofty_bits q3,q4,q5,0
+    lofty_bits q3,q4,q5,4
 .Llofty_end:
     retw
     .size dvbs2_pie_lofty,.-dvbs2_pie_lofty

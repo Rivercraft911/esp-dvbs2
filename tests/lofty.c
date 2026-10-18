@@ -146,6 +146,12 @@ static void encoder(void)
                 memcpy(bits,ws->bits,DVBS2_FEC_BYTES);
                 assert(dvbs2_fast_cache_size(f) <= 32768);
                 assert(!dvbs2_fast_cache_tables(f,(uint8_t *)cache));
+                if (m->t > 8 && !(m->kbch%16)) {
+                    memset((uint8_t *)map+1024+DVBS2_BCH_PAIR_BYTES,0xa5,16);
+                    assert(!dvbs2_fast_cache_bch_pair(f,(uint8_t *)map+1024));
+                    for (unsigned j = 0; j < 16; ++j)
+                        assert(((uint8_t *)map)[1024+DVBS2_BCH_PAIR_BYTES+j] == 0xa5);
+                }
                 assert(!dvbs2_fast_bb_gcs(f,ws,payload,8*bytes));
                 dvbs2_fast_bch(f,ws);
                 assert(!memcmp(bits,ws->bits,m->nbch/8));
@@ -186,6 +192,7 @@ static void encoder(void)
         for (unsigned i = 0; i < bytes; ++i) { x ^= x<<13; x ^= x>>17; x ^= x<<5; payload[i] = x; }
         assert(!dvbs2_fast_prepare(f,m,1,15 | (mc == 11 ? DVBS2_MAP_QUADS : 0)));
         assert(!dvbs2_fast_cache_tables(f,(uint8_t *)cache));
+                if (m->t > 8 && !(m->kbch%16)) assert(!dvbs2_fast_cache_bch_pair(f,(uint8_t *)map+1024));
         if (mc != 11) assert(!dvbs2_fast_lofty_cache(f,map));
         else for (unsigned w = 0; w < 1024; ++w) {
             table[w] = 0;

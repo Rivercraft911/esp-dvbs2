@@ -22,6 +22,9 @@ def operands(ins):
         return [(a[1]+'.'+str(int(a[4])//2),1),(a[2],1)],[(a[0]+'.'+a[3],2)]
     if op == 'ee.movi.32.a': return [(a[0]+'.'+a[2],1)],[(a[1],1)]
     if op == 'ee.movi.32.q': return [(a[1],1)],[(a[0]+'.'+a[2],1)]
+    if op == 'ee.notq': return [(a[1],1)],[(a[0],1)]
+    if op == 'ee.vld.l.64.ip':
+        return [(a[1],1)],[(a[0]+'.0',2),(a[0]+'.1',2),(a[1],1)]
     if op == 'ee.zero.q': return [],[(a[0],1)]
     if op == 'ee.vadds.s16': return [(a[1],1),(a[2],1)],[(a[0],1)]
     if op.startswith(('ee.vzip.','ee.vunzip.','ee.srci.2q')):
@@ -113,9 +116,11 @@ def report(trace,disassembly):
             yield dict(kind='encoder_model',modcod=mc,frame=frame,stages=stages,kernel_cycles=kernel,
                        input_copy_planning_floor=4823,total_cycles=kernel+4823,
                        sensitivity_25_percent=math.ceil(1.25*kernel)+4823,
-                       frame_cycles=duration,ceiling_cycles=203685 if mc == 11 else 169784,
+                       frame_cycles=duration,ceiling_cycles=193848 if mc == 11 else 160000,
                        core0_bank_cycles=core0,publication_wake_allowance_per_bank=1000,
-                       reserve_15_percent=core0 <= 40137,
+                       radio_off_reserve_15_percent=core0 <= 40137,
+                       keyed_tx_planning_cycles=46000 if mc == 11 else 38344,
+                       keyed_reserve_target_met=kernel+4823 <= (157685 if mc == 11 else 132000),
                        first_publication_cycles=kernel-stages['frame']['cycles']+4823,measured=False)
         yield dict(kind='encoder_pair',modcod=mc,mean_cycles=sum(frames)/2+4823,
                    max_cycles=max(frames)+4823,measured=False)

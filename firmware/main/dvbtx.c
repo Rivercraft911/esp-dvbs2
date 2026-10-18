@@ -24,6 +24,7 @@
 #include "esp_cpu.h"
 #include "esp_heap_caps.h"
 #include "esp_rom_crc.h"
+#include "esp_task_wdt.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -70,6 +71,7 @@ typedef struct {
     unsigned den, history, span;   // exact sps = table.n / den
     bool moon;                    // core-0 sign mapper / core-1 renderer
     bool lofty;
+    bool poll;
     bool page_wake;                // diagnostic comparison with the original publication path
     unsigned queue_pages, wake_pages;
     lofty_page *lofty_pages;
@@ -117,6 +119,10 @@ typedef struct {
     uint8_t *tables;               // moon: complete resident encoder data
     uint8_t *bch;                  // resident byte table with internal workspace, t = 10/12
     bool bch_borrowed;
+    uint8_t *pair_bch;
+    bool watch_worker;
+    uint32_t watch_clock;
+    unsigned priority;
     bool ws_borrowed;
     bool quads;                     // four QPSK codes/byte, block shaper
     bool packed;                    // all fast rates: packed internal ring
@@ -182,21 +188,41 @@ static uint32_t next_byte(uint32_t *x)
     return *x & 0xff;
 }
 
-// Mapping and publication run on the encoder task. Only a full queue sleeps;
-// no preparation task, packed frame ring or between-stage pumping remains.
+// Polling runs below Wi-Fi's priority. Full-queue waits, including polling,
+// are excluded from work; interrupts while encoding remain in the stage times.
+static void encoder_watch(void)
+{
+    uint32_t now = esp_cpu_get_cycle_count();
+    if (enc.watch_worker && now-enc.watch_clock >= 24000000) {
+        (void)esp_task_wdt_reset();
+        enc.watch_clock = now;
+    }
+}
+
 static void moon_wait(void)
 {
     const uint32_t before = esp_cpu_get_cycle_count();
     const bool live = __atomic_load_n(&dvb.consumed,__ATOMIC_ACQUIRE) != 0;
-    __atomic_store_n(&dvb.waiting,1,__ATOMIC_RELEASE);
-    if (!enc.stop && dvb.produced-__atomic_load_n(&dvb.consumed,__ATOMIC_ACQUIRE) == dvb.queue_pages)
-        ulTaskNotifyTake(pdTRUE,portMAX_DELAY);
-    __atomic_store_n(&dvb.waiting,0,__ATOMIC_RELEASE);
+    if (dvb.poll) {
+        // Single producer/single consumer: the acquire pairs with each released
+        // page. Core 1 makes no kernel call, even at a physical bank wrap.
+        while (!enc.stop && dvb.produced-__atomic_load_n(&dvb.consumed,__ATOMIC_ACQUIRE) == dvb.queue_pages) {
+#ifdef __XTENSA__
+            // Space shared-SRAM reads by 32 issue cycles (133 ns at 240 MHz).
+            __asm__ volatile(".rept 32\n nop\n .endr\n");
+#endif
+            encoder_watch();
+        }
+    } else {
+        __atomic_store_n(&dvb.waiting,1,__ATOMIC_RELEASE);
+        if (!enc.stop && dvb.produced-__atomic_load_n(&dvb.consumed,__ATOMIC_ACQUIRE) == dvb.queue_pages)
+            ulTaskNotifyTake(pdTRUE,enc.watch_worker ? pdMS_TO_TICKS(100) : portMAX_DELAY);
+        encoder_watch();
+        __atomic_store_n(&dvb.waiting,0,__ATOMIC_RELEASE);
+    }
     const uint32_t cycles = esp_cpu_get_cycle_count()-before;
     dvb.queue_wait_cycles += cycles;
     if (cycles > dvb.queue_wait_max) dvb.queue_wait_max = cycles;
-    // Exclude prefill through the opening ID and the stop after the closing ID.
-    // The unfiltered maximum above retains both, including failed-run stops.
     if (live && !enc.stop && cycles > dvb.queue_wait_live_max) dvb.queue_wait_live_max = cycles;
 }
 
@@ -284,7 +310,7 @@ static IRAM_ATTR esp_err_t moon_shape(uint32_t *dst, uint64_t first, size_t coun
             dvb.page_sample = 0;
             if (++dvb.get_index == dvb.queue_pages) dvb.get_index = 0;
             __atomic_store_n(&dvb.consumed,get+1,__ATOMIC_RELEASE);
-            if (put-get-1 <= dvb.queue_pages-dvb.wake_pages) {
+            if (!dvb.poll && put-get-1 <= dvb.queue_pages-dvb.wake_pages) {
                 if (dvb.page_wake) moon_wake();
                 else dvb.wake_pending = true;
             }
@@ -467,7 +493,20 @@ static void encoder_task(void *arg)
     uint8_t *const payload = e->payload;
     uint32_t x = SEED;
     const unsigned input = spi_input_type();
+    bool watch_idle = false;
     dvbs2_ts_state ts = {0};
+    if (dvb.lofty) {
+        // As on core 1, watch the busy task instead of its idle task. Keep
+        // this subscription through diagnostic wake policies and restore it.
+        TaskHandle_t idle = xTaskGetIdleTaskHandleForCore(0);
+        if (esp_task_wdt_status(idle) == ESP_OK) {
+            if (esp_task_wdt_delete(idle) != ESP_OK) { e->failed = true; goto done; }
+            watch_idle = true;
+        }
+        if (esp_task_wdt_add(NULL) != ESP_OK) { e->failed = true; goto done; }
+        e->watch_worker = true;
+        e->watch_clock = esp_cpu_get_cycle_count();
+    }
     if (spi_input_start() != ESP_OK) { e->failed = true; goto done; }
     e->input_started = true;
     if (dvb.moon && !input) {
@@ -488,6 +527,7 @@ static void encoder_task(void *arg)
         dvb.last_word = dvb.page_blocks = 0;
     }
     for (uint32_t f = 0; !e->stop; ++f) {
+        encoder_watch();
         uint8_t *out = NULL;
         while (!dvb.moon && !(out = ring_slot(&dvb.ring, f))) {
             if (e->stop) {
@@ -513,6 +553,7 @@ static void encoder_task(void *arg)
                     if (got) e->input_partial++;
                     else {
                         e->input_waits++;
+                        encoder_watch();
                         ulTaskNotifyTake(pdTRUE, 1);
                     }
                 }
@@ -590,6 +631,8 @@ static void encoder_task(void *arg)
         }
     }
 done:
+    if (e->watch_worker) (void)esp_task_wdt_delete(NULL);
+    if (watch_idle) (void)esp_task_wdt_add(xTaskGetIdleTaskHandleForCore(0));
     spi_input_stop();
     e->stack_min_free = uxTaskGetStackHighWaterMark(NULL);
     xSemaphoreGive(e->exited);
@@ -612,6 +655,7 @@ static void release(void)
     heap_caps_free(dvb.samples);
     dvb.samples = NULL;
     heap_caps_free(enc.tables);
+    heap_caps_free(enc.pair_bch);
     heap_caps_free(enc.fast);
     if (!enc.input_borrowed) heap_caps_free(enc.input);
     enc.input = NULL;
@@ -626,7 +670,7 @@ static void release(void)
         heap_caps_free(enc.slots);
         heap_caps_free(enc.filler);
     }
-    enc.tables = NULL;
+    enc.tables = enc.pair_bch = NULL;
     enc.fast = NULL, enc.ws = NULL, enc.bch = enc.block = enc.payload = enc.slots = enc.filler = NULL;
 }
 
@@ -658,9 +702,10 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
     dvb.dac_rate = dac_rate;
     dvb.moon = moon;
     dvb.lofty = lofty;
-    dvb.page_wake = false;
-    dvb.queue_pages = lofty ? (modcod == 17 ? 44 : modcod == 13 ? 48 : LOFTY_PAGES) : MACHINE_PAGES;
-    dvb.wake_pages = lofty ? LOFTY_WAKE : MACHINE_WAKE_PAGES;
+    dvb.poll = lofty;
+    dvb.page_wake = !lofty;
+    dvb.queue_pages = lofty ? (modcod == 17 ? 46 : modcod == 13 ? 54 : LOFTY_PAGES) : MACHINE_PAGES;
+    dvb.wake_pages = lofty ? 1 : MACHINE_WAKE_PAGES;
     dvb.pages = NULL;
     dvb.lofty_pages = NULL;
     dvb.last_word = 0;
@@ -832,7 +877,7 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
         enc.filler = enc.ws ? (uint8_t *)enc.ws+DVBS2_FAST_WORKSPACE_USED : NULL;
     if (!moon) dvb.win_bytes = quads ? 2 + (RADIO_S3_BANK_WORDS + 8*sps-2)/(4*sps) + 1 :
                            SHAPER_HISTORY + (RADIO_S3_BANK_WORDS + sps - 1) / sps + 2;
-    if (enc.ws_borrowed && sps == 3) store_used += DVBS2_FAST_WORKSPACE_USED;
+    if (!moon && enc.ws_borrowed && sps == 3) store_used += DVBS2_FAST_WORKSPACE_USED;
     if (enc.packed) enc.payload = dvbs2_fast_payload(enc.fast);
     if (!moon) dvb.win = enc.ws_borrowed && sps == 3 ? (uint8_t *)enc.ws+DVBS2_FAST_WORKSPACE_USED : resident ? (enc.ws ? (uint8_t *)enc.ws + DVBS2_FAST_WORKSPACE_USED : NULL) :
                         heap_caps_aligned_alloc(16, dvb.win_bytes, internal);
@@ -876,6 +921,13 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
             heap_caps_free(taps); release();
             printf("@{\"cmd\":\"%s\",\"error\":\"encoder cache allocation failed\"}\n",cmd);
             return 0;
+        }
+    }
+    if (lofty && mode->t > 8) {
+        enc.pair_bch = heap_caps_aligned_alloc(16,DVBS2_BCH_PAIR_BYTES,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+        if (!enc.pair_bch || dvbs2_fast_cache_bch_pair(enc.fast,enc.pair_bch)) {
+            printf("@{\"cmd\":\"%s\",\"error\":\"BCH pair allocation failed\"}\n",cmd);
+            heap_caps_free(taps); release(); return 0;
         }
     }
     if (enc.packed) {
@@ -943,8 +995,11 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
                       resident && !moon && !(enc.ws_borrowed && sps == 3) ? (uint8_t *)enc.ws+ws_used : NULL,
                       resident && !moon && !(enc.ws_borrowed && sps == 3) && ws_used < sizeof *enc.ws ? sizeof *enc.ws-ws_used : 0);
 
+    // A polling task must not outrank its command task: prefill and stop
+    // need that task to run while the queue is full. Wi-Fi can preempt both.
+    enc.priority = lofty ? uxTaskPriorityGet(NULL) : moon ? MOON_PRIORITY : ENCODER_PRIORITY;
     enc.exited = xSemaphoreCreateBinaryStatic(&exited_storage);
-    if (xTaskCreatePinnedToCore(encoder_task, "encoder", ENCODER_STACK, &enc, moon ? MOON_PRIORITY : ENCODER_PRIORITY, &enc.task, 0)
+    if (xTaskCreatePinnedToCore(encoder_task, "encoder", ENCODER_STACK, &enc, enc.priority, &enc.task, 0)
             != pdPASS) {
         printf("@{\"cmd\":\"%s\",\"error\":\"encoder task failed\"}\n", cmd);
         release();
@@ -1020,11 +1075,12 @@ static void stop_encoder(void)
     printf(",\"payload_source\":\"%s\",\"input_frames\":%u,\"input_memory\":\"%s\",\"input_prepare_cycles\":%" PRIu32
            ",\"encoder_priority\":%u,\"encoder_pie\":%u,\"encode_frame_work_cycles_mean\":%" PRIu64 ",\"encode_frame_work_cycles_live_max\":%" PRIu32,
            enc.input ? "internal-frame" : spi_input_type() ? "spi" : "xorshift32",enc.input ? 1 : 0,
-           enc.input ? "internal" : "none",enc.input_prepare_cycles,dvb.moon ? MOON_PRIORITY : ENCODER_PRIORITY,dvbs2_fast_pie(enc.fast),
+           enc.input ? "internal" : "none",enc.input_prepare_cycles,enc.priority,dvbs2_fast_pie(enc.fast),
            enc.frames ? enc.frame_work_cycles/enc.frames : 0,enc.frame_work_live_max);
     if (dvb.moon) printf(",\"queue_wait_cycles\":%" PRIu64 ",\"queue_wait_max_cycles\":%u,\"queue_wait_live_max_cycles\":%u,\"prepare_max_ticks\":%u,\"queue_page_gap_max_cycles\":%u,\"queue_page_samples\":%u,\"queue_wake_pages\":%u",
                          dvb.queue_wait_cycles,(unsigned)dvb.queue_wait_max,(unsigned)dvb.queue_wait_live_max,(unsigned)dvb.prepare_ticks,(unsigned)dvb.page_gap_max,MACHINE_PAGE_SAMPLES,dvb.wake_pages);
-    if (dvb.moon) printf(",\"queue_wake_policy\":\"%s\"",dvb.page_wake ? "page" : "bank");
+    if (dvb.moon) printf(",\"queue_wake_policy\":\"%s\"",dvb.poll ? "poll" : dvb.page_wake ? "page" : "bank");
+    if (dvb.moon) printf(",\"bch_pair_psram_bytes\":%u",enc.pair_bch ? DVBS2_BCH_PAIR_BYTES : 0);
     if (dvb.moon) printf(",\"warmup_frames\":%u,\"warmup_cycles\":%u",(unsigned)enc.warmup_frames,(unsigned)enc.warmup_cycles);
     if (dvb.moon) printf(",\"encode_work_cycles_mean\":%" PRIu64 ",\"encode_work_cycles_live_max\":%" PRIu32,
                          enc.frames ? enc.work_cycles/enc.frames : 0,enc.work_live_max);
@@ -1050,7 +1106,7 @@ static void stop_encoder(void)
            (unsigned)heap_caps_get_allocated_size(enc.fast),
            enc.bch && !enc.bch_borrowed ? (unsigned)heap_caps_get_allocated_size(enc.bch) : 0,
            enc.bch || enc.tables ? DVBS2_BCH_CACHE_BYTES : 0,
-           enc.tables ? (enc.mode->t == 8 ? "resident-pair" : "resident-byte") : enc.bch ? "resident-byte" : enc.packed && (dvb.moon || enc.mode->bits_per_symbol == 2 || dvb.table.n == 4)
+           enc.tables ? (enc.pair_bch ? "split-pair" : enc.mode->t == 8 ? "resident-pair" : "resident-byte") : enc.bch ? "resident-byte" : enc.packed && (dvb.moon || enc.mode->bits_per_symbol == 2 || dvb.table.n == 4)
                                       && enc.mode->t == 8 && (enc.quads || enc.mode->bits_per_symbol == 3) && !spi_input_type() ? "flash-pair" : "nibble",
            !enc.packed ? "none" : dvb.lofty ? "words" : dvb.moon ? "signs" : enc.quads ? "quads" : enc.mode->bits_per_symbol == 2 || dvb.table.n == 4 ? "direct" : "sparse");
     printf(",\"encoder_stack_bytes\":%u,\"encoder_stack_min_free\":%u", ENCODER_STACK, (unsigned)enc.stack_min_free);
@@ -1157,13 +1213,17 @@ void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, 
 }
 
 void dvbtx_pace(unsigned modcod, uint32_t seconds, unsigned level, unsigned stall_ms,
-                 unsigned sps, uint32_t dac_rate, bool page_wake, bool observer)
+                 unsigned sps, uint32_t dac_rate, unsigned wake_policy, bool observer)
 {
     const size_t symbols = start_encoder("dvbpace", modcod, level, stall_ms, sps, dac_rate);
     if (!symbols) {
         return;
     }
-    dvb.page_wake = page_wake;
+    if (wake_policy) {
+        dvb.poll = false;
+        dvb.page_wake = wake_policy == 1;
+        if (dvb.lofty) dvb.wake_pages = LOFTY_WAKE;
+    }
     stream_jitter_enable(observer && dvb.moon);
     radio_s3_stats_t s;
     const esp_err_t err = (dvb.moon ? radio_s3_paced_wifi_rate : radio_s3_paced_run_rate)(seconds, dac_rate, fill, NULL, &s);

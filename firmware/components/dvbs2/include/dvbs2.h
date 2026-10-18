@@ -114,6 +114,11 @@ int dvbs2_fast_prepare(dvbs2_fast *f, const dvbs2_mode *mode, int pilots, unsign
  * Returns -1 for invalid context/alignment or t = 8. No allocation is hidden. */
 #define DVBS2_BCH_CACHE_BYTES 8192
 int dvbs2_fast_cache_bch(dvbs2_fast *f, uint8_t *table);
+/* Optional t=10/12 pairs, even byte counts only. Call after cache_tables,
+ * with a separate aligned low table. Uses the resident table's high padding;
+ * both buffers live until prepare/cache_bch. No internal allocation. */
+#define DVBS2_BCH_PAIR_BYTES 4096
+int dvbs2_fast_cache_bch_pair(dvbs2_fast *, uint8_t *low);
 /* Optional complete hot-data cache (PRBS, Gold, BCH, LDPC
  * program/columns and GCS header CRC). After prepare, allocate cache_size()
  * aligned internal bytes, then cache_tables(). Buffer remains owned by caller
@@ -177,8 +182,8 @@ unsigned dvbs2_fast_sign_read(const dvbs2_fast *f, dvbs2_sign_state *s, uint32_t
                               unsigned blocks, const uint32_t *lut);
 
 // 8PSK: four chronological phases per 12-bit word. Partial groups survive EOF.
-// table is 1088 caller-owned internal bytes; prepare first, then cache once.
-#define DVBS2_LOFTY_CACHE_BYTES 1088
+// table is 1024 caller-owned internal bytes; prepare first, then cache once.
+#define DVBS2_LOFTY_CACHE_BYTES 1024
 int dvbs2_fast_lofty_cache(dvbs2_fast *, uint32_t *table);
 int dvbs2_fast_lofty_start(dvbs2_fast *, const dvbs2_workspace *, dvbs2_sign_state *);
 // Borrow up to *blocks framed words, with 16 readable guard bytes; advance at.
