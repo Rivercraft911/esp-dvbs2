@@ -70,11 +70,32 @@ static bool tx_mode(const char *code, char **count, char **save, uint32_t *modco
     return true;
 }
 
+/* Remove a standalone opt-in token before the existing positional parser. */
+static bool take_option(char *args, const char *flag, bool *enabled)
+{
+    *enabled = false;
+    const size_t length = strlen(flag);
+    for (char *p = args; *p;) {
+        if (*p == ' ' || *p == '\t') { ++p; continue; }
+        char *end = p;
+        while (*end && *end != ' ' && *end != '\t') ++end;
+        if ((size_t)(end - p) == length && !strncmp(p, flag, length)) {
+            if (*enabled) return false;
+            *enabled = true;
+            memset(p, ' ', end - p);
+        }
+        p = end;
+    }
+    return true;
+}
+
 static void cmd_dvb(char *args)
 {
     if (!station_require("dvb")) {
         return;
     }
+    bool fixture;
+    const bool source_ok = take_option(args,"--fixture",&fixture);
     char *save, *mhz = strtok_r(args, " \t", &save);
     char *code = strtok_r(NULL, " \t", &save);
     char *duration = strtok_r(NULL, " \t", &save);
@@ -84,15 +105,16 @@ static void cmd_dvb(char *args)
     char *peak = strtok_r(NULL, " \t", &save);
     char *extra = strtok_r(NULL, " \t", &save);
     uint32_t freq, seconds, gain = RADIO_S3_GAIN_DEFAULT, top = 128;
-    if (!number(mhz, 2390, 2450, &freq) || !mode_ok ||
+    if (!source_ok || !number(mhz, 2390, 2450, &freq) || !mode_ok ||
+        (fixture && !(sps == DVB_SPS_12_5 || (sps == 3 && modcod >= 12))) ||
         !number(duration, 1, 60, &seconds) ||
         (level && !number(level, 0, RADIO_S3_GAIN_MAX, &gain)) ||
         (peak && !number(peak, 16, 508, &top)) || extra) {
         printf("@{\"cmd\":\"dvb\",\"error\":\"usage: dvb <2390..2450 MHz> <modcod 4..17> [5m|10m|20m|26m667|33m333] "
-               "<1..60 seconds> [0..17 gain] [16..508 peak]\"}\n");
+               "<1..60 seconds> [0..17 gain] [16..508 peak] [--fixture]\"}\n");
         return;
     }
-    dvbtx_run(freq, modcod, seconds, gain, top, sps, rate);
+    dvbtx_run(freq, modcod, seconds, gain, top, sps, rate, fixture);
 }
 
 static void cmd_dvbdump(char *args)

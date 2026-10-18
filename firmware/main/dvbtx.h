@@ -11,8 +11,9 @@
 // QPSK/8PSK encoded on core 0 and shaped on core 1. Measured 80 MS/s modes
 // use QPSK blocks at 3/4 sps and short 8PSK at 4 sps. QPSK 12/5 sps uses a persistent prepare/render queue, roll-off .20.
 // Timing evidence and remaining margins are in docs/measurements.md.
+// fixture repeats dvbpace's prepared frame; requires a queued rate and payload input off.
 void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, unsigned level,
-                unsigned sps, uint32_t dac_rate);
+                unsigned sps, uint32_t dac_rate, bool fixture);
 
 // dvbdump command: the same encoder and fill sequence without the radio. Every decim-th played
 // sample goes out over USB as int16 I/Q after a record carrying binary_bytes. dac_rate picks the

@@ -1071,8 +1071,8 @@ static size_t packed_bytes(size_t symbols)
 
 // Build the scaled table and the dummy frame, start the encoder on core 0 and wait until it has
 // filled every slot. Returns the frame length in symbols, or 0 after printing an error for `cmd`.
-static size_t start_encoder_traced(const char *cmd, unsigned modcod, unsigned level, unsigned stall_ms,
-                                   unsigned sps, uint32_t dac_rate, bool trace, unsigned pages, bool auto_pages)
+static size_t start_encoder_source(const char *cmd, unsigned modcod, unsigned level, unsigned stall_ms,
+                                   unsigned sps, uint32_t dac_rate, bool trace, unsigned pages, bool auto_pages, bool fixture)
 {
     const dvbs2_mode *mode = dvbs2_find_mode(modcod);
     const bool fractional = sps == DVB_SPS_12_5;
@@ -1088,6 +1088,11 @@ static size_t start_encoder_traced(const char *cmd, unsigned modcod, unsigned le
         return 0;
     }
     const size_t symbols = dvbs2_frame_symbols(mode, PILOTS);
+    const bool input = spi_input_type() != 0;
+    if (fixture && (!moon || input)) {
+        printf("@{\"cmd\":\"%s\",\"error\":\"fixture needs QPSK 33m333 or 8PSK 26m667 and payload input off\"}\n",cmd);
+        return 0;
+    }
     if (trace && !lofty) {
         printf("@{\"cmd\":\"%s\",\"error\":\"trace needs lofty\"}\n",cmd);
         return 0;
@@ -1158,7 +1163,6 @@ static size_t start_encoder_traced(const char *cmd, unsigned modcod, unsigned le
     }
     const uint32_t internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     const size_t payload_bytes = (mode->kbch - 80) / 8;
-    const bool input = spi_input_type() != 0;
     size_t store_used = shaper_table_words(sps, mode->bits_per_symbol) * 4;
     enc.packed = sps != 40;
     enc.quads = quads;
@@ -1409,7 +1413,7 @@ static size_t start_encoder_traced(const char *cmd, unsigned modcod, unsigned le
     }
     ring_filler_length(&dvb.ring, DVBS2_DUMMY_SYMBOLS);
 
-    if (moon && !input && !strcmp(cmd,"dvbpace")) {
+    if (moon && !input && (fixture || !strcmp(cmd,"dvbpace"))) {
         const size_t at = (store_used+15) & ~(size_t)15;
         enc.input_borrowed = at+payload_bytes <= sizeof shaper_store;
         enc.input = enc.input_borrowed ? (uint8_t *)shaper_store+at :
@@ -1465,6 +1469,12 @@ static size_t start_encoder_traced(const char *cmd, unsigned modcod, unsigned le
     }
     enc.prefill_frames = moon ? enc.frames : __atomic_load_n(&dvb.ring.published,__ATOMIC_ACQUIRE);
     return symbols;
+}
+
+static size_t start_encoder_traced(const char *cmd, unsigned modcod, unsigned level, unsigned stall_ms,
+                                   unsigned sps, uint32_t dac_rate, bool trace, unsigned pages, bool auto_pages)
+{
+    return start_encoder_source(cmd,modcod,level,stall_ms,sps,dac_rate,trace,pages,auto_pages,false);
 }
 
 // Stop the encoder after a run and print the stream part of the result record.
@@ -1755,12 +1765,12 @@ static void print_wifi(const radio_s3_wifi_heap_t *w)
 }
 
 void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, unsigned level,
-                unsigned sps, uint32_t dac_rate)
+                unsigned sps, uint32_t dac_rate, bool fixture)
 {
     if (!station_require("dvb")) {
         return;
     }
-    const size_t symbols = start_encoder("dvb", modcod, level, 0, sps, dac_rate);
+    const size_t symbols = start_encoder_source("dvb",modcod,level,0,sps,dac_rate,false,0,true,fixture);
     if (!symbols) {
         return;
     }
@@ -1770,6 +1780,7 @@ void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, 
     const esp_err_t err = radio_s3_run_bandwidth(freq, (uint8_t)gain, seconds, dac_rate, bandwidth,
                                                fill, NULL, &s);
     print_mode("dvb", modcod, symbols, level);
+    printf(",\"prepared_fixture\":%s",fixture ? "true" : "false");
     printf(",\"freq_mhz\":%" PRIu32 ",\"seconds\":%" PRIu32 ",\"gain\":%u,\"dac_rate\":%" PRIu32
            ",\"step_words\":%u", freq, seconds, gain, dac_rate, RADIO_S3_STEP_FOR(dac_rate));
     printf(",\"pulse_symbols\":%u", dvb.moon ? dvb.span : dvb.table.parts == 2 ? 6 : 9);

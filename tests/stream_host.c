@@ -265,9 +265,26 @@ esp_err_t radio_s3_paced_run_rate(uint32_t sec, uint32_t rate, radio_s3_fill_fn 
 esp_err_t radio_s3_paced_wifi_rate(uint32_t sec, uint32_t rate, radio_s3_fill_fn fn, void *ctx, radio_s3_stats_t *stats)
 { (void)sec; (void)rate; (void)fn; (void)ctx; (void)stats; abort(); }
 #endif
+static bool native_keyed_fixture;
+static unsigned native_keyed_frames;
+static esp_err_t discard(const uint32_t *, uint64_t, size_t, void *);
 esp_err_t radio_s3_run_bandwidth(uint32_t freq, uint8_t gain, uint32_t sec, uint32_t rate,
                                  uint32_t bandwidth, radio_s3_fill_fn fn, void *ctx, radio_s3_stats_t *stats)
-{ (void)freq; (void)gain; (void)sec; (void)rate; (void)bandwidth; (void)fn; (void)ctx; (void)stats; abort(); }
+{
+    // Public keyed API, with the radio replaced by the actual dry fill/oracle.
+    assert(native_keyed_fixture && freq == 2412 && !gain && sec == 30 && rate == 80000000);
+    assert(bandwidth == (dvb.lofty ? 36000000u : 40000000u));
+    assert(enc.input && !spi_input_type());
+    uint32_t x = SEED;
+    for (size_t i = 0; i < (enc.mode->kbch-80)/8; ++i) assert(enc.input[i] == next_byte(&x));
+    if (dvb.lofty) assert(radio_s3_stream_ready() == ESP_OK);
+    const uint64_t samples = ((uint64_t)native_keyed_frames*dvb.ring.frame_symbols*dvb.table.n+dvb.den-1)/dvb.den;
+    radio_s3_dry_stats_t dry;
+    memset(stats,0,sizeof *stats);
+    const esp_err_t err = radio_s3_dry_run_rate(fn,ctx,samples,rate,discard,NULL,&dry);
+    stats->fills = dry.fills;
+    return err;
+}
 void radio_filter_print(const radio_filter_stats_t *stats) { (void)stats; }
 static unsigned wifi_probes;
 static esp_err_t discard(const uint32_t *bank, uint64_t first, size_t count, void *ctx)
@@ -353,6 +370,10 @@ int main(int argc, char **argv)
     // Every command-owned allocation can fail: count them on a good start, then fail each.
     // Cleanup must leave no live allocations.
     allocation_count = 0;
+    if (!moon || native_input) {
+        assert(!start_encoder_source("dvb",mc,128,0,sps,rate,false,0,true,true));
+        assert(!allocation_count && !live_allocations);
+    }
     assert(start_encoder("dvbdump", mc, 128, 0, sps, rate));
     const int allocations = allocation_count;
     const bool resident = sps != 40 && (moon || mc < 12 || sps == 4);
@@ -464,6 +485,13 @@ int main(int argc, char **argv)
                                       rate,discard,NULL,&stats));
         stop_encoder(); printf("}\n");
         assert(live_allocations == 0);
+        if (moon) {
+            native_keyed_fixture = true;
+            native_keyed_frames = frames;
+            dvbtx_run(2412,mc,30,0,128,sps,rate,true);
+            assert(!live_allocations && !enc.failed);
+            native_keyed_fixture = false;
+        }
         if (moon && !dvb.lofty && mc == 11) {
             assert(start_encoder("dvbpace",mc,128,0,sps,rate));
             id_handoff_check(rate);

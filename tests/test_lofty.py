@@ -73,6 +73,9 @@ def check(out, receiver=None):
         (out/f'{mc}.log').write_text(run.stdout+run.stderr)
         assert run.returncode == 0, run.stderr
         rows = [json.loads(l[1:]) for l in run.stdout.splitlines() if l.startswith('@{')]
+        keyed, = [r for r in rows if r.get('cmd') == 'dvb']
+        assert keyed['prepared_fixture'] and keyed['payload_source'] == 'psram-frame'
+        assert keyed['queue_pages'] == 54 and not keyed['encoder_failed'] and keyed['status'] == 'ESP_OK'
         dumps = [r for r in rows if 'crc32' in r]
         assert len(dumps) == 2 and dumps[0]['crc32'] == dumps[1]['crc32']
         r = dumps[0]

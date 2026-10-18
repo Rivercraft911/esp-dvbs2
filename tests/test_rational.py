@@ -35,6 +35,12 @@ def test(output=None, receiver=None):
             assert result.returncode == 0, (result.stdout,result.stderr)
             (out/(name+'.log')).write_text(result.stdout)
             records = [json.loads(l[1:]) for l in result.stdout.splitlines() if l.startswith('@')]
+            keyed = [r for r in records if r.get('cmd') == 'dvb']
+            if mc == 11:
+                r, = keyed
+                assert r['prepared_fixture'] and r['payload_source'] == 'internal-frame'
+                assert r['status'] == 'ESP_OK' and not r['encoder_failed']
+            else: assert not keyed
             dumps = [r for r in records if 'crc32' in r]
             assert len(dumps) == 2 and dumps[0]['crc32'] == dumps[1]['crc32']
             r = dumps[0]
