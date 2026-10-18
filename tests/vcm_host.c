@@ -85,6 +85,13 @@ int main(int argc, char **argv)
     assert(!start_encoder("dvbdump",initial,128,0,sps,40000000));
     assert(!live_allocations);
     native_task_fail=0;
+    // Exercise the formerly overflowing command path, including staged stack
+    // telemetry. The native high-water value is a stub, not a board measurement.
+    if (control) rewind(native_wire);
+    callsign="N0CALL";
+    dvbtx_wifi(initial,sps,40000000);
+    assert(!live_allocations);
+    callsign="";
     for (unsigned repeat=0;repeat<2;++repeat) {
         if (control) rewind(native_wire);
         char iq[4096]; snprintf(iq,sizeof iq,"%s.iq",argv[3]);

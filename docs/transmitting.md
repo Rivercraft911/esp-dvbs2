@@ -99,6 +99,12 @@ python3 host/decode.py fast.iq --rate 80000000 --symbol-rate 20000000 \
 python3 host/board.py "dvbpace 11 26m667 10" --timeout 120
 ```
 
+Completion records include `main_stack_bytes` and `main_stack_min_free`: the
+main task's configured stack size and minimum unused bytes since boot. The
+`wifimem` result also reports the minimum before setup, after encoder startup
+and after the Wi-Fi probe. A reboot clears the VCM pattern; confirm `vcm:true`
+in the result before treating a dump or pace as a VCM check.
+
 ## Station identification
 
 `callsign CALL` stores 3..23 ASCII characters in nonvolatile storage (NVS), normalizing

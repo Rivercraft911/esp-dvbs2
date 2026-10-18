@@ -1130,7 +1130,7 @@ static void *vcm_allocate(const char *cmd, const char *stage, size_t bytes, unsi
 // maximum context is in PSRAM, avoiding a 17,696-byte internal allocation.
 // Same-modulation patterns need only their own phase table. Mixed VCM uses
 // the common eight-phase pulse at 10m; its frame queue falls back to PSRAM.
-static bool vcm_memory(const char *cmd, const dvbs2_mode *mode, unsigned sps, unsigned level)
+static __attribute__((noinline)) bool vcm_memory(const char *cmd, const dvbs2_mode *mode, unsigned sps, unsigned level)
 {
     const unsigned internal=MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT;
     const unsigned external=MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT;
@@ -1181,11 +1181,16 @@ static bool vcm_memory(const char *cmd, const dvbs2_mode *mode, unsigned sps, un
                           (sps == 8 ? DVBS2_MAP_SPARSE : 0))) {
         vcm_allocation_error(cmd,"prepare",0,external); return false;
     }
-    int32_t taps[TAPS];
+    // This runs on main's 3584-byte stack, with shaper_build's bias array
+    // below it. Keep even the 1m pulse scratch out of that call chain.
+    const size_t tap_bytes=9*sps*sizeof(int32_t);
+    int32_t *taps=heap_caps_malloc(tap_bytes,external);
+    if (!taps) { vcm_allocation_error(cmd,"pulse taps",tap_bytes,external); return false; }
     const int32_t *source=sps == 40 ? shaper_taps_qpsk_n40_a35 :
                            sps == 8 ? shaper_taps_8psk_n8_a35 : shaper_taps_8psk_n4_a35;
     for (unsigned i=0;i<9*sps;++i) taps[i]=(int32_t)((double)source[i]*level/WORST_PEAK);
     shaper_build(&dvb.table,shaper_store,taps,sps,bits);
+    heap_caps_free(taps);
     if (enc.packed) {
         dvbs2_dummy(enc.slot[1]); dvbs2_pack(enc.slot[1],enc.filler,DVBS2_DUMMY_SYMBOLS);
         ring_init_slots(&dvb.ring,enc.slot,slots,enc.filler,DVBS2_MAX_SYMBOLS);
@@ -2028,6 +2033,7 @@ void dvbtx_dump(unsigned modcod, unsigned frames, unsigned level, unsigned decim
 
 void dvbtx_wifi(unsigned modcod, unsigned sps, uint32_t dac_rate)
 {
+    const unsigned stack_before=uxTaskGetStackHighWaterMark(NULL);
     if (!station_require("wifimem")) {
         return;
     }
@@ -2040,8 +2046,10 @@ void dvbtx_wifi(unsigned modcod, unsigned sps, uint32_t dac_rate)
     } else {
         (void)heap_caps_monitor_local_minimum_free_size_start();
     }
+    const unsigned stack_encoder=uxTaskGetStackHighWaterMark(NULL);
     radio_s3_stats_t s;
     const esp_err_t err = radio_s3_wifi_probe(&s);
+    const unsigned stack_wifi=uxTaskGetStackHighWaterMark(NULL);
     if (modcod) {
         print_mode("wifimem", modcod, symbols, 128);
         printf(",\"dac_rate\":%" PRIu32 ",\"pulse_symbols\":%u", dac_rate,
@@ -2050,6 +2058,8 @@ void dvbtx_wifi(unsigned modcod, unsigned sps, uint32_t dac_rate)
         printf("@{\"cmd\":\"wifimem\",\"modcod\":0");
     }
     print_wifi(&s.wifi);
+    printf(",\"main_stack_min_free_before\":%u,\"main_stack_min_free_after_encoder\":%u,"
+           "\"main_stack_min_free_after_wifi\":%u",stack_before,stack_encoder,stack_wifi);
     printf(",\"id_samples\":%" PRIu32 ",\"id_count\":%" PRIu32, s.id_samples, s.id_count);
     if (modcod) {
         stop_encoder();

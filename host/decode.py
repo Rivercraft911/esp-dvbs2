@@ -6,6 +6,7 @@ comes from the receiver's packet deframer. Acquisition may discard leading frame
 An expected file must occur completely and contiguously in the recovered stream.
 """
 import argparse
+from collections import Counter
 import hashlib
 import json
 import math
@@ -113,6 +114,7 @@ def summarize(status, frames, payload, expected=None):
         "receiver": "leandvb", "frame_lock": 1 in lock_events,
         "lock_at_end": bool(lock_events and lock_events[-1]),
         "modcods": modcods,
+        "frames_per_modcod": dict(sorted(Counter(a[0] for a in attempts if a[6] >= 0).items())),
         "attempted_modcods": sorted({a[0] for a in attempts}),
         "modes": [MODCODS.get(m, f"MODCOD {m}") for m in modcods],
         "fec_frames": len(attempts) if attempts else None,

@@ -143,6 +143,19 @@ covered. Existing fixed-mode golden CRC files are unchanged. These are host test
 evidence. A receiver's VCM support is required; fixed symbol rate alone does not
 guarantee seamless reception in noise.
 
+The `be6c23c` coordinator dumps each decode as 63 contiguous MODCOD-4 frames,
+matching the Python BBHEADER/data model exactly. They do not establish VCM on
+hardware: `wifimem` overflowed main's stack and rebooted, clearing the pattern
+before capture. Check `vcm:true` and `mode_frames` in each new run result.
+
+VCM pulse setup now allocates its temporary taps in PSRAM. Its compiled Xtensa
+stack frame fell from 1,504 to 64 B; it previously nested a 1,440 B tap array
+above `shaper_build`'s 960 B bias array on main's 3,584 B stack. The completion
+record reports `main_stack_bytes` and `main_stack_min_free`, in bytes since boot.
+`wifimem` also samples `main_stack_min_free_before`, `_after_encoder` and
+`_after_wifi` to distinguish pulse setup from Wi-Fi startup. Actual high-water
+readings for the fix must come from the coordinator, not the host RTOS stubs.
+
 Only the coordinator runs board steps. After flashing, keep the radio off:
 
 ```sh

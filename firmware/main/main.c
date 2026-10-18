@@ -314,6 +314,10 @@ void app_main(void)
             printf("@{\"error\":\"unknown command\",\"line\":\"%.40s\"}\n", line);
         }
         usb_input_finish();
-        printf("@{\"cmd\":\"%.40s\",\"done\":true}\n", line);
+        // ESP-IDF reports the minimum unused stack in bytes, since task start.
+        // Sample after result printing and USB recovery too, on the main task.
+        printf("@{\"cmd\":\"%.40s\",\"done\":true,\"main_stack_bytes\":%u,"
+               "\"main_stack_min_free\":%u}\n",line,(unsigned)CONFIG_ESP_MAIN_TASK_STACK_SIZE,
+               (unsigned)uxTaskGetStackHighWaterMark(NULL));
     }
 }
