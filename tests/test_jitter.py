@@ -33,8 +33,8 @@ def main():
         if mc == 15 and not observer: raise TimeoutError('injected timeout')
         r = dict(cmd='dvbpace',modcod=mc,queue_wake_policy=policy,paced_wifi_up=True,encoder_pie=15,
                      bch_variant='resident-pair' if mc in (11,17) else 'split-pair',warmup_frames=3,
-                     encoder_priority=24,
-                     fills=1,jitter_enabled=observer,seconds=int(args[3]),
+                     encoder_priority=24,admission_pages=44,dummy_startup=4,dummy_steady=2,dummy_alignment=3,
+                     fills=1,frames_played=24000,jitter_enabled=observer,seconds=int(args[3]),
                      elapsed_samples=2400000000,planned_samples=2400000000,
                      status='ESP_ERR_TIMEOUT' if mc == 17 and policy == 'page' else 'ESP_OK',
                      encoder_failed=False,queue_empty=0,underruns=0,late_fills=0,late_switches=0,
@@ -60,11 +60,18 @@ def main():
     except AssertionError as e: assert str(e) == 'incomplete pace'
     else: raise AssertionError('accepted a truncated run')
     r['elapsed_samples'] += 1
+    r['min_lead_symbols'] = 0
+    r['encode_cycles_mean'] = 300000
+    check.gate(r,17) # slow encoder and reported steady dummies are allowed
     r['min_lead_symbols'] = 2999
-    try: check.gate(r,17)
+    try: check.gate(r,11)
     except AssertionError as e: assert 'lead' in str(e)
     else: raise AssertionError('accepted lead below 3000 symbols')
+    assert not summary[6]['steady_dummy_target_met']
     r['min_lead_symbols'] = 3000
+    try: check.gate(r,11)
+    except AssertionError as e: assert 'encoder' in str(e)
+    else: raise AssertionError('accepted a slow qualified QPSK encoder')
     r['encoder_priority'] = 5
     try: check.timing([r],17,'bank',False)
     except AssertionError as e: assert str(e) == 'wrong encoder priority'

@@ -2,7 +2,7 @@
 """Radio-off clean gate plus bank/page wake diagnosis, about one minute per mode.
 
 No flashing or transmitter commands. Keep the Mac awake, for example:
-  caffeinate -i python3 host/jitter.py notes/eight-lofty-round7
+  caffeinate -i python3 host/jitter.py notes/eight-lofty-round8
 """
 import argparse
 import datetime as dt
@@ -35,6 +35,9 @@ def timing(rows, mc, policy, observer):
     assert r['encoder_priority'] == 24, 'wrong encoder priority'
     assert r['warmup_frames'] == 3, 'encoder warm-up missing'
     assert r['jitter_enabled'] == observer and ('jitter' in r) == observer, 'wrong observer state'
+    if mc != 11:
+        assert r['admission_pages'] == 44, 'wrong frame admission'
+        assert all(r[k] >= 0 for k in ('dummy_startup','dummy_steady','dummy_alignment')), 'bad dummy counts'
     if observer:
         j = r['jitter']
         assert j['complete'], 'interrupt observer capacity exceeded'
@@ -54,9 +57,9 @@ def gate(r, mc):
     assert r['late_fills'] == r['late_switches'] == r['fatal_late'] == 0, 'late bank'
     assert r['min_fill_slack_cycles'] > 0, 'no fill slack'
     assert r['max_fill_cycles'] <= 40137, f"bank {r['max_fill_cycles']} > 40137 cycles"
-    assert r['min_lead_symbols'] >= 3000, f"lead {r['min_lead_symbols']} < 3000 symbols"
-    ceiling = 193848 if mc == 11 else 160000
-    assert r['encode_cycles_mean'] <= ceiling, f"encoder {r['encode_cycles_mean']} > {ceiling} cycles/frame"
+    if mc == 11:
+        assert r['min_lead_symbols'] >= 3000, f"lead {r['min_lead_symbols']} < 3000 symbols"
+        assert r['encode_cycles_mean'] <= 193848, f"encoder {r['encode_cycles_mean']} > 193848 cycles/frame"
     assert r['wifi_min_free'] >= 20000, f"Wi-Fi minimum {r['wifi_min_free']} < 20000 B"
     assert r['encoder_stack_min_free'] >= 512, 'encoder stack < 512 B'
 
@@ -74,9 +77,12 @@ def suite(send, firmware, seconds, observe_seconds=5):
                        queue_wakes=r['queue_wakes'],queue_low_pages=r['queue_low_pages'],
                        queue_empty=r['queue_empty'],prefill_frames=r['prefill_frames'],
                        warmup_frames=r['warmup_frames'],wifi_min_free=r['wifi_min_free'],
+                       frames_played=r['frames_played'],
                        min_lead_symbols=r['min_lead_symbols'],encode_cycles_live_max=r['encode_cycles_live_max'])
             if 'queue_fault' in r: row['queue_fault'] = r['queue_fault']
-            if mc != 11: row['keyed_reserve_target_met'] = r['encode_cycles_mean'] <= 132000
+            if mc != 11:
+                row.update({k:r[k] for k in ('dummy_startup','dummy_steady','dummy_alignment')})
+                row['steady_dummy_target_met'] = r['dummy_steady'] == 0
             if observer: row['worst_bank'] = r['jitter']['worst_bank']
             # Instrumented runs diagnose the lock; only the clean default run is
             # admitted. Keep faults in the raw records and always finish the suite.
@@ -88,9 +94,9 @@ def suite(send, firmware, seconds, observe_seconds=5):
         print(f"{row['verdict']}: {mc} {rate} {policy} {'observed' if observer else 'clean'}: "+
               (f"bank {row['max_fill_cycles']} cycles, encoder {row['encode_cycles_mean']} cycles/frame"
                if 'max_fill_cycles' in row else row.get('detail',''))+
-              (f"; lead {row['min_lead_symbols']} symbols, {row['status']}" if 'status' in row else '')+
-              ('; 132k reserve target '+('met' if row['keyed_reserve_target_met'] else 'open')
-               if 'keyed_reserve_target_met' in row else '')+
+              (f"; data frames {row['frames_played']}, lead {row['min_lead_symbols']} symbols, {row['status']}" if 'status' in row else '')+
+              (f"; dummies startup {row['dummy_startup']}, steady {row['dummy_steady']} (target 0), alignment {row['dummy_alignment']}"
+               if 'dummy_startup' in row else '')+
               (f"; notify max {row['worst_bank']['notify_max_cycles']} cycles in worst bank"
                if 'worst_bank' in row else '')+
               (f"; {row['detail']}" if 'max_fill_cycles' in row and 'detail' in row else ''),flush=True)

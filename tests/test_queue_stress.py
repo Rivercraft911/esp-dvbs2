@@ -19,9 +19,9 @@ def test(out):
             rows = [json.loads(l[1:]) for l in r.stdout.splitlines() if l.startswith('@{')]
             result = next(row for row in rows if row.get('test') == 'queue_stress')
             assert result['pages'] == 4096 and result['wraps'] >= 75
-            assert result['early_notifications'] >= 20
-            assert result['waveform_hash'] == hashes.setdefault(mc,result['waveform_hash'])
-            print(name,'4096 pages intact; bank wakes and pending notifications preserved',flush=True)
+            assert result['early_notifications'] == 1
+            assert result['data_hash'] == hashes.setdefault(mc,result['data_hash'])
+            print(name,'4096 pages intact; late producer replaced by dummies; data intact',flush=True)
 
 
 if __name__ == '__main__':

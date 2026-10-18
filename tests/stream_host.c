@@ -4,11 +4,36 @@
 #include "ring.h"
 static int checked_window(ring_t *, uint8_t *, size_t, uint64_t, size_t, unsigned, unsigned, unsigned);
 static int checked_task(void (*)(void *), const char *, unsigned, void *, unsigned, TaskHandle_t *, int);
+static uint32_t checked_load(const volatile uint32_t *, int);
+#define __atomic_load_n checked_load
 #define xTaskCreatePinnedToCore checked_task
 #define ring_window checked_window
 #include "dvbtx.c"
 #undef ring_window
 #undef xTaskCreatePinnedToCore
+#undef __atomic_load_n
+
+static uint32_t checked_load(const volatile uint32_t *p, int order)
+{
+    static unsigned forced_mask;
+    if (p == &lofty_mux.published && !current && !getenv("UNPACED_LOFTY")) {
+        // Host-only producer pacing at admission, without changing physical
+        // bank callbacks. The hardware consumer never waits here.
+        if (!lofty_mux.output) forced_mask = 0;
+        unsigned bit = lofty_mux.frames == 0 ? 1 : lofty_mux.frames == 1 ? 2 : lofty_mux.frames == 5 ? 4 : 0;
+        if (getenv("FORCE_DUMMIES") && bit && !(forced_mask&bit)) {
+            forced_mask |= bit;
+            return lofty_mux.frames; // force a not-ready admission snapshot
+        }
+        moon_wake();
+        unsigned wait = 0;
+        while (!((lofty_mux.startup+lofty_mux.steady)&1) &&
+               __atomic_load_n(p,order) == lofty_mux.frames) {
+            assert(++wait < 5000); vTaskDelay(1);
+        }
+    }
+    return __atomic_load_n(p,order);
+}
 
 static int checked_task(void (*fn)(void *), const char *name, unsigned stack, void *arg,
                         unsigned priority, TaskHandle_t *task, int core)
@@ -130,7 +155,7 @@ static void bank_fill(radio_s3_fill_fn fn, void *ctx, unsigned b, uint64_t first
         const size_t needed = (end_symbol + dvb.ring.frame_symbols - 1) / dvb.ring.frame_symbols;
         // Host correctness test only: wait for the native encoder, with a deadlock timeout.
         unsigned tries = 0;
-        while (dvb.moon ? dvb.queue_sample+
+        while (dvb.lofty ? false : dvb.moon ? dvb.queue_sample+
                (uint32_t)(__atomic_load_n(&dvb.produced,__ATOMIC_ACQUIRE)-dvb.consumed)*MACHINE_PAGE_SAMPLES-
                dvb.page_sample < at+count :
                __atomic_load_n(&dvb.ring.published,__ATOMIC_ACQUIRE) < needed) {
@@ -145,7 +170,7 @@ static void bank_fill(radio_s3_fill_fn fn, void *ctx, unsigned b, uint64_t first
             else assert(!dvb.wake_pending);
         }
         if (dvb.moon) {
-            if (!dvb.page_wake && !getenv("EARLY_WAKE")) {
+            if (!dvb.lofty && !dvb.page_wake && !getenv("EARLY_WAKE")) {
                 if (offset && !p) assert(enc.task->notifications_sent == sent);
                 else assert(enc.task->notifications_sent-sent <= 1 && !dvb.wake_pending);
             }

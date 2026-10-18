@@ -1,25 +1,6 @@
 // TRM v1.8 1.7, Table 1.7-2: single issue, load-use interlocks.
 // Queue words contain scaled offsets. No bank preparation or multiplication.
-    .section .iram1.lofty,"ax"
-    .global lofty_render_pie
-    .type lofty_render_pie,@function
-    .align 4
-lofty_render_pie:
-    entry a1,32
-    beqz a4,.Ldone
-    movi a8,0x80200
-    ee.movi.32.q q7,a8,0
-    ee.movi.32.q q7,a8,1
-    ee.movi.32.q q7,a8,2
-    ee.movi.32.q q7,a8,3
-    movi a6,10240
-    add a6,a6,a5
-    movi a7,34816
-    add a7,a7,a5
-    addmi a13,a5,8192
-    movi a15,1024
-    l32i a8,a3,0
-    loopnez a4,.Lend
+    .macro lofty_word offset,advance
     extui a10,a8,0,13
     extui a11,a8,9,15
     extui a12,a8,20,10
@@ -40,11 +21,43 @@ lofty_render_pie:
     ee.vadds.s32.st.incp q4,a2,q5,q5,q3
     ee.xorq q4,q6,q7
     ee.vadds.s32.st.incp q4,a2,q5,q5,q0
-    addi a3,a3,4
-    l32i a8,a3,0
+    .if \advance
+    addi a3,a3,\advance
+    .endif
+    l32i a8,a3,\offset
     ee.xorq q4,q5,q7
     ee.vst.128.ip q4,a2,16
+    .endm
+    .section .iram1.lofty,"ax"
+    .global lofty_render_pie
+    .type lofty_render_pie,@function
+    .align 4
+lofty_render_pie:
+    entry a1,32
+    beqz a4,.Ldone
+    movi a8,0x80200
+    ee.movi.32.q q7,a8,0
+    ee.movi.32.q q7,a8,1
+    ee.movi.32.q q7,a8,2
+    ee.movi.32.q q7,a8,3
+    movi a6,10240
+    add a6,a6,a5
+    movi a7,34816
+    add a7,a7,a5
+    addmi a13,a5,8192
+    movi a15,1024
+    l32i a8,a3,0
+    extui a14,a4,0,2
+    srli a4,a4,2
+    loopnez a4,.Lend
+    lofty_word 4,0
+    lofty_word 8,0
+    lofty_word 12,0
+    lofty_word 0,16
 .Lend:
+    loopnez a14,.Ltail
+    lofty_word 0,4
+.Ltail:
 .Ldone:
     retw
     .size lofty_render_pie,.-lofty_render_pie

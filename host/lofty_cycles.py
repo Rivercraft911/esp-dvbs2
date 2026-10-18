@@ -126,20 +126,21 @@ def report(trace,disassembly):
                    max_cycles=max(frames)+4823,measured=False)
     r = replay(rows[-1])
     yield dict(kind='render_trace',blocks=1365,samples=16380,**r,measured=False)
-    f = [(pc,ins.replace('ee.vld.128.xp','ee.vld.128.ip'))
-         for pc,ins in base.functions(disassembly)['lofty_render_pie']]
-    first = base.replay(base.loop_stream(f,1))['cycles']
-    step = base.replay(base.loop_stream(f,2))['cycles']-first
-    prologue = first-step
-    # Coordinator 3cbf37c: worst 8PSK bank 34,926 cycles, at 22 issue
-    # cycles/block. Charge the kernel delta and another 1,000 cycles. Internal
-    # RAM contention may change, so this is a prediction, never a bound.
-    residual = 34926-math.ceil(15740/12)*22
-    predicted = math.ceil(15740/12)*step+residual+1000
-    yield dict(kind='bank_prediction',cycles_per_block=step,cycles_per_sample=step/12,
-               prologue_cycles=prologue,reference_residual_cycles=residual,
-               extra_wrapper_allowance=1000,predicted_cycles=predicted,ceiling_cycles=40137,
-               deadline_cycles=47220,measured=False)
+    f = base.functions(disassembly)['lofty_render_pie']
+    begin = next(i for i,(_,ins) in enumerate(f) if re.match(r'extui\s+a10, a8, 0, 13$',ins))
+    end = next(i for i,(_,ins) in enumerate(f) if re.match(r'loopnez\s+a14,',ins))
+    while f[end-1][1].startswith('nop'): end -= 1 # assembler padding after LEND
+    group = replay(f[begin:end])['cycles']
+    step = group/4
+    # The executed 1365-block trace includes 341 four-block groups and one
+    # single-block tail. Calls, loop setup and memory stalls are separate.
+    prologue = r['cycles']-341*group-24
+    assert group == 93 and 0 <= prologue < 256,(group,prologue)
+    yield dict(kind='render_model',cycles_per_block=step,cycles_per_sample=step/12,
+               prologue_cycles=prologue,previous_cycles_per_block=24,
+               issue_saving_per_15740_sample_bank=math.ceil(15740/12)*(24-step),
+               ceiling_cycles=40137,deadline_cycles=47220,measured=False)
+
 
 
 if __name__ == '__main__':

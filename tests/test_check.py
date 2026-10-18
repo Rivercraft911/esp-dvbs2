@@ -41,7 +41,7 @@ else:
         packed_mapper='signs' if moon else 'none' if n==40 else 'quads' if quads else 'direct' if resident else 'sparse')
  if mc>=12 and n==3:
   r.update(pulse_symbols=5,ring_format='words',packed_mapper='words',fill_kernel='lofty-queue',
-           queue_pages={13:54,15:50,17:46}[mc],queue_wake_pages=2,encoder_cache_bytes={13:22960,15:24112,17:24256}[mc])
+           dummy_startup=0,dummy_steady=0,admission_pages=44,queue_pages={13:54,15:50,17:46}[mc],queue_wake_pages=2,encoder_cache_bytes={13:22960,15:24112,17:24256}[mc])
  if kind=='dvbdump':
   frames=int(x[3] if named else x[2]); decim=int(x[-1]); size=((frames*symbols*n+den-1)//den+decim-1)//decim*4
   if bad and moon and n==3:size+=4
@@ -242,6 +242,6 @@ with tempfile.TemporaryDirectory() as tmp:
         assert commands.index('wifimem 13 20m') < commands.index('dvbpace 13 26m667 20')
         assert commands.index('dvbpace 11 33m333 10') < commands.index('dvbpace 13 26m667 20')
         assert commands[-1] == 'wifimem 17 26m667'
-        for mc,seconds in ((13,20),(15,20),(17,10)):
+        for mc,seconds in ((13,20),(15,20),(17,20)):
             assert f'dvbpace {mc} 26m667 {seconds}' in commands
 print('check: dry plan, all commands run after failures, strict CRC/decode/2%/heap gates, final exit and summary pass')

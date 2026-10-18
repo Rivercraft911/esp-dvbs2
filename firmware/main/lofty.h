@@ -8,6 +8,8 @@
 #define LOFTY_STORED 38
 #define LOFTY_PAGES 50
 #define LOFTY_WAKE 2
+#define LOFTY_PAGE_META (LOFTY_BLOCKS+1) // after the renderer's prefetch guard
+#define LOFTY_FRAME_PAGES 44           // ceil(22194/512), including partial EOF
 typedef struct {
     uint32_t words[LOFTY_BLOCKS+4]; // owned trailing prefetch guard
 } __attribute__((aligned(16))) lofty_page;
