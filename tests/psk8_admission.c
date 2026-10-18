@@ -47,15 +47,15 @@ static void envelope_one(bool fused)
                 }
                 if (safe) { brute = q; break; }
             }
-            assert(lofty_admission(gap,wake) == brute);
+            assert((fused ? lofty_admission_fused(gap,wake) : lofty_admission(gap,wake)) == brute);
         }
-    assert(lofty_admission(1000,0) == 10);
-    assert(lofty_admission(1000,47220) == (fused ? 28 : 26));
+    assert((fused ? lofty_admission_fused(1000,0) : lofty_admission(1000,0)) == 10);
+    assert((fused ? lofty_admission_fused(1000,47220) : lofty_admission(1000,47220)) == (fused ? 28 : 26));
     for (unsigned wake = 0; wake <= 47220; wake += 47220) {
         unsigned limit = (34*period-wake)/2;
-        assert(lofty_admission(limit,wake) == 43);
-        assert(lofty_admission(limit+1,wake) == 44);
-        assert(lofty_admission(UINT32_MAX,wake) == 44);
+        assert((fused ? lofty_admission_fused(limit,wake) : lofty_admission(limit,wake)) == 43);
+        assert((fused ? lofty_admission_fused(limit+1,wake) : lofty_admission(limit+1,wake)) == 44);
+        assert((fused ? lofty_admission_fused(UINT32_MAX,wake) : lofty_admission(UINT32_MAX,wake)) == 44);
     }
 }
 

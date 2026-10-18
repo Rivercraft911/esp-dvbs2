@@ -15,3 +15,10 @@ ASSERT((_lofty_text_start & 31) == 0 &&
        "lofty control code must fit one aligned instruction-cache way")
 ASSERT(_lofty_text_start >= 0x42000000 && _lofty_text_end < 0x42800000,
        "lofty control code must have flash backing")
+
+ASSERT((_lofty_fused_text_start & 31) == 0 &&
+       ((_lofty_fused_text_end - _lofty_fused_text_start + 31) & ~31) <= 4096,
+       "fused control code must fit one instruction-cache way")
+
+ASSERT((_lofty_text_end - _lofty_text_start) == 1632,
+       "default cache lock footprint must match main 6e7eed5")

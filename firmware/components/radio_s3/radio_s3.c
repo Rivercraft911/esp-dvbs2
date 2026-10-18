@@ -157,6 +157,7 @@ typedef struct {
     radio_s3_dry_stats_t *dry;
     geometry_t geo;
     radio_s3_options_t options;
+    station_fill_fn *payload_fill;
 } run_t;
 
 static inline uint32_t IRAM_ATTR cycles(void)
@@ -511,6 +512,8 @@ static void worker(void *arg)
     }
     // Admit stream memory only after the optional teardown, before any RF setup.
     error = radio_s3_stream_ready();
+    if (error == ESP_OK && run->options.select_fill && run->payload_fill)
+        *run->payload_fill = run->options.select_fill(*run->payload_fill);
     if (error == ESP_OK && run->wifi_pace) {
         error = watch_begin(run, &watch_idle, &watch_worker);
         if (error == ESP_OK) error = paced(run);
@@ -662,6 +665,7 @@ static esp_err_t on_core1(TaskFunction_t task, run_t *run)
     running = true;
     portEXIT_CRITICAL(&state_lock);
     station_id_t *id = NULL;
+    run->payload_fill = &run->fill;
     if (run->identify) {
         id = heap_caps_calloc(1, sizeof *id, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
         if (!id) {
@@ -689,6 +693,7 @@ static esp_err_t on_core1(TaskFunction_t task, run_t *run)
             }
         }
         run->samples = id->total_samples;
+        run->payload_fill = &id->payload;
         run->fill = station_id_fill;
         run->ctx = id;
         run->stats->id_samples = id->length;

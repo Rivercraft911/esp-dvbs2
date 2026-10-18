@@ -187,33 +187,26 @@ _Static_assert(CONFIG_ESP32S3_INSTRUCTION_CACHE_SIZE == 16384 &&
                CONFIG_ESP32S3_INSTRUCTION_CACHE_LINE_SIZE == 32,
                "lofty residency requires the qualified 16 KiB / 32-byte cache");
 extern const uint8_t _lofty_text_start[], _lofty_text_end[];
+extern const uint8_t _lofty_fused_text_start[], _lofty_fused_text_end[];
 #endif
-static int resident;
-#endif
-
-size_t lofty_resident_bytes(void)
+static int resident; // 0: unlocked, 1: default region, 2: fused region
+static size_t resident_bytes(unsigned mode)
 {
-#if defined(__XTENSA__) || defined(LOFTY_CACHE_HOST)
-    return resident ? ((uintptr_t)_lofty_text_end-(uintptr_t)_lofty_text_start+31)&~31u : 0;
-#else
-    return 0;
-#endif
+    const uintptr_t first = mode == 1 ? (uintptr_t)_lofty_text_start : (uintptr_t)_lofty_fused_text_start;
+    const uintptr_t end = mode == 1 ? (uintptr_t)_lofty_text_end : (uintptr_t)_lofty_fused_text_end;
+    return (end-first+31)&~31u;
 }
-
-int lofty_resident(int on)
+static int resident_set(int on, int mode)
 {
-#if defined(__XTENSA__) || defined(LOFTY_CACHE_HOST)
-    if (!!on == resident) return 0;
-    const uint32_t first = (uintptr_t)_lofty_text_start;
-    const uint32_t bytes = ((uintptr_t)_lofty_text_end-(uintptr_t)_lofty_text_start+31)&~31u;
+    if (on ? resident == mode : resident != mode) return 0;
+    if (on && resident) return -1; // never lock both regions
+    const uint32_t first = mode == 1 ? (uintptr_t)_lofty_text_start : (uintptr_t)_lofty_fused_text_start;
+    const uint32_t bytes = resident_bytes(mode);
     if (!on) {
         int r = Cache_Unlock_Addr(first,bytes);
         if (!r) resident = 0;
         return r;
     }
-    // At most one 4 KiB way of the configured 16 KiB instruction cache.
-    // Load and lock before Wi-Fi/playback; neither task needs a cold flash fetch
-    // at the first data/dummy boundary. The vector renderer remains in IRAM.
     const uint32_t before = esp_cpu_get_cycle_count();
     const uint32_t autoload = Cache_Start_ICache_Preload(first,bytes,0);
     while (!Cache_ICache_Preload_Done()) {
@@ -224,12 +217,43 @@ int lofty_resident(int on)
     }
     Cache_End_ICache_Preload(autoload);
     int r = Cache_Lock_Addr(first,bytes);
-    if (!r) resident = 1;
+    if (!r) resident = mode;
     return r;
+}
+#endif
+
+size_t lofty_resident_bytes(void)
+{
+#if defined(__XTENSA__) || defined(LOFTY_CACHE_HOST)
+    return resident == 1 ? resident_bytes(1) : 0;
+#else
+    return 0;
+#endif
+}
+size_t lofty_fused_resident_bytes(void)
+{
+#if defined(__XTENSA__) || defined(LOFTY_CACHE_HOST)
+    return resident == 2 ? resident_bytes(2) : 0;
+#else
+    return 0;
+#endif
+}
+int lofty_resident(int on)
+{
+#if defined(__XTENSA__) || defined(LOFTY_CACHE_HOST)
+    return resident_set(on,1);
 #else
     (void)on;
     return 0;
 #endif
 }
-
+int lofty_fused_resident(int on)
+{
+#if defined(__XTENSA__) || defined(LOFTY_CACHE_HOST)
+    return resident_set(on,2);
+#else
+    (void)on;
+    return 0;
+#endif
+}
 #endif // !LOFTY_FUSED

@@ -163,9 +163,16 @@ def check_residency(current):
     size = (end-first+31)&~31
     assert first%32 == 0 and 0 < size <= 4096
     assert 0x42000000 <= first < end < 0x42800000
-    for name in ('lofty_shape','lofty_short','lofty_splice','lofty_samples',
-                 'lofty_fused_samples','lofty_fused_render_pie','lofty_fused_render_pages_pie','lofty_page_at'):
+    assert size == 1632, "default lock footprint must match 6e7eed5"
+    for name in ('lofty_shape','lofty_short','lofty_splice','lofty_samples'):
         assert first <= m[name] < end,(name,m[name])
+    fused_first, fused_end = m['_lofty_fused_text_start'],m['_lofty_fused_text_end']
+    assert fused_first%32 == 0 and 0 < fused_end-fused_first <= 4096
+    assert end <= fused_first
+    for name in ('lofty_shape_fused','lofty_short_fused','lofty_splice_fused','fill_fused',
+                 'moon_map_fused','lofty_fused_samples','lofty_fused_render_pie',
+                 'lofty_fused_render_pages_pie'):
+        assert fused_first <= m[name] < fused_end,(name,m[name])
     for name in ('lofty_prepare_pie','lofty_fused_prepare_pie'):
         assert 0x42000000 <= m[name] < 0x42800000
     for name in ('lofty_render_pie','lofty_render_pages_pie','machine_axis_render_pie',
@@ -173,7 +180,7 @@ def check_residency(current):
         assert 0x40370000 <= m[name] < 0x403e0000,(name,m[name])
     store = m['shaper_store']
     assert store%16 == 0 and 0x3fc88000 <= store < store+65536 <= 0x3fcc0000
-    print(f'linked: {size} B locked only for 26m667; scaled renderer IRAM, fused renderer locked; common 64 KiB store before DAC')
+    print(f'linked: {size} B default lock (main unchanged), separate fused lock {fused_end-fused_first} B; common 64 KiB store before DAC')
 
 if __name__ == '__main__':
     p = argparse.ArgumentParser(description=__doc__)

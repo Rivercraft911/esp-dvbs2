@@ -3,10 +3,12 @@
 #include <stdint.h>
 
 // The small control path is cache-resident only while this mode is active.
+#ifndef LOFTY_TEXT
 #ifdef __XTENSA__
 #define LOFTY_TEXT __attribute__((section(".lofty"), noinline))
 #else
 #define LOFTY_TEXT __attribute__((noinline))
+#endif
 #endif
 int lofty_resident(int on);
 size_t lofty_resident_bytes(void);
@@ -80,3 +82,6 @@ static inline __attribute__((always_inline)) void lofty_fused_render_pages(uint3
 #elif !LOFTY_FUSED
 void lofty_fused_render_pages(uint32_t *, const uint32_t *, unsigned, const uint32_t *, uint32_t *);
 #endif
+
+int lofty_fused_resident(int on);
+size_t lofty_fused_resident_bytes(void);

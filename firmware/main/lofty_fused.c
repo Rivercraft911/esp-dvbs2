@@ -1,4 +1,7 @@
 // Fused and scaled kernels share the same source and rounding rules.
+#ifdef __XTENSA__
+#define LOFTY_TEXT __attribute__((section(".lofty_fused"), noinline))
+#endif
 #define LOFTY_FUSED 1
 #define lofty_build lofty_fused_build
 #define lofty_prepare lofty_fused_prepare

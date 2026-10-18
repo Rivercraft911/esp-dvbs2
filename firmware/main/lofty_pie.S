@@ -60,7 +60,7 @@
     .endm
 #if LOFTY_FUSED
     // Locked with the mux only during 26m667; costs no permanent internal RAM.
-    .section .lofty,"ax"
+    .section .lofty_fused,"ax"
 #else
     .section .iram1.lofty,"ax"
 #endif

@@ -174,8 +174,9 @@ Admission happens after Wi-Fi setup or solo teardown, retaining the 20,000 B flo
 plus 2,048 B guard. Insufficient or fragmented RAM falls back to the original static
 queue, with `fused_tails:false`; no pages are dropped. `fused_requested`, `fused_tails`,
 `queue_sizing` and `queue_layout` record the decision. The common 64 KiB store and
-5 Msym/s self-check's 22,351 B heap floor are retained. The fused kernel shares the
-mode's locked instruction-cache region, so it adds no permanent renderer RAM.
+5 Msym/s self-check's 22,351 B heap floor are retained. The fused kernel has a separate
+instruction-cache lock region; playback locks only the selected region. Default playback
+retains main's 1,632-byte lock footprint, with no fused dispatch in its page loops.
 R&D timing is motivation; this port still needs coordinator timing and RF checks.
 
 The automatic transmit-filter selector is retained. Register readbacks do not establish

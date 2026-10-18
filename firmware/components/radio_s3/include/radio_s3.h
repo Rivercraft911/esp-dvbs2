@@ -67,7 +67,11 @@ esp_err_t radio_s3_stream_ready(void);
 
 /* Experimental Wi-Fi teardown while an independent PHY lifetime remains held.
  * No BT controller may coexist. RF quality without Wi-Fi recalibration is unverified. */
-typedef struct { bool phy_solo; } radio_s3_options_t;
+typedef struct {
+    bool phy_solo;
+    // Optional once-only selection after stream admission, before the first fill.
+    radio_s3_fill_fn (*select_fill)(radio_s3_fill_fn original);
+} radio_s3_options_t;
 typedef struct {
     int64_t at_us;
     int32_t wifi_mode_result;
