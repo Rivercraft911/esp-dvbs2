@@ -6,7 +6,7 @@
 // The sps argument is an integer except DVB_SPS_12_5, meaning exactly 12/5.
 #define DVB_SPS_12_5 12u
 
-// Configure frame-boundary VCM for the next run: off, on, or hold + MODCOD pattern.
+// Configure frame-boundary VCM for the next run: off, on (same modulation), mixed (10m), or hold + MODCOD pattern.
 void dvbtx_vcm_command(const char *args);
 
 // QPSK/8PSK encoded on core 0 and shaped on core 1. Measured 80 MS/s modes

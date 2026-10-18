@@ -73,14 +73,16 @@ def test_controls():
             ring.close()
 
 
-def check_model(symbols, payload, sps, hold):
-    modes = 8 if sps == 40 else 14
+def check_model(symbols, payload, sps, hold, scope):
+    pattern = [4, 7, 11] if scope == 'first' else list(range(4, 18)) if scope == 'mixed' else list(range(12, 18)) if scope == '8psk' else list(range(4, 12))
+    modes = len(pattern)
+    target = 13 if scope == 'mixed' else 17 if scope == '8psk' else 11
     count = (32*2+8) if not hold else 2*modes*hold+8
     offset = used = 0
     sequence = []
     with NativeEncoder() as enc:
         for frame in range(count):
-            mc = (13 if frame else 4) if not hold else 4+(frame//hold)%modes
+            mc = (target if frame else pattern[0]) if not hold else pattern[(frame//hold)%modes]
             rate = d.RATES[mc-1] if mc < 12 else d.PSK8_RATES[mc-12]
             n = (d.code(rate).kbch-80)//8
             data = payload[used:used+n]
@@ -111,9 +113,11 @@ def run(receiver=None, output=None):
     with tempfile.TemporaryDirectory() as tmp:
         folder = output or Path(tmp)
         folder.mkdir(parents=True, exist_ok=True)
-        exe = compile_stream(Path(tmp), source='vcm_host.c')
-        for sps, hold in ((40, 1), (8, 1), (4, 1), (4, 2), (4, 0)):
-            stem = folder/f'vcm-n{sps}-hold{hold}'
+        exe = compile_stream(Path(tmp), source='vcm_host.c', defines=('STREAM_HEAP_LIMITS',))
+        for sps, hold, scope in ((40, 1, 'qpsk'), (8, 1, 'qpsk'), (8, 4, 'first'), (8, 1, '8psk'),
+                                 (4, 1, 'qpsk'), (4, 1, '8psk'), (4, 1, 'mixed'), (4, 2, 'mixed'),
+                                 (4, 0, 'mixed'), (8, 0, 'qpsk')):
+            stem = folder/f'vcm-n{sps}-hold{hold}-{scope}'
             symbols = stem.with_suffix('.phases')
             payload = stem.with_suffix('.payload')
             wire = stem.with_suffix('.pv')
@@ -121,14 +125,25 @@ def run(receiver=None, output=None):
                 # Control is consumed during frame zero's assembly. Frame zero
                 # stays QPSK; frame one switches to 8PSK without changing bytes.
                 data = input_bytes(600000)
-                messages = [send.message(b'\x0d', 0, 3)]
+                messages = [send.message(bytes((13 if scope == 'mixed' else 11,)), 0, 3)]
                 messages += [send.message(data[i:i+1316], 1+i//1316, 2) for i in range(0, len(data), 1316)]
                 wire.write_bytes(b''.join(messages))
-            result = subprocess.run([str(exe), str(sps), str(hold), str(symbols), str(payload), str(wire)],
+            result = subprocess.run([str(exe), str(sps), str(hold), str(symbols), str(payload), str(wire), scope],
                                     capture_output=True, text=True, timeout=90)
             assert result.returncode == 0, result.stdout[-2000:]+result.stderr
+            records = [json.loads(line[1:]) for line in result.stdout.splitlines() if line.startswith('@')]
+            dumps = [row for row in records if row.get('cmd') == 'dvbdump' and 'crc32' in row]
+            assert len(dumps) == 2 and all(row['status'] == 'ESP_OK' and not row['encoder_failed'] for row in dumps)
+            assert Path(str(symbols)+'.iq').stat().st_size > 0
+            failures = [json.loads(line[1:]) for line in result.stdout.splitlines() if line.startswith('@') and 'VCM allocation failed' in line]
+            assert failures
+            fragmented = failures[-1]
+            assert fragmented['stage'] == 'overlap' and fragmented['requested_bytes'] == 8704
+            assert fragmented['free_internal_before'] == 16384 and fragmented['largest_internal_before'] == 4096
+            assert fragmented['free_internal'] == 16384-2058 and fragmented['largest_internal'] == 4096
+            assert fragmented['free_psram'] == fragmented['largest_psram'] == 1024*1024
             summary = next(line for line in result.stdout.splitlines() if line.startswith('VCM n'))
-            sequence = check_model(np.fromfile(symbols, np.uint8), payload.read_bytes(), sps, hold)
+            sequence = check_model(np.fromfile(symbols, np.uint8), payload.read_bytes(), sps, hold, scope)
             print(summary+'; every PL symbol and DAC word matches', flush=True)
             if receiver:
                 iq = np.fromfile(str(symbols)+'.iq', '<i2').reshape(-1, 2).astype(np.float32)/512
@@ -141,7 +156,7 @@ def run(receiver=None, output=None):
                 assert report['frame_lock'] and report['lock_at_end'] and report['status_complete'], report
                 assert set(report['modcods']) == set(sequence), report
                 assert got and got in payload.read_bytes(), report
-                assert report['bb_frames'] >= (32 if not hold else 2*(8 if sps == 40 else 14)*hold)-5, report
+                assert report['bb_frames'] >= (32 if not hold else 2*len(set(sequence))*hold)-5, report
                 for key in ('ldpc_bit_flips', 'bch_corrected_bits', 'bch_failed_frames', 'bbheader_rejected_frames'):
                     assert report[key] == 0, report
                 print(json.dumps(dict(sps=sps, hold=hold, frames=report['bb_frames'], modcods=report['modcods'],

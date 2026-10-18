@@ -296,22 +296,35 @@ def test_stream():
 
 def test_live_controls():
     with tempfile.TemporaryDirectory() as tmp:
-        control = Path(tmp)/'modcod'; control.write_text('4')
-        class LivePeer(Peer):
-            def write(self, data):
-                n = super().write(data)
-                if self.messages >= 3:
-                    control.write_text('13')
-                return n
-        peer = LivePeer()
-        stats, rows = send.stream(peer, io.BytesIO(bytes(30000)), cmd='dvbpace 4 5m 20', kind=2,
-                                  seconds=20, control=control, rate='5m')
-        assert peer.controls == [4, 13] and stats['controls'] == 2
-        assert stats['payload_bytes'] == peer.payload_bytes == 30000
-        send.check_run(stats, rows)
+        control = Path(tmp)/'modcod'
+        for mixed, target, rate in ((False, 11, '5m'), (True, 13, '10m')):
+            control.write_text('4')
+            class LivePeer(Peer):
+                def write(self, data):
+                    n = super().write(data)
+                    if self.messages >= 3:
+                        control.write_text(str(target))
+                    return n
+            peer = LivePeer()
+            stats, rows = send.stream(peer, io.BytesIO(bytes(30000)), cmd=f'dvbpace 4 {rate} 20', kind=2,
+                                      seconds=20, control=control, rate=rate, mixed=mixed)
+            assert peer.controls == [4, target] and stats['controls'] == 2
+            assert stats['payload_bytes'] == peer.payload_bytes == 30000
+            send.check_run(stats, rows)
         for mc in (0, 3, 18, 255):
             rejects(send.message, bytes((mc,)), 0, 3)
-    print('USB live MODCOD file: ordered controls, data preserved: ok')
+        # These preflight rejections must never open a serial port.
+        control.write_text('13')
+        source = Path(tmp)/'input.bin'; source.write_bytes(b'bytes')
+        for extra in (['--rate','5m'], ['--rate','5m','--mixed']):
+            with patch.object(send, 'open_port', side_effect=AssertionError('opened a port')), contextlib.redirect_stderr(io.StringIO()):
+                try:
+                    send.main(['send',str(source),'--control',str(control),'--report',str(Path(tmp)/'report.json'),*extra])
+                except SystemExit as e:
+                    assert e.code == 1
+                else:
+                    raise AssertionError('invalid modulation scope accepted')
+    print('USB live MODCOD file: same modulation by default, mixed at 10m, data preserved, preflight scope gate: ok')
 
 
 def test_safety():

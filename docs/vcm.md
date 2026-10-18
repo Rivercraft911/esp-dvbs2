@@ -1,10 +1,12 @@
 # Changing MODCOD while sending
 
-The prototype switches at PLFRAME boundaries, at a fixed symbol clock. Enable it
-before a run with `vcm on`, or repeat a test pattern with `vcm 4 4 11 13 17`
-(four data frames per MODCOD). `vcm off` restores the fixed-mode path. Settings
-last until changed or rebooted. The first pattern entry must match the run's
-initial MODCOD. Pilots, normal FECFRAME length and roll-off 0.35 stay fixed.
+The prototype switches at PLFRAME boundaries, at a fixed symbol clock. `vcm on`
+allows code-rate changes within the run's initial modulation. A pattern such as
+`vcm 4 4 7 11` repeats four frames per QPSK mode. `vcm mixed` allows live
+QPSK/8PSK changes at **10 Msym/s only**; a pattern containing both modulations
+selects that scope automatically. `vcm off` restores the fixed-mode path.
+Settings last until changed or rebooted. The first pattern entry must match the
+run's initial MODCOD. Pilots, normal FECFRAME length and roll-off 0.35 stay fixed.
 
 ## Scope
 
@@ -20,8 +22,8 @@ lowest selected capacity or accept backpressure and dummy frames.
 | Symbol rate | Separate QPSK + 8PSK pulse tables | Prototype |
 |---|---:|---|
 | 1 Msym/s | 32,768 + 262,144 B (8PSK unimplemented) | QPSK MODCOD 4..11 |
-| 5 Msym/s | 8,192 + 65,536 B | MODCOD 4..17, common 65,536 B table |
-| 10 Msym/s | 4,096 + 32,768 B | MODCOD 4..17, common 32,768 B table |
+| 5 Msym/s | 8,192 + 65,536 B | Same modulation only |
+| 10 Msym/s | 4,096 + 32,768 B | Same modulation or mixed MODCOD 4..17 |
 | 20 Msym/s | 49,152 + 16,384 B | Rejected |
 | 26.67 Msym/s | 36,864 + 36,864 B | Rejected |
 | 33.33 Msym/s | 24,576 B QPSK; no corresponding 8PSK path | Rejected |
@@ -37,14 +39,39 @@ switching is possible in principle at these higher rates, but this prototype
 rejects it too: resident FEC caches and mode-sized queues need another design
 and timing check.
 
-The S3 layout reserves the existing 65,536 B store. Additional internal heap
-requests are 18,116 / 44,106 / 59,744 B at 1/5/10 Msym/s, respectively. They
-include maximum-size FEC context where internal, ring, window and overlap cache;
-exclude allocator overhead, task stacks, input drivers, Wi-Fi and the two
-65,536 B DAC banks. At 5 Msym/s the context/workspace use 30,116 B PSRAM;
-at 10 Msym/s the workspace and one maximum QPSK slot share the table tail.
-Allocation failure aborts before playback. These are allocation calculations;
-on-chip free heap, switching cost and bank deadlines remain unmeasured.
+The board rejected the original mixed 5 Msym/s allocation on `d9520e8`
+(radio off, coordinator records in `notes/vcm/`). Those records did not capture
+free heap or largest blocks. Mixed 5 Msym/s is now rejected before allocation.
+The pulse table stays internal; moving it to PSRAM would require a board fill
+measurement. Same-modulation runs use only their own constellation's table.
+
+The revised allocator borrows the existing 65,536 B store for the table, render
+window, overlap, dummy and 8,144 B fast workspace, then fits as many packed frame
+slots as remain, capped at three. If fewer than two fit, it reserves two frames
+in PSRAM. The maximum-size FEC context is always in PSRAM. No large contiguous
+internal ring or context allocation is required.
+
+| Run | Store used | Internal data heap | PSRAM data heap | Queue |
+|---|---:|---:|---:|---|
+| QPSK, 1 Msym/s | 44,688 B | 0 B | 291,216 B | 8 raw PSRAM frames |
+| QPSK, 5 Msym/s | 62,144 B | **0 B** | 17,696 B | 2 internal packed frames |
+| QPSK, 10 Msym/s | 60,096 B | 0 B | 17,696 B | 2 internal packed frames |
+| 8PSK, 5 Msym/s | 65,536 B | 10,762 B | 49,776 B | 2 PSRAM packed frames |
+| 8PSK, 10 Msym/s | 55,424 B | 0 B | 39,936 B | 2 PSRAM packed frames |
+| Mixed, 10 Msym/s | 55,424 B | **0 B** | 51,040 B | 2 PSRAM packed frames |
+
+These are S3 allocation calculations, excluding allocator overhead, task stacks,
+input drivers, Wi-Fi and the two 65,536 B DAC banks. QPSK at 5 Msym/s is the first
+check: it reserves no internal data heap, even with a fragmented heap. Task
+creation still needs its normal stack/TCB allocation. PSRAM queue timing for the
+mixed run remains unmeasured on the board.
+
+Allocation failures report `stage`, `requested_bytes`, `memory`, current
+`free_internal`, `largest_internal`, `free_psram`, `largest_psram`, pre-layout
+`free_internal_before`/`largest_internal_before`, and `store_bytes`, before
+cleanup. Successful runs report `vcm_scope`, `vcm_table_bytes`, `vcm_store_bytes`,
+actual queue memory/count and pre-layout heap values, alongside existing heap
+and timing counters. The coordinator supplies the real heap readings.
 
 ## Stream and control
 
@@ -62,13 +89,12 @@ their own accepted/rejected counters and never enter the payload stream. A
 control consumed while assembling frame N affects frame N+1; already queued
 frames keep their mode. Several controls consumed before that boundary coalesce
 to the latest value. Controls are rejected with VCM off, during a console
-pattern, or for 8PSK at 1 Msym/s. Bad CRC, invalid length/MODCOD and duplicate
+pattern, or outside the modulation(s) reserved at startup. Bad CRC, invalid length/MODCOD and duplicate
 messages follow the existing rejection rules. There is no per-control ACK or
 automatic receiver feedback; the run result reports controls, rejections,
 changes and encoded frame counts indexed by MODCOD 4..17. Boundary-cycle counters
 include FEC reprepare; total encoder work includes that cost with external input too.
-This is VCM with a manual ACM
-command input, not a closed feedback loop.
+This is VCM with a manual ACM command input, not a closed feedback loop.
 
 The laptop sender polls `--control /tmp/modcod` between PV messages. Put a decimal
 MODCOD in that file; replace it atomically while sending. For example, the
@@ -78,11 +104,13 @@ following is **radio off**:
 printf '4\n' > /tmp/modcod
 python3 examples/usb-send/send.py send input.bin --rate 5m --seconds 60 --control /tmp/modcod
 # In another shell, during that run:
-printf '13\n' > /tmp/modcod.new && mv /tmp/modcod.new /tmp/modcod
+printf '7\n' > /tmp/modcod.new && mv /tmp/modcod.new /tmp/modcod
 ```
 
-`--kind gcs` sends raw bytes; `--kind file` (the default for input.bin) adds file
-recovery padding and SHA-256. `--kind ts --control ...` is rejected before opening
+`--mixed --rate 10m --control /tmp/modcod` enables live modulation changes.
+Without `--mixed`, cross-modulation controls are rejected. `--kind gcs` sends raw
+bytes; `--kind file` (the default for input.bin) adds file recovery padding and
+SHA-256. `--kind ts --control ...` is rejected before opening
 USB. A dump with a console pattern counts actual data frames; a dump with live
 controls uses the initial mode's nominal frame duration as its time limit.
 
@@ -103,19 +131,34 @@ python3 tests/test_vcm.py --receiver /path/to/leandvb
 
 This runs the actual firmware lifecycle with peripheral stubs, compares every
 PL symbol with `host/dvbs2.py` and every DAC word with the plain C encoder, then
-independently decodes IQ. All 14 MODCODs alternate at 5/10 Msym/s; all eight QPSK
-MODCODs alternate at 1 Msym/s. The 28-frame mixed patterns recover 26 contiguous
-frames, 156,066 bytes, with no reported BCH corrections/failures or LDPC flips.
+independently decodes IQ. All 14 MODCODs alternate at 10 Msym/s; same-modulation patterns run at
+5/10 Msym/s, and all eight QPSK MODCODs alternate at 1 Msym/s. The 28-frame
+mixed patterns recover 26 contiguous frames, 156,066 bytes, with no reported BCH corrections/failures or LDPC flips.
 A 56-frame pattern recovers 54; an in-band QPSK-to-8PSK control recovers 45 frames
 over the nominal 32-QPSK-frame dump interval. Tests also cover startup allocation
-failures, repeated runs, split ingress reads and physical bank wraps. Existing
-fixed-mode golden CRC files are unchanged. These are host tests, not board or RF
+failures, exact fragmentation diagnostics, repeated runs, split ingress reads
+and physical bank wraps. QPSK 5/10 Msym/s and mixed 10 Msym/s run with the host
+internal data heap bounded to zero; the 5 Msym/s 4/7/11 first-run pattern is
+covered. Existing fixed-mode golden CRC files are unchanged. These are host tests, not board or RF
 evidence. A receiver's VCM support is required; fixed symbol rate alone does not
 guarantee seamless reception in noise.
 
-Only the coordinator runs board steps. With radio off, flash, select
-`spiinput off`, run `vcm 4 4 11 13 17`, then `dvbdump 4 5m 64` and
-`dvbpace 4 5m 30`. Require zero overlap mismatches, no encoder failure, positive
-fill slack, zero late/fatal counters and at least 256 B encoder stack reserve.
-Check memory with `wifimem 4 5m` before considering keying. Any keyed check is a
-separate step, only in the closed Faraday box, with the station's real callsign.
+Only the coordinator runs board steps. After flashing, keep the radio off:
+
+```sh
+python3 host/board.py "spiinput off"
+python3 host/board.py "vcm 4 4 7 11"
+python3 host/board.py "wifimem 4 5m"
+python3 host/board.py "dvbdump 4 5m 64" --save /tmp/vcm-qpsk.iq --timeout 120
+python3 host/board.py "dvbpace 4 5m 30" --timeout 120
+# Then the mixed layout, still radio off:
+python3 host/board.py "vcm 4 4 11 13 17"
+python3 host/board.py "wifimem 4 10m"
+python3 host/board.py "dvbdump 4 10m 64" --save /tmp/vcm-mixed.iq --timeout 120
+python3 host/board.py "dvbpace 4 10m 30" --timeout 120
+```
+
+Require zero overlap mismatches, no encoder failure/underruns, positive fill
+slack, zero late/fatal counters and at least 256 B encoder stack reserve. Any
+keyed check is separate, only in the closed Faraday box, with the station's real
+callsign, after those checks pass.

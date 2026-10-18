@@ -69,7 +69,7 @@ omit `flash`.
 | `dvbdump MODCOD [rate] frames [peak] [decimation] [stall_ms]` | Samples over USB, radio off |
 | `dvbpace MODCOD [rate] seconds [peak] [stall_ms]` | Live encoder and bank deadlines, no playback |
 | `spiinput on\|quad\|off [ts\|gcs]` | Select [SPI payload input](spi-input.md) for the next run |
-| `vcm off\|on\|N MODCOD...` | Opt-in [GCS rate switching](vcm.md); repeat each mode for N frames |
+| `vcm off\|on\|mixed\|N MODCOD...` | Opt-in [GCS rate switching](vcm.md); repeat each mode for N frames |
 | `spipins devkit\|xiao` | Select the SPI pin preset |
 | `spirx ms on\|quad [ts\|gcs] [loop [Mb/s [fault]]]` | Radio-off SPI receive diagnostic |
 | `spisend ms on\|quad [ts\|gcs] [MHz [Mb/s [fault]]]` | SPI test sender on a second S3; no RF |

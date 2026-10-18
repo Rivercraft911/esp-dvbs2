@@ -126,9 +126,11 @@ give its denominator and numerator. `wall_payload_mbps` retains the original rat
 including the pause. Both rate checks require at least 15 measured seconds.
 FIFO plus driver bytes must equal wire bytes. If the board disconnects before counters can be read,
 `board_counters_available` is false; host diagnostics are still saved.
+
 ## Live rate changes
 
 `--control /tmp/modcod` enables [GCS VCM](../../docs/vcm.md) at 1, 5 or
-10 Msym/s. Write a decimal MODCOD to that file before starting, then replace the
+10 Msym/s, within the initial modulation. Add `--mixed --rate 10m` for
+QPSK/8PSK changes. Write a decimal MODCOD to that file before starting, then replace the
 file atomically during the run. The sender inserts PV type 3 controls without
 altering payload bytes. It defaults to radio off; TS VCM is rejected.

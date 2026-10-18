@@ -267,7 +267,7 @@ def collect(link, cmd, timeout=10, records=None):
 
 
 def stream(link, source, *, cmd, kind, seconds, dump=False, sink=None, mbps=0,
-           stats=None, rows=None, abort_after=None, opening_id=0, control=None, rate='1m'):
+           stats=None, rows=None, abort_after=None, opening_id=0, control=None, rate='1m', mixed=False, modcod=4):
     stop, ready, done = threading.Event(), threading.Event(), threading.Event()
     cancel = threading.Event()
     chunks = queue.Queue(8)
@@ -317,7 +317,11 @@ def stream(link, source, *, cmd, kind, seconds, dump=False, sink=None, mbps=0,
                     if selected:
                         mc = int(selected)
                         if rate not in ('1m', '5m', '10m') or (rate == '1m' and mc >= 12):
-                            raise ValueError('VCM supports 1m QPSK and 5m/10m QPSK/8PSK')
+                            raise ValueError('VCM supports 1m QPSK and 5m/10m')
+                        if mixed and rate != '10m':
+                            raise ValueError('mixed VCM needs 10m')
+                        if not mixed and (mc < 12) != (modcod < 12):
+                            raise ValueError('MODCOD changes must stay within the starting modulation; use --mixed at 10m')
                         wire = message(bytes((mc,)), stats['next_seq'], 3)
                         if mc != last_modcod:
                             write_all(link, wire, timeout=write_timeout, stats=stats, cancel=cancel)
@@ -539,6 +543,7 @@ def main(argv=None):
     s.add_argument('--port'); s.add_argument('--modcod', type=int, default=4)
     s.add_argument('--rate', choices=('1m', '5m', '10m', '20m', '26m667', '33m333'), default='1m')
     s.add_argument('--control', type=Path, help='live MODCOD text file; enables GCS VCM at 1m/5m/10m')
+    s.add_argument('--mixed', action='store_true', help='allow QPSK/8PSK controls at 10m; requires --control')
     s.add_argument('--seconds', type=int, default=10); s.add_argument('--frames', type=int, default=24)
     safety = s.add_mutually_exclusive_group()
     safety.add_argument('--dump', type=Path, help='radio-off IQ dump instead of radio-off pace')
@@ -571,12 +576,16 @@ def main(argv=None):
         a.report.write_text(json.dumps(report, indent=2)+'\n')
         frame_bytes, capacity = mode(a.modcod, a.rate)
         kind = a.kind or ('ts' if a.file == '-' or Path(a.file).suffix.lower() == '.ts' else 'file')
+        if a.mixed and (not a.control or a.rate != '10m'):
+            raise ValueError('--mixed needs --control and --rate 10m')
         if a.control:
             if kind == 'ts' or a.rate not in ('1m', '5m', '10m'):
                 raise ValueError('--control needs file/GCS at 1m, 5m or 10m; TS VCM needs Annex D')
             initial = int(a.control.read_text().strip())
             message(bytes((initial,)), 0, 3)
             mode(initial, a.rate)
+            if not a.mixed and (initial < 12) != (a.modcod < 12):
+                raise ValueError('control file must match the starting modulation; use --mixed at 10m')
             frame_bytes = (58192-80)//8  # acquisition/tail padding for the largest selected frame
         with contextlib.ExitStack() as stack:
             source = sys.stdin.buffer if a.file == '-' else stack.enter_context(Path(a.file).open('rb'))
@@ -588,13 +597,13 @@ def main(argv=None):
             callsign = next((r.get('callsign', '') for r in report['info'] if r.get('cmd') == 'info' and not r.get('done')), '')
             if a.key and not callsign:
                 raise ValueError('no stored callsign; set your assigned callsign with the console first')
-            collect(link, 'vcm '+('on' if a.control else 'off'), records=report['setup'])
+            collect(link, 'vcm '+('mixed' if a.mixed else 'on' if a.control else 'off'), records=report['setup'])
             collect(link, 'spiinput usb '+('ts' if kind == 'ts' else 'gcs'), records=report['setup'])
             print(f'{cmd}; {capacity:.3f} Mb/s mode payload; callsign={callsign or "unset"}', file=sys.stderr)
             stats, rows = stream(link, source, cmd=cmd, kind=1 if kind == 'ts' else 2,
                                  seconds=a.seconds, dump=bool(a.dump), sink=sink, mbps=a.mbps,
                                  stats=report['sender'], rows=report['records'], abort_after=a.abort_after,
-                                 opening_id=id_seconds(callsign), control=a.control, rate=a.rate)
+                                 opening_id=id_seconds(callsign), control=a.control, rate=a.rate, mixed=a.mixed, modcod=a.modcod)
             if stats['complete'] and not stats['recovery']:
                 collect(link, 'spiinput off', records=report['setup'])
             summary = check_run(stats, rows, bool(a.dump), kind == 'file')
