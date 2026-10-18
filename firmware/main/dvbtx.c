@@ -47,6 +47,7 @@
 #define ENCODER_PRIORITY 5          // above the command loop, below the Wi-Fi and IPC tasks
 #define MOON_PRIORITY (configMAX_PRIORITIES - 1) // bounded encoder bursts, then queue backpressure
 #define ENCODER_STACK 2048
+#define MOON_STARTUP_PAGES ((RADIO_S3_BANK_WORDS+MACHINE_PAGE_SAMPLES-1)/MACHINE_PAGE_SAMPLES)
 // Samples, including the first bank's extra lead. Later banks re-read 2112 words, or 640 on the
 // 80 MS/s geometry, which keeps only its 768 (dvb.cached_words).
 #define CACHED_FOR(rate) (RADIO_S3_BANK_WORDS - RADIO_S3_STEP_FOR(rate) + RADIO_S3_LEAD_FOR(rate))
@@ -71,8 +72,11 @@ typedef struct {
     uint32_t produced, consumed;   // single writer each; release/acquire ownership
     unsigned put_index, get_index, page_words;
     dvbs2_sign_state mapper;
-    uint32_t *render_signs;         // former sign lookup storage, core 1 only
+    uint32_t *render_signs;         // one expanded page, core 1 only during playback
     uint32_t render_history;
+    machine_sign_page *startup_signs; // first bank expanded before the ID starts
+    unsigned startup_pages, startup_at;
+    uint32_t startup_expand_cycles;
     uint64_t queue_wait_cycles;
     uint32_t queue_wait_max, queue_wait_live_max, prepare_ticks, page_clock, page_gap_max;
     uint64_t page_wait;
@@ -98,6 +102,8 @@ typedef struct {
 static DRAM_ATTR dvb_t dvb;
 _Static_assert(MACHINE_PAGE_BLOCKS%16 == 0 && sizeof(machine_page)%16 == 0,
                "queue pages retain prepare and render alignment");
+_Static_assert(MACHINE_PAGES*5*MACHINE_PAGE_BLOCKS >= 2*33282,
+               "fractional startup holds two complete pilot-on frames");
 _Static_assert(sizeof(dvbs2_workspace) - DVBS2_FAST_WORKSPACE_USED >=
                SHAPER_HISTORY + BANK_SYMBOLS + 1, "fast workspace tail holds n4 window");
 typedef struct {
@@ -234,18 +240,23 @@ static IRAM_ATTR esp_err_t moon_shape(uint32_t *dst, uint64_t first, size_t coun
         const int32_t lead = ((int32_t)(ready*MACHINE_PAGE_SAMPLES)-(int32_t)dvb.page_sample)*5/12;
         if (lead < dvb.ring.min_lead) dvb.ring.min_lead = lead;
         if (!ready) { ++dvb.queue_empty; return ESP_FAIL; }
-        machine_page *page = dvb.pages+dvb.get_index;
-        if (!dvb.page_sample) {
+        const uint32_t *signs = dvb.render_signs;
+        if (dvb.startup_at < dvb.startup_pages) {
+            signs = dvb.startup_signs[dvb.startup_at].signs;
+            if (!dvb.page_sample) dvb.render_history = signs[MACHINE_PAGE_BLOCKS-1];
+        } else if (!dvb.page_sample) {
+            machine_page *page = dvb.pages+dvb.get_index;
             dvb.render_history = machine_expand(dvb.render_signs,page->axes,dvb.render_history);
             dvb.render_signs[MACHINE_PAGE_BLOCKS] = 0;
         }
         const size_t left = MACHINE_PAGE_SAMPLES-dvb.page_sample;
         const size_t take = count < left ? count : left;
-        machine_samples(dst,dvb.render_signs+dvb.page_sample/12,dvb.page_sample%12,take,shaper_store);
+        machine_samples(dst,signs+dvb.page_sample/12,dvb.page_sample%12,take,shaper_store);
         dst += take, count -= take, dvb.page_sample += take;
         dvb.queue_sample += take;
         if (dvb.page_sample == MACHINE_PAGE_SAMPLES) {
             dvb.page_sample = 0;
+            if (dvb.startup_at < dvb.startup_pages) ++dvb.startup_at;
             if (++dvb.get_index == MACHINE_PAGES) dvb.get_index = 0;
             __atomic_store_n(&dvb.consumed,get+1,__ATOMIC_RELEASE);
             dvb.wake_pending = true;
@@ -660,14 +671,15 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
         dvb.page_words = 0;
         dvb.mapper = (dvbs2_sign_state){0};
         dvb.render_history = 0;
+        dvb.startup_pages = dvb.startup_at = dvb.startup_expand_cycles = 0;
         dvb.queue_wait_cycles = dvb.queue_wait_max = dvb.queue_wait_live_max = dvb.prepare_ticks = 0;
         dvb.page_clock = dvb.page_gap_max = dvb.page_wait = 0;
         dvb.pages = (machine_page *)(shaper_store+MACHINE_TABLE_WORDS);
-        uint32_t *lut = (uint32_t *)(dvb.pages+MACHINE_PAGES);
-        dvb.render_signs = lut;
+        machine_sign_page *render = (machine_sign_page *)(dvb.pages+MACHINE_PAGES);
+        dvb.render_signs = render->signs;
         dvb.win = NULL;
         dvb.win_bytes = 0;
-        moon_ws = (dvbs2_workspace *)(lut+MACHINE_LUT_WORDS);
+        moon_ws = (dvbs2_workspace *)(render+1);
         store_used = (uint8_t *)moon_ws+DVBS2_FAST_WORKSPACE_USED-(uint8_t *)shaper_store;
         if (store_used > sizeof shaper_store) { release(); return 0; }
     } else if (quads) {
@@ -857,6 +869,17 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
         if (enc.input_borrowed) store_used = at+payload_bytes;
     }
     if (enc.ws_borrowed && sps == 3) store_used += dvb.win_bytes;
+    if (moon) {
+        const size_t at = (store_used+15) & ~(size_t)15;
+        const size_t end = at+MOON_STARTUP_PAGES*sizeof(machine_sign_page);
+        if (end > sizeof shaper_store) {
+            printf("@{\"cmd\":\"%s\",\"error\":\"startup histories do not fit\"}\n",cmd);
+            release();
+            return 0;
+        }
+        dvb.startup_signs = (machine_sign_page *)((uint8_t *)shaper_store+at);
+        store_used = end;
+    }
     const size_t tail = (store_used+15) & ~(size_t)15;
     const size_t ws_used = (DVBS2_FAST_WORKSPACE_USED+dvb.win_bytes+15) & ~(size_t)15;
     spi_input_buffers(!moon && tail < sizeof shaper_store ? (uint8_t *)shaper_store+tail : NULL,
@@ -887,6 +910,19 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
         return 0;
     }
     enc.prefill_frames = moon ? enc.frames : __atomic_load_n(&dvb.ring.published,__ATOMIC_ACQUIRE);
+    if (moon) {
+        // Published pages stay consumer-owned: the producer cannot overwrite
+        // them while preflight expands the first bank, before any radio task.
+        const unsigned ready = __atomic_load_n(&dvb.produced,__ATOMIC_ACQUIRE)-dvb.consumed;
+        dvb.startup_pages = ready < MOON_STARTUP_PAGES ? ready : MOON_STARTUP_PAGES;
+        const uint32_t before = esp_cpu_get_cycle_count();
+        uint32_t history = 0;
+        for (unsigned p = 0; p < dvb.startup_pages; ++p) {
+            history = machine_expand(dvb.startup_signs[p].signs,dvb.pages[p].axes,history);
+            dvb.startup_signs[p].signs[MACHINE_PAGE_BLOCKS] = 0;
+        }
+        dvb.startup_expand_cycles = esp_cpu_get_cycle_count()-before;
+    }
     return symbols;
 }
 
@@ -947,6 +983,8 @@ static void stop_encoder(void)
                          dvb.queue_wait_cycles,(unsigned)dvb.queue_wait_max,(unsigned)dvb.queue_wait_live_max,(unsigned)dvb.prepare_ticks,(unsigned)dvb.page_gap_max,MACHINE_PAGE_SAMPLES,MACHINE_WAKE_PAGES);
     if (dvb.moon) printf(",\"encode_work_cycles_mean\":%" PRIu64 ",\"encode_work_cycles_live_max\":%" PRIu32,
                          enc.frames ? enc.work_cycles/enc.frames : 0,enc.work_live_max);
+    if (dvb.moon) printf(",\"startup_expanded_pages\":%u,\"startup_consumed_pages\":%u,\"startup_expand_cycles\":%u",
+                         dvb.startup_pages,dvb.startup_at,(unsigned)dvb.startup_expand_cycles);
     if (dvb.moon) printf(",\"queue_pages\":%u,\"queue_low_pages\":%u,\"queue_empty\":%u,"
                          "\"queue_wake_max_cycles\":%u,\"queue_wakes\":%u,\"prepare_pages\":%u,"
                          "\"prepare_max_cycles\":%u,\"prepare_tail_max_cycles\":%u,\"prepare_cycles\":%" PRIu64 ","

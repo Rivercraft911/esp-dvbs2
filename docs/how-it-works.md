@@ -122,20 +122,23 @@ are [-6..1], [-5..2] and [-3..4]. Table construction sums one whole axis before 
 No addition of independently rounded pulse fragments is needed in the renderer.
 
 The encoder queues compact I/Q bit planes, including headers and pilots: forty words
-per page, each holding sixteen signs per axis. Core 1 expands a page into 128 eleven-sign
-histories before rendering it, keeping the expanded page across bank cuts. The renderer
+per page, each holding sixteen signs per axis. Before playback starts, the queue holds two
+complete frames and the first bank's eleven pages are expanded into sign histories.
+Core 1 expands later pages into 128 eleven-sign histories before rendering them,
+keeping the expanded page across bank cuts. The renderer
 selects the appropriate eight-sign window for each vector.
 There is no intermediate packed frame ring for this mode. A full queue blocks the
 encoder until the renderer releases at least eight pages. One notification at bank end
 wakes it after both callbacks finish. History survives every frame and bank seam.
 
-The 65,536 B shaping store holds `24576 + 54*160 + 4096 + 8144 = 45456 B`:
-axis tables, 54 queue page allocations, render scratch and the encoder workspace.
-The former sign lookup storage now holds the expanded page and its readable renderer
-guard. The compact pages also leave room to borrow the radio-off reference input
-from the store instead of allocating it on the heap.
+The 65,536 B shaping store holds `24576 + 105*160 + 528 + 8144 = 50048 B`:
+axis tables, 105 queue pages, one expanded page with a renderer guard and the encoder
+workspace. The headline radio-off pace also borrows its 7,264-byte reference input
+and eleven 528-byte startup history pages: 63,120 B total, without additional heap.
+Startup expansion does not advance the consumer or drop any payload. Its separate
+cycle count is reported outside the paced fill timing.
 Each page represents 128 five-symbol groups, or 1,536 samples. Full coverage is
-`54*1536 / 80e6 s = 1.0368 ms`. The overlap buffer remains a separate internal allocation.
+`105*1536 / 80e6 s = 2.016 ms`. The overlap buffer remains a separate internal allocation.
 Acquire/release counters transfer ownership between cores; physical page cursors remain
 valid through 32-bit counter wrap.
 

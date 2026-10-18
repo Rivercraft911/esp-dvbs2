@@ -7,11 +7,14 @@
 #define MACHINE_PAGE_BLOCKS 128
 #define MACHINE_PAGE_SAMPLES (12*MACHINE_PAGE_BLOCKS)
 #define MACHINE_PAGE_AXIS_WORDS (5*MACHINE_PAGE_BLOCKS/16)
-#define MACHINE_PAGES 54
+#define MACHINE_PAGES 105
 #define MACHINE_WAKE_PAGES 8
 typedef struct {
     uint32_t axes[MACHINE_PAGE_AXIS_WORDS]; // sixteen signs per axis per word
 } __attribute__((aligned(16))) machine_page;
+typedef struct {
+    uint32_t signs[MACHINE_PAGE_BLOCKS+1]; // readable guard for the renderer
+} __attribute__((aligned(16))) machine_sign_page;
 
 // QPSK sign windows, seven-symbol .20 pulse, twelve samples/five symbols.
 // src: high-pair-first phase>>1, six history symbols then five symbols/block.

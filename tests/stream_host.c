@@ -1,14 +1,27 @@
 // Actual dvbtx.c lifecycle with pthread task/notification stubs, no peripherals.
 // Timing is synthetic. Compare every filled DAC word against the plain encoder.
 #include "native.h"
+#include <stdbool.h>
 #include "ring.h"
+#include "machine.h"
 static int checked_window(ring_t *, uint8_t *, size_t, uint64_t, size_t, unsigned, unsigned, unsigned);
 static int checked_task(void (*)(void *), const char *, unsigned, void *, unsigned, TaskHandle_t *, int);
+static uint32_t checked_expand(uint32_t *, const uint32_t *, uint32_t);
+static bool native_filling;
+static unsigned native_fill_expansions;
 #define xTaskCreatePinnedToCore checked_task
 #define ring_window checked_window
+#define machine_expand checked_expand
 #include "dvbtx.c"
 #undef ring_window
 #undef xTaskCreatePinnedToCore
+#undef machine_expand
+
+static uint32_t checked_expand(uint32_t *dst, const uint32_t *axes, uint32_t history)
+{
+    if (native_filling) ++native_fill_expansions;
+    return machine_expand(dst,axes,history);
+}
 
 static int checked_task(void (*fn)(void *), const char *name, unsigned stack, void *arg,
                         unsigned priority, TaskHandle_t *task, int core)
@@ -118,6 +131,7 @@ static void bank_fill(radio_s3_fill_fn fn, void *ctx, unsigned b, uint64_t first
 {
     const size_t offset = (first+bank_shift) % RADIO_S3_BANK_WORDS;
     const size_t parts[] = {RADIO_S3_BANK_WORDS - offset, offset};
+    const unsigned expansions = native_fill_expansions;
     uint64_t at = first;
     for (unsigned p = 0; p < 2; ++p) {
         const size_t count = parts[p];
@@ -136,7 +150,9 @@ static void bank_fill(radio_s3_fill_fn fn, void *ctx, unsigned b, uint64_t first
         }
         if (dvb.moon && getenv("EARLY_WAKE")) xTaskNotifyGive(enc.task);
         const unsigned sent = enc.task->notifications_sent;
+        native_filling = true;
         assert(fn(banks[b] + (at+bank_shift) % RADIO_S3_BANK_WORDS, at, count, ctx) == ESP_OK);
+        native_filling = false;
         if (enc.packed && !dvb.moon) {
             if (offset && !p) assert(enc.task->notifications_sent == sent);
             else assert(!dvb.wake_pending);
@@ -182,6 +198,9 @@ static void bank_fill(radio_s3_fill_fn fn, void *ctx, unsigned b, uint64_t first
         assert(dvb.shaped_words == dvb.sample_end);
         assert(dvb.sample_end == first + RADIO_S3_BANK_WORDS);
     }
+    // The first physical data bank, including either callback of a wrap,
+    // must use histories prepared before startup, with no timed expansion.
+    if (dvb.moon && !first) assert(native_fill_expansions == expansions);
     stats->fills++;
 }
 
@@ -222,6 +241,36 @@ void radio_filter_print(const radio_filter_stats_t *stats) { (void)stats; }
 static unsigned wifi_probes;
 static esp_err_t discard(const uint32_t *bank, uint64_t first, size_t count, void *ctx)
 { (void)bank; (void)first; (void)count; (void)ctx; return ESP_OK; }
+
+static void id_handoff_check(uint32_t rate)
+{
+    station_id_t id;
+    assert(station_id_init_rate(&id,callsign,rate,rate,fill,NULL));
+    const uint64_t step = RADIO_S3_STEP_FOR(rate), lead = RADIO_S3_LEAD_FOR(rate);
+    const uint64_t first = (id.length+lead)/step*step-lead;
+    assert(first < id.length && first+RADIO_S3_BANK_WORDS > id.length);
+    const unsigned expansions = native_fill_expansions;
+    const unsigned sent = enc.task->notifications_sent;
+    const size_t offset = first%RADIO_S3_BANK_WORDS;
+    const size_t head = RADIO_S3_BANK_WORDS-offset;
+    native_filling = true;
+    assert(station_id_fill(banks[0]+offset,first,head,&id) == ESP_OK);
+    if (offset) assert(station_id_fill(banks[0],first+head,offset,&id) == ESP_OK);
+    native_filling = false;
+    assert(native_fill_expansions == expansions);
+    assert(enc.task->notifications_sent-sent <= 1);
+    const size_t samples = first+RADIO_S3_BANK_WORDS-id.length;
+    assert(dvb.queue_sample == samples && dvb.startup_at < dvb.startup_pages);
+    // Independent packed-phase path checks payload at the exact CW/data seam.
+    uint8_t packed[1800] = {0};
+    const unsigned groups = (samples+11)/12;
+    for (unsigned j = 6; j < 6+5*groups+8; ++j)
+        packed[j/4] |= (phases[j-6] >> 1) << (6-2*(j&3));
+    machine_reference(reference,packed,0,groups,shaper_store);
+    for (unsigned j = 0; j < samples; ++j)
+        assert(banks[0][(id.length+j)%RADIO_S3_BANK_WORDS] == reference[j]);
+}
+
 esp_err_t radio_s3_wifi_probe(radio_s3_stats_t *stats)
 {
     assert(enc.fast && enc.ws && enc.payload && (dvb.moon || dvb.win));
@@ -361,8 +410,13 @@ int main(int argc, char **argv)
         assert((enc.input != NULL) == moon);
         if (moon) {
             assert(enc.input_borrowed);
+            assert(enc.prefill_frames >= 2);
+            assert(dvb.startup_pages == MOON_STARTUP_PAGES);
             assert(enc.input >= (uint8_t *)enc.ws+DVBS2_FAST_WORKSPACE_USED);
             assert(enc.input+bytes <= (uint8_t *)(shaper_store+SHAPER_STORE_WORDS));
+            assert((uint8_t *)dvb.startup_signs >= enc.input+bytes);
+            assert((uint8_t *)(dvb.startup_signs+MOON_STARTUP_PAGES) <=
+                   (uint8_t *)(shaper_store+SHAPER_STORE_WORDS));
             x = SEED;
             for (size_t i = 0; i < bytes; ++i) assert(enc.input[i] == next_byte(&x));
         }
@@ -371,6 +425,12 @@ int main(int argc, char **argv)
                                       rate,discard,NULL,&stats));
         stop_encoder(); printf("}\n");
         assert(live_allocations == 0);
+        if (moon && mc == 11) {
+            assert(start_encoder("dvbpace",mc,128,0,sps,rate));
+            id_handoff_check(rate);
+            stop_encoder(); printf("}\n");
+            assert(live_allocations == 0);
+        }
         if (heap_input) {
             fail_after = pace_allocations-1;
             assert(!start_encoder("dvbpace",mc,128,0,sps,rate));
