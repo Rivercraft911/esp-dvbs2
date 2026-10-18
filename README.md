@@ -52,7 +52,11 @@ Roll-off is 0.35 unless noted. Data rates follow from the DVB-S2 normal frame wi
 exclude station-ID time. Every mode's samples decode bit-exact in LeanDVB, an independent
 receiver; a receiver decoding the signal over the air is not shown yet.
 \*Keyed with an earlier, longer pulse; the current pulse has radio-off evidence.
-Margins, raw records and limits: [measurements](docs/measurements.md).
+Margins, raw records and limits: [measurements](docs/measurements.md). The 40 MHz mode keeps
+a 15% reserve on both cores while keyed.
+
+Somewhere along the way the $5 chip outgrew the SDR on my bench: the E200's AD9363 sees at
+most 20 MHz, so watching the full 40 MHz signal takes a wider receiver.
 
 ## Quick start
 

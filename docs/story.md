@@ -127,6 +127,16 @@ no late fill and no underrun, and every older mode still passed the regression g
 uses 99% of a frame keyed, so the mode works without the 15% reserve. 8PSK at 40 MHz does not fit yet.
 ([40 MHz](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/results/2026-10-17-moonshot/README.md))
 
+The margin came the same day. The encoder now queues compact I/Q bit planes instead of sign
+histories, core 1 pulls the sign windows straight out of them while rendering, and the encoder
+is woken once per bank instead of once per page. Two frames are queued before playback so the
+first data banks never wait. Keyed again in the box, the encoder averaged 198,879 cycles of a
+239,630-cycle frame (17% spare, from 1%) and the longest bank fill was 39,548 of 47,220 (16%
+spare): the 15% reserve, met on both cores. ([record](measurements.md#40-mhz))
+
+Somewhere along the way the $5 chip outgrew the SDR on the bench: the E200's AD9363 sees at
+most 20 MHz, so watching the whole 40 MHz signal takes a wider receiver.
+
 ## Now
 
 The next measurement is a receiver decoding the signal over a cabled RF path, then live

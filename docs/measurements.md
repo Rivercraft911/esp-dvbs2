@@ -5,11 +5,11 @@ Faraday box met the bank deadlines. **No receiver has yet decoded this transmitt
 Bandwidth below is the nominal shaped bandwidth, not a measured RF passband or emission mask.
 
 All board records below used an ESP32-S3 at 240 MHz. The copied JSON lines are unchanged
-subsets of the development archive, including their original firmware versions and command
-names. [sources.json](measurements/sources.json) records their origins and SHA-256 hashes.
+subsets of the development archive or of later board runs, including their original firmware
+versions and command names. [sources.json](measurements/sources.json) records their origins
+and SHA-256 hashes.
 The complete evidence remains in
 [archive/dev-2026-10-17](https://github.com/Rivercraft911/esp-dvbs2/tree/archive/dev-2026-10-17).
-No hardware was accessed for the public cleanup.
 
 ## What it can do
 
@@ -20,7 +20,7 @@ different firmware versions; these are historical capabilities, not a new accept
 
 | Mode | Symbol rate | Bandwidth | Data rate | Tested | Slack |
 |---|---:|---:|---:|---|---|
-| QPSK 9/10, roll-off 0.20 | 33.33 Msym/s | 40 MHz | 58.2 Mb/s | keyed | 12% fill, encoder about 1% ([record](#40-mhz)) |
+| QPSK 9/10, roll-off 0.20 | 33.33 Msym/s | 40 MHz | 58.2 Mb/s | keyed | 16% fill, 17% encoder ([record](#40-mhz)) |
 | 8PSK 5/6 | 20 Msym/s | 27 MHz | 48.4 Mb/s | keyed | 14% [radio off, current pulse](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/results/2026-10-17-next4/README.md); 4% keyed, [earlier pulse](#8psk-at-20-msyms) |
 | QPSK 9/10 | 26.67 Msym/s | 36 MHz | 46.6 Mb/s | keyed | 18% ([record](#qpsk-at-2667-msyms)) |
 | 8PSK 2/3 | 20 Msym/s | 27 MHz | 38.7 Mb/s | keyed | 14% radio off, current pulse |
@@ -51,26 +51,29 @@ they are not measured sustained video-input throughput.
 
 ## 40 MHz
 
-Firmware **51764f0** keyed QPSK 9/10 at 100/3 Msym/s, roll-off 0.20, for 30 s
-inside the shielded box. The wide filter setting was read back. Status was ESP_OK,
-with zero late fills, late switches, fatal lateness or underruns.
-[Copied keyed record](measurements/2026-10-17-moonshot-keyed.jsonl),
-[full report and radio-off checks](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/results/2026-10-17-moonshot/README.md).
+Firmware **e96795b** keyed QPSK 9/10 at 100/3 Msym/s, roll-off 0.20, for 30 s inside the
+shielded box with `dvb 2420 11 33m333 30 4 128` (firmware revision read with `info` just
+before the run). Status was ESP_OK, with zero late fills, late switches, fatal lateness,
+underruns or empty-queue events.
+[Copied keyed record](measurements/2026-10-17-qpsk-reserve-keyed.jsonl).
+The first keyed run of this mode, firmware 51764f0, is kept for comparison
+([record](measurements/2026-10-17-moonshot-keyed.jsonl),
+[report](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/results/2026-10-17-moonshot/README.md)).
 
-| Quantity | Recorded value |
-|---|---:|
-| Bank deadline | 47,220 cycles |
-| Longest bank fill | 41,130 cycles |
-| Minimum fill slack | 5,810 cycles |
-| Encoder mean / live maximum | 237,370 / 265,333 cycles/frame |
-| Frame duration, derived | 239,630.4 CPU cycles |
-| Minimum queued lead | 5,120 symbols |
-| Free internal RAM with Wi-Fi up | 28,667 B |
+| Quantity | 51764f0, first keyed run | e96795b, keyed | 15% reserve line |
+|---|---:|---:|---:|
+| Bank deadline | 47,220 cycles | 47,220 cycles | |
+| Longest bank fill | 41,130 cycles | 39,548 cycles | 40,137 |
+| Minimum fill slack | 5,810 cycles | 7,394 cycles | |
+| Encoder mean / live maximum, cycles/frame | 237,370 / 265,333 | 198,879 / 222,440 | 203,686 mean |
+| Frame duration, derived | 239,630.4 cycles | 239,630.4 cycles | |
+| Minimum queued lead | 5,120 symbols | 34,901 symbols | |
+| Free internal RAM with Wi-Fi up | 28,667 B | 30,395 B | 20,000 B |
 
-The queue absorbed encoder frames longer than their individual duration. The encoder
-averaged about 99% of a frame. This meets the observed schedule, but fails the proposed
-15% reserve target. Spectrum, filter flatness near ±20 MHz, RF decoding and live input
-at this rate remain unmeasured. [Sign-window design](how-it-works.md#sign-windows-and-40-mhz).
+The same build ran radio off for 30 s with an encoder mean of 152,128 cycles/frame, so keying
+the radio costs core 0 about 46.8k cycles per frame. The reserve is now met on both cores, in
+one 30 s keyed run. Spectrum, filter flatness near ±20 MHz, RF decoding and live input at this
+rate remain unmeasured. [Sign-window design](how-it-works.md#sign-windows-and-40-mhz).
 
 ## QPSK at 26.67 Msym/s
 
