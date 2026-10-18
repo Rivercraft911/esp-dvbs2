@@ -22,6 +22,7 @@ jobs:
       - run: python tests/test_shaper_axes.py
       - run: python tests/test_vcm.py
       - run: python tests/test_vcm.py --axes
+      - run: python tests/test_vcm_dump.py
       - run: python tests/test_self_check.py
       - run: python tests/test_live_video.py
       - run: python tests/test_ota.py

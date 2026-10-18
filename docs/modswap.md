@@ -3,7 +3,8 @@
 `exp/modswap`, based on `d9520e8`. Opt in with `vcm axes on`, then select a
 normal VCM pattern. This prototype accepts **5 Msym/s only**. The default
 full-table path remains available with `vcm axes off`; `vcm off` disables VCM.
-No board or radio was accessed for this experiment.
+The agent did not access the board or radio. The coordinator subsequently
+qualified the 5 M pattern with radio off; see the [board decode and merge assessment](modswap-board.md).
 
 ## Estimates and selection
 
@@ -129,9 +130,9 @@ plain encoder's parity workspace would overlap the render window/cache.
 The actual assembled steady loop has 193 instructions per six symbols:
 **32 + 1/6 per symbol**, about **57,369 cycles per fresh bank** at 5 M.
 Phase loads are separated from their uses. Allowing roughly 10–15k cycles
-for existing non-render work suggests about 67–72k cycles/bank, but SRAM
-stalls and Wi-Fi contention remain unmeasured. This is a planning estimate,
-not a deadline guarantee. The old 8 KiB offset-map version needed about
+for existing non-render work suggested about 67–72k cycles/bank before board
+testing. The coordinator subsequently measured 70,730 cycles maximum in a
+Wi-Fi-up pace. The old 8 KiB offset-map version needed about
 72k renderer cycles alone. PIE packing adds each axis independently, shifts
 I by six, interleaves uint16 lanes, shifts each word back by six, then XORs
 the existing DAC bias. Lane bounds prevent carries and saturation.
@@ -149,8 +150,8 @@ budget is 1,065,312 CPU cycles. Profile the boundary as well as the FEC kernel.
 * **1 M:** original QPSK VCM only; a full 8PSK table would need 262,144 B.
   An axis implementation could fit and has ample CPU budget, but n40 kernels
   and validation are outside this prototype.
-* **5 M:** full-table VCM exists; the new compact path removes its playback
-  heap requests. Both need coordinator timing and the 20 KB Wi-Fi heap floor.
+* **5 M:** full-table VCM exists; the compact path removes its playback heap
+  requests and passed coordinator radio-off timing/heap checks for 4/11/13/17.
 * **10 M:** original common-table VCM is host-verified but heap-heavy
   (59,744 B additional internal requests on S3). The compact n8 renderer
   cannot be sped up simply by running it twice as fast. A four-sample variant

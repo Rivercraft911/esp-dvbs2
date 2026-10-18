@@ -1,0 +1,145 @@
+{
+  "board": {
+    "dvbdump": {
+      "crc32": 250437847,
+      "decimation": 2,
+      "encoder_failed": false,
+      "frames": 64,
+      "frames_played": 65,
+      "max_fill_cycles": 72415,
+      "overlap_mismatches": 0,
+      "samples": 14201856,
+      "status": "ESP_OK",
+      "underruns": 0
+    },
+    "dvbpace": {
+      "encode_cycles_live_max": 687389,
+      "encode_cycles_mean": 499197,
+      "encoder_stack_min_free": 1040,
+      "fatal_late": 0,
+      "frames_encoded": 5409,
+      "frames_played": 5408,
+      "late_fills": 0,
+      "late_switches": 0,
+      "max_fill_cycles": 70730,
+      "min_fill_slack_cycles": 14505,
+      "min_lead_symbols": 7946,
+      "paced_wifi_up": true,
+      "seconds": 30,
+      "status": "ESP_OK",
+      "underruns": 0,
+      "wifi_min_free": 77143
+    },
+    "wifimem": {
+      "encoder_stack_min_free": 1008,
+      "fast_bytes": 17696,
+      "playback_store_bytes": 64192,
+      "ring_heap_bytes": 0,
+      "status": "ESP_OK",
+      "table_bytes": 10240,
+      "wifi_free_up": 77143,
+      "wifi_largest_up": 31744,
+      "wifi_min_free": 75327,
+      "workspace_bytes": 8144
+    }
+  },
+  "coordinator_radio_off": true,
+  "firmware_commit": "479a068",
+  "independent_decode": {
+    "attempted_modcods": [
+      4,
+      11,
+      13,
+      17
+    ],
+    "bb_frames": 62,
+    "bbheader_rejected_frames": 0,
+    "bch_corrected_bits": 0,
+    "bch_failed_frames": 0,
+    "callsign": "N0CALL",
+    "capture_crc32": 250437847,
+    "capture_sha256": "e746fa02134186da9a10ab0828ea02f3347d99af64e250d2e286b933fd1776ad",
+    "compared_bits": 2959920,
+    "contiguous_payload": true,
+    "empty_bb_frames": 0,
+    "exact_bbframes": true,
+    "fec_frames": 62,
+    "first_frame": 0,
+    "frame_lock": true,
+    "frames_played_counter": 65,
+    "frequency_offset_hz": {
+      "count": 6,
+      "last": -3.0,
+      "max": 13.0,
+      "median": -1.0,
+      "min": -23.0
+    },
+    "hold_frames": 1,
+    "last_frame": 61,
+    "ldpc_bit_flips": 0,
+    "ldpc_checks_after": 0,
+    "ldpc_checks_before": 0,
+    "ldpc_residual_frames": 0,
+    "lock_at_end": true,
+    "mer_db": {
+      "count": 6,
+      "last": 26.9,
+      "max": 27.1,
+      "median": 26.95,
+      "min": 26.7
+    },
+    "modcods": [
+      4,
+      11,
+      13,
+      17
+    ],
+    "modes": [
+      "QPSK 1/2",
+      "QPSK 9/10",
+      "8PSK 2/3",
+      "8PSK 9/10"
+    ],
+    "nominal_frames": 64,
+    "omitted_leading_frames": 0,
+    "omitted_trailing_frames": 2,
+    "pattern": [
+      4,
+      11,
+      13,
+      17
+    ],
+    "payload_bit_errors": 0,
+    "payload_bytes": 369990,
+    "payload_frames": 62,
+    "payload_sha256": "69dcce755f369c1b3a018a1066eae088a8828b389af49c72224b54e580dee42c",
+    "per_modcod": {
+      "11": {
+        "frames": 16,
+        "payload_bytes": 116224
+      },
+      "13": {
+        "frames": 15,
+        "payload_bytes": 80550
+      },
+      "17": {
+        "frames": 15,
+        "payload_bytes": 108960
+      },
+      "4": {
+        "frames": 16,
+        "payload_bytes": 64256
+      }
+    },
+    "receiver": "leandvb",
+    "receiver_executable": "/Users/river/Documents/stanford/SSI/esp-dvbs2/notes/leansdr/src/apps/leandvb",
+    "receiver_flush_samples": 4096,
+    "receiver_sha256": "5482ab74d714959498cf2ad8f177b195194c81850c4e479890bb2a4d695dcfa0",
+    "sample_rate": 20000000.0,
+    "status_complete": true,
+    "stream": "gcs",
+    "symbol_rate": 5000000
+  },
+  "source_records": "notes/modswap-board/runs.jsonl",
+  "source_records_sha256": "72103ea9475bd76c15df6ee692f7365b2b1922d44605248b72abaf7c3ce0a34f"
+}
