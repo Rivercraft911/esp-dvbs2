@@ -1,135 +1,123 @@
 # Contained RF check
 
-This coordinator closes the next evidence gap: E200 IQ capture → independent LeanDVB
-decode → exact synthetic payload comparison. **No successful RF decode is claimed yet.**
-USB replay and host-generated waveforms test the workflow only.
+Capture with UHD or a Pluto-firmware ADALM-Pluto / ANTSDR E200 (libiio), decode with
+LeanDVB, and compare every recovered payload byte against the synthetic source.
+Bench runs recovered exact payloads at 2.5 and 10 MS/s streaming, and at 20 MS/s
+with a single 16 M sample device buffer. The integrated libiio backend needs its
+first coordinator run; host tests use simulated devices only.
 
-Read [Transmitting](../../docs/transmitting.md) first. Use a **closed Faraday box with both
-devices inside**, or **coax with attenuators** (at least 30 dB initially). Antennas belong
-inside the closed box only. Record the path, attenuation, antenna/connector and gain.
-Verify the E200 input limits; the S3 gain index is not calibrated power. A shielded box
-does not establish zero leakage, licence authority, or emission-mask compliance.
+Read [Transmitting](../../docs/transmitting.md). Use a **closed Faraday box with
+both devices inside**, or **coax with attenuators** (at least 30 dB initially).
+Antennas stay inside the closed box. Check receiver input limits and record the
+path, attenuation, connectors and gain. Gain indices are not calibrated power.
+For anything radiated, the operator needs the required licence, an assigned
+callsign stored in the S3, and an authorized frequency/emission containing the
+whole signal. A box does not establish zero leakage or licence authority.
+2420 MHz is a bench default, not band permission.
 
-The operator must hold the required licence, store their assigned callsign beforehand,
-choose an authorized frequency/emission, and keep the complete signal inside their band.
-The default center is 2420 MHz; this is an explicit bench setting, not band permission.
-Keep the contained path connected until the firmware's timed run finishes. Ctrl-C stops
-the coordinator/capture; it **cannot stop an already keyed firmware run**.
+`--key` authorizes the S3's timed transmission. Keep containment connected until
+it finishes: Ctrl-C stops host capture but **cannot stop already keyed firmware**.
+No discovery, reset, firmware changes or callsign writes occur. The exact serial
+port is locked; `info` must return a valid stored callsign. `--callsign` optionally
+cross-checks it. The keyed seconds include both Morse IDs; short runs are refused.
+`spiinput off` selects synthetic input and disables USB ingress for this run.
 
-## RF settings
+## Pluto / E200 with Pluto firmware
 
-Normal frames, pilots, RRC roll-off 0.35; all three MODCODs work at either rate:
+Use host Python with `numpy scipy matplotlib pyserial` and a LeanDVB build supporting
+this repository's FEC diagnostics (see [host decoder](../../host/decode.py)). Set
+`RX` to that executable. The isolated worker defaults to
+`~/radioconda/bin/python`; use `--iio-python /path/to/python` for another
+Python with **pylibiio** and its native libiio library. Radioconda includes these
+[ADI Python bindings](https://github.com/analogdevicesinc/libiio/tree/v0.26/bindings/python).
+UHD bindings are not needed for this backend.
 
-| MODCOD | Mode | Symbol rate | Nominal occupied bandwidth | UHD sample rate | RX bandwidth | Master clock / decimation |
-|---|---|---|---|---|---|---|
-| 7 | QPSK 3/4, first check | 5 Msym/s | 6.75 MHz | 10 MS/s | 10 MHz | 40 MHz / 4 |
-| 7 | QPSK 3/4, demo | 10 Msym/s | 13.5 MHz | 20 MS/s | 20 MHz | 40 MHz / 2 |
-| 13 | 8PSK 2/3 | 10 Msym/s | 13.5 MHz | 20 MS/s | 20 MHz | 40 MHz / 2 |
-| 11 | QPSK 9/10 | 10 Msym/s | 13.5 MHz | 20 MS/s | 20 MHz | 40 MHz / 2 |
-
-These choices use one RX channel and integer UHD decimation, at least two samples per
-symbol, and an analog bandwidth within the AD9363's 20 MHz limit. The master clock is
-the RFIC/UHD clock, **not** the 40 MHz reference oscillator. The chip's digital sample
-rate limit and its analog bandwidth limit are different. See the
-[AD9363 specifications](https://www.analog.com/en/products/ad9363.html),
-[ADI sample-rate specifications](https://wiki.analog.com/university/tools/pluto/devs/specs), and
-[E200 clock/streamer limits in the vendor driver](https://github.com/MicroPhase/antsdr_uhd/blob/master/host/lib/usrp/ant/ant_impl.cpp).
-Do not request a second channel at a 40 MHz master clock. The vendor driver halves
-its maximum clock for two channels. No 20 Msym/s mode is offered here.
-
-Wire samples are sc16 (40 or 80 MB/s before Ethernet overhead); disk IQ is cf32_le
-(80 or 160 MB/s). Use gigabit Ethernet, fast local storage and several GB free.
-A 30 s run has a 42 s capture safety limit: approximately 3.36 GB at 5 Msym/s or
-6.72 GB at 10 Msym/s. Normal capture stops one second after the board reports done.
-
-## Operator commands
-
-Use a host Python with `numpy scipy matplotlib pyserial`. Radioconda's Python is the
-default capture worker; the coordinator uses the normal host Python (Radioconda here
-does not include pyserial). The worker's UHD installation must
-support the **E200 firmware actually loaded**: stock UHD availability alone does not
-prove the vendor E200 transport is installed. See the
-[vendor UHD setup](https://antsdr-docs.microphase.cn/en/latest/device_and_usage_manual/ANTSDR_E_Series_Module/ANTSDR_E200_Reference_Manual/AntsdrE200_UHD.html).
-Set `--uhd-python` to another compatible Python if needed. No automatic discovery,
-firmware loading, board reset, or callsign writes occur. Select the physically connected
-receive port (`--antenna RX2` by default).
-
-From the repository root, set `E200_IP` to the owner's configured device address.
-`RX` defaults to the existing LeanDVB build at
-`/Users/river/Documents/stanford/SSI/esp-dvbs2/notes/leansdr/src/apps/leandvb`.
+From the repository root, with the owner's configured URI and serial port:
 
 ```sh
-export E200_IP=192.168.1.10  # replace with the actual E200 address
-export RX=/Users/river/Documents/stanford/SSI/esp-dvbs2/notes/leansdr/src/apps/leandvb
+export IIO_URI=ip:192.168.1.10  # E200 example; Pluto commonly uses ip:192.168.2.1
+export RX=/path/to/leandvb
 
-# Read-only plan: no imports of board/UHD, no devices, no output files.
-python3 examples/over-the-air/check.py --args "addr=$E200_IP" --rate 5m --modcod 7 --plan
+# Device-free plan; creates no evidence files.
+python3 examples/over-the-air/check.py --backend libiio --uri "$IIO_URI" --plan
 
-# Operator executes only after closing the box / connecting the attenuated path.
-python3 examples/over-the-air/check.py notes/ota-first-5m \
-  --args "addr=${E200_IP:?set E200_IP}" --mhz 2420 --modcod 7 --rate 5m \
-  --seconds 30 --gain 0 --peak 128 --key
+# First check: QPSK 3/4, 5 Msym/s, 10 MS/s streaming.
+# Operator runs only after closing the box / connecting the attenuated path.
+python3 examples/over-the-air/check.py notes/ota-pluto-first \
+  --backend libiio --uri "${IIO_URI:?set IIO_URI}" --receiver "${RX:?set RX}" \
+  --port /dev/cu.usbmodem1101 --mhz 2420 --modcod 7 --rate 5m \
+  --sample-rate 10000000 --rx-gain 30 --gain 0 --peak 128 --seconds 30 --key
+
+# Wider check: one contiguous device buffer after the leading Morse ID.
+python3 examples/over-the-air/check.py notes/ota-pluto-burst \
+  --backend libiio --uri "${IIO_URI:?set IIO_URI}" --receiver "${RX:?set RX}" \
+  --port /dev/cu.usbmodem1101 --modcod 7 --rate 10m --sample-rate 20000000 \
+  --burst 16000000 --rx-gain 30 --seconds 30 --key
 ```
 
-The new output directory must not exist. Specify `--port` when native USB is elsewhere;
-the coordinator uses that exact path and the `host/board.py` ownership lock, without
-reset or port discovery. `info` must return a valid stored callsign. Optional `--callsign`
-cross-checks it. A short keyed window that leaves less than two seconds of DVB after
-both Morse IDs is refused. `spiinput off` selects synthetic input for this check; it
-also disables USB ingress. This is a volatile input selection, not a callsign change.
+Each output directory must be new. Explicit `usb:BUS.ADDR` URIs also work; bare
+`ip:` / `usb:` and automatic discovery are refused. Use the physically connected
+RX connector. Keep other SDR clients closed for the entire run.
 
-The worker sets internal clock, manual RX gain (default 0 dB), antenna, center frequency,
-sample rate and bandwidth. It checks actual readbacks and LO lock, then receives one
-second of clean IQ before the coordinator sends `dvb MHz MODCOD rate seconds gain peak`.
-The keyed seconds **include both IDs**. Capture continues through board startup and
-the keyed window plus one second afterward; a finite safety limit bounds disk use.
-Any sample-rate/master-clock/bandwidth coercion, missing IQ, overflow, metadata error,
-or failed capture prevents a pass. A failure detected before keying prevents `dvb`.
-After keying, the firmware retains responsibility for its timed shutdown.
+The SDR is receive-only even when its TX connector has no load. Before RX setup,
+the worker sets **TX LO powerdown = 1**, **every TX hardwaregain = -89.75 dB** and
+**every DDS raw = 0**, then reads every value back. It reapplies these inhibits
+after RX setup, verifies them immediately before creating an RX buffer, and
+checks again after capture. Cleanup reapplies the inhibits on success or failure.
+Missing attributes, failed writes, nonfinite values,
+or any mismatch refuse capture. There is no TX buffer, TX tuning or restore of
+previous TX settings. RX LO, sample rate, analog bandwidth and manual gain also
+require matching readbacks. Unsupported sample layouts are refused.
 
-Then repeat with fresh directories and `--rate 10m --modcod 7`, `--rate 10m --modcod 13`,
-and `--rate 10m --modcod 11`. If acquisition fails, inspect spectrum and logs before
-changing manual RX gain or RF settings; gain 0 on either device is not a power guarantee.
+| Symbol rate | Native capture rate | Transport evidence / choice |
+|---|---|---|
+| 1 Msym/s (`--rate 1m`, e.g. `--modcod 4`) | 2.5 MS/s | Streaming recovered exact payload |
+| 5 Msym/s (`--rate 5m`, MODCOD 7) | 10 MS/s | Streaming recovered exact payload; start here |
+| 10 Msym/s (`--rate 10m`, MODCOD 7) | 20 MS/s | Streaming lost samples; use a 16 M sample burst (0.8 s) |
 
-## PHY-solo A/B
+Streaming above 10 MS/s is refused. Sustainable throughput depends on the host
+and link; even 10 MS/s is not universal, especially over Pluto USB. libiio here
+exposes no sample timestamps or hardware overflow counter: `overflows` is `null`,
+not an invented zero. Transport errors and short buffers fail; exact-payload
+comparison rejects missing frames inside the recovered slice. This does not
+prove continuity in undecoded parts of a stream.
 
-Wi-Fi teardown removes periodic recalibration. CPU/heap records cannot establish
-RF quality. After the radio-off self-check and paired `dvbpace` runs, the coordinator
-runs this A/B **only inside the closed Faraday box**, keeping the path, supply,
-attenuation, RX gain, peak and callsign fixed. Use fresh output directories. Repeat
-in reverse order to distinguish warmup/drift from the option; the labels below record
-both orders. Use the same `E200_IP`, `RX` and compatible UHD Python as above.
+Burst mode queues **one RX kernel buffer**, after the stored callsign's Morse
+duration plus `--burst-margin` (default 2.3 s for firmware startup). It refills
+exactly once. The whole burst must fit between both IDs; a conservative check
+against board completion timing rejects capture before the leading ID ended or
+transfer completion too late to prove capture preceded the trailing ID.
+Increase the margin / keyed duration if startup is slower. The 16 M sample limit
+is the tested allocation; transfer can take longer than the RF sample window.
+
+Default analog bandwidth is 1.15 times the nominal RRC bandwidth (roll-off 0.35).
+`--bandwidth HZ` overrides it. `20m`, `26m667` and `33m333` are experimental libiio
+burst choices, **not validated decodes**; native rates are capped at 61.44 MS/s.
+A stock AD9363's 20 MHz analog bandwidth cannot validate a 36 MHz `26m667` signal.
+The receiver must actually cover the full occupied bandwidth; no firmware unlock
+is performed. `--upsample 2` interpolates saved IQ offline before LeanDVB when
+native capture is below two samples/symbol (but still covers the signal). It
+cannot repair aliasing, cropped bandwidth or dropped samples. Spectrum always
+uses native IQ; `decode.cfile` holds the interpolated copy.
+
+## UHD
+
+The default backend remains UHD. Use a Python with the driver for the firmware
+actually loaded (`--uhd-python` overrides the Radioconda default). Pluto firmware
+uses libiio; stock UHD availability alone does not establish E200 compatibility.
+One RX channel, internal 40 MHz master clock, sc16 wire format, manual gain and
+LO lock are checked. `5m` uses 10 MS/s / 10 MHz bandwidth; `10m` uses 20 MS/s /
+20 MHz. The default antenna is `RX2`; select the connected port with `--antenna`.
 
 ```sh
-for mc in 13 15 17; do
-  for arm in wifi-a solo-a solo-b wifi-b; do
-    opt=''; case "$arm" in solo-*) opt='--phy-solo';; esac
-    python3 examples/over-the-air/check.py "notes/ota-phy-$mc-$arm" \
-      --args "addr=${E200_IP:?set E200_IP}" --receiver "${RX:?set RX}" \
-      --mhz 2420 --modcod "$mc" --rate 10m --seconds 30 --gain 0 --peak 128 \
-      $opt --key || exit 1
-  done
-done
+python3 examples/over-the-air/check.py notes/ota-uhd-first \
+  --args addr=192.168.1.10 --modcod 7 --rate 5m --rx-gain 0 --seconds 30 --key
 ```
 
-Compare exact payload recovery, frame-lock continuity, decoded frame count, LDPC/BCH
-corrections/failures, locked MER, carrier offset and PSD. Require the existing exact-byte
-pass in every arm, complete/error-free captures, and solo records showing Wi-Fi absent,
-PHY users 2, both cores' Wi-Fi IRQ routes zero before setup, then PHY users 0 after
-cleanup. Investigate a repeated solo-only loss of lock, MER degradation, correction
-increase, carrier drift or new spectral feature before accepting the option.
+## Offline replay and evidence
 
-This E200 workflow uses `10m` (13.5 MHz occupied) for all three 8PSK modes. Its configured
-20 MHz analog bandwidth cannot validate the full **36 MHz** `26m667` emission, and the
-fused renderer runs only at that higher rate. A passing E200 A/B therefore tests the
-PHY lifetime at 10 Msym/s; full-rate RF quality and fused-path RF validation remain
-pending a receiver covering the complete occupied bandwidth. Do not infer those results
-from the 26m667 keyed timing runs or from a narrow cropped capture.
-
-## Offline USB replay
-
-Use an **existing** radio-off USB dump and its exact metadata. This command does not
-collect a new dump or open any device:
+An existing radio-off USB dump needs its original frame count, callsign and saved
+sample rate **after decimation**. This opens no devices:
 
 ```sh
 python3 examples/over-the-air/check.py notes/ota-usb-check \
@@ -137,44 +125,31 @@ python3 examples/over-the-air/check.py notes/ota-usb-check \
   --rate 5m --modcod 7 --frames 16 --callsign N0CALL
 ```
 
-`--dump-rate` is the saved sample rate **after decimation**, not the DAC clock.
-For example, QPSK 5m with the default dump decimation 2 is 20 MS/s; a decimation-1
-8PSK 5m dump is 40 MS/s. `--frames` must be the dump's original frame count.
-N0CALL is a contained/radio-off fixture, never an assigned operating callsign.
-The same `analyze()` calls `host/decode.py` for RF and USB, with int16 conversion and
-4096 receiver lookahead samples added only for USB, as in the existing dump checker.
+N0CALL is a radio-off / contained fixture, never an assigned operating callsign.
+Both RF backends use the same `analyze()` / `host/decode.py` path: frame lock,
+complete FEC diagnostics, requested MODCOD, at least eight nonempty BB frames,
+and **every recovered payload byte** matching one frame-aligned contiguous slice
+of `decode.payload()`, including callsign headers. Leading acquisition loss and
+trailing partial frames are allowed; corrupt bytes or an interior missing frame
+fail. Reference length comes from the board's `frames_encoded`; ESP_OK, synthetic
+input, healthy playback and zero S3 underruns are required.
 
-## Evidence and pass criteria
+`report.json` retains exact-byte results, decoded frames, LDPC/BCH corrections and
+failures, locked MER and carrier offset; missing telemetry is `null`. Corrections
+are not measured channel BER. `spectrum.png` is a Hann PSD in digital dBFS/Hz with
+nominal RRC edges, not calibrated RF power or an emission mask. `capture.cfile`
+contains cf32_le IQ (80 MB/s at 10 MS/s). A 30 s streaming run has a 42 s safety
+limit: allow 3.36 GB at 10 MS/s, plus space for optional interpolation. A 16 M
+sample burst saves 128 MB. `capture.json`, `iio.log` / `uhd.log`, `board.jsonl`,
+`settings.json`, `plan.json`, `revision.json`, `leandvb.log` and `payload.bin`
+retain settings, readbacks and evidence. Failures exit nonzero and preserve files.
 
-`report.json` records decoded BB frames, LDPC bit flips/parity-check counts, BCH corrected
-bits/failures, exact-byte comparison, locked MER (dB) and carrier offset (Hz), with
-count/min/median/max/last for receiver telemetry. Missing telemetry is `null`, never zero.
-These are receiver estimates; the raw fd-info/debug output is in `leandvb.log`. Carrier
-offset uses LeanDVB's signed FREQ estimate relative to the capture center. LDPC flips
-and BCH corrections are not a measured channel BER.
+For PHY-solo A/B, use fresh directories and alternate the same mode with / without
+`--phy-solo`, then reverse order, keeping containment, path, gain and callsign
+fixed. Require exact payload recovery in every arm and compare FEC, MER, carrier
+offset and spectrum. Solo records must show Wi-Fi absent, PHY users 2 and both
+cores' IRQ routes zero before setup, then PHY users 0 after cleanup. A 10m result
+does not validate the full-bandwidth 26m667 emission or its fused renderer.
 
-A pass needs frame lock, complete FEC diagnostics, the requested MODCOD, at least eight
-nonempty BB frames, and **every recovered payload byte** matching one frame-aligned,
-contiguous slice of `host/decode.payload()` including the callsign headers. Leading
-acquisition loss and trailing partial frames are allowed; corrupt bytes or an interior
-missing frame fail. RF reference length comes from the board's `frames_encoded`.
-Nonzero FEC corrections are reported and allowed when the recovered bytes match.
-The board must also report ESP_OK, the expected synthetic mode and zero underruns.
-
-`spectrum.png` uses `host/plotstyle.py`: Hann PSD from evenly spaced windows across the
-capture, including IDs and silence, in digital dBFS/Hz, with nominal RRC band edges.
-It is not a calibrated RF-power or regulatory mask measurement. USB spectra exclude
-the appended receiver lookahead. RF capture remains as `capture.cfile`; `capture.json`
-holds readbacks/device identity/sample count/errors, and `uhd.log` preserves diagnostics.
-`board.jsonl`, `settings.json`, `plan.json`, `revision.json` and `payload.bin` retain
-the command, stored callsign, firmware revision, settings and decoded evidence.
-Failures exit nonzero and keep available evidence. USB reports explicitly say `usb-dump`.
-
-The new device-free checks run as `python3 tests/test_ota.py`; the normal host suite
-remains `for test in tests/test_*.py; do python3 "$test" || exit 1; done`.
-
-Offline validation on 2026-10-17: native firmware-stream fixtures, resampled to the
-planned two samples/symbol, decoded in the existing LeanDVB build with exact payloads
-and zero LDPC/BCH corrections. QPSK 3/4 at 5 and 10 Msym/s and QPSK 9/10 at 10 Msym/s
-recovered 15/16 frames; 8PSK 2/3 at 10 Msym/s recovered 13/16. A historical USB dump
-without callsign headers was rejected. These checks did not access hardware or RF.
+Device-free tests: `python3 tests/test_ota.py`. All host tests:
+`for test in tests/test_*.py; do python3 "$test" || exit 1; done`.
