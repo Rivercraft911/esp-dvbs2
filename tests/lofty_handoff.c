@@ -1,13 +1,23 @@
 // Replay the observed ID/data bank, including the real station and overlap muxes.
 #include "native.h"
 #define lofty_samples checked_samples
+#define lofty_render checked_render
 #define main stream_lifecycle_main
 #include "stream_host.c"
 #undef main
 #undef lofty_samples
+#undef lofty_render
 void lofty_samples(uint32_t *, const uint32_t *, unsigned, size_t, const uint32_t *);
+void lofty_render(uint32_t *, const uint32_t *, unsigned, const uint32_t *);
 static unsigned bulk, singles, bank_switches;
 static bool dummy_source;
+
+void checked_render(uint32_t *dst, const uint32_t *src, unsigned n, const uint32_t *table)
+{
+    assert(!((uintptr_t)dst&15));
+    bulk += n;
+    lofty_render(dst,src,n,table);
+}
 
 void checked_samples(uint32_t *dst, const uint32_t *src, unsigned skip, size_t n, const uint32_t *table)
 {

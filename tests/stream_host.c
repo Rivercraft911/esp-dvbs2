@@ -16,6 +16,11 @@ static uint32_t checked_load(const volatile uint32_t *, int);
 static uint32_t checked_load(const volatile uint32_t *p, int order)
 {
     static unsigned forced_mask;
+    static bool forced_admission;
+    if (p == &dvb.produced && !current && forced_admission) {
+        forced_admission = false;
+        return dvb.consumed;
+    }
     if (p == &lofty_mux.published && !current && !getenv("UNPACED_LOFTY")) {
         // Host-only producer pacing at admission, without changing physical
         // bank callbacks. The hardware consumer never waits here.
@@ -25,6 +30,7 @@ static uint32_t checked_load(const volatile uint32_t *p, int order)
                        lofty_mux.frames == 0 ? 1 : lofty_mux.frames == 1 ? 2 : lofty_mux.frames == 5 ? 4 : 0;
         if ((frame || getenv("FORCE_DUMMIES")) && bit && !(forced_mask&bit)) {
             forced_mask |= bit;
+            forced_admission = true;
             return lofty_mux.frames; // force a not-ready admission snapshot
         }
         moon_wake();
@@ -221,7 +227,10 @@ esp_err_t radio_s3_dry_run_rate(radio_s3_fill_fn fn, void *ctx, uint64_t samples
                                 uint32_t rate, radio_s3_sink_fn sink_fn, void *sink_ctx,
                                 radio_s3_dry_stats_t *stats)
 {
-    const uint64_t step = RADIO_S3_STEP_FOR(rate), lead = RADIO_S3_LEAD_FOR(rate);
+    const uint64_t step = RADIO_S3_STEP_FOR(rate);
+    // This raw-payload fixture has no station mux. Timed lofty uses the
+    // regular overlap from its first data bank; lofty_handoff.c tests the ID.
+    const uint64_t lead = dvb.cached_words-(RADIO_S3_BANK_WORDS-step);
     *stats = (radio_s3_dry_stats_t){0};
     bank_fill(fn, ctx, 0, 0, stats);
     bank_fill(fn, ctx, 1, step - lead, stats);

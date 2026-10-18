@@ -60,6 +60,11 @@ int main(int argc, char **argv)
     callsign = "N0CALL";
     assert(start_encoder("dvbpace",mc,128,0,3,80000000));
     full_queue();
+    // This ownership test suspends the producer indefinitely. That exceeds
+    // every finite streaming rate, so exercise the measured-slow fallback.
+    lofty_mux.page_max = 1000000;
+    lofty_mux.admission_pages = lofty_admission(lofty_mux.page_max,0) | (lofty_admission(lofty_mux.page_max,47220)<<8);
+    assert(lofty_mux.admission_pages == (LOFTY_FRAME_PAGES | (LOFTY_FRAME_PAGES<<8)));
     armed = 1;
     unsigned pages = 0, wraps = 0, sequence_wraps = 0, bank_pages = 0;
     unsigned last_index = dvb.get_index;

@@ -284,7 +284,8 @@ def pace(mc,token,seconds,limit):
         assert r['prepare_pages'] > 0 and r['encoder_cache_bytes'] == ({13:22960,15:24112,17:24256}[mc] if mc >= 12 else 25920), r
         assert r['queue_pages'] == ({13:54,15:50,17:46}[mc] if mc >= 12 else 54) and r['queue_page_samples'] == 1536 and r['queue_wake_pages'] == (2 if mc >= 12 else 8) and r['queue_low_pages'] > 0 and r['queue_empty'] == 0, r
         if lofty_mode:
-            assert r['admission_pages'] == 44 and r['queue_pages'] >= 44, r
+            assert 6 <= r['admission_pages'] <= r['admission_wait_pages'] <= 44 and r['queue_pages'] >= 44, r
+            assert r['queue_stream_page_max_cycles'] >= 0, r
             assert r['dummy_startup'] >= 0 and r['dummy_steady'] >= 0, r
         else:
             assert r['encode_kernel_cycles_mean']+copy_cycles <= limit['encode_cycles_mean'], r

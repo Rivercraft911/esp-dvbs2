@@ -33,7 +33,8 @@ def main():
         if mc == 15 and not observer: raise TimeoutError('injected timeout')
         r = dict(cmd='dvbpace',modcod=mc,queue_wake_policy=policy,paced_wifi_up=True,encoder_pie=15,
                      bch_variant='resident-pair' if mc in (11,17) else 'split-pair',warmup_frames=3,
-                     encoder_priority=24,admission_pages=44,dummy_startup=4,dummy_steady=2,dummy_alignment=3,
+                     encoder_priority=24,admission_pages=7,admission_wait_pages=23,queue_stream_page_max_cycles=600,
+                     dummy_startup=4,dummy_steady=2,dummy_alignment=3,
                      handoff=[dict(words=8100,shape_cycles=17000),dict(words=6092,shape_cycles=13000)],
                      fills=1,frames_played=24000,jitter_enabled=observer,seconds=int(args[3]),
                      elapsed_samples=2400000000,planned_samples=2400000000,

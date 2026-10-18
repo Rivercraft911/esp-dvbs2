@@ -2,7 +2,7 @@
 """Radio-off clean gate plus bank/page wake diagnosis, about one minute per mode.
 
 No flashing or transmitter commands. Keep the Mac awake, for example:
-  caffeinate -i python3 host/jitter.py notes/eight-lofty-round10
+  caffeinate -i python3 host/jitter.py notes/eight-lofty-round11
 """
 import argparse
 import datetime as dt
@@ -36,7 +36,8 @@ def timing(rows, mc, policy, observer):
     assert r['warmup_frames'] == 3, 'encoder warm-up missing'
     assert r['jitter_enabled'] == observer and ('jitter' in r) == observer, 'wrong observer state'
     if mc != 11:
-        assert r['admission_pages'] == 44, 'wrong frame admission'
+        assert 6 <= r['admission_pages'] <= r['admission_wait_pages'] <= 44, 'wrong streaming admission'
+        assert r['queue_stream_page_max_cycles'] >= 0, 'missing production bound'
         assert len(r['handoff']) == 2, 'missing handoff record'
         if r['status'] == 'ESP_OK':
             assert [p['words'] for p in r['handoff']] == [8100,6092], 'wrong ID/data handoff'

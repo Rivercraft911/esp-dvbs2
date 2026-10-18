@@ -3,10 +3,7 @@
     .macro lofty_word offset,advance
     extui a10,a8,0,13
     extui a11,a8,9,15
-    // C0 ignores the last phase. Half its rows; double the raw offset
-    // after the load to reach C1. Both vector loads discard address bits0..3.
-    extui a12,a8,21,9
-    addmi a15,a12,512
+    extui a12,a8,20,10
     add a10,a10,a5
     add a11,a11,a6
     add a12,a12,a7
@@ -17,7 +14,7 @@
     ee.vadds.s32.ld.incp q2,a9,q0,q0,q1
     ee.vld.128.ip q3,a11,16
     ee.vld.128.ip q5,a9,0
-    ee.vld.128.xp q1,a12,a15
+    ee.vld.128.ip q1,a12,1024
     ee.vadds.s32.ld.incp q3,a11,q6,q2,q3
     ee.xorq q4,q0,q7
     ee.vadds.s32.ld.incp q0,a12,q6,q6,q1

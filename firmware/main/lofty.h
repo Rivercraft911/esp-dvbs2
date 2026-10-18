@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 // Five-symbol .35 pulse, three samples/symbol, four symbols/block.
-#define LOFTY_TABLE_WORDS 9088
+#define LOFTY_TABLE_WORDS 9216
 #define LOFTY_BLOCKS 128
 #define LOFTY_STORED 38
 #define LOFTY_PAGES 50
@@ -19,6 +19,14 @@ typedef struct {
 uint32_t lofty_prepare(uint32_t *, const uint16_t *, unsigned, uint32_t previous);
 uint32_t lofty_prepare_pie(uint32_t *, const uint16_t *, unsigned vectors, uint32_t);
 int lofty_build(uint32_t *, unsigned peak);
-void lofty_render(uint32_t *, const uint32_t *, unsigned, const uint32_t *);
 void lofty_render_pie(uint32_t *, const uint32_t *, unsigned, const uint32_t *);
+#ifdef __XTENSA__
+static inline __attribute__((always_inline)) void lofty_render(uint32_t *dst, const uint32_t *src,
+                                                             unsigned n, const uint32_t *table)
+{
+    lofty_render_pie(dst,src,n,table);
+}
+#else
+void lofty_render(uint32_t *, const uint32_t *, unsigned, const uint32_t *);
+#endif
 void lofty_samples(uint32_t *, const uint32_t *, unsigned skip, size_t, const uint32_t *);

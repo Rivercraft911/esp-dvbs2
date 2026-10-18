@@ -98,10 +98,9 @@ def table(peak=128):
         bounds.append(-v.min(axis=1))
     bounds[0] += 512-sum(bounds)
     packed = [((p[0]+b[0]) | ((p[1]+b[1])<<10)).astype('<u4') for p,b in zip(parts,bounds)]
-    # At samples4..7 the newest phase has no causal tap. Adjacent rows match.
     assert np.array_equal(packed[2][::2,4:8],packed[2][1::2,4:8])
     return np.r_[packed[0][:,:4].ravel(),packed[0][:64,4:12].ravel(),packed[1].ravel(),
-                 packed[2][::2,4:8].ravel(),packed[2][:,8:12].ravel()]
+                 packed[2][:,4:8].ravel(),packed[2][:,8:12].ravel()]
 
 
 

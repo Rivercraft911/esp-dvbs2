@@ -39,9 +39,7 @@ int lofty_build(uint32_t *table, unsigned peak)
     const unsigned counts[] = {3,2,3,2,2}, widths[] = {4,8,12,4,4};
     for (unsigned v = 0; v < 5; ++v) {
         unsigned part = parts[v], count = counts[v], width = widths[v];
-        // C's first vector ignores the newest phase. Keep four copies per
-        // older phase, enough to halve its address with one PIE instruction.
-        unsigned rows = (1u<<(3*count)) >> (v == 3);
+        unsigned rows = 1u<<(3*count);
         for (unsigned w = 0; w < rows; ++w)
             for (unsigned p = 0; p < width; ++p) {
                 uint32_t packed = 0;
@@ -50,7 +48,7 @@ int lofty_build(uint32_t *table, unsigned peak)
                     for (unsigned j = 0; j < count; ++j) {
                         int position = part == 0 ? -1-(int)count+(int)j : -4+(int)(3*part+j);
                         int h = (int)(first[v]+p)-3*position;
-                        unsigned phase = (v == 3 ? 2*w : w)>>(3*(count-1-j))&7;
+                        unsigned phase = w>>(3*(count-1-j))&7;
                         if (h >= 0 && h < 15)
                             sum += (int64_t)(axis ? shaper_level_q[phase] : shaper_level_i[phase])*taps[h];
                     }
@@ -86,22 +84,20 @@ uint32_t lofty_prepare(uint32_t *dst, const uint16_t *src, unsigned n, uint32_t 
     return previous;
 }
 
-IRAM_ATTR void lofty_render(uint32_t *dst, const uint32_t *src, unsigned n, const uint32_t *table)
+#ifndef __XTENSA__
+void lofty_render(uint32_t *dst, const uint32_t *src, unsigned n, const uint32_t *table)
 {
-#ifdef __XTENSA__
-    lofty_render_pie(dst,src,n,table);
-#else
     while (n--) {
         uint32_t w = *src++;
         unsigned a = (w>>4)&511, b = (w>>13)&2047, c = (w>>24)&63;
         for (unsigned p = 0; p < 12; ++p) {
             uint32_t av = p < 4 ? table[4*a+p] : table[2048+8*(a&63)+p-4];
             *dst++ = (av+table[2560+4*b+p]+(p < 4 ? 0 :
-                table[(p < 8 ? 8704+4*(c/2) : 8832+4*c)+(p&3)]))^0x80200;
+                table[(p < 8 ? 8704 : 8960)+4*c+(p&3)]))^0x80200;
         }
     }
-#endif
 }
+#endif
 
 IRAM_ATTR void lofty_samples(uint32_t *dst, const uint32_t *src, unsigned skip, size_t n,
                              const uint32_t *table)
