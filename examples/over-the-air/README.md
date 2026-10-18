@@ -142,9 +142,11 @@ input, healthy playback and zero S3 underruns are required.
 `report.json` retains exact-byte results, decoded frames, LDPC/BCH corrections and
 failures, locked MER and carrier offset; missing telemetry is `null`. Corrections
 are not measured channel BER. `spectrum.png` is a Hann PSD in digital dBFS/Hz with
-nominal RRC edges, not calibrated RF power or an emission mask. `capture.cfile`
-contains cf32_le IQ (80 MB/s at 10 MS/s). A 30 s streaming run has a 42 s safety
-limit: allow 3.36 GB at 10 MS/s, plus space for optional interpolation. A 16 M
+nominal RRC edges, not calibrated RF power or an emission mask. The libiio worker records sc16 first with four 1 Mi-sample device buffers
+(419 ms at 10 MS/s), then converts after RX cleanup. Conversion cannot stall
+capture refills. This buffers scheduling jitter; it does not prove continuity.
+`capture.cfile` contains cf32_le IQ (80 MB/s at 10 MS/s). A 30 s streaming run has a 42 s safety
+limit: allow 5.04 GB peak disk at 10 MS/s (raw plus converted IQ), plus optional interpolation. A 16 M
 sample burst saves 128 MB. `capture.json`, `iio.log` / `uhd.log`, `board.jsonl`,
 `settings.json`, `plan.json`, `revision.json`, `leandvb.log` and `payload.bin`
 retain settings, readbacks and evidence. Failures exit nonzero and preserve files.
@@ -155,6 +157,14 @@ fixed. Require exact payload recovery in every arm and compare FEC, MER, carrier
 offset and spectrum. Solo records must show Wi-Fi absent, PHY users 2 and both
 cores' IRQ routes zero before setup, then PHY users 0 after cleanup. A 10m result
 does not validate the full-bandwidth 26m667 emission or its fused renderer.
+
+Saved VCM BBFRAMEs/logs can be audited without IQ or devices. The original
+reports stay unchanged; an interior gap remains a failure, with exact segments
+and missing frame indices reported:
+
+```sh
+python3 examples/over-the-air/check.py notes/vcm-mixed-audit --recheck notes/vcm-mixed-ota
+```
 
 Device-free tests: `python3 tests/test_ota.py`. All host tests:
 `for test in tests/test_*.py; do python3 "$test" || exit 1; done`.

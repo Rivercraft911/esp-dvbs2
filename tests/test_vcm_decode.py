@@ -45,6 +45,11 @@ def run():
             assert not decode.vcm_match(bad_rows, bad_modes, **options)['host_model_exact']
         assert not decode.vcm_match(rows, modes, **dict(options, max_frames=35))['contiguous']
         assert not decode.vcm_match(rows, modes, **dict(options, hold_frames=3))['contiguous']
+        gap = decode.vcm_match(rows[:8] + rows[9:], modes[:8] + modes[9:], **options)
+        assert gap['exact_individual_frames'] == 35 and gap['missing_frames'] == 1
+        assert gap['individual_compared_bytes'] == sum(len(f['payload']) for f in rows[:8] + rows[9:])
+        assert [(s['first_frame'], s['last_frame']) for s in gap['segments']] == [(0, 7), (9, 35)]
+        assert gap['first_mismatch']['reason'] == 'gap' and not gap['host_model_exact']
         assert not decode.vcm_match(rows[:3], modes[:3], **options)['pattern_complete']
     # MODCODs 6 and 13 have identical payload capacities. PLS must still match.
     rows, modes = frames((6, 13), 12)

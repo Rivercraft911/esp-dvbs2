@@ -225,9 +225,11 @@ def wait_ready(process, out, s):
     while True:
         if process.poll() is not None:
             raise RuntimeError("SDR worker failed before key; see capture.json and backend log")
-        ready, iq = out / "ready.json", out / "capture.cfile"
+        raw_iio = s.get("backend") == "libiio"
+        ready = out / "ready.json"
+        iq = out / ("capture.i16" if raw_iio else "capture.cfile")
         if ready.exists() and (s.get("burst_samples") or
-                (iq.exists() and iq.stat().st_size >= s["pre_seconds"] * s["sample_rate"] * 8)):
+                (iq.exists() and iq.stat().st_size >= s["pre_seconds"] * s["sample_rate"] * (4 if raw_iio else 8))):
             return
         if time.monotonic() >= deadline:
             raise TimeoutError("no SDR readiness within 30 s; board was not keyed")
@@ -307,7 +309,7 @@ def hardware(a, s, out):
                 rows = command(tx_command(a), a.seconds + 10)
                 time.sleep(s["post_seconds"])
             (out / "stop").touch()
-            code = process.wait(timeout=30 if s.get("burst_samples") else 7)
+            code = process.wait(timeout=60 if a.backend == "libiio" else 7)
             capture_report = json.loads((out / "capture.json").read_text())
             if code or not capture_report["complete"] or capture_report["overflows"]:
                 raise RuntimeError(f"SDR capture incomplete; see capture.json and {log}")
@@ -392,6 +394,74 @@ def spectrum(source, fs, s, out, flush_samples=0):
                 includes_id_and_silence=not bool(flush_samples) and not bool(s.get("burst_samples")))
 
 
+def pattern_report(r, recovered, frames, call, a):
+    r.update(decode.vcm_match(recovered, r["frame_modcods"], pattern=a.pattern,
+                             hold_frames=a.hold, max_frames=frames, callsign=call))
+    checks = decode.vcm_checks(r)
+    checks["enough_frames"] = r["payload_frames"] >= a.min_frames
+    if a.dry_run is not None:
+        checks["dump_coverage"] = r["payload_frames"] >= a.frames - 2
+        checks["dump_fec_clean"] = all(r.get(k) == 0 for k in (
+            "ldpc_bit_flips", "bch_corrected_bits", "bch_failed_frames"))
+    r.update(passed=all(checks.values()), checks=checks,
+             failed_checks=[k for k, passed in checks.items() if not passed],
+             pattern=list(a.pattern), hold_frames=a.hold, reference_frames=frames, callsign=call,
+             payload_bit_errors=0 if r["host_model_exact"] else None,
+             evidence="usb-dump" if a.dry_run is not None else "rf-capture")
+    return r
+
+
+def recheck(a):
+    """Saved BBFRAME/log audit; never imports a device driver or changes evidence."""
+    import hashlib
+    source = a.recheck.resolve()
+    if a.key or a.dry_run is not None:
+        raise ValueError("--recheck cannot be combined with --key or --dry-run")
+    if a.plan:
+        print(json.dumps(dict(offline_recheck=str(source), devices=False)))
+        return 0
+    settings = json.loads((source / "settings.json").read_text())
+    rows = [json.loads(line) for line in (source / "board.jsonl").read_text().splitlines()]
+    results = [r for r in rows if r.get("cmd") == "dvb" and "status" in r]
+    if len(results) != 1 or not settings.get("pattern"):
+        raise ValueError("need one board result and saved VCM pattern")
+    board = results[0]
+    a.pattern = tuple(settings["pattern"])
+    a.hold = settings["hold_frames"]
+    a.modcod = a.pattern[0]
+    a.rate = next(name for name, rate in RATES.items() if abs(rate-settings["symbol_rate"]) < 1)
+    a.mhz, a.seconds, a.gain, a.peak = (board[k] for k in ("freq_mhz", "seconds", "gain", "peak_level"))
+    a.phy_solo = board.get("phy_solo", False)
+    call = board["callsign"]
+    frames = decode.parse_bbframes((source / "frames.bbf").read_bytes())
+    r = decode.summarize((source / "leandvb.log").read_text(), frames, b"".join(f["payload"] for f in frames))
+    report = pattern_report(r, frames, board["frames_encoded"], call, a)
+    capture = json.loads((source / "capture.json").read_text())
+    cleanup = json.loads((source / "cleanup.json").read_text())
+    try:
+        board_result(results, a, call)
+        board_ok = True
+    except ValueError as exc:
+        board_ok = False
+        report["board_error"] = str(exc)
+    report["checks"].update(board_valid=board_ok,
+        capture_complete=capture.get("complete") is True and not capture.get("overflows"),
+        cleanup_valid=([r.get("command") for r in cleanup] == ["vcm off", "vcm axes off"] and
+                       all(r.get("passed") is True for r in cleanup)))
+    report.update(passed=all(report["checks"].values()),
+                  failed_checks=[k for k, passed in report["checks"].items() if not passed],
+                  source=str(source), board=board, capture=capture,
+                  source_sha256={name: hashlib.sha256((source/name).read_bytes()).hexdigest()
+                      for name in ("frames.bbf", "leandvb.log", "board.jsonl", "settings.json", "capture.json", "cleanup.json")})
+    out = (a.out or ROOT/"notes"/dt.datetime.now().strftime("ota-recheck-%Y%m%d-%H%M%S")).resolve()
+    out.mkdir(parents=True, exist_ok=False)
+    (out/"report.json").write_text(json.dumps(report, indent=2) + "\n")
+    print(json.dumps({k: report[k] for k in ("passed", "failed_checks", "exact_individual_frames",
+        "individual_compared_bytes", "missing_frames", "first_mismatch", "segments")}))
+    print(f"Evidence: {out}")
+    return 0 if report["passed"] else 1
+
+
 def analyze(source, fs, frames, call, a, s, out):
     if a.pattern:
         bb = out / "frames.bbf"
@@ -399,20 +469,8 @@ def analyze(source, fs, frames, call, a, s, out):
                              receiver=a.receiver, output=out / "payload.bin", bb_output=bb,
                              log=out / "leandvb.log", timeout=a.timeout)
         recovered = decode.parse_bbframes(bb.read_bytes())
-        r.update(decode.vcm_match(recovered, r["frame_modcods"], pattern=a.pattern,
-                                 hold_frames=a.hold, max_frames=frames, callsign=call))
-        checks = decode.vcm_checks(r)
-        checks["enough_frames"] = r["payload_frames"] >= a.min_frames
-        if a.dry_run is not None:
-            checks["dump_coverage"] = r["payload_frames"] >= a.frames - 2
-            checks["dump_fec_clean"] = all(r.get(k) == 0 for k in (
-                "ldpc_bit_flips", "bch_corrected_bits", "bch_failed_frames"))
-        r.update(passed=all(checks.values()), checks=checks,
-                 failed_checks=[k for k, passed in checks.items() if not passed],
-                 pattern=list(a.pattern), hold_frames=a.hold, reference_frames=frames, callsign=call,
-                 payload_bit_errors=0 if r["host_model_exact"] else None,
-                 evidence="usb-dump" if a.dry_run is not None else "rf-capture")
-        return r
+        return pattern_report(r, recovered, frames, call, a)
+
     r, got = decode.decode(source, sample_rate=fs, symbol_rate=s["symbol_rate"], alpha=.35,
                            receiver=a.receiver, output=out / "payload.bin", log=out / "leandvb.log",
                            timeout=a.timeout)
@@ -436,6 +494,7 @@ def parser():
     p.add_argument("--plan", action="store_true")
     p.add_argument("--phy-solo", action="store_true", help="experimental Wi-Fi teardown during playback")
     p.add_argument("--key", action="store_true", help="explicitly authorize contained hardware run")
+    p.add_argument("--recheck", type=Path, help="offline audit of saved VCM BBFRAMEs/logs; no IQ or devices")
     p.add_argument("--dry-run", type=Path, metavar="USB_DUMP", help="offline int16 IQ, never opens devices")
     p.add_argument("--dump-rate", type=float, help="saved USB samples/s after decimation")
     p.add_argument("--frames", type=int, default=16, help="synthetic frames in USB dump")
@@ -472,6 +531,8 @@ def main():
     p = parser()
     a = p.parse_args()
     try:
+        if a.recheck is not None:
+            return recheck(a)
         s = settings(a)
         if a.plan:
             print(json.dumps(plan(a, s), indent=2))
@@ -512,7 +573,7 @@ def main():
                     result["spectrum"] = plotted
                     result["receiver_flush_samples"] = 4096
             else:
-                disk_bytes = capture_bytes(s) * (1 + a.upsample if a.upsample > 1 else 1)
+                disk_bytes = capture_bytes(s) * ((1.5 if a.backend == "libiio" else 1) + (a.upsample if a.upsample > 1 else 0))
                 if shutil.disk_usage(out).free < disk_bytes + 100e6:
                     raise ValueError("insufficient free disk for bounded cf32 capture")
                 call, frames, capture_report = hardware(a, s, out)

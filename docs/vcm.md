@@ -9,7 +9,7 @@ and `--fec` with live USB controls are not supported.
 | Rate | VCM path | Evidence / limit |
 |---|---|---|
 | 1 Msym/s | QPSK phase table | Exact, contiguous E200 OTA code-rate switching |
-| 5 Msym/s | Same-modulation phase table | QPSK 4/7/11: 2,938 exact, contiguous OTA frames |
+| 5 Msym/s | Same-modulation phase table | QPSK 4/7/11: 2,938 branch / 2,935 merged OTA frames, exact and contiguous |
 | 5 Msym/s | Mixed QPSK/8PSK, automatic five-level axes | 4/11/13/17 every frame: 3,523 exact, contiguous OTA frames, 21 MB; about 77 KB internal heap free |
 | 10 Msym/s | Same modulation, phase table | Host-model coverage; board timing needs checking |
 | 10 Msym/s mixed | Refused before encoder/radio startup | Earlier branch decoded, but exceeded encoder budget and inserted dummies / lost data |
@@ -17,11 +17,20 @@ and `--fec` with live USB controls are not supported.
 
 OTA measurements above came from `exp/vcm` (`b893fa8`) and `exp/modswap`
 (`154692d`), S3 → ANTSDR E200, both inside a closed Faraday box. They are branch
-measurements, not reruns of this merge. The merged firmware still needs the
-radio-off checks and contained reruns below. Host clocks cannot prove board timing.
+measurements. On merged `709976c`, SPI and USB passed and QPSK recovered
+2,935 exact frames / 16,948,004 bytes. Mixed VCM recovered 3,505 individually
+exact frames / 20,954,034 bytes, but lost model frames 1051–1069 between two
+exact segments; nine in-interval FEC failures correctly failed the check. Axis
+selection, headers and payload generation matched. Without saved IQ, the loss
+cannot be localized between RF and receive transport. The capture worker now
+matches the earlier helper's larger buffers and defers conversion until RX stops.
+Default timing placement was restored after the 26m667 pace regression. Both
+changes need the radio-off and contained reruns below; host tests cannot prove timing.
 
 The axis table is 10,240 bytes instead of the 65,536-byte mixed phase table at
-5 Msym/s. Both preserve the existing integer pulse rounding and symbol history.
+5 Msym/s. Both preserve the existing integer pulse rounding and symbol history. VCM hot
+code has its own optional cache lock; fixed ring/encoder layouts and the default
+1,632-byte lock stay independent.
 Same-modulation runs keep their smaller phase tables. Mixed 5m automatically
 uses axes; `vcm axes on` also selects axes explicitly at 5m, and `vcm axes off`
 restores automatic selection. Allocation failures report stage, requested bytes,

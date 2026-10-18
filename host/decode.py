@@ -278,36 +278,63 @@ def payload(modcod, frames, callsign, *, pattern=None, hold_frames=1):
 
 
 def vcm_match(frames, modcods, *, pattern, hold_frames, max_frames, callsign):
-    """Match all recovered BBHEADERs, data and PLS modes at consecutive indices.
+    """Strict interval verdict plus exact per-frame diagnostics for failed runs.
 
-    Acquisition may lose a prefix/suffix. An internal dropped, repeated, reordered
-    or corrupt frame fails. PRNG generation stops after the recovered interval.
+    All recovered frames must match full BBHEADERs, data and PLS in order.
+    Diagnostics retain exact segments and interior gaps without accepting them.
     """
-    failed = dict(payload_match=False, host_model_exact=False, contiguous=False,
+    result = dict(payload_match=False, host_model_exact=False, contiguous=False,
                   first_frame=None, last_frame=None, compared_bytes=0, compared_bits=0,
-                  pattern_complete=set(modcods) == set(pattern))
+                  pattern_complete=set(modcods) == set(pattern),
+                  exact_individual_frames=0, individual_compared_bytes=0,
+                  missing_frames=0, segments=[], first_mismatch=None)
     if not frames or len(frames) != len(modcods):
-        return failed
-    expected = enumerate(payload_sequence(pattern, max_frames, callsign, hold_frames))
-    for first, (mc, data) in expected:
-        if data == frames[0]["payload"]:
-            break
-    else:
-        return failed
-    for index, frame in enumerate(frames):
-        if index:
-            following = next(expected, None)
-            if following is None:
-                return failed
-            _, (mc, data) = following
+        result["first_mismatch"] = dict(reason="missing_frames_or_pls")
+        return result
+    by_digest = {}
+    for i, frame in enumerate(frames):
+        by_digest.setdefault(hashlib.sha256(frame["payload"]).digest(), []).append(i)
+    indices = [None] * len(frames)
+    payload_indices = [None] * len(frames)
+    for index, (mc, data) in enumerate(payload_sequence(pattern, max_frames, callsign, hold_frames)):
+        candidates = by_digest.get(hashlib.sha256(data).digest(), ())
+        if not candidates:
+            continue
         header = b"\x60\0\0\0" + (len(data)*8).to_bytes(2, "big") + b"\0\0\0"
         header += bytes((crc8(header),))
-        if modcods[index] != mc or frame["payload"] != data or frame["header"] != header:
-            return failed
-    count = sum(len(f["payload"]) for f in frames)
-    return dict(failed, payload_match=True, host_model_exact=True, contiguous=True,
-                first_frame=first, last_frame=first+len(frames)-1,
-                compared_bytes=count, compared_bits=count*8)
+        for i in candidates:
+            if frames[i]["payload"] == data:
+                payload_indices[i] = index
+                if frames[i]["header"] == header and modcods[i] == mc:
+                    indices[i] = index
+    segments = result["segments"]
+    for i, index in enumerate(indices):
+        if index is None:
+            if result["first_mismatch"] is None:
+                result["first_mismatch"] = dict(recovered_frame=i, model_frame=payload_indices[i],
+                    reason="payload_not_found" if payload_indices[i] is None else "header_or_pls")
+            continue
+        result["exact_individual_frames"] += 1
+        result["individual_compared_bytes"] += len(frames[i]["payload"])
+        previous = indices[i-1] if i else None
+        if i and previous is not None and index != previous+1:
+            if index > previous+1:
+                result["missing_frames"] += index-previous-1
+            if result["first_mismatch"] is None:
+                result["first_mismatch"] = dict(recovered_frame=i, previous_model_frame=previous,
+                    model_frame=index, reason="gap" if index > previous+1 else "repeat_or_reorder")
+        if segments and segments[-1]["last_recovered_frame"] == i-1 and previous is not None and index == previous+1:
+            segments[-1].update(last_recovered_frame=i, last_frame=index)
+            segments[-1]["compared_bytes"] += len(frames[i]["payload"])
+        else:
+            segments.append(dict(first_recovered_frame=i, last_recovered_frame=i,
+                                 first_frame=index, last_frame=index, compared_bytes=len(frames[i]["payload"])))
+    if len(segments) == 1 and result["exact_individual_frames"] == len(frames):
+        count = result["individual_compared_bytes"]
+        result.update(payload_match=True, host_model_exact=True, contiguous=True,
+                      first_frame=indices[0], last_frame=indices[-1],
+                      compared_bytes=count, compared_bits=8*count)
+    return result
 
 
 def vcm_checks(report):

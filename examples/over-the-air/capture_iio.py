@@ -112,13 +112,23 @@ class Radio:
         return actual, tx
 
 
+def convert_raw(source, target):
+    """Scale saved sc16 only after RX stops, keeping conversion out of capture."""
+    import numpy as np
+    with source.open("rb") as stream, target.open("xb") as sink:
+        while raw := stream.read(4 * 1048576):
+            if len(raw) % 4:
+                raise ValueError("incomplete saved I/Q pair")
+            values = np.frombuffer(raw, dtype="<i2").reshape(-1, 2).astype(np.float32) / 2048
+            (values[:, 0] + 1j * values[:, 1]).astype("<c8").tofile(sink)
+
+
 def capture(settings, out):
     report = dict(backend="libiio", complete=False, samples=0, overflows=None,
                   continuity="No sample timestamps or hardware overflow counter exposed by this API",
                   capture_mode="burst" if settings["burst_samples"] else "stream")
     buffer = radio = None
     try:
-        import numpy as np
         import iio
 
         context = iio.Context(settings["uri"])
@@ -129,7 +139,12 @@ def capture(settings, out):
         report.update(actual=actual, tx_inhibit=tx, device=dict(description=context.description,
                       attrs=context.attrs), libiio_version=iio.version)
         burst = settings["burst_samples"]
-        count = burst or 262144
+        # Match the earlier iio_readdev VCM runs: four 1 Mi-sample buffers.
+        # The old four 256 Ki-sample buffers gave only 105 ms of scheduling room.
+        count = burst or 1048576
+        report.update(buffer_samples=count, kernel_buffers=1 if burst else 4,
+                      buffered_seconds=count*(1 if burst else 4)/settings["sample_rate"],
+                      capture_format="sc16_le", processing_seconds_max=0)
         deadline = time.monotonic() + settings["capture_limit_seconds"]
         if burst:
             # Do not allocate/queue the device buffer until after the leading CW ID.
@@ -144,16 +159,17 @@ def capture(settings, out):
         if buffer.step != 4:
             raise ValueError("unexpected RX buffer stride")
         limit = int(settings["capture_limit_seconds"] * settings["sample_rate"])
-        with (out / "capture.cfile").open("xb") as sink:
+        with (out / "capture.i16").open("xb", buffering=0) as sink:
             while not (out / "stop").exists():
                 buffer.refill()
                 report["buffer_filled_monotonic"] = time.monotonic()
                 raw = buffer.read()
                 if len(raw) != count * 4:
                     raise RuntimeError("short IIO device buffer")
-                values = np.frombuffer(raw, dtype="<i2").reshape(-1, 2).astype(np.float32) / 2048
-                (values[:, 0] + 1j * values[:, 1]).astype("<c8").tofile(sink)
-                sink.flush()
+                if sink.write(raw) != len(raw):
+                    raise RuntimeError("short capture file write")
+                report["processing_seconds_max"] = max(report["processing_seconds_max"],
+                    time.monotonic()-report["buffer_filled_monotonic"])
                 report["samples"] += count
                 if burst:
                     break  # Exactly one refill of one contiguous device buffer.
@@ -181,6 +197,14 @@ def capture(settings, out):
                 report["tx_final"] = radio.inhibit_tx()
             except Exception as exc:
                 report.update(complete=False, tx_inhibit_error=str(exc))
+        if report["complete"]:
+            try:
+                before=time.monotonic()
+                convert_raw(out / "capture.i16", out / "capture.cfile")
+                report["conversion_seconds"]=time.monotonic()-before
+                (out / "capture.i16").unlink()
+            except Exception as exc:
+                report.update(complete=False, conversion_error=str(exc))
         write_json(out / "capture.json", report)
     return 0 if report["complete"] else 1
 

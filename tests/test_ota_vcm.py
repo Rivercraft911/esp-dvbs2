@@ -80,7 +80,45 @@ def test_cleanup():
             if fault: assert not any(s.startswith('dvb ') for s in sent)
 
 
+def test_recheck():
+    pattern = (4, 11, 13, 17)
+    model, modes = frames(pattern, 16, 1)
+    for gap in (False, True):
+        actual = model if not gap else model[:8] + model[9:]
+        actual_modes = modes if not gap else modes[:8] + modes[9:]
+        status = 'FRAMELOCK 1\n' + '\n'.join(
+            f'S2FEC modcod={mc} short=0 pilots=1 ldpc_flips=0 ldpc_checks_before=0 '
+            'ldpc_checks_after=0 bch_errors=0' for mc in actual_modes)
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp)/'source'; source.mkdir()
+            out = Path(tmp)/'audit'
+            data = {
+                'settings.json': dict(pattern=pattern, hold_frames=1, symbol_rate=5000000),
+                'capture.json': dict(complete=True, overflows=None),
+                'cleanup.json': [dict(command=text, passed=True) for text in ('vcm off', 'vcm axes off')],
+            }
+            for name, value in data.items(): (source/name).write_text(json.dumps(value))
+            row = dict(cmd='dvb', status='ESP_OK', modcod=4, callsign='N0CALL', symbol_rate=5000000,
+                payload_source='xorshift32', encoder_failed=False, underruns=0, frames_played=16, frames_encoded=18,
+                freq_mhz=2420, seconds=30, gain=4, peak_level=128, vcm=True, vcm_axes=True,
+                fill_kernel='pie-axes5', fatal_late=0, late_fills=0, late_switches=0)
+            (source/'board.jsonl').write_text(json.dumps(row)+'\n')
+            (source/'frames.bbf').write_bytes(b''.join(f['header']+f['payload'] for f in actual))
+            (source/'leandvb.log').write_text(status)
+            before = {p.name:p.read_bytes() for p in source.iterdir()}
+            args = ota.parser().parse_args([str(out), '--recheck', str(source)])
+            with contextlib.redirect_stdout(None):
+                assert ota.recheck(args) == int(gap)
+            r = json.loads((out/'report.json').read_text())
+            assert r['passed'] is not gap and r['missing_frames'] == int(gap)
+            assert r['exact_individual_frames'] == len(actual)
+            assert before == {p.name:p.read_bytes() for p in source.iterdir()}
+            assert set(r['source_sha256']) == set(before)
+            rejects(ota.recheck, ota.parser().parse_args(['--recheck', str(source), '--key']))
+
+
 if __name__ == '__main__':
     test_plan_and_analysis()
     test_cleanup()
+    test_recheck()
     print('OTA VCM: libiio plan, exact pattern/gap checks, board deadlines and cleanup pass')

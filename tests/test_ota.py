@@ -384,6 +384,7 @@ def test_iio_worker():
                         raise OSError("injected overflow / transport failure")
                     (out / "stop").touch()
                 def read(self):
+                    assert not (out / "capture.cfile").exists(), "conversion must wait for RX cleanup"
                     data = np.tile(np.array([-2048, 1024], dtype="<i2"), self.count).tobytes()
                     return data[:-4] if fault == "short" else data
                 def cancel(self):
@@ -400,9 +401,12 @@ def test_iio_worker():
             report = json.loads((out / "capture.json").read_text())
             assert report["overflows"] is None  # Do not invent a zero hardware overflow count.
             if fault in success:
-                assert report["samples"] == (1024 if fault == "burst" else 262144)
+                assert report["samples"] == (1024 if fault == "burst" else 1048576)
                 z = np.fromfile(out / "capture.cfile", dtype="<c8")
                 assert np.all(z == -1 + .5j) and created[-1] == "cancel"
+                assert report["buffer_samples"] == (1024 if fault == "burst" else 1048576)
+                assert not (out / "capture.i16").exists()
+                assert report["conversion_seconds"] >= 0
                 assert report["tx_after_capture"]["dds_raw"][f"altvoltage{tone_count-1}"] == 0
                 assert report["tx_final"]["hardwaregain"] == (
                     {"voltage0": -89.75} if fault == "ad9364" else {"voltage0": -89.75, "voltage1": -89.75})
