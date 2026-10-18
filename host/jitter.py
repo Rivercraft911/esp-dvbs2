@@ -14,7 +14,10 @@ import sys
 CASES = ((13,'26m667'),(15,'26m667'),(17,'26m667'),(11,'33m333'))
 
 
-def commands(seconds, observe_seconds=5):
+def commands(seconds, observe_seconds=5, trace=False):
+    if trace:
+        return [(mc,'26m667','bank',True,f'dvbpace {mc} 26m667 10 128 0 observe trace')
+                for mc in (15,17)]
     rows = []
     for mc,rate in CASES:
         default = 'page' if mc == 11 else 'bank'
@@ -70,11 +73,53 @@ def gate(r, mc):
     assert r['encoder_stack_min_free'] >= 512, 'encoder stack < 512 B'
 
 
-def suite(send, firmware, seconds, observe_seconds=5):
+def trace_summary(r):
+    t = r['stream_trace']
+    assert t['version'] == 1 and t['complete'], 'incomplete stream trace; retain raw rows'
+    assert t['first_frame'] == 64 and t['frame_count'] == t['frames_complete'] == 64
+    producer, fill = t['lanes']
+    assert [producer['core'],fill['core']] == [0,1]
+    for lane in (producer,fill):
+        assert not lane['dropped'], 'stream trace overflow'
+        assert all(len(e) == 8 for e in lane['rows']), 'bad trace row'
+        assert all(a[0] <= b[0] for a,b in zip(lane['rows'],lane['rows'][1:])), 'trace clock reversed'
+    waits = {3:[],5:[]}
+    dummies = []
+    for frame in range(64,128):
+        p = [e for e in producer['rows'] if e[2] == frame]
+        f = [e for e in fill['rows'] if e[2] == frame]
+        assert sum(e[3] == 13 for e in p) == 1, 'missing frame start'
+        assert sum(e[3] == 1 for e in p) == sum(e[3] == 2 for e in p) == 1, 'missing FEC edge'
+        published = [(e[4],e[6]) for e in p if e[3] == 7]
+        released = [(e[5],e[6]) for e in f if e[3] == 9]
+        assert len(published) == 44 and published == released, 'page publication/release mismatch'
+        assert sum(e[3] == 11 for e in f) == 1, 'missing data frame end'
+        data = [e for e in f if e[3] == 8 and not e[6] & (1<<19)]
+        assert len(data) == 1, 'missing data admission'
+        dummies.append(data[0][7])
+        pending = {}
+        for e in p:
+            kind = e[3]
+            if kind in waits:
+                assert kind not in pending, 'nested page wait'
+                pending[kind] = e
+            elif kind in (4,6):
+                start = pending.pop(kind-1)
+                assert e[6:] == start[6:], 'wait changed page index/mapper position'
+                waits[kind-1].append(e[0]-start[0])
+        assert not pending, 'unclosed page wait'
+    return dict(frames=64,producer_events=len(producer['rows']),fill_events=len(fill['rows']),
+                map_waits=len(waits[3]),map_wait_max_us=max(waits[3],default=0),
+                pl_waits=len(waits[5]),pl_wait_max_us=max(waits[5],default=0),
+                dummies_before_data=sum(dummies),max_dummies_before_data=max(dummies),
+                hook_body_max_cycles=[p['hook_body_max_cycles'] for p in t['lanes']])
+
+
+def suite(send, firmware, seconds, observe_seconds=5, trace=False):
     info, = send('info')
     assert info['firmware'] == firmware and info['callsign'] == 'N0CALL', 'wrong firmware/callsign'
     summary = []
-    for mc,rate,policy,observer,command in commands(seconds,observe_seconds):
+    for mc,rate,policy,observer,command in commands(seconds,observe_seconds,trace):
         row = dict(command=command,modcod=mc,policy=policy,observer=observer)
         try:
             r = timing(send(command),mc,policy,observer)
@@ -91,6 +136,7 @@ def suite(send, firmware, seconds, observe_seconds=5):
                 if 'handoff' in r: row['handoff'] = r['handoff']
                 row['steady_dummy_target_met'] = r['dummy_steady'] == 0
             if observer: row['worst_bank'] = r['jitter']['worst_bank']
+            if trace: row['trace'] = trace_summary(r)
             # Instrumented runs diagnose the lock; only the clean default run is
             # admitted. Keep faults in the raw records and always finish the suite.
             if not observer: gate(r,mc)
@@ -107,6 +153,7 @@ def suite(send, firmware, seconds, observe_seconds=5):
               (f"; handoff {row['handoff']}" if 'handoff' in row else '')+
               (f"; notify max {row['worst_bank']['notify_max_cycles']} cycles in worst bank"
                if 'worst_bank' in row else '')+
+              (f"; trace {row['trace']}" if 'trace' in row else '')+
               (f"; {row['detail']}" if 'max_fill_cycles' in row and 'detail' in row else ''),flush=True)
     return summary
 
@@ -117,11 +164,12 @@ def main():
     p.add_argument('--seconds',type=int,default=20,choices=range(20,56),metavar='20..55')
     p.add_argument('--observe-seconds',type=int,default=5,choices=range(1,21),metavar='1..20')
     p.add_argument('--port',default='/dev/cu.usbmodem101')
+    p.add_argument('--trace',action='store_true',help='15 and 17 only, 10 seconds each, observed page trace')
     p.add_argument('--plan',action='store_true',help='print commands without opening/resetting a port')
     a = p.parse_args()
     if a.plan:
         print('info (reset once)')
-        for *_,command in commands(a.seconds,a.observe_seconds): print(command)
+        for *_,command in commands(a.seconds,a.observe_seconds,a.trace): print(command)
         return 0
     import board
     firmware = subprocess.check_output(['git','rev-parse','--short','HEAD'],text=True).strip()
@@ -143,7 +191,7 @@ def main():
         return rows
 
     with board.reserve_port(port,reset=True):
-        summary = suite(send,firmware,a.seconds,a.observe_seconds)
+        summary = suite(send,firmware,a.seconds,a.observe_seconds,a.trace)
     (a.output/'summary.json').write_text(json.dumps(summary,indent=2)+'\n')
     print('Records:',a.output)
     return int(any(r['verdict'] == 'FAIL' for r in summary))

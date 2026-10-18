@@ -43,6 +43,10 @@ static inline TickType_t xTaskGetTickCount(void) {
     struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
     return (uint32_t)((uint64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000);
 }
+static inline int64_t esp_timer_get_time(void) {
+    struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
+    return (int64_t)t.tv_sec*1000000+t.tv_nsec/1000;
+}
 static inline uint32_t esp_cpu_get_cycle_count(void) { return 17; }
 static inline unsigned uxTaskGetStackHighWaterMark(void *task) { (void)task; return 1024; }
 static int fail_after = -1, live_allocations, allocation_count;
@@ -158,7 +162,7 @@ def compile_stream(folder, source="stream_host.c", defines=()):
     tmp = str(folder)
     (folder / "native.h").write_text(NATIVE)
     for header in ("esp_err.h", "esp_cpu.h", "esp_attr.h", "esp_heap_caps.h", "esp_rom_crc.h",
-                   "driver/usb_serial_jtag.h", "freertos/FreeRTOS.h", "freertos/semphr.h",
+                   "esp_timer.h", "driver/usb_serial_jtag.h", "freertos/FreeRTOS.h", "freertos/semphr.h",
                    "freertos/task.h"):
         path = folder / header
         path.parent.mkdir(exist_ok=True)
@@ -179,6 +183,7 @@ def compile_stream(folder, source="stream_host.c", defines=()):
                     str(ROOT / "firmware/main/machine.c"),
                     str(ROOT / "firmware/main/lofty.c"),
                     str(ROOT / "firmware/main/stream_jitter.c"),
+                    str(ROOT / "firmware/main/stream_trace.c"),
                     str(ROOT / "firmware/main/shaper_qpsk.c"),
                     str(ROOT / "firmware/components/dvbs2/dvbs2.c"),
                     str(ROOT / "firmware/components/dvbs2/fast.c"),

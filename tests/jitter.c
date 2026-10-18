@@ -2,6 +2,12 @@
 #include <assert.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdlib.h>
+#define MALLOC_CAP_SPIRAM 4
+#define MALLOC_CAP_8BIT 2
+static int allocation_failed;
+static void *heap_caps_malloc(size_t n, unsigned caps) { (void)caps; return allocation_failed ? NULL : malloc(n); }
+static void heap_caps_free(void *p) { free(p); }
 #define STREAM_JITTER_HOST
 #define DRAM_ATTR
 #define IRAM_ATTR
@@ -112,5 +118,12 @@ int main(void)
     stream_jitter_notify(999);
     assert(mark.notify_calls == 0);
     assert(!memcmp(saved,_xt_interrupt_table,sizeof saved));
+    allocation_failed = 1;
+    stream_jitter_enable(1);
+    assert(enabled < 0 && !report);
+    stream_jitter_core_start(); stream_jitter_core_stop();
+    stream_jitter_notify(999);
+    assert(!memcmp(saved,_xt_interrupt_table,sizeof saved));
+    stream_jitter_enable(0);
     return 0;
 }

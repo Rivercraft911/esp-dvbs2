@@ -85,6 +85,10 @@ def main():
     else: raise AssertionError('accepted observer in clean gate')
     plan = subprocess.check_output(['python3',str(ROOT/'host/jitter.py'),'/unused','--plan'],text=True)
     assert len(plan.splitlines()) == 13 and all('dvbpace' in s for s in plan.splitlines()[1:])
+    # Trace mode must also continue after an incomplete/failed first capture.
+    summary = check.suite(send,'abc1234',20,trace=True)
+    assert len(summary) == 2 and [r['modcod'] for r in summary] == [15,17]
+    assert all(r['verdict'] == 'FAIL' and 'stream_trace' in r['detail'] for r in summary)
     print('jitter coordinator: clean gate, same-bank notify times, keeps going after timing/transport faults: ok')
 
 

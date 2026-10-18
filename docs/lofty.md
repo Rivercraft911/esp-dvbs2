@@ -22,12 +22,16 @@ FEC frame cannot overwrite an incompletely published mapped frame. This change
 keeps the existing one-frame overlap, without another frame buffer or kernel
 changes.
 
-## Admission clock fix
+## Admission accounting
+
+The round-12 silicon records for ebf8fb4 still end at 41 active / 43 waiting
+pages, with G=13,268/13,268/13,748 cycles for 13/15/17. The accounting change
+did not solve steady dummies. The source of that gap is unknown. The host
+reproducer below demonstrates a feedback path, not the measured cause.
 
 In daec325, a new worst page gap recalculated admission inside the publication
-loop. Its cold calculation became part of the next measured page gap. The
-permanent maximum then raised its own thresholds. Supplied round-11 clean
-records end at 41/42 pages on every mode, with gaps around 14,440 cycles.
+loop. The time spent there could enter the next measured gap and permanently
+raise admission. Round-11 clean records end at 41/42 pages, around 14,440 cycles.
 
 The host reproducer injects a 13,500-cycle cold calculation into a producer
 whose pages take 1,000 cycles. The old code learns 14,500 cycles and 41/42 pages.
@@ -106,6 +110,56 @@ Startup counts cover choices before three data frames finish; later choices
 are steady-state dummies, with target zero. All valid source transitions remain
 in IRAM.
 
+## Optional queue trace
+
+`dvbpace ... observe trace` allocates a 655,416-byte PSRAM recorder before the
+encoder starts. It captures data frames 64 through 127, zero based. Dummies do
+not advance this ID. Admission-bound updates and new maximum page gaps are
+retained even outside that window. This round changes instrumentation only;
+it makes no new claim about the cause or dummy rate.
+
+The pace record's `stream_trace` contains two single-writer lanes, core 0
+producer and core 1 fill. Each row has the declared columns:
+`[us, cycles, frame, event, produced, consumed, a, b]`. `us` is the shared
+`esp_timer_get_time()` clock, in microseconds since the 32-bit `epoch_us`, with
+modular subtraction. IDF v6.1 implements it with SYSTIMER
+(`components/esp_timer/src/esp_timer_impl_systimer.c`). `cycles` is that core's
+CCOUNT; the two core-local cycle counters must not be compared directly.
+Sequence counters also wrap modulo 2^32.
+
+| Event | a | b |
+| --- | --- | --- |
+| frame_start (13) | 0 | 0 |
+| fec_start/end (1/2), BB through LDPC | 0 | 0 |
+| map_wait_start/end (3/4), pl_wait_start/end (5/6) | physical page index | mapper symbol position |
+| publish (7) | physical page index | mapper symbol position |
+| admit (8) | packed decision, below | dummies before this data frame, on data admission |
+| release (9) | physical page index | data-frame sample position after release |
+| bound (10) | learned G, CPU cycles | active threshold + 256 * waiting threshold |
+| data_end (11) | cumulative dummy count | 0 |
+| gap_max (12) | new maximum G, CPU cycles | mapper symbol position |
+
+Admission packs the actual decision snapshot: bits 0..7 queued pages, 8..15
+selected threshold, 16 completed frame available, 17 producer outside mapping,
+18 forced second dummy for alignment, 19 dummy selected, 20..22 producer phase
+(1 FEC, 2 map, 3 wait, 4 PL). Row counters are re-read when the event is logged
+and may be newer than the packed snapshot. Publication/release markers follow their atomic stores; they timestamp the
+logging point, rather than the exact store instruction. Wait markers surround the page wait, including its notification recheck.
+
+During these 64 frames only, trace uses one page per render call so every
+release has a marker. Bank-end wakes, admission and queue geometry are retained.
+`single_page_batches` records this diagnostic cost. Event-body cycles/maxima
+exclude call, filter and return; they are not the complete trace overhead.
+Tracing and the observer perturb timing, so these are observed runs. The trace
+allocates/prints only before/after playback. Full lanes report dropped events
+and `complete:false`; the coordinator preserves those raw records.
+
+Observer bank summaries and route names now allocate PSRAM only when enabled;
+interrupt-handler counters remain internal. The linked internal heap starts
+160 bytes earlier than ebf8fb4, despite the trace hooks. Wi-Fi minima and trace
+timing still require silicon measurements. Encoder kernels and queue sizes are
+unchanged.
+
 ## Offline checks and collection
 
 The producer test checks FEC ordering, exact FEC bytes, a cold admission path,
@@ -126,11 +180,17 @@ release counters to the existing 4,320 slices, mapper and ISR tests.
 After the coordinator builds/flashes the revision with N0CALL:
 
 ```sh
-caffeinate -i python3 host/jitter.py notes/eight-lofty-round12
+caffeinate -i python3 host/jitter.py notes/eight-lofty-round13 --trace
 ```
 
-Each mode gets 20 s clean and two 5 s observed runs, about one minute including
-IDs. The runner never flashes or transmits; `--plan` opens no port. Clean gates
+Trace collection runs only 15 and 17 at 26m667, 10 s each, with the interrupt
+observer enabled. `tests/test_stream_trace.py` checks 64 real threaded frames
+per mode, all 2,816 publication/release pairs, forced dummies and equal output
+checksums with tracing on/off. It also checks clock wrap, capture limits and
+allocation failure. No timing model is used in this check.
+
+Without `--trace`, each mode gets 20 s clean and two 5 s observed runs.
+The runner never flashes or transmits; `--plan` opens no port. Clean gates
 remain ESP_OK, complete playback, zero late fills/switches and queue faults,
 fill <=40,137 cycles, Wi-Fi minimum >=20,000 B and stack >=512 B. Startup dummies
 are allowed; steady dummies and lead are reported. QPSK's mean/lead gates remain

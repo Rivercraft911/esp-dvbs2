@@ -38,6 +38,7 @@
 #include "machine.h"
 #include "lofty.h"
 #include "stream_jitter.h"
+#include "stream_trace.h"
 
 #define RING_SLOTS 8                // legacy QPSK frames ahead: 233 ms at 1 Msym/s
 #define PACKED_SLOTS 3              // fast rates: three packed frames at 4 sps, two at 8, plus a cache
@@ -100,6 +101,7 @@ typedef struct {
     uint64_t fill_words, fill_cycles;
     uint32_t fill_calls;
     uint32_t worst_copy, worst_whole, worst_partial, worst_save, worst_notify;
+    stream_trace_t *trace;          // optional paced diagnostic, allocated only in PSRAM
     uint64_t shaped_words, reused_words;
 } dvb_t;
 
@@ -219,8 +221,22 @@ static uint32_t next_byte(uint32_t *x)
 
 enum { QUEUE_FEC = 1, QUEUE_MAP, QUEUE_WAIT, QUEUE_PL };
 
-static void moon_wait(void)
+static void trace_producer(unsigned event, uint32_t a, uint32_t b)
 {
+    stream_trace_event(dvb.trace,0,event,enc.frames,dvb.produced,
+                       __atomic_load_n(&dvb.consumed,__ATOMIC_ACQUIRE),a,b);
+}
+
+static void trace_fill(unsigned event, uint32_t a, uint32_t b)
+{
+    stream_trace_event(dvb.trace,1,event,lofty_mux.frames,
+                       __atomic_load_n(&dvb.produced,__ATOMIC_ACQUIRE),dvb.consumed,a,b);
+}
+
+static void moon_wait(unsigned stage)
+{
+    if (dvb.trace) trace_producer(stage == QUEUE_PL ? TRACE_PL_WAIT_START : TRACE_MAP_WAIT_START,
+                                  dvb.put_index,dvb.mapper.at);
     const uint32_t before = esp_cpu_get_cycle_count();
     const uint32_t get = __atomic_load_n(&dvb.consumed,__ATOMIC_ACQUIRE);
     const bool live = get != 0;
@@ -238,6 +254,8 @@ static void moon_wait(void)
     if (cycles > dvb.queue_wait_max) dvb.queue_wait_max = cycles;
     if (live && !enc.stop && cycles > dvb.queue_wait_live_max) dvb.queue_wait_live_max = cycles;
     __atomic_store_n(&dvb.producer_phase,QUEUE_MAP,__ATOMIC_RELEASE);
+    if (dvb.trace) trace_producer(stage == QUEUE_PL ? TRACE_PL_WAIT_END : TRACE_MAP_WAIT_END,
+                                  dvb.put_index,dvb.mapper.at);
 }
 
 static uint32_t lofty_phases(uint32_t w)
@@ -279,6 +297,8 @@ static __attribute__((noinline)) void lofty_publish(unsigned end)
     if (++dvb.put_index == dvb.queue_pages) dvb.put_index = 0;
     __atomic_store_n(&dvb.produced,dvb.produced+1,__ATOMIC_RELEASE);
     const uint32_t published = esp_cpu_get_cycle_count();
+    if (dvb.trace) trace_producer(TRACE_PUBLISH,
+        dvb.put_index ? dvb.put_index-1 : dvb.queue_pages-1,dvb.mapper.at);
     if (dvb.prepare_pages) {
         uint32_t gap = published-dvb.page_clock-(uint32_t)(dvb.queue_wait_cycles-dvb.page_wait);
         if (gap > dvb.page_gap_max) dvb.page_gap_max = gap;
@@ -287,6 +307,7 @@ static __attribute__((noinline)) void lofty_publish(unsigned end)
                 gap > lofty_mux.admission_gap && gap-lofty_mux.admission_gap > lofty_mux.admission_gap &&
                 __atomic_load_n(&dvb.consumed,__ATOMIC_ACQUIRE)) ++lofty_mux.rate_misses;
             lofty_mux.page_max = gap;
+            if (dvb.trace) trace_producer(TRACE_GAP_MAX,gap,dvb.mapper.at);
         }
     }
     dvb.page_clock = published;
@@ -306,6 +327,7 @@ static void lofty_calibrate(void)
     lofty_mux.admission_gap = gap;
     const uint32_t spent = esp_cpu_get_cycle_count()-before;
     if (spent > lofty_mux.admission_max) lofty_mux.admission_max = spent;
+    if (dvb.trace) trace_producer(TRACE_BOUND,gap,pages);
 }
 
 static __attribute__((noinline)) int lofty_finish(void)
@@ -314,7 +336,7 @@ static __attribute__((noinline)) int lofty_finish(void)
     // frame repeats and skips a two-symbol prefix when necessary.
     if (dvb.mapper.pending) {
         while (!enc.stop && dvb.produced-__atomic_load_n(&dvb.consumed,__ATOMIC_ACQUIRE) == dvb.queue_pages)
-            moon_wait();
+            moon_wait(QUEUE_PL);
         if (enc.stop) return -1;
         uint16_t word[16] __attribute__((aligned(16))) = {(dvb.mapper.history&63)<<6};
         lofty_prepare(lofty_page_at(dvb.put_index)->words+dvb.page_blocks,word,1,dvb.last_word);
@@ -340,7 +362,7 @@ static IRAM_ATTR __attribute__((noinline)) int moon_map(bool warmup)
                      dvbs2_fast_sign_start(enc.fast,enc.ws,&dvb.mapper))) return -1;
     while (!enc.stop && dvb.mapper.at < dvb.ring.frame_symbols) {
         while (!warmup && !enc.stop && dvb.produced-__atomic_load_n(&dvb.consumed,__ATOMIC_ACQUIRE) == dvb.queue_pages)
-            moon_wait();
+            moon_wait(QUEUE_MAP);
         if (enc.stop) return -1;
         machine_page *page = dvb.pages ? dvb.pages+dvb.put_index : NULL;
         lofty_page *lp = dvb.lofty ? lofty_page_at(dvb.put_index) : NULL;
@@ -490,10 +512,13 @@ static inline __attribute__((always_inline)) void lofty_boundary(uint32_t ready)
     bool complete = (int32_t)(ready-lofty_mux.frames) > 0;
     // The producer owns phase until it has actually resumed. waiting alone
     // is insufficient: moon_wake clears it before the task gets CPU time.
-    unsigned asleep = __atomic_load_n(&dvb.producer_phase,__ATOMIC_ACQUIRE) != QUEUE_MAP;
+    unsigned phase = __atomic_load_n(&dvb.producer_phase,__ATOMIC_ACQUIRE);
+    unsigned asleep = phase != QUEUE_MAP;
     unsigned threshold = (__atomic_load_n(&lofty_mux.admission_pages,__ATOMIC_ACQUIRE)>>(8*asleep))&255;
     lofty_mux.filler = odd || (!complete &&
         queued < threshold);
+    if (dvb.trace) trace_fill(TRACE_ADMIT,queued | (threshold<<8) | (complete<<16) |
+                             (asleep<<17) | (odd<<18) | (lofty_mux.filler<<19) | (phase<<20),0);
     if (!lofty_mux.filler && !complete) ++lofty_mux.streaming;
     lofty_mux.at = 0;
     lofty_mux.length = lofty_mux.filler ? 3*DVBS2_DUMMY_SYMBOLS : 3*LOFTY_FRAME_SYMBOLS;
@@ -577,10 +602,14 @@ static IRAM_ATTR __attribute__((noinline)) esp_err_t lofty_shape(uint32_t *dst, 
                 if (pages > room) pages = room;
                 unsigned available = !dvb.page_wake && put-get > LOFTY_RESERVE_PAGES ? put-get-LOFTY_RESERVE_PAGES : 1;
                 if (pages > available) pages = available;
+                // Trace only: expose each release to C without adding a kernel
+                // call or changing bank-end wake policy. Default batches stay intact.
+                if (dvb.trace && lofty_mux.frames-STREAM_TRACE_FIRST < STREAM_TRACE_FRAMES) pages = 1;
                 take = pages*MACHINE_PAGE_SAMPLES;
                 // Publication during the batch can only increase this bound.
                 lead -= (pages-1)*MACHINE_PAGE_SAMPLES;
                 lofty_render_pages(dst,p->words,pages,shaper_store,&dvb.consumed);
+                if (dvb.trace) trace_fill(TRACE_RELEASE,dvb.get_index,lofty_mux.at+take);
                 dvb.get_index += pages;
                 if (dvb.get_index == dvb.queue_pages) dvb.get_index = 0;
             } else {
@@ -592,6 +621,8 @@ static IRAM_ATTR __attribute__((noinline)) esp_err_t lofty_shape(uint32_t *dst, 
                     dvb.page_sample = 0;
                     if (++dvb.get_index == dvb.queue_pages) dvb.get_index = 0;
                     __atomic_store_n(&dvb.consumed,get+1,__ATOMIC_RELEASE);
+                    if (dvb.trace) trace_fill(TRACE_RELEASE,
+                        dvb.get_index ? dvb.get_index-1 : dvb.queue_pages-1,lofty_mux.at+take);
                 }
             }
             if (lead < low) low = lead;
@@ -607,7 +638,10 @@ static IRAM_ATTR __attribute__((noinline)) esp_err_t lofty_shape(uint32_t *dst, 
         lofty_mux.output += take; lofty_mux.at += take;
         if (lofty_mux.at == lofty_mux.length) {
             if (lofty_mux.filler) lofty_mux.history = lofty_mux.dummy_history;
-            else ++lofty_mux.frames;
+            else {
+                if (dvb.trace) trace_fill(TRACE_DATA_END,lofty_mux.startup+lofty_mux.steady,0);
+                ++lofty_mux.frames;
+            }
             lofty_mux.length = 0;
         }
     }
@@ -819,6 +853,7 @@ static void encoder_task(void *arg)
     }
     for (uint32_t f = 0; !e->stop; ++f) {
         __atomic_store_n(&dvb.producer_phase,QUEUE_FEC,__ATOMIC_RELEASE);
+        if (dvb.trace) trace_producer(TRACE_FRAME_START,0,0);
         uint8_t *out = NULL;
         while (!dvb.moon && !(out = ring_slot(&dvb.ring, f))) {
             if (e->stop) {
@@ -862,6 +897,7 @@ static void encoder_task(void *arg)
         const encoder_mark_t kernel_start = dvb.profile ? before : encoder_mark();
         int rc;
         if (dvb.profile || dvb.moon) {
+            if (dvb.trace) trace_producer(TRACE_FEC_START,0,0);
             rc = input == PV_TS ? dvbs2_fast_bb_ts(e->fast, e->ws, &ts, payload, bytes) :
                                   dvbs2_fast_bb_gcs(e->fast, e->ws, payload, bytes * 8);
             before = encoder_record(&e->stage[1],before);
@@ -872,6 +908,7 @@ static void encoder_task(void *arg)
                 before = encoder_record(&e->stage[3],before);
                 if (dvb.moon) {
                     __atomic_store_n(&dvb.producer_phase,QUEUE_MAP,__ATOMIC_RELEASE);
+                    if (dvb.trace) trace_producer(TRACE_FEC_END,0,0);
                     rc = moon_map(false);
                 } else if (e->packed) {
                     dvbs2_fast_map_packed(e->fast, e->ws, out);
@@ -942,6 +979,7 @@ static void release(void)
         cache_configured = false;
     }
     (void)heap_caps_monitor_local_minimum_free_size_stop();
+    stream_trace_free(dvb.trace); dvb.trace = NULL;
     heap_caps_free(dvb.samples);
     dvb.samples = NULL;
     heap_caps_free(enc.tables);
@@ -973,8 +1011,8 @@ static size_t packed_bytes(size_t symbols)
 
 // Build the scaled table and the dummy frame, start the encoder on core 0 and wait until it has
 // filled every slot. Returns the frame length in symbols, or 0 after printing an error for `cmd`.
-static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, unsigned stall_ms,
-                            unsigned sps, uint32_t dac_rate)
+static size_t start_encoder_traced(const char *cmd, unsigned modcod, unsigned level, unsigned stall_ms,
+                                   unsigned sps, uint32_t dac_rate, bool trace)
 {
     const dvbs2_mode *mode = dvbs2_find_mode(modcod);
     const bool fractional = sps == DVB_SPS_12_5;
@@ -1306,6 +1344,13 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
                       resident && !moon && !(enc.ws_borrowed && sps == 3) ? (uint8_t *)enc.ws+ws_used : NULL,
                       resident && !moon && !(enc.ws_borrowed && sps == 3) && ws_used < sizeof *enc.ws ? sizeof *enc.ws-ws_used : 0);
 
+    if (trace) {
+        if (!lofty || !(dvb.trace = stream_trace_new())) {
+            printf("@{\"cmd\":\"%s\",\"error\":\"trace needs lofty and PSRAM storage\"}\n",cmd);
+            release();
+            return 0;
+        }
+    }
     // Bounded bursts above Wi-Fi, then sleep on the full queue. Startup and
     // stop need no controller boost because a full producer always blocks.
     enc.priority = moon ? MOON_PRIORITY : ENCODER_PRIORITY;
@@ -1344,6 +1389,12 @@ static void print_profile(const char *name, const stream_profile_t *p)
            ",\"data_access\":%" PRIu64 ",\"instruction_miss\":%" PRIu64 ",\"prepare_cycles\":%" PRIu64 "}",
            name, p->calls, p->cycles, p->max_cycles, p->flash_miss, p->psram_miss,
            p->data_access, p->instruction_miss, p->prepare_cycles);
+}
+
+static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, unsigned stall_ms,
+                            unsigned sps, uint32_t dac_rate)
+{
+    return start_encoder_traced(cmd,modcod,level,stall_ms,sps,dac_rate,false);
 }
 
 static void stop_encoder(void)
@@ -1479,6 +1530,7 @@ static void stop_encoder(void)
         printf("}}");
     }
     stream_jitter_print();
+    stream_trace_print(dvb.trace);
     release();
 }
 
@@ -1544,9 +1596,9 @@ void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, 
 }
 
 void dvbtx_pace(unsigned modcod, uint32_t seconds, unsigned level, unsigned stall_ms,
-                 unsigned sps, uint32_t dac_rate, unsigned wake_policy, bool observer)
+                 unsigned sps, uint32_t dac_rate, unsigned wake_policy, bool observer, bool trace)
 {
-    const size_t symbols = start_encoder("dvbpace", modcod, level, stall_ms, sps, dac_rate);
+    const size_t symbols = start_encoder_traced("dvbpace", modcod, level, stall_ms, sps, dac_rate,trace);
     if (!symbols) {
         return;
     }

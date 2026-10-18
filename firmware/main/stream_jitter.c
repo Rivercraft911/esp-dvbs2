@@ -7,6 +7,7 @@
 #ifndef STREAM_JITTER_HOST
 #include "esp_attr.h"
 #include "esp_cpu.h"
+#include "esp_heap_caps.h"
 #include "esp_ipc.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -37,7 +38,6 @@ typedef struct {
     int installed;
 } cpu_t;
 static DRAM_ATTR cpu_t cpu[2];
-static uint8_t routes[2][ETS_MAX_INTR_SOURCE];
 static int enabled;
 static uint32_t perf_saved[5];
 typedef struct {
@@ -49,12 +49,22 @@ typedef struct {
     uint32_t calls, max_cycles, irq_cycles, data_busy, high_irq_entries;
     uint32_t histogram[6];
 } bucket_t;
-static bucket_t buckets[2][5];
-static struct {
+typedef struct {
     uint32_t cycles, irqs, irq_cycles, vectors, data_busy, high_irq_entries, bank;
     uint32_t notify_calls, notify_cycles, notify_max_cycles;
     uint64_t first;
-} worst;
+} worst_t;
+// Only bank callbacks and reporting use these, never the interrupt wrapper.
+// Keep optional diagnostics out of the Wi-Fi internal-memory budget.
+typedef struct {
+    uint8_t routes[2][ETS_MAX_INTR_SOURCE];
+    bucket_t buckets[2][5];
+    worst_t worst;
+} report_t;
+static report_t *report;
+#define routes (report->routes)
+#define buckets (report->buckets)
+#define worst (report->worst)
 
 static void IRAM_ATTR counted_irq(void *arg)
 {
@@ -81,15 +91,21 @@ static void IRAM_ATTR counted_irq(void *arg)
 
 void stream_jitter_enable(int on)
 {
-    enabled = on;
+    heap_caps_free(report);
+#if defined(CONFIG_SPIRAM) || defined(STREAM_JITTER_HOST)
+    const unsigned caps = MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT;
+#else
+    const unsigned caps = MALLOC_CAP_8BIT; // small target-only tests have no PSRAM
+#endif
+    report = on ? heap_caps_malloc(sizeof *report,caps) : NULL;
+    enabled = on ? (report ? 1 : -1) : 0;
+    if (report) memset(report,0,sizeof *report);
     memset(cpu,0,sizeof cpu);
-    memset(buckets,0,sizeof buckets);
-    memset(&worst,0,sizeof worst);
 }
 
 void stream_jitter_core_start(void)
 {
-    if (!enabled) return;
+    if (enabled != 1) return;
     unsigned core = esp_cpu_get_core_id();
     cpu_t *c = &cpu[core];
     uint32_t mask = portSET_INTERRUPT_MASK_FROM_ISR();
@@ -147,7 +163,7 @@ static void start_other(void *arg) { (void)arg; stream_jitter_core_start(); }
 static void stop_other(void *arg) { (void)arg; stream_jitter_core_stop(); }
 void radio_s3_profile_start(void)
 {
-    if (!enabled) return;
+    if (enabled != 1) return;
     // Wi-Fi installs handlers during setup. Snapshot after it is up, on each
     // owning CPU. These IPC callbacks neither block nor call the scheduler.
     ESP_ERROR_CHECK(esp_ipc_call_blocking(0,start_other,NULL));
@@ -155,14 +171,14 @@ void radio_s3_profile_start(void)
 }
 void radio_s3_profile_stop(void)
 {
-    if (!enabled) return;
+    if (enabled != 1) return;
     stream_jitter_core_stop();
     ESP_ERROR_CHECK(esp_ipc_call_blocking(0,stop_other,NULL));
 }
 
 void IRAM_ATTR radio_s3_profile_bank_begin(void)
 {
-    if (!enabled) return;
+    if (enabled != 1) return;
     cpu_t *c = &cpu[1];
     uint32_t mask = portSET_INTERRUPT_MASK_FROM_ISR();
     mark.calls = c->calls[0]+c->calls[1]+c->calls[2];
@@ -178,7 +194,7 @@ void IRAM_ATTR radio_s3_profile_bank_begin(void)
 // callbacks, including page wakes inside shaping, in this bank's record.
 void IRAM_ATTR stream_jitter_notify(uint32_t cycles)
 {
-    if (!enabled) return;
+    if (enabled != 1) return;
     ++mark.notify_calls;
     mark.notify_cycles += cycles;
     if (cycles > mark.notify_max_cycles) mark.notify_max_cycles = cycles;
@@ -186,7 +202,7 @@ void IRAM_ATTR stream_jitter_notify(uint32_t cycles)
 
 void IRAM_ATTR radio_s3_profile_bank_end(uint32_t cycles, unsigned bank, uint64_t first)
 {
-    if (!enabled) return;
+    if (enabled != 1) return;
     cpu_t *c = &cpu[1];
     uint32_t mask = portSET_INTERRUPT_MASK_FROM_ISR();
     uint32_t calls = c->calls[0]+c->calls[1]+c->calls[2]-mark.calls;
@@ -218,6 +234,11 @@ void IRAM_ATTR radio_s3_profile_bank_end(uint32_t cycles, unsigned bank, uint64_
 
 void stream_jitter_print(void)
 {
+    if (enabled < 0) {
+        printf(",\"jitter\":{\"complete\":false,\"error\":\"observer allocation failed\"}");
+        stream_jitter_enable(0);
+        return;
+    }
     if (!enabled) return;
     printf(",\"jitter\":{\"complete\":%s,\"irq_time_scope\":\"C handlers levels 1..3; excludes vector entry/exit and scheduling\","
            "\"histogram_upper_cycles\":[31999,35999,40137,43999,47219,null],\"banks_by_irq_count\":[",
@@ -254,6 +275,7 @@ void stream_jitter_print(void)
         printf("]");
     }
     printf("]}");
+    stream_jitter_enable(0);
 }
 #else
 void stream_jitter_enable(int enabled) { (void)enabled; }
