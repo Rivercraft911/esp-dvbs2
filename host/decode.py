@@ -61,7 +61,7 @@ def parse_bbframes(raw):
             raise ValueError("only single-stream GCS and TS captures are supported")
         if stream_type == 1 and (header[2:4] != b"\0\0" or header[7:9] != b"\0\0"):
             raise ValueError("GCS requires UPL=0 and SYNCD=0")
-        frames.append({"stream_type": stream_type, "dfl_bits": dfl,
+        frames.append({"header": header, "stream_type": stream_type, "dfl_bits": dfl,
                        "rolloff_code": header[0] & 3,
                        "payload": raw[offset + 10:end]})
         offset = end
@@ -115,6 +115,7 @@ def summarize(status, frames, payload, expected=None):
         "lock_at_end": bool(lock_events and lock_events[-1]),
         "modcods": modcods,
         "frames_per_modcod": dict(sorted(Counter(a[0] for a in attempts if a[6] >= 0).items())),
+        "frame_modcods": [a[0] for a in attempts if a[6] >= 0],
         "attempted_modcods": sorted({a[0] for a in attempts}),
         "modes": [MODCODS.get(m, f"MODCOD {m}") for m in modcods],
         "fec_frames": len(attempts) if attempts else None,
@@ -184,7 +185,7 @@ def receiver_command(executable, fs, rs, alpha, bb_fd, *, tune=0.0, rrc_rej=20):
 
 def decode(capture, *, sample_rate=None, symbol_rate=None, alpha=None,
            receiver=None, expected=None, output=None, log=None, tune=0.0, timeout=120,
-           rrc_rej=20):
+           rrc_rej=20, bb_output=None):
     """Decode one file, returning a JSON-serializable report and recovered bytes.
 
     LDPC counts are bit flips and unsatisfied parity checks, not a measured BER.
@@ -209,7 +210,10 @@ def decode(capture, *, sample_rate=None, symbol_rate=None, alpha=None,
         if result.returncode:
             raise RuntimeError(f"LeanDVB exited {result.returncode}: {status[-2000:]}")
         bb.seek(0)
-        frames = parse_bbframes(bb.read())
+        raw_bb = bb.read()
+        frames = parse_bbframes(raw_bb)
+        if bb_output:
+            Path(bb_output).write_bytes(raw_bb)
         if len({f["stream_type"] for f in frames}) > 1:
             raise ValueError("mixed GCS/TS captures require separate output streams")
         if frames and frames[0]["stream_type"] == 3:
@@ -227,26 +231,67 @@ def decode(capture, *, sample_rate=None, symbol_rate=None, alpha=None,
     return report, payload
 
 
-def payload(modcod, frames, callsign):
-    """Firmware test payload. No FEC model or receiver code is used here."""
+def payload_sequence(pattern, frames, callsign, hold_frames=1):
+    """Yield (MODCOD, payload) with one continuous firmware PRNG across frames."""
     import morse
     kbch = {4: 32208, 5: 38688, 6: 43040, 7: 48408, 8: 51648,
             9: 53840, 10: 57472, 11: 58192, 12: 38688, 13: 43040,
             14: 48408, 15: 53840, 16: 57472, 17: 58192}
-    if modcod not in kbch or frames < 1:
-        raise ValueError("need MODCOD 4..17 and at least one frame")
-    size = (kbch[modcod] - 80) // 8
-    data, state = bytearray(size * frames), 2026
-    for i in range(len(data)):
-        state ^= (state << 13) & 0xffffffff
-        state ^= state >> 17
-        state ^= (state << 5) & 0xffffffff
-        data[i] = state & 255
-    if callsign:
-        header = ("ESP-DVBS2 ID=" + morse.callsign(callsign)).ljust(39).encode("ascii") + b"\n"
-        for at in range(0, len(data), size):
-            data[at:at+40] = header
-    return bytes(data)
+    if not pattern or any(mc not in kbch for mc in pattern) or frames < 1 or hold_frames < 1:
+        raise ValueError("need MODCODs 4..17, positive frame count and hold_frames")
+    header = (("ESP-DVBS2 ID=" + morse.callsign(callsign)).ljust(39).encode("ascii") + b"\n"
+              if callsign else None)
+    state = 2026
+    for frame in range(frames):
+        mc = pattern[(frame // hold_frames) % len(pattern)]
+        data = bytearray((kbch[mc] - 80) // 8)
+        for i in range(len(data)):
+            state ^= (state << 13) & 0xffffffff
+            state ^= state >> 17
+            state ^= (state << 5) & 0xffffffff
+            data[i] = state & 255
+        if header:
+            data[:40] = header
+        yield mc, bytes(data)
+
+
+def payload(modcod, frames, callsign, *, pattern=None, hold_frames=1):
+    """Firmware test payload. No FEC model or receiver code is used here."""
+    return b"".join(data for _, data in payload_sequence(
+        pattern if pattern is not None else (modcod,), frames, callsign, hold_frames))
+
+
+def vcm_match(frames, modcods, *, pattern, hold_frames, max_frames, callsign):
+    """Match all recovered BBHEADERs, data and PLS modes at consecutive indices.
+
+    Acquisition may lose a prefix/suffix. An internal dropped, repeated, reordered
+    or corrupt frame fails. PRNG generation stops after the recovered interval.
+    """
+    failed = dict(payload_match=False, host_model_exact=False, contiguous=False,
+                  first_frame=None, last_frame=None, compared_bytes=0, compared_bits=0,
+                  pattern_complete=set(modcods) == set(pattern))
+    if not frames or len(frames) != len(modcods):
+        return failed
+    expected = enumerate(payload_sequence(pattern, max_frames, callsign, hold_frames))
+    for first, (mc, data) in expected:
+        if data == frames[0]["payload"]:
+            break
+    else:
+        return failed
+    for index, frame in enumerate(frames):
+        if index:
+            following = next(expected, None)
+            if following is None:
+                return failed
+            _, (mc, data) = following
+        header = b"\x60\0\0\0" + (len(data)*8).to_bytes(2, "big") + b"\0\0\0"
+        header += bytes((crc8(header),))
+        if modcods[index] != mc or frame["payload"] != data or frame["header"] != header:
+            return failed
+    count = sum(len(f["payload"]) for f in frames)
+    return dict(failed, payload_match=True, host_model_exact=True, contiguous=True,
+                first_frame=first, last_frame=first+len(frames)-1,
+                compared_bytes=count, compared_bits=count*8)
 
 
 def stream_match(expected, got, per_frame):

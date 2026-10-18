@@ -63,8 +63,9 @@ internal ring or context allocation is required.
 These are S3 allocation calculations, excluding allocator overhead, task stacks,
 input drivers, Wi-Fi and the two 65,536 B DAC banks. QPSK at 5 Msym/s is the first
 check: it reserves no internal data heap, even with a fragmented heap. Task
-creation still needs its normal stack/TCB allocation. PSRAM queue timing for the
-mixed run remains unmeasured on the board.
+creation still needs its normal stack/TCB allocation. Coordinator runs on
+`be6c23c` paced QPSK 5 Msym/s and mixed 10 Msym/s for 30 seconds with no late
+fills; mixed fill peaked at 44,208 cycles with 41,133 cycles of slack.
 
 Allocation failures report `stage`, `requested_bytes`, `memory`, current
 `free_internal`, `largest_internal`, `free_psram`, `largest_psram`, pre-layout
@@ -154,7 +155,22 @@ above `shaper_build`'s 960 B bias array on main's 3,584 B stack. The completion
 record reports `main_stack_bytes` and `main_stack_min_free`, in bytes since boot.
 `wifimem` also samples `main_stack_min_free_before`, `_after_encoder` and
 `_after_wifi` to distinguish pulse setup from Wi-Fi startup. Actual high-water
-readings for the fix must come from the coordinator, not the host RTOS stubs.
+readings for the fix come from the coordinator, not the host RTOS stubs.
+On `438c933`, both `wifimem` probes succeeded with VCM enabled; main retained
+1,292 B. The QPSK 5 Msym/s dump independently decodes as 63 contiguous frames
+0..62 (MODCOD 4/7/11: 23/20/20), and mixed 10 Msym/s as 62 frames 0..61
+(4/11/13/17: 16/16/16/14). Every recovered BBHEADER/data bit matches
+`host/dvbs2.py`, CCM cleared, with zero reported LDPC flips, BCH corrections or
+failures. The terminal capture edge is excluded; only recovered frames are
+compared. Raw dump CRCs match the board records. These are radio-off captures.
+
+`host/decode.py` also provides `payload_sequence` and `vcm_match` for contained
+RF checks. They preserve one PRNG across variable payload sizes and require
+every recovered PLS mode, BBHEADER and payload at consecutive model indices.
+Acquisition may discard a prefix/suffix; internal gaps, repeated frames and
+wrong pattern phase fail. A passing pattern test must observe every requested
+MODCOD. The local coordinator E200 helper is `notes/e200_vcm.py`; its `--plan`
+and `--decode-only` paths access no devices. Both capture paths require `--key`.
 
 Only the coordinator runs board steps. After flashing, keep the radio off:
 
