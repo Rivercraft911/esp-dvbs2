@@ -23,10 +23,11 @@ def test(out):
         bits = np.unpackbits(np.frombuffer(waveforms.payload(mc,1,'N0CALL'),np.uint8))
         fec = dvbs2.fecframe(dvbs2.bbframe(bits,rate),rate)
         phases = dvbs2.plframe_phases(fec,rate,modulation=modulation)
-        for before in (None,1,2):
-            name = f'{mc}-{before}'
+        for before,page_wake in ((None,False),(1,False),(2,False),(None,True)):
+            name = f'{mc}-{before}'+('-page' if page_wake else '')
             iq = out/f'{name}.iq'
             env = dict(os.environ)
+            if page_wake: env['PAGE_WAKE'] = '1'
             if before is not None: env['FORCE_DUMMY_FRAME'] = str(before)
             run = subprocess.run([str(exe),str(mc),str(iq)],env=env,capture_output=True,text=True,timeout=60)
             (out/f'{name}.log').write_text(run.stdout+run.stderr)

@@ -30,11 +30,22 @@
     .endm
     .section .iram1.lofty,"ax"
     .global lofty_render_pie
+    .global lofty_render_pages_pie
     .type lofty_render_pie,@function
+    .type lofty_render_pages_pie,@function
     .align 4
+lofty_render_pages_pie:
+    entry a1,32
+    mov a15,a6
+    s32i a4,a1,0
+    beqz a4,.Ldone
+    movi a4,128
+    j .Lsetup
 lofty_render_pie:
     entry a1,32
+    movi a15,0
     beqz a4,.Ldone
+.Lsetup:
     movi a8,0x80200
     ee.movi.32.q q7,a8,0
     ee.movi.32.q q7,a8,1
@@ -46,6 +57,7 @@ lofty_render_pie:
     add a7,a7,a5
     addmi a13,a5,8192
     l32i a8,a3,0
+.Lpage:
     // Two words keep the hardware loop short and leave IRAM for the mux.
     extui a14,a4,0,1
     srli a4,a4,1
@@ -56,9 +68,24 @@ lofty_render_pie:
     loopnez a14,.Ltail
     lofty_word 0,4
 .Ltail:
+    beqz a15,.Ldone
+    l32i a9,a15,0
+    addi a9,a9,1
+    memw
+    s32i a9,a15,0
+    l32i a9,a1,0
+    addi a9,a9,-1
+    beqz a9,.Ldone
+    s32i a9,a1,0
+    // Skip the guard and three metadata words. The next source is a page.
+    addi a3,a3,16
+    l32i a8,a3,0
+    movi a4,128
+    j .Lpage
 .Ldone:
     retw
     .size lofty_render_pie,.-lofty_render_pie
+    .size lofty_render_pages_pie,.-lofty_render_pages_pie
 
 // Eight four-symbol words -> eight offsets. Output aligned; source has 16 guard bytes.
     .section .iram1.lofty_prepare,"ax"

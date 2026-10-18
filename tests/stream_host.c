@@ -50,6 +50,10 @@ static int checked_task(void (*fn)(void *), const char *name, unsigned stack, vo
     // page cursors and the 64-bit symbol timeline must remain continuous.
     if (dvb.lofty) {
         assert(priority == MOON_PRIORITY);
+#ifdef QUEUE_TEST_PAGES
+        assert(QUEUE_TEST_PAGES <= dvb.queue_pages);
+        dvb.queue_pages = QUEUE_TEST_PAGES;
+#endif
     }
     if (dvb.moon) dvb.produced = dvb.consumed = UINT32_MAX-15;
     return xTaskCreatePinnedToCore(fn,name,stack,arg,priority,task,core);

@@ -16,6 +16,14 @@ static uint32_t want[16420] __attribute__((aligned(16)));
 static uint32_t offsets[1380] __attribute__((aligned(16)));
 static uint16_t words[1380] __attribute__((aligned(16)));
 
+static void page_offsets(void)
+{
+    for (unsigned page = 10; page-- > 0;) {
+        memmove(offsets+132*page,offsets+128*page,128*sizeof *offsets);
+        for (unsigned k = 128; k < 132; ++k) offsets[132*page+k] = 0xa5a50000+page;
+    }
+}
+
 static uint32_t hash(const void *data, size_t n)
 {
     const uint8_t *p = data;
@@ -77,10 +85,23 @@ static void kernels(void)
                         for (unsigned i = first+n; i < 16420; ++i) assert(got[i] == 0xa5a5a5a5);
                         ++cases;
                     }
+            page_offsets();
+            uint32_t source_hash = hash(offsets,1320*sizeof *offsets);
+            for (unsigned pages = 0; pages <= 10; ++pages) {
+                memset(got,0xa5,sizeof got);
+                uint32_t consumed = UINT32_MAX-4;
+                lofty_render_pages(got+4,offsets,pages,table,&consumed);
+                assert(consumed == UINT32_MAX-4+pages);
+                assert(!memcmp(got+4,want,pages*1536*sizeof *got));
+                assert(source_hash == hash(offsets,1320*sizeof *offsets));
+                for (unsigned k = 0; k < 4; ++k) assert(got[k] == 0xa5a5a5a5);
+                for (unsigned k = 4+1536*pages; k < 16420; ++k) assert(got[k] == 0xa5a5a5a5);
+            }
             printf("@{\"test\":\"lofty\",\"peak\":%u,\"seed\":%u,\"table\":%"PRIu32",\"samples\":%"PRIu32"}\n",
                    (unsigned[]){16,128,508}[peak],seed,hash(table,sizeof table),hash(want,1367*48));
         }
     printf("@{\"test\":\"lofty_end\",\"slices\":%u,\"errors\":0}\n",cases);
+    puts("lofty pages: 99 guarded batches, metadata skipped, release counter wraps");
     // I/Q fields do not overlap, so the fused ADD renderer must equal OR.
     const unsigned shifts[] = {3,2,0};
     for (unsigned level = 0; level < 3; ++level) {
@@ -236,6 +257,16 @@ static void encoder(void)
     lofty_prepare(offsets,words+1,1365,words[0]);
     offsets[1365] = 0;
     lofty_begin(); lofty_render(got,offsets,1365,table); lofty_end();
+    page_offsets();
+    uint32_t consumed = UINT32_MAX-4;
+    lofty_begin(); lofty_render_pages(got,offsets,10,table,&consumed); lofty_end();
+    assert(consumed == 5);
+    lofty_begin();
+    for (unsigned p = 0; p < 10; ++p) {
+        lofty_render(got+1536*p,offsets+132*p,128,table);
+        __atomic_store_n(&consumed,consumed+1,__ATOMIC_RELEASE);
+    }
+    lofty_end();
 #endif
     free(bits); free(cache); free(map); free(raw); free(payload); free(ws); free(f);
 #if !LOFTY_TRACE

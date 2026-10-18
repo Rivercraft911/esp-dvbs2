@@ -1,22 +1,23 @@
 // Replay the observed ID/data bank, including the real station and overlap muxes.
 #include "native.h"
 #define lofty_samples checked_samples
-#define lofty_render checked_render
+#define lofty_render_pages checked_pages
 #define main stream_lifecycle_main
 #include "stream_host.c"
 #undef main
 #undef lofty_samples
-#undef lofty_render
+#undef lofty_render_pages
 void lofty_samples(uint32_t *, const uint32_t *, unsigned, size_t, const uint32_t *);
-void lofty_render(uint32_t *, const uint32_t *, unsigned, const uint32_t *);
+void lofty_render_pages(uint32_t *, const uint32_t *, unsigned, const uint32_t *, uint32_t *);
 static unsigned bulk, singles, bank_switches;
 static bool dummy_source;
 
-void checked_render(uint32_t *dst, const uint32_t *src, unsigned n, const uint32_t *table)
+void checked_pages(uint32_t *dst, const uint32_t *src, unsigned n, const uint32_t *table, uint32_t *consumed)
 {
     assert(!((uintptr_t)dst&15));
-    bulk += n;
-    lofty_render(dst,src,n,table);
+    assert(!dvb.page_wake || n == 1);
+    bulk += n*LOFTY_BLOCKS;
+    lofty_render_pages(dst,src,n,table,consumed);
 }
 
 void checked_samples(uint32_t *dst, const uint32_t *src, unsigned skip, size_t n, const uint32_t *table)
@@ -48,6 +49,7 @@ int main(int argc, char **argv)
     callsign = "N0CALL";
     assert(!posix_memalign((void **)&banks,65536,2*sizeof *banks));
     assert(start_encoder("dvbpace",mc,128,0,3,80000000));
+    dvb.page_wake = getenv("PAGE_WAKE") != NULL;
     station_id_t id;
     assert(station_id_init_rate(&id,callsign,80000000,80000000,fill,NULL));
     assert(id.length == 417600000);

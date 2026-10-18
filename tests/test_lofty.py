@@ -38,6 +38,7 @@ def kernels(text):
         print('real per-core ISR dispatch, original arguments and repeat teardown: ok')
     assert len(rows) == 11,len(rows)
     assert "sign mapper: 96 frames" in text and "machine add: 4095 blocks" in text
+    assert "lofty pages: 99 guarded batches" in text
     for r in rows[:9]:
         assert r['table'] == checksum(lofty.table(r['peak']).tobytes()),r
         x = (2026,7,0xffffffff)[r['seed']]
@@ -81,7 +82,7 @@ def check(out, receiver=None):
         assert r['bch_pair_psram_bytes'] == (0 if mc == 17 else 4096)
         assert r['encoder_priority'] == 24
         assert r['dummy_startup'] == r['dummy_steady'] == 0
-        assert r['admission_pages'] == 6 and r['admission_wait_pages'] == 23
+        assert r['admission_pages'] == 9 and r['admission_wait_pages'] == 26
         assert r['dummy_startup_frames'] == 3
         assert r['queue_stream_page_max_cycles'] == 0 # host clocks are synthetic
         assert r['queue_stream_bound_misses'] == 0

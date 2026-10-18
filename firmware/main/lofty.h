@@ -20,13 +20,21 @@ uint32_t lofty_prepare(uint32_t *, const uint16_t *, unsigned, uint32_t previous
 uint32_t lofty_prepare_pie(uint32_t *, const uint16_t *, unsigned vectors, uint32_t);
 int lofty_build(uint32_t *, unsigned peak);
 void lofty_render_pie(uint32_t *, const uint32_t *, unsigned, const uint32_t *);
+// Consecutive full queue pages. Release each page after its last descriptor.
+void lofty_render_pages_pie(uint32_t *, const uint32_t *, unsigned, const uint32_t *, uint32_t *);
 #ifdef __XTENSA__
 static inline __attribute__((always_inline)) void lofty_render(uint32_t *dst, const uint32_t *src,
                                                              unsigned n, const uint32_t *table)
 {
     lofty_render_pie(dst,src,n,table);
 }
+static inline __attribute__((always_inline)) void lofty_render_pages(uint32_t *dst, const uint32_t *src,
+                    unsigned pages, const uint32_t *table, uint32_t *consumed)
+{
+    lofty_render_pages_pie(dst,src,pages,table,consumed);
+}
 #else
 void lofty_render(uint32_t *, const uint32_t *, unsigned, const uint32_t *);
+void lofty_render_pages(uint32_t *, const uint32_t *, unsigned, const uint32_t *, uint32_t *);
 #endif
 void lofty_samples(uint32_t *, const uint32_t *, unsigned skip, size_t, const uint32_t *);

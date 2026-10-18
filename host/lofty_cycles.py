@@ -98,7 +98,7 @@ def traces(path,disassembly):
             assert active is None
             active = []
         if active is not None: active.extend(blocks[pc])
-    assert len(rows) == 49,len(rows)
+    assert len(rows) == 51,len(rows)
     return rows
 
 
@@ -124,7 +124,7 @@ def report(trace,disassembly):
                        first_publication_cycles=kernel-stages['frame']['cycles']+4823,measured=False)
         yield dict(kind='encoder_pair',modcod=mc,mean_cycles=sum(frames)/2+4823,
                    max_cycles=max(frames)+4823,measured=False)
-    r = replay(rows[-1])
+    r = replay(rows[48])
     yield dict(kind='render_trace',blocks=1365,samples=16380,**r,measured=False)
     f = base.functions(disassembly)['lofty_render_pie']
     begin = next(i for i,(_,ins) in enumerate(f) if re.match(r'extui\s+a10, a8, 0, 13$',ins))
@@ -138,10 +138,13 @@ def report(trace,disassembly):
     prologue = r['cycles']-682*group-24
     assert group == 47 and 0 <= prologue < 256,(group,prologue)
     yield dict(kind='render_model',cycles_per_block=step,cycles_per_sample=step/12,
-               prologue_cycles=prologue,previous_cycles_per_block=24.5,
+               prologue_cycles=prologue,previous_cycles_per_block=23.5,
                minimum_page_cycles=23*128,
-               issue_saving_per_15740_sample_bank=math.ceil(15740/12)*(24.5-step),
+               issue_saving_per_15740_sample_bank=math.ceil(15740/12)*(23.5-step),
                ceiling_cycles=40137,deadline_cycles=47220,measured=False)
+    batch, separate = [replay(row) for row in rows[49:51]]
+    yield dict(kind='page_batch_model',pages=10,samples=15360,batch=batch,separate=separate,
+               issue_saving=separate['cycles']-batch['cycles'],measured=False)
 
 
 

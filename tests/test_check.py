@@ -41,7 +41,7 @@ else:
         packed_mapper='signs' if moon else 'none' if n==40 else 'quads' if quads else 'direct' if resident else 'sparse')
  if mc>=12 and n==3:
   r.update(pulse_symbols=5,ring_format='words',packed_mapper='words',fill_kernel='lofty-queue',
-           dummy_startup=0,dummy_steady=0,admission_pages=7,admission_wait_pages=23,queue_stream_page_max_cycles=600,
+           dummy_startup=0,dummy_steady=0,admission_pages=10,admission_wait_pages=26,admission_update_max_cycles=7000,queue_stream_page_max_cycles=600,
            queue_pages={13:54,15:50,17:46}[mc],queue_wake_pages=2,encoder_cache_bytes={13:22960,15:24112,17:24256}[mc])
  if kind=='dvbdump':
   frames=int(x[3] if named else x[2]); decim=int(x[-1]); size=((frames*symbols*n+den-1)//den+decim-1)//decim*4

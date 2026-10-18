@@ -97,6 +97,16 @@ void lofty_render(uint32_t *dst, const uint32_t *src, unsigned n, const uint32_t
         }
     }
 }
+
+void lofty_render_pages(uint32_t *dst, const uint32_t *src, unsigned pages,
+                        const uint32_t *table, uint32_t *consumed)
+{
+    while (pages--) {
+        lofty_render(dst,src,LOFTY_BLOCKS,table);
+        dst += 12*LOFTY_BLOCKS; src += LOFTY_BLOCKS+4;
+        __atomic_store_n(consumed,*consumed+1,__ATOMIC_RELEASE);
+    }
+}
 #endif
 
 IRAM_ATTR void lofty_samples(uint32_t *dst, const uint32_t *src, unsigned skip, size_t n,

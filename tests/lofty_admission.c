@@ -40,17 +40,17 @@ static void envelope(void)
             for (unsigned q = 2; q < 44; ++q) {
                 bool safe = true;
                 for (unsigned k = 1; k <= 44-q; ++k) {
-                    int64_t deadline = ((int64_t)q-6+k-1)*2944;
+                    int64_t deadline = ((int64_t)q-9+k-1)*2944;
                     if ((int64_t)wake+2*(int64_t)gap*k > deadline) safe = false;
                 }
                 if (safe) { brute = q; break; }
             }
             assert(lofty_admission(gap,wake) == brute);
         }
-    assert(lofty_admission(1000,0) == 7);
-    assert(lofty_admission(1000,47220) == 23);
+    assert(lofty_admission(1000,0) == 10);
+    assert(lofty_admission(1000,47220) == 26);
     for (unsigned wake = 0; wake <= 47220; wake += 47220) {
-        unsigned limit = (37*2944-wake)/2;
+        unsigned limit = (34*2944-wake)/2;
         assert(lofty_admission(limit,wake) == 43);
         assert(lofty_admission(limit+1,wake) == 44);
         assert(lofty_admission(UINT32_MAX,wake) == 44);
@@ -59,7 +59,7 @@ static void envelope(void)
 
 int main(int argc, char **argv)
 {
-    assert(argc == 3);
+    assert(argc == 3 || argc == 4);
     unsigned mc = atoi(argv[1]); slow = atoi(argv[2]);
     envelope();
     setenv("UNPACED_LOFTY","1",1);
@@ -91,8 +91,10 @@ int main(int argc, char **argv)
     unsigned mean = mc == 13 ? 168152 : mc == 15 ? 174332 : 153882;
     bulk = mc == 13 ? 43595 : mc == 15 ? 44262 : 44762;
     fec = mean-bulk-42000;
-    // Force a genuine partial-frame admission from the minimum live prefix.
-    for (unsigned i = 0; i < 7; ++i) publish_page();
+    // Test both minimum-prefix admission and the firmware's full prefill.
+    unsigned prefill = argc == 4 ? dvb.queue_pages : 10;
+    for (unsigned i = 0; i < prefill; ++i) publish_page();
+    blocked = prefill == dvb.queue_pages;
     next = 1000;
     uint32_t *dst; assert(!posix_memalign((void **)&dst,16,1540*sizeof *dst));
     for (uint64_t t = 0; lofty_mux.frames < 1000; t += 47220) {
@@ -127,12 +129,12 @@ int main(int argc, char **argv)
         }
         assert(!dvb.queue_empty);
     }
-    assert(lofty_mux.streaming > 0 && !lofty_mux.startup);
+    assert((argc == 4 || lofty_mux.streaming > 0) && !lofty_mux.startup);
     assert(slow ? lofty_mux.steady > 0 : lofty_mux.steady == 0);
-    printf("@{\"test\":\"streaming\",\"modcod\":%u,\"slow\":%u,\"data\":%u,"
+    printf("@{\"test\":\"streaming\",\"modcod\":%u,\"slow\":%u,\"prefill\":%u,\"data\":%u,"
            "\"streamed\":%u,\"startup\":%u,\"steady\":%u,\"threshold\":%u,\"lead\":%lld}\n",
-           mc,slow,lofty_mux.frames,lofty_mux.streaming,lofty_mux.startup,lofty_mux.steady,
-           lofty_mux.admission_pages&255,(long long)dvb.ring.min_lead);
+           mc,slow,prefill,lofty_mux.frames,lofty_mux.streaming,lofty_mux.startup,lofty_mux.steady,
+           lofty_mux.admission_pages&255,(long long)lofty_mux.head[2]/3);
     free(dst); release(); assert(!live_allocations);
     return 0;
 }
