@@ -148,29 +148,15 @@ static void cmd_dvbpace(char *args)
     char *peak = strtok_r(NULL, " \t", &save);
     char *pause = strtok_r(NULL, " \t", &save);
     char *extra = strtok_r(NULL, " \t", &save);
-    uint32_t seconds, top = 128, stall = 0, pages = 0;
-    unsigned wake_policy = 0;
-    bool observer = false, trace = false, nowifi = false, flags_ok = true;
-    for (; extra; extra = strtok_r(NULL," \t",&save)) {
-        if (!strcmp(extra,"pagewake") && !wake_policy) wake_policy = 1;
-        else if (!strcmp(extra,"bankwake") && !wake_policy) wake_policy = 2;
-        else if (!strcmp(extra,"observe") && !observer) observer = true;
-        else if (!strcmp(extra,"trace") && !trace) trace = true;
-        else if (!strcmp(extra,"nowifi") && !nowifi) nowifi = true;
-        else if (!strncmp(extra,"pages=",6) && !pages) {
-            if (!number(extra+6,DVB_PACE_MIN_PAGES,DVB_PACE_MAX_PAGES,&pages)) flags_ok = false;
-        }
-        else flags_ok = false;
-    }
+    uint32_t seconds, top = 128, stall = 0;
     if (!mode_ok || !number(duration, 1, 600, &seconds) ||
         (peak && !number(peak, 16, 508, &top)) || (pause && !number(pause, 0, 2000, &stall)) ||
-        (!flags_ok || (observer && (trace || nowifi)))) {
+        extra) {
         printf("@{\"cmd\":\"dvbpace\",\"error\":\"usage: dvbpace <modcod 4..17> [5m|10m|20m|26m667|33m333] <1..600 seconds> "
-               "[16..508 peak] [0..2000 ms encoder stall] [pagewake|bankwake] [observe|trace] "
-               "[pages=44..64, 8PSK 26m667 only] [nowifi]\"}\n");
+               "[16..508 peak] [0..2000 ms encoder stall]\"}\n");
         return;
     }
-    dvbtx_pace(modcod, seconds, top, stall, sps, rate,wake_policy,observer,trace,pages,nowifi);
+    dvbtx_pace(modcod, seconds, top, stall, sps, rate);
 }
 
 static void cmd_wifimem(char *args)

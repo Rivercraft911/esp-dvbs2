@@ -14,7 +14,12 @@ per symbol for 33m333. All dumps use pilots, peak 128 and stored callsign N0CALL
 Decimation is 10 for 1 Msym/s QPSK, 2 for 5 Msym/s QPSK, and 1 otherwise.
 CRCs cover the emitted little-endian int16 I/Q bytes. They include no receiver flush.
 
-Together the 73 fixtures cover every supported modulation/rate combination, plus
+`psk8_26m667_crcs.json` adds the original three 16-frame 8PSK dumps at 80/3 Msym/s,
+MODCOD 13/15/17, peak 128, pilots on and N0CALL. The five-symbol pulse and its
+three independent integer roundings are checked against `tests/reference/psk8_26m667.py`.
+Forced dummy transitions compare every output word against that reference too.
+
+Together the 76 fixtures cover every supported modulation/rate combination, plus
 several historical frame-count regressions. The stream test also compares every
 filled word against the portable encoder and shaper; fractional samples are checked
 against independent Python convolution. These are software correctness checks,

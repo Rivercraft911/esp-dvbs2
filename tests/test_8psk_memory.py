@@ -1,9 +1,11 @@
-"""Actual console parser and pace lifecycle with runtime pages. No board."""
+"""Console fixture parser, post-Wi-Fi queue sizing and heap failures. No board."""
 import argparse
 import json
 import pathlib
+from pathlib import Path
 import re
 import subprocess
+import tempfile
 from test_stream import ROOT, compile_stream
 
 
@@ -36,26 +38,23 @@ static void dvbtx_run_check(uint32_t freq, unsigned mc, uint32_t sec, unsigned g
 #define dvbtx_run dvbtx_run_check
 static unsigned calls;
 static void dvbtx_pace_check(unsigned mc, uint32_t sec, unsigned peak, unsigned stall,
-    unsigned sps, uint32_t rate, unsigned wake, bool observe, bool trace, unsigned pages, bool nowifi)
+    unsigned sps, uint32_t rate)
 {
     assert(mc == 17 && sec == 10 && peak == 128 && !stall && sps == 3 && rate == 80000000);
-    assert(!observe && !trace && !wake && (pages == 0 || pages == 58));
-    assert(nowifi == (pages == 58)); ++calls;
+    ++calls;
 }
 #define dvbtx_pace dvbtx_pace_check
 '''+functions+'''
 int main(void) {
-    const char *cases[] = {"17 26m667 10", "17 26m667 10 128 0 pages=58 nowifi",
-        "17 26m667 10 128 0 nowifi pages=58", "17 26m667 10 128 0 pages=43",
-        "17 26m667 10 128 0 pages=65", "17 26m667 10 128 0 pages=58junk",
-        "17 26m667 10 128 0 pages=58 pages=58", "17 26m667 10 128 0 nowifi nowifi",
-        "17 26m667 10 128 0 observe nowifi", "17 26m667 10 128 0 pages=",
-        "17 26m667 10 128 0 pages=0", "17 26m667 10 128 0 pages=-1"};
+    const char *cases[] = {"17 26m667 10", "17 26m667 10 128 0",
+        "17 26m667 10 128 0 trace", "17 26m667 10 128 0 pages=54",
+        "17 26m667 10 128 0 nowifi", "17 26m667 10 128 0 observe",
+        "17 26m667 10 128 0 pagewake"};
     for (unsigned i = 0; i < sizeof cases/sizeof *cases; ++i) {
         char text[128]; strcpy(text,cases[i]); cmd_dvbpace(text);
-        assert(calls == (i < 3 ? i+1 : 3));
+        assert(calls == (i < 2 ? i+1 : 2));
     }
-    puts("console: defaults, flag order, strict page range, duplicates and incompatible flags: ok");
+    puts("console: normal pace arguments accepted; retired diagnostics rejected: ok");
     const char *keyed[] = {"2412 13 26m667 30 0 128 --fixture",
         "--fixture 2412 15 26m667 30", "2412 17 26m667 --fixture 30",
         "2412 11 33m333 30 --fixture", "2412 13 26m667 30",
@@ -74,27 +73,22 @@ int main(void) {
     text = subprocess.check_output([str(out/'parser')],text=True)
     (out/'parser.log').write_text(text)
     print(text.splitlines()[-1])
-    exe = compile_stream(out,source='lofty_pace.c')
+    exe = compile_stream(out,source='psk8_memory.c')
     run = subprocess.run([str(exe)],capture_output=True,text=True,timeout=60)
     (out/'lifecycle.log').write_text(run.stdout+run.stderr)
     assert run.returncode == 0,(run.stdout,run.stderr)
     rows = [json.loads(l[1:]) for l in run.stdout.splitlines() if l.startswith('@{')]
-    pages = [r for r in rows if r.get('test') == 'pace_pages']
-    assert [r['pages'] for r in pages] == [46,46,50,54,58,44,64]
-    assert len(set(r['crc'] for r in pages)) == 1
     pace = [r for r in rows if r.get('cmd') == 'dvbpace' and 'status' in r]
-    assert len(pace) == 9 and all(r['status'] == 'ESP_OK' for r in pace)
-    assert all(not r['paced_wifi_up'] and 'wifi_min_free' not in r for r in pace[:7])
-    assert all(r['paced_wifi_up'] for r in pace[7:])
-    assert all(not r['profile']['fill_phase_cycles'] and not r['profile']['fill']['whole']['calls'] for r in pace[:8])
-    assert pace[8]['profile']['fill_phase_cycles'] and pace[8]['profile']['fill']['whole']['calls'] > 0
+    assert len(pace) == 2 and all(r['status'] == 'ESP_OK' and r['paced_wifi_up'] for r in pace)
+    assert not pace[0]['profile']['fill_phase_cycles'] and not pace[0]['profile']['fill']['whole']['calls']
+    assert pace[1]['profile']['fill_phase_cycles'] and pace[1]['profile']['fill']['whole']['calls'] > 0
     budget = [r for r in rows if r.get('test') == 'queue_budget']
     assert len(budget) == 18
     for mc in (13,15,17):
         for setup in ('dvb','dvbpace'):
             pair = [r for r in budget[:12] if r['modcod'] == mc and r['setup'] == setup]
             assert [r['queue_sizing']['automatic'] for r in pair] == [False,True]
-            assert all(r['queue_pages'] == 54 for r in pair)
+            assert [r['queue_pages'] for r in pair] == [{13:54,15:50,17:46}[mc],54]
             assert pair[0]['crc'] == pair[1]['crc']
             auto = pair[1]
             assert auto['queue_sizing']['free_before'] == 32000
@@ -127,7 +121,45 @@ int main(void) {
     print(run.stdout.splitlines()[-1])
 
 
+def symbols(path):
+    return {name: int(addr,16) for addr,name in re.findall(
+        r'^\s*0x([0-9a-f]+)\s+([A-Za-z_]\w*)\b',path.read_text(),re.M)}
+
+
+def check_residency(current):
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp)
+        (out/'esp_attr.h').write_text('#define IRAM_ATTR\n')
+        subprocess.run(['cc','-O2','-Wall','-Wextra','-Werror','-I'+tmp,
+                        str(ROOT/'tests/psk8_resident.c'),'-o',str(out/'resident')],check=True)
+        subprocess.run([str(out/'resident')],check=True)
+    print('cache residency: dormant, timeout, ROM error, repeated setup and cleanup: ok')
+    if not current: return
+    m = symbols(current)
+    project = json.loads((current.parent/'project_description.json').read_text())
+    nm = project['c_compiler'].removesuffix('gcc')+'nm'
+    for line in subprocess.check_output([nm,str(current.with_suffix('.elf'))],text=True).splitlines():
+        fields = line.split()
+        if len(fields) == 3: m[fields[2]] = int(fields[0],16)
+    first,end = m['_lofty_text_start'],m['_lofty_text_end']
+    size = (end-first+31)&~31
+    assert first%32 == 0 and 0 < size <= 4096
+    assert 0x42000000 <= first < end < 0x42800000
+    for name in ('lofty_shape','lofty_short','lofty_splice','lofty_samples'):
+        assert first <= m[name] < end,(name,m[name])
+    assert 0x42000000 <= m['lofty_prepare_pie'] < 0x42800000
+    for name in ('lofty_render_pie','lofty_render_pages_pie','machine_axis_render_pie',
+                 'machine_axis_samples','xTaskGenericNotify','shaper_copy_pie'):
+        assert 0x40370000 <= m[name] < 0x403e0000,(name,m[name])
+    store = m['shaper_store']
+    assert store%16 == 0 and 0x3fc88000 <= store < store+65536 <= 0x3fcc0000
+    print(f'linked: {size} B locked only for 26m667; renderer IRAM; common 64 KiB store before DAC')
+
 if __name__ == '__main__':
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('output',type=pathlib.Path)
-    check(p.parse_args().output.resolve())
+    p.add_argument('output',nargs='?',type=pathlib.Path)
+    p.add_argument('--map',type=pathlib.Path)
+    a = p.parse_args()
+    check_residency(a.map)
+    with tempfile.TemporaryDirectory() as tmp:
+        check((a.output or pathlib.Path(tmp)).resolve())

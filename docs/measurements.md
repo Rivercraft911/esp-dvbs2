@@ -66,7 +66,7 @@ remained up. Each run reused one prepared payload and encoded every frame
 through the normal baseband, FEC and pilot stages. This measures the complete
 transmitter's timing with prepared input, not external input throughput or RF decoding.
 
-| Quantity | [2/3, MODCOD 13](measurements/2026-10-18-8psk-26m667-eee5153-13.jsonl) | [5/6, MODCOD 15](measurements/2026-10-18-8psk-26m667-eee5153-15.jsonl) | [9/10, MODCOD 17](measurements/2026-10-18-8psk-26m667-eee5153-17.jsonl) |
+| Quantity | [2/3, MODCOD 13](measurements/2026-10-18-8psk-26m667-keyed.jsonl) | [5/6, MODCOD 15](measurements/2026-10-18-8psk-26m667-keyed.jsonl) | [9/10, MODCOD 17](measurements/2026-10-18-8psk-26m667-keyed.jsonl) |
 |---|---:|---:|---:|
 | Status | ESP_OK | ESP_OK | ESP_OK |
 | Data frames played | 23,501 | 23,501 | 23,501 |
@@ -87,13 +87,25 @@ bank deadline is 47,220 cycles. **9/10 meets the 15% reserve on both cores.**
 fills retain more than 15%. All three had zero steady dummies, empty queues or
 underruns. The same image passed the 23/23 self-check and the SPI and USB checks.
 
-The instrumented radio-off pace adds profiling: its queue gate failed with 3,472 / 4,262 / 100 steady dummies and roughly 42.6k-cycle fills, while keyed runs had none.
+The instrumented radio-off pace adds profiling. Over 20 s per mode it recorded
+3,472 / 4,262 / 100 steady dummies, encoder means of 179,099 / 183,223 / 163,883
+cycles/frame and longest fills of 42,726 / 42,697 / 42,554 cycles. It failed the
+experimental 15% reserve gate; keyed runs had no steady dummies.
+[Copied pace records](measurements/2026-10-18-8psk-26m667-pace.jsonl).
+
+The public [self-check](../examples/self-check/README.md) uses the keyed figures
+above plus fixed profiling allowances: 4,500 cycles for fills and 10,000 cycles
+for encoder mean/live maximum. Its fill ceilings are 43,919 / 43,303 / 43,463,
+and mean encoder ceilings 182,076 / 186,477 / 168,719 cycles. These leave less
+than 15% reserve and are regression limits, not new board measurements. Steady
+dummies are capped at 180 / 220 / 6 per payload second, with at most four startup
+dummies and one cold production-bound miss. A matching minimum-data-frame gate
+rejects excessive lost airtime even if dummy counters are wrong. Missed bank
+deadlines, queue starvation and minimum internal RAM below 20,000 B always fail.
 
 Earlier firmware **87b17a9** averaged 163,086 / 167,875 / 147,941 encoder
 cycles/frame, with longest fills of 39,011 / 38,509 / 38,255 cycles and zero
-steady dummies ([2/3](measurements/2026-10-18-8psk-26m667-keyed-13.jsonl),
-[5/6](measurements/2026-10-18-8psk-26m667-keyed-15.jsonl),
-[9/10](measurements/2026-10-18-8psk-26m667-keyed-17.jsonl)).
+steady dummies ([earlier keyed records](measurements/2026-10-18-8psk-26m667-87b17a9.jsonl)).
 Restoring the older modes' RAM and moving the control code into locked instruction
 cache cost about 9k encoder cycles/frame; those earlier timings do not describe eee5153.
 

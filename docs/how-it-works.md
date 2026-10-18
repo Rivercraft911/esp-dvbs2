@@ -150,13 +150,68 @@ Live input and RF decode at this rate remain unmeasured. [Evidence](measurements
 
 ## 8PSK at 36 MHz
 
-The three-sample 8PSK path uses resident encoder tables and a queue of compact
-four-symbol descriptors. Core 1 renders them directly into the DAC bank. Its
-54-page queue shares the shaping store; startup and transient delays can insert
-standard dummy PLFRAMEs without dropping a data frame. The [queue and memory
-design](lofty.md) explains the page geometry and admission rule.
-[Three keyed rates](measurements.md#8psk-at-36-mhz) reached 51.6, 64.6 and
-69.8 Mb/s in 36 MHz nominal shaped bandwidth.
+At 80/3 Msym/s, 8PSK uses a five-symbol pulse with roll-off 0.35:
+`(1+0.35)*(80/3) MHz = 36 MHz`. Core 0 publishes compact four-symbol descriptors;
+core 1 renders them directly into the DAC banks. All three measured code rates,
+2/3, 5/6 and 9/10, ran at full rate in [30 s keyed tests](measurements.md#8psk-at-36-mhz).
+
+The encoder keeps BCH, PRBS, Gold and mapper tables in internal RAM to avoid
+competing with the renderer for flash cache. Its largest table allocation comes
+first, before the context and 8,144-byte FEC workspace, so smaller allocations
+cannot fragment that block. Cold cache tails, extra BCH data, dummy descriptors
+and prepared input use PSRAM. These allocations exist only for 8PSK `26m667`.
+The vector renderer stays in IRAM. Its small control path is flash-backed and
+locked in instruction cache only while this mode is active, occupying at most
+one 4 KiB way of the configured 16 KiB cache. Setup repeats after Wi-Fi starts;
+cleanup unlocks it. Other modes retain their own memory layouts.
+
+The shared 65,536-byte shaping store holds the complete pulse table, queue and
+stream mux, with no extra queue allocation:
+
+```
+36864 table bytes + 54 * 528 page bytes + 160 mux bytes = 65536 bytes
+```
+
+Each page contains 128 four-symbol descriptors, a prefetch guard and metadata,
+representing up to 1,536 samples. A normal 22,194-symbol frame needs 44 pages.
+Ten spare pages let mapping bursts overlap playback; mean encoder time alone
+was insufficient to choose the depth. After Wi-Fi and worker allocations exist,
+startup samples free internal heap and its command low-water mark. It selects
+all 54 resident pages only with at least 20,000 B minimum free and 22,048 B
+currently free (including a 2,048 B transient guard); otherwise it aborts before
+playback. It then prefills the queue without allocating from Wi-Fi's heap.
+Radio-off dumps use 54/50/46 pages at MODCOD 13/15/17 without Wi-Fi.
+
+Payload, BB, BCH and LDPC for the next frame run before waiting for pages; only
+mapping and PL publication block. Scratch cannot be reused until the mapped
+frame is fully published. Acquire/release counters transfer page ownership;
+the producer arms its wait before rechecking space, and the consumer notifies
+it once per completed bank. Physical cursors survive 32-bit counter wrap.
+
+The fill never waits. At each PLFRAME boundary it admits a complete frame, or
+a partial frame covered by a measured production bound. Let G be the largest
+recurring page-publication gap after bulk mapping, excluding full-queue sleep,
+W = 2G cycles/page, P the ready pages, and R = 9 reserve pages. Wake allowance
+D is zero during mapping or 47,220 cycles while awaiting a bank-end wake.
+Every missing page k = 1 through 44-P must satisfy:
+
+```
+D + k*W <= (P-R+k-1)*2944                         CPU cycles
+```
+
+The renderer needs at least `128*23 = 2944` single-issue instructions per page.
+The linear inequality needs only its endpoints checked; thresholds update after
+EOF publication. This bound depends on measured production and wake latency;
+it cannot cover arbitrary CPU starvation. Records expose bound misses and dummies.
+If admission fails, a standard 3,330-symbol DVB-S2 dummy PLFRAME preserves framing
+(EN 302 307-1 §5.5.1). Dummy pairs retain four-symbol rounding and vector alignment;
+boundary history is spliced into the same renderer. No data frame or input byte
+is skipped. Startup and steady dummies are counted separately.
+
+The [self-check](../examples/self-check/README.md) checks a golden dump and all
+three paced code rates. Profiling adds bounded work and can insert steady dummies;
+those paces do not establish the full-rate keyed result. Digital dumps decode
+bit-exact; live input throughput and RF reception at this rate remain unmeasured.
 
 ## Rates
 
@@ -206,7 +261,8 @@ The compact CI suite tests the Python reference against standard vectors and ind
 stage digests, compares every portable C encoder stage with Python, and runs the actual
 stream lifecycle with host task stubs. All pinned dump CRCs must remain exact. The
 fractional stream is also checked sample by sample against independent integer convolution.
-Allocation failures, repeated commands, frame seams, bank wraps and counter wrap are covered.
+Allocation failures, post-Wi-Fi heap admission, dummy transitions, repeated commands, frame seams,
+bank wraps and counter wrap are covered.
 Host clocks and heaps are synthetic; only [the board example](../examples/self-check/README.md)
 can check deadlines and startup memory. RF decoding and spectral measurements remain separate work.
 
@@ -221,6 +277,6 @@ python3 examples/live-video/dry_run.py notes/video-dry --receiver "$PWD/notes/le
 ```
 
 Use the [host shell and IDF setup](../README.md#quick-start); no board is needed for these
-commands. CI runs all fourteen host scripts and a firmware build. The receiver build and
+commands. CI runs all host test scripts and a firmware build. The receiver build and
 video dry run are separate integration checks. If a sandbox blocks ESP-IDF's unused
 component manager, use `IDF_COMPONENT_MANAGER=0 idf.py build`; no managed dependencies are needed.

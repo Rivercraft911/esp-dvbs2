@@ -186,7 +186,7 @@ static void bank_fill(radio_s3_fill_fn fn, void *ctx, unsigned b, uint64_t first
             else assert(!dvb.wake_pending);
         }
         if (dvb.moon) {
-            if (!dvb.lofty && !dvb.page_wake && !getenv("EARLY_WAKE")) {
+            if (!dvb.lofty && !getenv("EARLY_WAKE")) {
                 if (offset && !p) assert(enc.task->notifications_sent == sent);
                 else assert(enc.task->notifications_sent-sent <= 1 && !dvb.wake_pending);
             }
@@ -237,7 +237,7 @@ esp_err_t radio_s3_dry_run_rate(radio_s3_fill_fn fn, void *ctx, uint64_t samples
 {
     const uint64_t step = RADIO_S3_STEP_FOR(rate);
     // This raw-payload fixture has no station mux. Timed lofty uses the
-    // regular overlap from its first data bank; lofty_handoff.c tests the ID.
+    // regular overlap from its first data bank; psk8_handoff.c tests the ID.
     const uint64_t lead = dvb.cached_words-(RADIO_S3_BANK_WORDS-step);
     *stats = (radio_s3_dry_stats_t){0};
     bank_fill(fn, ctx, 0, 0, stats);
@@ -371,7 +371,7 @@ int main(int argc, char **argv)
     // Cleanup must leave no live allocations.
     allocation_count = 0;
     if (!moon || native_input) {
-        assert(!start_encoder_source("dvb",mc,128,0,sps,rate,false,0,true,true));
+        assert(!start_encoder_source("dvb",mc,128,0,sps,rate,true,true));
         assert(!allocation_count && !live_allocations);
     }
     assert(start_encoder("dvbdump", mc, 128, 0, sps, rate));

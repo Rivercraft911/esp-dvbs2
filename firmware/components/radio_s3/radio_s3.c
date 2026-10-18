@@ -130,13 +130,6 @@ static uint32_t cw_backoff(unsigned gain)
 }
 static StaticSemaphore_t done_storage;
 
-// Optional radio-off instrumentation, supplied by the encoder diagnostics.
-void __attribute__((weak)) radio_s3_profile_start(void) {}
-void __attribute__((weak)) radio_s3_profile_stop(void) {}
-void IRAM_ATTR __attribute__((weak)) radio_s3_profile_bank_begin(void) {}
-void IRAM_ATTR __attribute__((weak)) radio_s3_profile_bank_end(uint32_t cycles, unsigned bank, uint64_t first)
-{ (void)cycles; (void)bank; (void)first; }
-
 // Final stream allocation/prefill after Wi-Fi and worker allocations exist.
 // Runs before either paced deadlines or the first keyed register access.
 esp_err_t __attribute__((weak)) radio_s3_stream_ready(void) { return ESP_OK; }
@@ -191,7 +184,6 @@ static esp_err_t IRAM_ATTR fill_bank(run_t *run, unsigned bank, uint64_t start)
     size_t offset = start % RADIO_S3_BANK_WORDS;
     size_t first_count = RADIO_S3_BANK_WORDS - offset;
     uint32_t before = cycles();
-    if (run->wifi_pace) radio_s3_profile_bank_begin();
     esp_err_t error = run->fill(base + offset, start, first_count, run->ctx);
     if (error == ESP_OK && offset) {
         error = run->fill(base, start + first_count, offset, run->ctx);
@@ -203,7 +195,6 @@ static esp_err_t IRAM_ATTR fill_bank(run_t *run, unsigned bank, uint64_t start)
         run->stats->max_fill_cycles = elapsed;
         run->stats->max_fill_sample = start;
     }
-    if (run->wifi_pace) radio_s3_profile_bank_end(elapsed,bank,start);
     return error;
 }
 
@@ -492,11 +483,7 @@ static void worker(void *arg)
     if (error == ESP_OK) error = radio_s3_stream_ready();
     if (error == ESP_OK && run->wifi_pace) {
         error = watch_begin(run, &watch_idle, &watch_worker);
-        if (error == ESP_OK) {
-            radio_s3_profile_start();
-            error = paced(run);
-            radio_s3_profile_stop();
-        }
+        if (error == ESP_OK) error = paced(run);
         goto cleanup;
     }
     if (error != ESP_OK || run->probe) {

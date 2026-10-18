@@ -2,6 +2,7 @@
 import argparse
 import json
 import pathlib
+import os
 import subprocess
 import sys
 import tempfile
@@ -11,8 +12,8 @@ from test_stream import compile_stream
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'host'))
-import lofty
 sys.path.insert(0,str(ROOT/'tests/reference'))
+import psk8_26m667 as lofty
 import waveforms as onair
 
 
@@ -24,18 +25,6 @@ def checksum(data):
 
 def kernels(text):
     rows = [json.loads(l[1:]) for l in text.splitlines() if l.startswith('@{')]
-    jitter = [r['jitter'] for r in rows if r.get('test') == 'jitter_target']
-    rows = [r for r in rows if r.get('test') != 'jitter_target']
-    if jitter:
-        assert len(jitter) == 2
-        for r in jitter:
-            assert r['worst_bank']['cycles'] == 12345 and r['worst_bank']['irqs'] >= 1
-            assert r['worst_bank']['notify_calls'] == 1 and r['worst_bank']['notify_cycles'] == 321
-            assert all(sum(p['calls'] for p in c) >= 1 for c in r['cores'])
-            for core,c in enumerate(r['cores']):
-                assert any(f'FROM_CPU_INTR{core}' in p['sources'] for p in c)
-            assert sum(b['calls'] for b in r['banks_by_irq_count']) == 1
-        print('real per-core ISR dispatch, original arguments and repeat teardown: ok')
     assert len(rows) == 11,len(rows)
     assert "sign mapper: 96 frames" in text and "machine add: 4095 blocks" in text
     assert "lofty pages: 99 guarded batches" in text
@@ -59,9 +48,9 @@ def check(out, receiver=None):
     exe = compile_stream(out)
     component = ROOT/'firmware/components/dvbs2'
     kernel = out/'kernels'
-    subprocess.run(['cc','-O2','-Wall','-Wextra','-Werror','-DLOFTY_HOST',
+    subprocess.run(['cc','-O2','-Wall','-Wextra','-Werror',
                     '-I'+str(out),'-I'+str(ROOT/'firmware/main'),'-I'+str(component/'include'),
-                    str(ROOT/'tests/lofty.c'),str(ROOT/'tests/sign_mapper.c'),
+                    str(ROOT/'tests/psk8_kernels.c'),str(ROOT/'tests/sign_mapper.c'),
                     str(ROOT/'firmware/main/machine.c'),str(ROOT/'firmware/main/lofty.c'),
                     str(component/'fast.c'),str(component/'dvbs2.c'),'-o',str(kernel)],check=True)
     kernels(subprocess.check_output([str(kernel)],text=True))
@@ -119,7 +108,7 @@ def check(out, receiver=None):
             assert all(d[k] == 0 for k in ('bch_failed_frames','bch_corrected_bits',
                        'ldpc_checks_before','ldpc_bit_flips','payload_bit_errors')),d
             print('LeanDVB',mc,d['payload_frames'],'bit-exact frames',flush=True)
-    pinned = ROOT/'tests/data/lofty_crcs.json'
+    pinned = ROOT/'tests/data/psk8_26m667_crcs.json'
     if pinned.exists(): assert crcs == json.loads(pinned.read_text())
     (out/'crcs.json').write_text(json.dumps(crcs,indent=2)+'\n')
     for peak in (16,128,508):
@@ -131,12 +120,48 @@ def check(out, receiver=None):
     print('exact rounded-table mask at peak 128',quantized)
 
 
+def check_dummies(out, receiver=None):
+    out.mkdir(parents=True,exist_ok=True)
+    exe = compile_stream(out)
+    for mc in (13,15,17):
+        iq = out/f'{mc}.iq'
+        env = dict(os.environ,FORCE_DUMMIES='1',BANK_SHIFT='1540')
+        r = subprocess.run([str(exe),str(mc),'3',str(iq),'N0CALL','80000000','16'],
+                           env=env,capture_output=True,text=True,timeout=90)
+        (out/f'{mc}.log').write_text(r.stdout+r.stderr)
+        assert r.returncode == 0,(mc,r.stderr)
+        rows = [json.loads(l[1:]) for l in r.stdout.splitlines() if l.startswith('@{')]
+        dump, = [row for row in rows if 'crc32' in row][:1]
+        assert dump['dummy_startup'] == 4 and dump['dummy_steady'] == 2 and dump['dummy_alignment'] == 3
+        assert dump['queue_empty'] == dump['underruns'] == dump['overlap_mismatches'] == 0
+        s = onair.symbols(mc,17,dummy_before=(0,0,1,1,5,5),callsign='N0CALL')
+        phases = np.rint(np.angle(s)*4/np.pi).astype(int)%8
+        expected = lofty.iq(lofty.shape(phases[:16*22194]))
+        actual = np.fromfile(iq,dtype='<i2').reshape(-1,2)
+        np.testing.assert_array_equal(actual,np.column_stack((expected.real,expected.imag)))
+        print(mc,'six dummies, every DAC word equals Python, startup=4 steady=2',flush=True)
+        if receiver:
+            cmd = [sys.executable,str(ROOT/'host/decode.py'),str(iq),'--rate','80000000',
+                   '--symbol-rate',str(80000000/3),'--rolloff','.35','--modcod',str(mc),
+                   '--scale','512','--stream','16','--callsign','N0CALL','--receiver',str(receiver)]
+            run = subprocess.run(cmd,capture_output=True,text=True,timeout=120)
+            (out/f'{mc}.decode.json').write_text(run.stdout+run.stderr)
+            assert run.returncode == 0,(mc,run.stdout,run.stderr)
+            d = json.loads(run.stdout)
+            assert d['frame_lock'] and d['status_complete'] and d['payload_match']
+            assert d['first_frame'] in (0,1) and d['payload_frames'] >= 12
+            assert all(d[k] == 0 for k in ('bch_failed_frames','bch_corrected_bits',
+                       'ldpc_checks_before','ldpc_bit_flips','payload_bit_errors')),d
+            print(mc,'LeanDVB:',d['payload_frames'],'contiguous exact data frames',flush=True)
+
+
+
 if __name__ == '__main__':
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('output',nargs='?',type=pathlib.Path)
     p.add_argument('--receiver',type=pathlib.Path)
-    p.add_argument('--qemu',type=pathlib.Path)
     a = p.parse_args()
-    if a.qemu: kernels(a.qemu.read_text())
     with tempfile.TemporaryDirectory() as tmp:
-        check((a.output or pathlib.Path(tmp)).resolve(),a.receiver)
+        out = (a.output or pathlib.Path(tmp)).resolve()
+        check(out,a.receiver)
+        check_dummies(out/"dummy",a.receiver)

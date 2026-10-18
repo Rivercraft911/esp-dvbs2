@@ -188,8 +188,6 @@ def compile_stream(folder, source="stream_host.c", defines=()):
                     str(ROOT / "firmware/main/shaper_short.c"),
                     str(ROOT / "firmware/main/machine.c"),
                     str(ROOT / "firmware/main/lofty.c"),
-                    str(ROOT / "firmware/main/stream_jitter.c"),
-                    str(ROOT / "firmware/main/stream_trace.c"),
                     str(ROOT / "firmware/main/shaper_qpsk.c"),
                     str(ROOT / "firmware/components/dvbs2/dvbs2.c"),
                     str(ROOT / "firmware/components/dvbs2/fast.c"),

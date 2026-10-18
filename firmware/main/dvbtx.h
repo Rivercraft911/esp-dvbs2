@@ -5,8 +5,6 @@
 
 // The sps argument is an integer except DVB_SPS_12_5, meaning exactly 12/5.
 #define DVB_SPS_12_5 12u
-#define DVB_PACE_MIN_PAGES 44u
-#define DVB_PACE_MAX_PAGES 64u
 
 // QPSK/8PSK encoded on core 0 and shaped on core 1. Measured 80 MS/s modes
 // use QPSK blocks at 3/4 sps and short 8PSK at 4 sps. QPSK 12/5 sps uses a persistent prepare/render queue, roll-off .20.
@@ -24,13 +22,8 @@ void dvbtx_dump(unsigned modcod, unsigned frames, unsigned level, unsigned decim
 // dvbpace command: the same encoder, fills and bank deadlines as dvb for `seconds`, timed against
 // the cycle counter, at 40 or 80 MS/s. Moonshot modes keep Wi-Fi NULL/RX up
 // (radio_s3_paced_wifi_rate); legacy modes leave Wi-Fi off. No DAC or TX keying.
-// trace: optional steady 64-frame lofty capture in PSRAM; excludes observer.
-// pages: lofty queue override (44..64); zero sizes after Wi-Fi start (cap 54).
-// nowifi retains the previous 54/50/46 default without automatic sizing.
-// nowifi: use the radio-off timer without starting Wi-Fi; excludes observer.
 void dvbtx_pace(unsigned modcod, uint32_t seconds, unsigned level, unsigned stall_ms,
-                 unsigned sps, uint32_t dac_rate, unsigned wake_policy, bool observer, bool trace,
-                 unsigned pages, bool nowifi);
+                 unsigned sps, uint32_t dac_rate);
 
 // wifimem command: radio_s3_wifi_probe (Wi-Fi start-up and shutdown, no keying), with the
 // transmitter's memory for modcod/sps allocated as before a dvb run, or nothing for modcod 0.

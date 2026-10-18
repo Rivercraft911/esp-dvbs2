@@ -1,4 +1,4 @@
-// Runtime queue geometry through the actual pace API. No host timing claims.
+// Post-Wi-Fi queue admission and allocation cleanup. No host timing claims.
 #include "native.h"
 #include <stdbool.h>
 // A finite, priority-ordered heap fixture, not a model of silicon addresses.
@@ -95,7 +95,7 @@ static uint32_t queue_budget(unsigned mc, bool fixture, bool automatic, size_t a
     budget_active = false;
     warm_words = 0;
     const char *cmd = fixture ? "dvbpace" : "dvb";
-    assert(start_encoder_traced(cmd,mc,128,0,3,80000000,false,automatic ? 0 : 54,automatic));
+    assert(start_encoder_source(cmd,mc,128,0,3,80000000,automatic,false));
     if (fixture) assert(enc.input && esp_ptr_external_ram(enc.input));
     else assert(!enc.input);
     if (automatic) {
@@ -166,14 +166,11 @@ static esp_err_t pace(bool wifi, uint32_t sec, uint32_t rate, radio_s3_fill_fn f
 {
     assert(wifi == expect_wifi && sec == 10 && rate == 80000000 && fn == fill);
     if (wifi) assert(radio_s3_stream_ready() == ESP_OK);
-    assert(dvb.queue_pages == expect_pages && !dvb.trace && !dvb.trace_state);
-    assert(!dvb.page_wake);
+    assert(dvb.queue_pages == expect_pages);
     if (dvb.lofty) {
         assert(enc.table_tail && esp_ptr_external_ram(enc.table_tail));
         assert(!enc.ws_borrowed && heap_caps_get_allocated_size(enc.ws) == DVBS2_FAST_WORKSPACE_USED);
-        const unsigned extra = expect_pages > LOFTY_STORED ? expect_pages-LOFTY_STORED : 0;
-        if (extra) assert(heap_caps_get_allocated_size(enc.block) == extra*sizeof(lofty_page));
-        else assert(!enc.block);
+        assert(!enc.block);
         for (unsigned i = 1; i < expect_pages && i < LOFTY_STORED; ++i)
             assert(lofty_page_at(i) == lofty_page_at(i-1)+1);
         assert(enc.prefill_frames == 1);
@@ -209,48 +206,31 @@ int main(void)
 {
     callsign = "N0CALL";
     assert(!posix_memalign((void **)&banks,65536,2*sizeof *banks));
-    uint32_t golden = 0;
-    const unsigned counts[] = {0,46,50,54,58,44,64};
-    for (unsigned i = 0; i < sizeof counts/sizeof *counts; ++i) {
-        expect_pages = counts[i] ? counts[i] : 46;
-        expect_wifi = false;
-        dvbtx_pace(17,10,128,0,3,80000000,0,false,false,counts[i],true);
-        assert(!live_allocations);
-        if (!i) golden = pace_crc;
-        else assert(pace_crc == golden);
-        printf("@{\"test\":\"pace_pages\",\"pages\":%u,\"crc\":%u}\n",expect_pages,pace_crc);
-    }
-    // Default 17 and qualified QPSK still select the Wi-Fi-up implementation.
+    // Public paces choose Wi-Fi and gate the queue after its allocations.
     expect_wifi = true; expect_pages = 54;
-    dvbtx_pace(17,10,128,0,3,80000000,0,false,false,0,false);
-    assert(pace_crc == golden && !live_allocations);
+    dvbtx_pace(17,10,128,0,3,80000000);
+    assert(!live_allocations);
     expect_pages = MACHINE_PAGES;
-    dvbtx_pace(11,10,128,0,DVB_SPS_12_5,80000000,0,false,false,0,false);
-    assert(!live_allocations && pace_calls == 9);
-    // Invalid overrides and observer without Wi-Fi fail before allocation.
+    dvbtx_pace(11,10,128,0,DVB_SPS_12_5,80000000);
+    assert(!live_allocations && pace_calls == 2);
+    // Fail each setup allocation, including the dummy and PSRAM payload.
     allocation_count = 0;
-    dvbtx_pace(17,10,128,0,3,80000000,0,false,false,43,true);
-    dvbtx_pace(17,10,128,0,3,80000000,0,false,false,65,true);
-    dvbtx_pace(11,10,128,0,DVB_SPS_12_5,80000000,0,false,false,46,true);
-    dvbtx_pace(17,10,128,0,3,80000000,0,true,false,46,true);
-    assert(!allocation_count && !live_allocations && pace_calls == 9);
-    // The larger queue owns no memory on any allocation-failure return.
-    allocation_count = 0;
-    assert(start_encoder_traced("dvbpace",17,128,0,3,80000000,false,58,false));
+    assert(start_encoder_source("dvbpace",17,128,0,3,80000000,true,false));
     const int allocations = allocation_count;
     stop_encoder(); puts("}");
     for (int i = 0; i < allocations; ++i) {
         fail_after = i;
-        assert(!start_encoder_traced("dvbpace",17,128,0,3,80000000,false,58,false));
+        assert(!start_encoder_source("dvbpace",17,128,0,3,80000000,true,false));
         assert(!live_allocations);
     }
     fail_after = -1;
     for (unsigned mc = 13; mc <= 17; mc += 2)
         for (unsigned fixture = 0; fixture < 2; ++fixture) {
-            const uint32_t fixed = queue_budget(mc,fixture,false,0,54,0);
+            const unsigned pages = mc == 13 ? 54 : mc == 15 ? 50 : 46;
+            const uint32_t fixed = queue_budget(mc,fixture,false,0,pages,0);
             assert(queue_budget(mc,fixture,true,32000,54,0) == fixed);
         }
-    const uint32_t fixed = queue_budget(17,true,false,0,54,0);
+    const uint32_t fixed = queue_budget(17,true,false,0,46,0);
     assert(queue_budget(17,true,true,26500,54,0) == fixed);
     assert(queue_budget(17,true,true,22048,54,0) == fixed); // exact reserve
     queue_budget(17,true,true,22047,0,0); // below reserve
@@ -258,6 +238,6 @@ int main(void)
     assert(queue_budget(17,true,true,32000,54,2) == fixed); // allocation disabled after Wi-Fi
     for (unsigned mc = 13; mc <= 17; mc += 2) fragmented_order(mc);
     free(banks);
-    puts("runtime pages: wraps, identical words, allocation cleanup, Wi-Fi routing and defaults: ok");
+    puts("queue admission: identical words, allocation cleanup, Wi-Fi routing and defaults: ok");
     return 0;
 }

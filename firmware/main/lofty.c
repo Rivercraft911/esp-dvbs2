@@ -4,7 +4,7 @@
 
 int lofty_build(uint32_t *table, unsigned peak)
 {
-    // host/lofty.py: inverse-hold RRC, alpha .35, five symbols, Kaiser beta 1.5.
+    // tests/reference/psk8_26m667.py: inverse-hold RRC, alpha .35, five symbols, Kaiser beta 1.5.
     static const int32_t pulse[15] = {
         3186,4025,-4203,-15205,-8356,28954,78499,101737,
         78499,28954,-8356,-15205,-4203,4025,3186

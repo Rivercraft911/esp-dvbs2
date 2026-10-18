@@ -15,7 +15,6 @@ static bool dummy_source;
 void checked_pages(uint32_t *dst, const uint32_t *src, unsigned n, const uint32_t *table, uint32_t *consumed)
 {
     assert(!((uintptr_t)dst&15));
-    assert(!dvb.page_wake || n == 1);
     unsigned limit = dvb.get_index < LOFTY_STORED && dvb.queue_pages > LOFTY_STORED ? LOFTY_STORED : dvb.queue_pages;
     assert(src == lofty_page_at(dvb.get_index)->words && n <= limit-dvb.get_index);
     ++page_calls;
@@ -53,7 +52,6 @@ int main(int argc, char **argv)
     callsign = "N0CALL";
     assert(!posix_memalign((void **)&banks,65536,2*sizeof *banks));
     assert(start_encoder("dvbpace",mc,128,0,3,80000000));
-    dvb.page_wake = getenv("PAGE_WAKE") != NULL;
     station_id_t id;
     assert(station_id_init_rate(&id,callsign,80000000,80000000,fill,NULL));
     assert(id.length == 417600000);

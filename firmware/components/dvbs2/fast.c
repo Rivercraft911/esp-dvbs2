@@ -36,8 +36,8 @@ struct dvbs2_fast {
     const uint16_t *prog, *cols;
     const uint8_t *crc8;
     uint8_t *p;
-    // Fit experiment metadata in Xtensa's pre-vector alignment padding. Keep
-    // main's common fields and scratch at their original QPSK offsets.
+    // Fit 8PSK metadata in Xtensa's pre-vector alignment padding. Keep
+    // common fields and scratch at their original QPSK offsets.
     const uint8_t *pair_bch;
     uint16_t lofty_history;
     uint8_t lofty_prefix, lofty_framed;
@@ -52,7 +52,7 @@ struct dvbs2_fast {
     uint8_t scratch[] __attribute__((aligned(16)));
 };
 #ifdef __XTENSA__
-_Static_assert(offsetof(dvbs2_fast,scratch) == 608, "retain main's QPSK scratch placement");
+_Static_assert(offsetof(dvbs2_fast,scratch) == 608, "retain QPSK scratch placement");
 #endif
 
 size_t dvbs2_fast_mode_size(const dvbs2_mode *mode)
