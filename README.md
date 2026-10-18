@@ -55,9 +55,6 @@ receiver; a receiver decoding the signal over the air is not shown yet.
 Margins, raw records and limits: [measurements](docs/measurements.md). The 40 MHz mode keeps
 a 15% reserve on both cores while keyed.
 
-Somewhere along the way the $5 chip outgrew the SDR on my bench: the E200's AD9363 sees at
-most 20 MHz, so watching the full 40 MHz signal takes a wider receiver.
-
 ## Quick start
 
 You need an ESP32-S3 with 8 MB octal PSRAM and 16 MB flash (an N16R8 module), ESP-IDF v6.1,
