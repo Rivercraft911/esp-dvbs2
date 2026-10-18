@@ -114,6 +114,11 @@ python3 examples/over-the-air/check.py notes/ota-uhd-first \
   --args addr=192.168.1.10 --modcod 7 --rate 5m --rx-gain 0 --seconds 30 --key
 ```
 
+VCM uses this same verifier: `--pattern 4,7,11 --hold 4` or
+`--pattern 4,11,13,17 --hold 1` at `--rate 5m`. Mixed modulation selects axes
+automatically; mixed `10m` is refused before device access.
+[Measured results and exact rerun commands](../../docs/vcm.md).
+
 ## Offline replay and evidence
 
 An existing radio-off USB dump needs its original frame count, callsign and saved

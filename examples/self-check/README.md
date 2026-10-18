@@ -1,12 +1,13 @@
 # Radio-off self-check
 
-Pass means the firmware revision matches the checkout, all seven sample dumps match their
-original CRCs and decode as contiguous exact payloads in LeanDVB, every paced run keeps
+Pass means the firmware revision matches the checkout, all seven fixed-mode dumps match their
+original CRCs, the VCM dump matches its host model, all decode as contiguous exact
+payloads in LeanDVB, every paced run keeps
 its bank deadlines, and Wi-Fi startup retains its measured heap floor. A failure makes
 the final exit status nonzero. The script prints the complete criteria before any command,
 keeps going after a failed dump/decode/pace, and writes each verdict to `summary.tsv`.
 
-Nothing transmits. The only commands sent are `info`, `dvbdump`, `dvbpace` and `wifimem`.
+Nothing transmits. The only commands sent are `info`, `vcm`, `dvbdump`, `dvbpace` and `wifimem`.
 The script resets once, takes exclusive board ownership, never flashes, and never changes
 the stored callsign. The 33m333 pace and heap check start Wi-Fi in NULL/promiscuous receive
 mode; no samples play through the DAC. No SDR is needed.
@@ -56,10 +57,16 @@ the board helper also detects one unambiguous native USB port when that default 
 `LEANDVB` can supply the receiver path instead of `--receiver`.
 
 The expected duration is about five minutes, depending on USB and receiver speed.
-There are seven 16-frame dumps, twelve paces (eight 5 s and four 10 s) and one heap check.
+There are seven 16-frame fixed-mode dumps, one 32-frame VCM dump,
+thirteen paces (nine 5 s and four 10 s) and one heap check.
 Each pace adds the stored callsign's start/end IDs to its payload time. N0CALL adds
-10.44 s per pace, so pacing alone accounts for about 205 s. Dump transport and decoding
+10.44 s per pace, so pacing alone accounts for about 221 s. Dump transport and decoding
 make up the rest. A failing or stalled device can take longer because each command times out.
+
+The VCM dump cycles 4/11/13/17 every frame at 5 Msym/s using automatic axes.
+It requires matching transport CRCs and sample geometry, at least 30 contiguous
+exact host-model BBFRAMEs covering every mode, and zero FEC corrections. A 5 s VCM pace also enforces deadlines with Wi-Fi up
+and at least 20 KB internal heap free. VCM is turned off again even if the dump fails. [Scope and OTA reruns](../../docs/vcm.md).
 
 The selected modes cover 1 Msym/s QPSK, 5 Msym/s 8PSK, 20 Msym/s QPSK/8PSK,
 26.67 Msym/s QPSK/8PSK and 33.33 Msym/s QPSK. The new 8PSK dump uses MODCOD 17;

@@ -106,6 +106,8 @@ The [self-check](examples/self-check/README.md) runs the full radio-off regressi
 five minutes: six dumps and decodes, a real-time pace of every modulation and rate path, and a
 Wi-Fi memory check. All console commands are in [transmitting](docs/transmitting.md#console).
 
+Opt-in [VCM](docs/vcm.md) switches MODCOD per frame, including mixed QPSK/8PSK at 5 Msym/s.
+
 ## Send it your data
 
 [examples/usb-send](examples/usb-send/README.md) is one Python file (`pyserial` only) for

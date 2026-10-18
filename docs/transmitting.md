@@ -69,6 +69,7 @@ omit `flash`.
 | `dvbdump MODCOD [rate] frames [peak] [decimation] [stall_ms]` | Samples over USB, radio off |
 | `dvbpace MODCOD [rate] seconds [peak] [stall_ms]` | Live encoder and bank deadlines, no playback |
 | `spiinput on\|quad\|off [ts\|gcs]` | Select [SPI payload input](spi-input.md) for the next run |
+| `vcm off\|on\|mixed\|N MODCOD...` | Opt-in [GCS rate switching](vcm.md); repeat each mode for N frames |
 | `spipins devkit\|xiao` | Select the SPI pin preset |
 | `spirx ms on\|quad [ts\|gcs] [loop [Mb/s [fault]]]` | Radio-off SPI receive diagnostic |
 | `spisend ms on\|quad [ts\|gcs] [MHz [Mb/s [fault]]]` | SPI test sender on a second S3; no RF |
@@ -97,6 +98,12 @@ python3 host/decode.py fast.iq --rate 80000000 --symbol-rate 20000000 \
   --modcod 15 --stream 16 --callsign N0CALL --receiver /path/to/leandvb
 python3 host/board.py "dvbpace 11 26m667 10" --timeout 120
 ```
+
+Completion records include `main_stack_bytes` and `main_stack_min_free`: the
+main task's configured stack size and minimum unused bytes since boot. The
+`wifimem` result also reports the minimum before setup, after encoder startup
+and after the Wi-Fi probe. A reboot clears the VCM pattern; confirm `vcm:true`
+in the result before treating a dump or pace as a VCM check.
 
 ## Station identification
 
