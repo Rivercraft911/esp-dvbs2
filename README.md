@@ -58,6 +58,8 @@ receiver; a receiver decoding the signal over the air is not shown yet.
 \*Keyed with an earlier, longer pulse; the current pulse has radio-off evidence.
 Margins, raw records and limits: [measurements](docs/measurements.md). With a prepared payload,
 30 s keyed tests of the 40 MHz mode left **37% mean encoder headroom and 16% bank-fill headroom**.
+At 36 MHz, keyed 8PSK 9/10 meets the 15% reserve on both cores; 2/3 and 5/6
+run at full rate with 14% and 12% mean encoder spare.
 
 ![Calculated payload rates from selected historical keyed records](docs/img/payload.png)
 

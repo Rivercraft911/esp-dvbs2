@@ -84,6 +84,24 @@
       "source": "LeanDVB decode of board USB dumps from 2026-10-18, firmware 87b17a9 on exp/eight-lofty",
       "records": 3,
       "sha256": "cd72ba9b05bdc7e62261d14b79920ddde09de60f3f0e2cf7eba70407cfe12473"
+    },
+    {
+      "file": "2026-10-18-8psk-26m667-eee5153-13.jsonl",
+      "source": "board run 2026-10-18, firmware eee5153 on exp/eight-lofty",
+      "records": 1,
+      "sha256": "2756f2b215bc42d088fca9b9a78de0cf4f7d9cb0b94df33c9844d0e341276049"
+    },
+    {
+      "file": "2026-10-18-8psk-26m667-eee5153-15.jsonl",
+      "source": "board run 2026-10-18, firmware eee5153 on exp/eight-lofty",
+      "records": 1,
+      "sha256": "097c4b211afdeb093045ae409dc14121b385481a26bcbda948a9bc4aa0a54c92"
+    },
+    {
+      "file": "2026-10-18-8psk-26m667-eee5153-17.jsonl",
+      "source": "board run 2026-10-18, firmware eee5153 on exp/eight-lofty",
+      "records": 1,
+      "sha256": "33f9d172b81afaddae62ce2e7f451d05cb758293e2d14ce06e42151b07f31e04"
     }
   ]
 }

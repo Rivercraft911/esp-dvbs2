@@ -3,7 +3,7 @@
 Core 0 encodes normal DVB-S2 frames and publishes compact four-symbol descriptors.
 Core 1 renders them into the DAC banks at 80 MS/s, using a five-symbol pulse with
 roll-off 0.35. MODCODs 13, 15 and 17 reached 51.6, 64.6 and 69.8 Mb/s in
-[30 s keyed tests](measurements.md#8psk-at-36-mhz), firmware 87b17a9.
+[30 s keyed tests](measurements.md#8psk-at-36-mhz), firmware eee5153.
 The dumped samples decode bit-exact; RF reception is still unmeasured.
 
 ## Queue and memory
@@ -78,8 +78,9 @@ fill branch. The vector renderer remains in IRAM. The small 8PSK control section
 is flash-backed, loaded and locked in instruction cache only for `26m667`, and
 unlocked on cleanup. It occupies at most one 4 KiB way of the configured 16 KiB
 cache. Setup repeats after Wi-Fi initialization; `renderer_icache_bytes` reports
-its size. Other modes do not load or lock it. This placement change needs a new
-board timing check; the linked map and host tests cannot establish a fill deadline.
+its size. Other modes do not load or lock it. Firmware eee5153 passed keyed
+checks at all three rates and the full older-mode self-check. See the
+[measured reserves](measurements.md#8psk-at-36-mhz).
 
 Without a board:
 
@@ -101,5 +102,6 @@ caffeinate -i python3 host/jitter.py notes/lofty-queue-check --queue-gate
 
 It checks 13/15/17 for 20 s each: ESP_OK, zero late fills, longest fill at most
 40,137 cycles and at least 20,000 B minimum free internal RAM, while reporting
-steady dummies. Use the [self-check](../examples/self-check/README.md) for older
+steady dummies. The profiled pace in eee5153 fails this diagnostic gate; the
+keyed runs meet their fill deadlines with no steady dummies. Use the [self-check](../examples/self-check/README.md) for older
 modes and the unchanged `wifimem 17 5m` floor of 22,351 B.

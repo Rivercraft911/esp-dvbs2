@@ -20,10 +20,10 @@ different firmware versions. The video-example row is a host-model check only.
 
 | Mode | Symbol rate | Bandwidth | Data rate | Tested | Fill headroom |
 |---|---:|---:|---:|---|---|
-| 8PSK 9/10 | 26.67 Msym/s | 36 MHz | 69.8 Mb/s | keyed | 19% ([records](#8psk-at-36-mhz)) |
-| 8PSK 5/6 | 26.67 Msym/s | 36 MHz | 64.6 Mb/s | keyed | 18% ([records](#8psk-at-36-mhz)) |
+| 8PSK 9/10 | 26.67 Msym/s | 36 MHz | 69.8 Mb/s | keyed | 17.5%; encoder 20.5% ([records](#8psk-at-36-mhz)) |
+| 8PSK 5/6 | 26.67 Msym/s | 36 MHz | 64.6 Mb/s | keyed | 17.8%; encoder 11.6% ([records](#8psk-at-36-mhz)) |
 | QPSK 9/10, roll-off 0.20 | 33.33 Msym/s | 40 MHz | 58.2 Mb/s | keyed | 16%; encoder 37%, prepared payload ([records](#40-mhz)) |
-| 8PSK 2/3 | 26.67 Msym/s | 36 MHz | 51.6 Mb/s | keyed | 17% ([records](#8psk-at-36-mhz)) |
+| 8PSK 2/3 | 26.67 Msym/s | 36 MHz | 51.6 Mb/s | keyed | 16.5%; encoder 13.9% ([records](#8psk-at-36-mhz)) |
 | 8PSK 5/6 | 20 Msym/s | 27 MHz | 48.4 Mb/s | keyed | 14% [radio off, current pulse](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/results/2026-10-17-next4/README.md); 5% keyed, [earlier pulse](#8psk-at-20-msyms) |
 | QPSK 9/10 | 26.67 Msym/s | 36 MHz | 46.6 Mb/s | keyed | 18% ([record](#qpsk-at-2667-msyms)) |
 | 8PSK 2/3 | 20 Msym/s | 27 MHz | 38.7 Mb/s | keyed | 14% radio off, current pulse |
@@ -59,32 +59,43 @@ they are not measured sustained video-input throughput.
 
 ## 8PSK at 36 MHz
 
-On 2026-10-18, firmware **87b17a9** keyed 8PSK 2/3, 5/6 and 9/10 at
+On 2026-10-18, firmware **eee5153** keyed 8PSK 2/3, 5/6 and 9/10 at
 80/3 Msym/s, roll-off 0.35, for 30 s each in the closed Faraday box. The commands
 were `dvb 2412 MC 26m667 30 0 128 --fixture`, with MC 13, 15 and 17. Wi-Fi
 remained up. Each run reused one prepared payload and encoded every frame
 through the normal baseband, FEC and pilot stages. This measures the complete
 transmitter's timing with prepared input, not external input throughput or RF decoding.
 
-| Quantity | [2/3, MODCOD 13](measurements/2026-10-18-8psk-26m667-keyed-13.jsonl) | [5/6, MODCOD 15](measurements/2026-10-18-8psk-26m667-keyed-15.jsonl) | [9/10, MODCOD 17](measurements/2026-10-18-8psk-26m667-keyed-17.jsonl) |
+| Quantity | [2/3, MODCOD 13](measurements/2026-10-18-8psk-26m667-eee5153-13.jsonl) | [5/6, MODCOD 15](measurements/2026-10-18-8psk-26m667-eee5153-15.jsonl) | [9/10, MODCOD 17](measurements/2026-10-18-8psk-26m667-eee5153-17.jsonl) |
 |---|---:|---:|---:|
 | Status | ESP_OK | ESP_OK | ESP_OK |
 | Data frames played | 23,501 | 23,501 | 23,501 |
 | Startup / steady-state dummy frames | 2 / 0 | 2 / 0 | 2 / 0 |
 | Late fills / switches | 0 / 0 | 0 / 0 | 0 / 0 |
-| Encoder mean / live maximum, cycles/frame | 163,086 / 243,124 | 167,875 / 247,503 | 147,941 / 211,351 |
-| Longest bank fill, cycles | 39,011 | 38,509 | 38,255 |
-| Minimum fill slack, cycles | 7,576 | 8,423 | 8,318 |
+| Encoder mean / live maximum, cycles/frame | 172,076 / 239,463 | 176,477 / 251,019 | 158,719 / 213,647 |
+| Encoder spare | 13.9% | 11.6% | 20.5% |
+| Longest bank fill, cycles | 39,419 | 38,803 | 38,963 |
+| Fill spare | 16.5% | 17.8% | 17.5% |
+| Minimum fill slack, cycles | 7,499 | 7,779 | 7,950 |
 | Minimum queued lead, symbols | 692 | 692 | 3,252 |
 | Queue pages | 54 | 54 | 54 |
-| Minimum free internal RAM during command, B | 26,583 | 23,907 | 22,211 |
+| Minimum free internal RAM during command, B | 32,087 | 29,427 | 27,731 |
 
-The frame duration is `22194 * 240e6 / (80e6/3) = 199746 cycles`.
-Mean encoder headroom was 18%, 16% and 26%; fill headroom against the
-47,220-cycle bank deadline was 17%, 18% and 19%. Every longest fill was below
-40,137 cycles, the 15% reserve line. A dummy PLFRAME lets an individual encoder
-frame exceed its duration without interrupting the data sequence. There were
-no steady-state dummies, empty queues or underruns in these runs.
+The frame duration is `22194 * 240e6 / (80e6/3) = 199746 cycles` and the
+bank deadline is 47,220 cycles. **9/10 meets the 15% reserve on both cores.**
+2/3 and 5/6 run at full rate with **14% and 12% mean encoder spare**; their
+fills retain more than 15%. All three had zero steady dummies, empty queues or
+underruns. The same image passed the 23/23 self-check and the SPI and USB checks.
+
+The instrumented radio-off pace adds profiling: its queue gate failed with 3,472 / 4,262 / 100 steady dummies and roughly 42.6k-cycle fills, while keyed runs had none.
+
+Earlier firmware **87b17a9** averaged 163,086 / 167,875 / 147,941 encoder
+cycles/frame, with longest fills of 39,011 / 38,509 / 38,255 cycles and zero
+steady dummies ([2/3](measurements/2026-10-18-8psk-26m667-keyed-13.jsonl),
+[5/6](measurements/2026-10-18-8psk-26m667-keyed-15.jsonl),
+[9/10](measurements/2026-10-18-8psk-26m667-keyed-17.jsonl)).
+Restoring the older modes' RAM and moving the control code into locked instruction
+cache cost about 9k encoder cycles/frame; those earlier timings do not describe eee5153.
 
 With B = 5370, 6720 and 7264 bytes and Ns = 22194 symbols, the payload-rate
 equation above gives 51.6, 64.6 and 69.8 Mb/s during data playout. Nominal shaped

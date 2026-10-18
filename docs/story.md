@@ -170,8 +170,11 @@ table store and moving cold data to PSRAM made 54 pages fit with Wi-Fi running.
 
 Keyed in the closed box for 30 s each, all three rates ran without a late fill
 or a steady dummy: 51.6 Mb/s at 2/3, 64.6 at 5/6, and **69.8 at 9/10**. The longest
-bank fills were 39,011, 38,509 and 38,255 cycles against 47,220. There was room on
-both cores, and at least 22,211 bytes remained through Wi-Fi startup. The chip's
+bank fills in the merged firmware were 39,419, 38,803 and 38,963 cycles against
+47,220, and at least 27,731 bytes remained through Wi-Fi startup. Restoring the
+slower modes' RAM cost about 9k encoder cycles per frame. 9/10 still has 20.5%
+encoder spare and meets the 15% reserve on both cores; 2/3 and 5/6 run at full
+rate with 14% and 12% encoder spare. The chip's
 dumped samples decoded in LeanDVB; receiving the signal over RF is still ahead.
 ([keyed records](measurements.md#8psk-at-36-mhz))
 
