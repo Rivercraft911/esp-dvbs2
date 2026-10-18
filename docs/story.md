@@ -4,6 +4,10 @@ The [README](../README.md) shows where the transmitter stands now. This page is 
 what it measured and what went wrong. Raw links point to the preserved development archive.
 All runs used one ESP32-S3 at 240 MHz.
 
+![Payload rate at each development milestone, with its mode and symbol rate](img/rate-history.png)
+
+Figures use [recorded points with per-point provenance](measurements/plot-data.json).
+
 ## The budget
 
 The S3's radio contains a test engine that plays a 16,380-sample bank from internal RAM into
@@ -103,6 +107,8 @@ Keyed in the box, 8PSK 2/3 and 5/6 ran at 20 Msym/s from the 80 MS/s DAC, 38.7 a
 for 30 s each with every deadline met.
 ([keyed at 20 Msym/s](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/results/2026-10-16-keyed-20m/README.md))
 
+![Encoder cycles across the 8PSK optimisation rounds and the later keyed QPSK reserve work](img/encoder-history.png)
+
 ## QPSK at 26.67 Msym/s
 
 Four-symbol QPSK tables and a packed ring brought the complete 9/10 stream to
@@ -133,6 +139,8 @@ is woken once per bank instead of once per page. Two frames are queued before pl
 first data banks never wait. Keyed again in the box, the encoder averaged 198,879 cycles of a
 239,630-cycle frame (17% spare, from 1%) and the longest bank fill was 39,548 of 47,220 (16%
 spare): the 15% reserve, met on both cores. ([record](measurements.md#40-mhz))
+
+![Longest bank-fill time and its deadline at the development milestones, including the failed 10 Msym/s attempt](img/fill-history.png)
 
 Somewhere along the way the $5 chip outgrew the SDR on the bench: the E200's AD9363 sees at
 most 20 MHz, so watching the whole 40 MHz signal takes a wider receiver.

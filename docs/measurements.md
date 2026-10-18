@@ -125,17 +125,26 @@ current firmware, compares firmware, USB and file CRCs with pinned original wave
 and decodes them independently. CI checks all supported modulation/rate combinations
 on the host. Neither check substitutes for an RF receiver measurement.
 
+Historical [payload milestones](img/rate-history.png), [encoder rounds](img/encoder-history.png)
+and bank fills use [exact points and provenance](measurements/plot-data.json).
+
+![Bank-fill time against the deadline across the project's recorded milestones](img/fill-history.png)
+
 ## Recreate the figures
 
 ```sh
 python3 -m pip install matplotlib
+git fetch origin tag archive/dev-2026-10-17  # if the archive tag is absent
 python3 host/plots.py
+python3 host/plots.py --check               # verify sources without rendering
 ```
 
-Both figures are generated from the copied keyed records. Cycle time uses the recorded
-240 MHz CPU and bank period uses `15740/(80e6 samples/s) = 196.75 µs` from
-`radio_s3.h`. The script validates the copied-file hashes before drawing. No chart
-uses hand-entered measured values. Historical records are never relabeled as new runs.
+All five figures use the point table, checked against exact JSONL lines and file hashes
+before drawing. Archived sources are read with `git show`; copied records retain their
+[original provenance](measurements/sources.json). Cycle time uses 240 MHz; bank periods
+are 85,608 cycles (356.7 µs) early and 47,220 (196.75 µs) later, from the archived reports
+quoted in the table. Payload rates follow the formula above and exact sample ratios.
+Historical records are never relabeled as new runs. No board connection is needed.
 
 The early memory, encoder, signal-quality, station-ID and test-tone measurements in
 the [story](story.md) link directly to the archive. Findings and licences from the
