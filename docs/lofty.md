@@ -1,6 +1,6 @@
 # 8PSK at 80/3 Msym/s
 
-Round five is an offline candidate. 8PSK polls released queue pages on core 0;
+Round six is an offline candidate. 8PSK polls released queue pages on core 0;
 core 1 makes no queue notification calls during fills. MODCODs 13/15/17 have
 54/50/46 pages. The mapper reads bit planes directly, and t=10/12 BCH uses
 pairs with a 4,096 B PSRAM extension. The three pinned 16-frame waveform CRCs
@@ -71,8 +71,10 @@ responds to the first released page, without waiting for a bank end. Shared
 reads are separated by 32 NOPs, nominally 133 ns at 240 MHz, to reduce SRAM
 traffic. Publication uses release/acquire sequence counters and owns each
 page through rendering. Full-queue polling is reported as backpressure.
-The encoder shares the command task's priority so startup/stop can run;
-Wi-Fi can preempt it. Its watchdog subscription replaces core 0's idle
+The encoder runs at priority 5, above background priority-1 peers. The
+command temporarily runs at least one level higher so startup and stop can
+preempt a full polling producer; its original priority is restored on exit.
+Wi-Fi can preempt both. Its watchdog subscription replaces core 0's idle
 subscription and is restored on exit. Sleeping diagnostic policies feed it
 through bounded 100 ms waits, including the opening/closing IDs.
 
@@ -83,14 +85,26 @@ least 3,000 symbols of measured lead and 20,000 B of Wi-Fi minimum free RAM.
 
 ## Main regressions and admission
 
-QPSK's sign producer kernels are identical to main's. Round four still had
-50 pages, four-page bank wakes and 2,320 B of shared encoder cache, while
-main used 54 pages and eight-page page wakes with the cache on heap.
-Round five restores main's layout and wake policy. The fused I/Q renderer,
-three warm-up frames, optional observer checks and shared producer branches
-remain different. The previous 5.4k-cycle map excess has no proven silicon
-cause; restored layout is a candidate fix. The QPSK ceiling stays 193,848
-cycles/frame. Every historical 2% ceiling remains pinned.
+The f2b71a1/6914c54 linker maps place the QPSK sign kernels in IRAM and
+encoder_task in cached flash in both builds. shaper_store moves from
+0x3fca1040 to 0x3fca1cd0, retaining 16-byte alignment. Heap-resident encoder
+tables are also allocated with 16-byte alignment; their addresses are not
+linker symbols. The context scratch offset changed from 608 B to 624 B.
+Round six restores main's common offsets using pre-vector padding. It also
+removes an extra PIE-flag check in the sign reader's inner loop, missed in
+the previous comparison. The QPSK ceiling remains 193,848 cycles/frame;
+the remaining silicon timing difference must be remeasured.
+
+The host stress test runs the actual encoder and page consumer, checks
+partial-page ownership through physical and 32-bit sequence wraps, and
+records both sides' views. Suspending a priority-1 producer reproduces a
+saved full view and a current empty view, with progress as soon as it resumes.
+Pauses in MAP and even the empty PL stage reproduce kernel outliers. The
+counter ring shows no mutual wait or lost release in this test. Priority 5
+prevents priority-1 peer preemption; injected higher-priority stalls still
+fail honestly. This reproduces a failure mechanism, not the identity of the
+preempting task on silicon. A queue fault now captures current sequences,
+producer phase and its last wait view for that distinction.
 
 An 8PSK frame lasts `22194*3*240e6/80e6 = 199746 cycles`; 85% is 169,784.
 The bank deadline is `15740*3 = 47220 cycles`, with a 40,137-cycle ceiling.
@@ -107,7 +121,7 @@ These are planning estimates, not keyed measurements of this candidate.
 After the coordinator builds/flashes the final revision with N0CALL:
 
 ```sh
-caffeinate -i python3 host/jitter.py notes/eight-lofty-round5
+caffeinate -i python3 host/jitter.py notes/eight-lofty-round6
 ```
 
 Each mode gets a clean 20 s run, a 5 s observed default-policy run and a 5 s
@@ -119,8 +133,9 @@ faults, observer off, fill <=40,137 cycles, lead >=3,000 symbols, Wi-Fi minimum
 >=20,000 B, encoder stack >=512 B, mean <=160,000 cycles/frame for 8PSK or
 <=193,848 for QPSK. The separate 132k reserve target remains visible.
 
-Executed-instruction replay predicts 151.7k/156.5k/135.8k cycles/frame for
+Round-five instruction replay predicted 151.7k/156.5k/135.8k cycles/frame for
 13/15/17, including a 4,823-cycle payload allowance. It excludes cache/bus
 stalls, task preemption and live publication overhead. It cannot establish
-any silicon ceiling. The 132k goal, startup of 17 and keyed qualification
-remain open until measured.
+any silicon ceiling. Round-five clean polls all underrun; their 13/17 means
+were 167,366/149,531 cycles/frame. The current scheduling fix, QPSK restoration,
+3,000-symbol lead, 20,000 B heap floor and keyed targets need new board runs.

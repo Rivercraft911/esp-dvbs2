@@ -43,7 +43,12 @@ static inline TickType_t xTaskGetTickCount(void) {
     struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
     return (uint32_t)((uint64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000);
 }
+#ifdef QUEUE_STRESS
+uint32_t queue_stress_clock(void);
+#define esp_cpu_get_cycle_count queue_stress_clock
+#else
 static inline uint32_t esp_cpu_get_cycle_count(void) { return 17; }
+#endif
 static inline unsigned uxTaskGetStackHighWaterMark(void *task) { (void)task; return 1024; }
 static int fail_after = -1, live_allocations, allocation_count;
 static struct { void *p; size_t n; unsigned caps; } native_blocks[64];
@@ -76,11 +81,12 @@ static inline int heap_caps_monitor_local_minimum_free_size_start(void) { return
 static inline int heap_caps_monitor_local_minimum_free_size_stop(void) { return 0; }
 typedef struct {
     pthread_t thread; pthread_mutex_t mutex; pthread_cond_t cond;
-    unsigned notifications, notifications_sent; void (*fn)(void *); void *arg;
+    unsigned notifications, notifications_sent, priority; void (*fn)(void *); void *arg;
 } native_task;
 typedef native_task *TaskHandle_t;
 static _Thread_local TaskHandle_t current;
 static TaskHandle_t worker;
+static int native_task_fail;
 static inline void vTaskDelay(unsigned ticks) {
     struct timespec t = {ticks / 1000, (long)(ticks % 1000) * 1000000}; nanosleep(&t, NULL);
 }
@@ -102,7 +108,17 @@ static inline unsigned ulTaskNotifyTake(int clear, unsigned timeout) {
     unsigned n = t->notifications; t->notifications = 0;
     pthread_mutex_unlock(&t->mutex); return n;
 }
-static inline unsigned uxTaskPriorityGet(TaskHandle_t t) { (void)t; return 1; }
+static unsigned native_control_priority = 1;
+static inline TaskHandle_t xTaskGetCurrentTaskHandle(void) { return current; }
+static inline unsigned uxTaskPriorityGet(TaskHandle_t t) {
+    if (!t) t = current;
+    return t ? __atomic_load_n(&t->priority,__ATOMIC_ACQUIRE) : native_control_priority;
+}
+static inline void vTaskPrioritySet(TaskHandle_t t, unsigned priority) {
+    if (!t) t = current;
+    if (t) __atomic_store_n(&t->priority,priority,__ATOMIC_RELEASE);
+    else native_control_priority = priority;
+}
 static unsigned native_watch_add, native_watch_delete;
 static inline TaskHandle_t xTaskGetIdleTaskHandleForCore(int core) { assert(core == 0); return NULL; }
 static inline int esp_task_wdt_status(TaskHandle_t t) { (void)t; return ESP_OK; }
@@ -119,8 +135,9 @@ static void *native_entry(void *arg) {
 }
 static inline int xTaskCreatePinnedToCore(void (*fn)(void *), const char *name,
     unsigned stack, void *arg, unsigned priority, TaskHandle_t *handle, int core) {
-    (void)name; (void)stack; (void)priority; (void)core;
-    worker = calloc(1, sizeof *worker); worker->fn = fn; worker->arg = arg;
+    (void)name; (void)stack; (void)core;
+    if (native_task_fail) return 0;
+    worker = calloc(1, sizeof *worker); worker->priority = priority; worker->fn = fn; worker->arg = arg;
     pthread_mutex_init(&worker->mutex, NULL); pthread_cond_init(&worker->cond, NULL);
     *handle = worker; assert(!pthread_create(&worker->thread, NULL, native_entry, worker));
     return pdPASS;
@@ -159,7 +176,7 @@ int usb_serial_jtag_write_bytes(const void *, size_t, unsigned);
 '''
 
 
-def compile_stream(folder):
+def compile_stream(folder, source="stream_host.c", defines=()):
     tmp = str(folder)
     (folder / "native.h").write_text(NATIVE)
     for header in ("esp_err.h", "esp_cpu.h", "esp_task_wdt.h", "esp_attr.h", "esp_heap_caps.h", "esp_rom_crc.h",
@@ -170,13 +187,13 @@ def compile_stream(folder):
         path.write_text('#include "native.h"\n')
     exe = folder / "stream"
     subprocess.run(["cc", "-O2", "-std=c11", "-D_POSIX_C_SOURCE=200809L",
-                    "-Wall", "-Wextra", "-Werror", "-pthread",
+                    "-Wall", "-Wextra", "-Werror", "-pthread", *["-D"+d for d in defines],
                     "-I" + tmp, "-I" + str(ROOT / "firmware/main"),
                     "-I" + str(ROOT / "firmware/components/ingress/include"),
                     "-I" + str(ROOT / "firmware/components/dvbs2/include"),
                     "-I" + str(ROOT / "firmware/components/radio_s3/include"),
                     "-I" + str(ROOT / "firmware/components/station_id/include"),
-                    str(ROOT / "tests/stream_host.c"), str(ROOT / "tests/ingress_sim.c"),
+                    str(ROOT / "tests" / source), str(ROOT / "tests/ingress_sim.c"),
                     str(ROOT / "firmware/components/ingress/ingress.c"),
                     str(ROOT / "firmware/components/ingress/ingress_pattern.c"), str(ROOT / "firmware/main/ring.c"),
                     str(ROOT / "firmware/main/shaper.c"),

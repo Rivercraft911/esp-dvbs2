@@ -33,6 +33,7 @@ def main():
         if mc == 15 and not observer: raise TimeoutError('injected timeout')
         r = dict(cmd='dvbpace',modcod=mc,queue_wake_policy=policy,paced_wifi_up=True,encoder_pie=15,
                      bch_variant='resident-pair' if mc in (11,17) else 'split-pair',warmup_frames=3,
+                     encoder_priority=24 if mc == 11 else 5,
                      fills=1,jitter_enabled=observer,seconds=int(args[3]),
                      elapsed_samples=2400000000,planned_samples=2400000000,
                      status='ESP_ERR_TIMEOUT' if mc == 17 and policy == 'page' else 'ESP_OK',

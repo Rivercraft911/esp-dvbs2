@@ -87,6 +87,8 @@ typedef struct {
     unsigned page_sample;          // consumer cursor in its current page
     unsigned waiting;              // producer is asleep; consumer wakes once below threshold
     uint32_t queue_low, queue_empty, queue_wakes;
+    uint32_t producer_phase, wait_put, wait_get;
+    struct { uint32_t put, get, phase, wait_put, wait_get; } queue_fault;
     uint32_t wake_bank, wake_max;
     bool wake_pending;             // legacy slot released in the first bank callback
     const uint32_t *sign_lut;
@@ -122,7 +124,9 @@ typedef struct {
     uint8_t *pair_bch;
     bool watch_worker;
     uint32_t watch_clock;
-    unsigned priority;
+    unsigned priority, control_priority;
+    TaskHandle_t control;
+    bool control_boosted;
     bool ws_borrowed;
     bool quads;                     // four QPSK codes/byte, block shaper
     bool packed;                    // all fast rates: packed internal ring
@@ -188,6 +192,8 @@ static uint32_t next_byte(uint32_t *x)
     return *x & 0xff;
 }
 
+enum { QUEUE_FEC = 1, QUEUE_MAP, QUEUE_WAIT, QUEUE_PL };
+
 // Polling runs below Wi-Fi's priority. Full-queue waits, including polling,
 // are excluded from work; interrupts while encoding remain in the stage times.
 static void encoder_watch(void)
@@ -202,7 +208,11 @@ static void encoder_watch(void)
 static void moon_wait(void)
 {
     const uint32_t before = esp_cpu_get_cycle_count();
-    const bool live = __atomic_load_n(&dvb.consumed,__ATOMIC_ACQUIRE) != 0;
+    const uint32_t get = __atomic_load_n(&dvb.consumed,__ATOMIC_ACQUIRE);
+    const bool live = get != 0;
+    __atomic_store_n(&dvb.wait_put,dvb.produced,__ATOMIC_RELAXED);
+    __atomic_store_n(&dvb.wait_get,get,__ATOMIC_RELAXED);
+    __atomic_store_n(&dvb.producer_phase,QUEUE_WAIT,__ATOMIC_RELEASE);
     if (dvb.poll) {
         // Single producer/single consumer: the acquire pairs with each released
         // page. Core 1 makes no kernel call, even at a physical bank wrap.
@@ -224,6 +234,7 @@ static void moon_wait(void)
     dvb.queue_wait_cycles += cycles;
     if (cycles > dvb.queue_wait_max) dvb.queue_wait_max = cycles;
     if (live && !enc.stop && cycles > dvb.queue_wait_live_max) dvb.queue_wait_live_max = cycles;
+    __atomic_store_n(&dvb.producer_phase,QUEUE_MAP,__ATOMIC_RELEASE);
 }
 
 static IRAM_ATTR __attribute__((noinline)) int moon_map(bool warmup)
@@ -297,7 +308,15 @@ static IRAM_ATTR esp_err_t moon_shape(uint32_t *dst, uint64_t first, size_t coun
         if (ready < dvb.queue_low) dvb.queue_low = ready;
         const int32_t lead = ((int32_t)(ready*MACHINE_PAGE_SAMPLES)-(int32_t)dvb.page_sample)*(dvb.lofty ? 4 : 5)/12;
         if (lead < dvb.ring.min_lead) dvb.ring.min_lead = lead;
-        if (!ready) { ++dvb.queue_empty; return ESP_FAIL; }
+        if (!ready) {
+            ++dvb.queue_empty;
+            dvb.queue_fault.put = put;
+            dvb.queue_fault.get = get;
+            dvb.queue_fault.phase = __atomic_load_n(&dvb.producer_phase,__ATOMIC_ACQUIRE);
+            dvb.queue_fault.wait_put = __atomic_load_n(&dvb.wait_put,__ATOMIC_RELAXED);
+            dvb.queue_fault.wait_get = __atomic_load_n(&dvb.wait_get,__ATOMIC_RELAXED);
+            return ESP_FAIL;
+        }
         machine_page *page = dvb.pages ? dvb.pages+dvb.get_index : NULL;
         const size_t left = MACHINE_PAGE_SAMPLES-dvb.page_sample;
         const size_t take = count < left ? count : left;
@@ -527,6 +546,7 @@ static void encoder_task(void *arg)
         dvb.last_word = dvb.page_blocks = 0;
     }
     for (uint32_t f = 0; !e->stop; ++f) {
+        __atomic_store_n(&dvb.producer_phase,QUEUE_FEC,__ATOMIC_RELEASE);
         encoder_watch();
         uint8_t *out = NULL;
         while (!dvb.moon && !(out = ring_slot(&dvb.ring, f))) {
@@ -581,6 +601,7 @@ static void encoder_task(void *arg)
                 dvbs2_fast_ldpc(e->fast, e->ws);
                 before = encoder_record(&e->stage[3],before);
                 if (dvb.moon) {
+                    __atomic_store_n(&dvb.producer_phase,QUEUE_MAP,__ATOMIC_RELEASE);
                     rc = moon_map(false);
                 } else if (e->packed) {
                     dvbs2_fast_map_packed(e->fast, e->ws, out);
@@ -588,6 +609,7 @@ static void encoder_task(void *arg)
                     dvbs2_fast_map(e->fast, e->ws, out);
                 }
                 before = encoder_record(&e->stage[4],before);
+                __atomic_store_n(&dvb.producer_phase,QUEUE_PL,__ATOMIC_RELEASE);
                 if (!dvb.moon) {
                     if (e->packed) dvbs2_fast_pl_packed(e->fast,out);
                     else dvbs2_fast_pl(e->fast,out);
@@ -672,6 +694,10 @@ static void release(void)
     }
     enc.tables = enc.pair_bch = NULL;
     enc.fast = NULL, enc.ws = NULL, enc.bch = enc.block = enc.payload = enc.slots = enc.filler = NULL;
+    if (enc.control_boosted) {
+        enc.control_boosted = false;
+        vTaskPrioritySet(enc.control,enc.control_priority);
+    }
 }
 
 // Bytes for a packed part, 16-byte aligned, with the 16 spare bytes the vector unpack may read.
@@ -757,6 +783,8 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
         dvb.queue_sample = 0;
         dvb.queue_low = dvb.queue_pages;
         dvb.queue_empty = dvb.queue_wakes = dvb.wake_max = dvb.wake_bank = 0;
+        dvb.producer_phase = dvb.wait_put = dvb.wait_get = 0;
+        memset(&dvb.queue_fault,0,sizeof dvb.queue_fault);
         dvb.prepare_max = 0;
         dvb.prepare_tail_max = 0;
         dvb.prepare_cycles = 0;
@@ -995,9 +1023,18 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
                       resident && !moon && !(enc.ws_borrowed && sps == 3) ? (uint8_t *)enc.ws+ws_used : NULL,
                       resident && !moon && !(enc.ws_borrowed && sps == 3) && ws_used < sizeof *enc.ws ? sizeof *enc.ws-ws_used : 0);
 
-    // A polling task must not outrank its command task: prefill and stop
-    // need that task to run while the queue is full. Wi-Fi can preempt both.
-    enc.priority = lofty ? uxTaskPriorityGet(NULL) : moon ? MOON_PRIORITY : ENCODER_PRIORITY;
+    // Poll above background priority-1 peers. The command must also be able
+    // to finish prefill and stop a full producer, so keep it one level above.
+    // Both remain below Wi-Fi; neither scheduling nor work time is masked.
+    enc.priority = moon && !lofty ? MOON_PRIORITY : ENCODER_PRIORITY;
+    if (lofty) {
+        enc.control = xTaskGetCurrentTaskHandle();
+        enc.control_priority = uxTaskPriorityGet(NULL);
+        if (enc.control_priority <= enc.priority) {
+            enc.control_boosted = true;
+            vTaskPrioritySet(enc.control,enc.priority+1);
+        }
+    }
     enc.exited = xSemaphoreCreateBinaryStatic(&exited_storage);
     if (xTaskCreatePinnedToCore(encoder_task, "encoder", ENCODER_STACK, &enc, enc.priority, &enc.task, 0)
             != pdPASS) {
@@ -1080,6 +1117,10 @@ static void stop_encoder(void)
     if (dvb.moon) printf(",\"queue_wait_cycles\":%" PRIu64 ",\"queue_wait_max_cycles\":%u,\"queue_wait_live_max_cycles\":%u,\"prepare_max_ticks\":%u,\"queue_page_gap_max_cycles\":%u,\"queue_page_samples\":%u,\"queue_wake_pages\":%u",
                          dvb.queue_wait_cycles,(unsigned)dvb.queue_wait_max,(unsigned)dvb.queue_wait_live_max,(unsigned)dvb.prepare_ticks,(unsigned)dvb.page_gap_max,MACHINE_PAGE_SAMPLES,dvb.wake_pages);
     if (dvb.moon) printf(",\"queue_wake_policy\":\"%s\"",dvb.poll ? "poll" : dvb.page_wake ? "page" : "bank");
+    if (dvb.moon && dvb.queue_empty) printf(",\"queue_fault\":{\"produced\":%"PRIu32",\"consumed\":%"PRIu32
+        ",\"producer_phase\":%"PRIu32",\"last_wait_produced\":%"PRIu32",\"last_wait_consumed\":%"PRIu32"}",
+        dvb.queue_fault.put,dvb.queue_fault.get,dvb.queue_fault.phase,
+        dvb.queue_fault.wait_put,dvb.queue_fault.wait_get);
     if (dvb.moon) printf(",\"bch_pair_psram_bytes\":%u",enc.pair_bch ? DVBS2_BCH_PAIR_BYTES : 0);
     if (dvb.moon) printf(",\"warmup_frames\":%u,\"warmup_cycles\":%u",(unsigned)enc.warmup_frames,(unsigned)enc.warmup_cycles);
     if (dvb.moon) printf(",\"encode_work_cycles_mean\":%" PRIu64 ",\"encode_work_cycles_live_max\":%" PRIu32,

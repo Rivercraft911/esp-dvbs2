@@ -5,6 +5,9 @@
 // These are overlapping observation windows, not exclusive per-core attribution.
 // Register definitions: IDF v6.1 soc/esp32s3/register/soc/extmem_reg.h, offsets C8..D8.
 #include <stdint.h>
+#ifdef STREAM_PROFILE_HOST
+#include "esp_cpu.h"
+#endif
 
 #ifdef __XTENSA__
 #include "esp_cpu.h"
@@ -34,6 +37,8 @@ static inline stream_mark_t stream_mark(void)
     m.instruction_miss = REG_READ(EXTMEM_IBUS_ACS_MISS_CNT_REG);
     m.cycles = esp_cpu_get_cycle_count();
     return m;
+#elif defined(STREAM_PROFILE_HOST)
+    return (stream_mark_t){.cycles = esp_cpu_get_cycle_count()};
 #else
     return (stream_mark_t){0};
 #endif
@@ -58,6 +63,8 @@ static inline void stream_record(stream_profile_t *p, stream_mark_t a, stream_ma
 static inline stream_mark_t stream_mark_cycles(void)
 {
 #ifdef __XTENSA__
+    return (stream_mark_t){.cycles = esp_cpu_get_cycle_count()};
+#elif defined(STREAM_PROFILE_HOST)
     return (stream_mark_t){.cycles = esp_cpu_get_cycle_count()};
 #else
     return (stream_mark_t){0};

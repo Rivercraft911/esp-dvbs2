@@ -31,17 +31,22 @@
 #define GOLD 2720               /* one 8PSK Gold plane, 169 x 16 bytes rounded */
 
 struct dvbs2_fast {
-    const uint8_t *bch, *gold, *prbs, *byte_bch, *pair_bch;
+    const uint8_t *bch, *gold, *prbs, *byte_bch;
     const uint32_t *map;
     const uint16_t *prog, *cols;
     const uint8_t *crc8;
     uint8_t *p;
+    // Fit experiment metadata in Xtensa's pre-vector alignment padding. Keep
+    // main's common fields and scratch at their original QPSK offsets.
+    const uint8_t *pair_bch;
+    uint16_t lofty_history;
+    uint8_t lofty_prefix, lofty_framed;
     uint8_t carry[ROW] __attribute__((aligned(16)));
     uint8_t tail[16] __attribute__((aligned(16)));
     uint8_t packed_header[48], packed_pilots[400];
     const uint8_t *header;
     const dvbs2_mode *mode;
-    unsigned pilots, pie, ldxq_bias, lofty_prefix, lofty_history, lofty_framed;
+    unsigned pilots, pie, ldxq_bias;
     unsigned bch_bytes, groups, q, data_symbols, pilot_blocks;
     uint8_t scratch[] __attribute__((aligned(16)));
 };
@@ -1248,7 +1253,9 @@ HOT unsigned dvbs2_fast_sign_read(const dvbs2_fast *f, dvbs2_sign_state *s, uint
         unsigned pending = s->pending, used = 0;
         while (used < n) {
 #ifdef DVBS2_PIE
-            if ((f->pie & DVBS2_PIE_MAP) && packed && !pending && !(at&3) && n-used >= 20) {
+            // Both C and PIE starts produce the same quad bytes. The scalar
+            // sign kernel needs no PIE mapping flag; keep main's hot loop.
+            if (packed && !pending && !(at&3) && n-used >= 20) {
                 const unsigned runs = (n-used)/20;
                 uint32_t dvbs2_pie_signs(uint32_t *, const uint8_t *, unsigned,
                                         const uint32_t *, uint32_t);

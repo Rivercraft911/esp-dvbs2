@@ -2,7 +2,7 @@
 """Radio-off clean gate plus polling/page/bank wake diagnosis, about one minute per mode.
 
 No flashing or transmitter commands. Keep the Mac awake, for example:
-  caffeinate -i python3 host/jitter.py notes/eight-lofty-round5
+  caffeinate -i python3 host/jitter.py notes/eight-lofty-round6
 """
 import argparse
 import datetime as dt
@@ -32,6 +32,7 @@ def timing(rows, mc, policy, observer):
     assert r['modcod'] == mc and r['queue_wake_policy'] == policy, 'wrong mode/policy'
     assert r['paced_wifi_up'] and r['encoder_pie'] == 15, 'Wi-Fi/PIE missing'
     assert r['bch_variant'] == ('resident-pair' if mc in (11,17) else 'split-pair'), 'wrong BCH variant'
+    assert r['encoder_priority'] == (24 if mc == 11 else 5), 'wrong encoder priority'
     assert r['warmup_frames'] == 3, 'encoder warm-up missing'
     assert r['jitter_enabled'] == observer and ('jitter' in r) == observer, 'wrong observer state'
     if policy == 'poll':
@@ -77,6 +78,7 @@ def suite(send, firmware, seconds, observe_seconds=5):
                        queue_empty=r['queue_empty'],prefill_frames=r['prefill_frames'],
                        warmup_frames=r['warmup_frames'],wifi_min_free=r['wifi_min_free'],
                        min_lead_symbols=r['min_lead_symbols'],encode_cycles_live_max=r['encode_cycles_live_max'])
+            if 'queue_fault' in r: row['queue_fault'] = r['queue_fault']
             if mc != 11: row['keyed_reserve_target_met'] = r['encode_cycles_mean'] <= 132000
             if observer: row['worst_bank'] = r['jitter']['worst_bank']
             # Instrumented runs diagnose the lock; only the clean default run is
