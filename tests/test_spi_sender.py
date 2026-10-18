@@ -106,12 +106,14 @@ int spi_device_polling_start(spi_device_handle_t d,spi_transaction_t *t,unsigned
     (void)d;(void)ticks;
     assert(t->flags==(raw_wire?0:SPI_TRANS_MODE_QIO) && t->cmd==(raw_wire?0:0x23) && t->addr==0 && t->length==1332*8);
     assert(pv_check(t->tx_buffer,1332)==PV_OK && now_us>=ready_at);
-    if (raw_wire) {
-        uint8_t want[1316]; ingress_pv_pattern(want,sequence);
+    {
+        uint8_t want[1316];
+        if (raw_wire && tx.type==PV_TS) ingress_pv_pattern(want,sequence);
+        else ingress_pattern(want,sequence,tx.type);
         assert(memcmp(want,(const uint8_t *)t->tx_buffer+12,1316)==0);
     }
     const uint8_t *m=t->tx_buffer;
-    assert((m[4] | m[5]<<8)==sequence++);
+    assert(m[3]==tx.type && (m[4] | m[5]<<8)==sequence++);
     if (!transfers) first_tx=now_us;
     else assert(now_us-last_tx >= (tx.mbps ? 470 : 75)); // rate ceiling or CS gap
     last_tx=now_us; ++transfers; return 0;
@@ -123,10 +125,10 @@ esp_err_t ingress_spi_start(const ingress_spi_config *cfg,ingress_ring **ring) {
 void ingress_spi_stop(void) {}
 void ingress_spi_get_stats(ingress_spi_stats *out) { memset(out,0,sizeof *out); }
 int main(void) {
-    for (unsigned test=0;test<6;++test) {
-        pv_mode=test>=3;
+    for (unsigned test=0;test<12;++test) {
+        pv_mode=test>=6;
         now_us=alarms=delays=transfers=sequence=0; ready_at=test?2000:0;
-        assert(tx_init(PV_TS,pv_mode?20:40,test%3==2?0:22,0,10)==ESP_OK);
+        assert(tx_init((test/3)%2?PV_GCS:PV_TS,pv_mode?20:40,test%3==2?0:22,0,10)==ESP_OK);
         tx_run();
         assert(tx.errors==0 && transfers>14 && alarms>10 && first_tx>=ready_at);
         assert(first_tx < ready_at+100 && delays==0); // READY resumes within a poll, no 1 ms sleep
@@ -139,13 +141,28 @@ int main(void) {
         assert(!rx && !tx.task && allocations==0);
     }
     assert(tasks==2);
-    spi_input_command("spiinput","pv loop 9");
+    spi_input_command("spiinput","on loop 9");
     assert(pv_mode && loop && input_type==PV_TS && target==9);
-    spi_input_command("spiinput","pv replay"); // rejected without changing preferences
+    spi_input_command("spiinput","on replay"); // rejected without changing preferences
     assert(pv_mode && loop && target==9);
+    const char *invalid[]={"on loop garbage","on gcs loop nan","quad ts extra","off ts","on loop 9 7"};
+    for (unsigned i=0;i<sizeof invalid/sizeof *invalid;++i) {
+        spi_input_command("spiinput",invalid[i]);
+        assert(pv_mode && loop && input_type==PV_TS && target==9);
+    }
+    spi_input_command("spiinput","on gcs");
+    assert(pv_mode && !loop && input_type==PV_GCS);
+    spi_input_command("spiinput","quad gcs loop 22");
+    assert(!pv_mode && loop && input_type==PV_GCS && target==22);
+    spi_input_command("spiinput","quad");
+    assert(!pv_mode && !loop && input_type==PV_TS);
+    spi_input_command("spiinput","pv"); // compatible old raw selector
+    assert(pv_mode && !loop && input_type==PV_TS);
+    spi_input_command("spiinput","gcs"); // compatible old quad selector
+    assert(!pv_mode && !loop && input_type==PV_GCS);
     spi_input_command("spiinput","ts");
     assert(!pv_mode && !loop && input_type==PV_TS);
-    spi_input_command("spisend","100 pv 21"); // no raw clock above 20 MHz
+    spi_input_command("spisend","100 on gcs 21"); // no raw clock above 20 MHz
     assert(!pv_mode && !allocations);
     spi_input_command("spipins","xiao");
     assert(pins.sclk==7 && pins.cs==1 && pins.d0==2 && pins.ready==8);

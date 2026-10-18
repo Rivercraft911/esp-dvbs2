@@ -101,6 +101,8 @@ On macOS, the host tool avoids the native port's RTS reset, which can enter the 
 | `callsign [CALL\|clear]` | Read, set or clear the station ID |
 | `dvbdump MODCOD [rate] frames [peak] [decimation] [stall_ms]` | Samples over USB, radio off |
 | `dvbpace MODCOD [rate] seconds [peak] [stall_ms]` | Live encoder and bank deadlines, no playback |
+| `spiinput on\|quad\|off [ts\|gcs]` | Select [SPI payload input](docs/spi-input.md) for the next run |
+| `spipins devkit\|xiao` | Select SPI pin preset |
 | `wifimem MODCOD [rate]` | Radio-off Wi-Fi startup and heap check, also used by SPI integration |
 | `iddump [CALL] [40\|80]` | Morse ID samples at 10 kS/s, radio off |
 | `tx MHz signal seconds [gain] [40\|80]` | Transmit a test tone; see setup first |
@@ -126,13 +128,15 @@ python3 host/board.py "dvbpace 11 26m667 10" --timeout 120
 | `host/board.py`, `host/decode.py`, `host/morse.py` | Board protocol, independent decode and ID checking |
 | `host/dvbs2.py`, `host/dvbs2_tables.py` | Independent Python oracle and standard tables |
 | `host/plots.py` | Regenerate the measurement figures from the retained raw records |
+| [`examples/pi-sender/`](examples/pi-sender/README.md) | Standard raw SPI sender for TS or arbitrary bytes from a Linux SBC |
 | `examples/self-check/` | Radio-off example and board regression check |
 | [`examples/live-video/`](examples/live-video/README.md) | UHD/LeanDVB video receiver and RF-free TS-to-IQ dry run |
 | `tests/` | Standard vectors, C/Python agreement and stream CRCs; table generators in `reference/` |
 | `docs/` | [How it works](docs/how-it-works.md), [transmitting](docs/transmitting.md), [story](docs/story.md), [measurements](docs/measurements.md), [credits](docs/prior-art.md) |
 
-[SPI input](docs/spi-input.md), its host tools and its tests are retained for the separate
-PigeonVision input work. The full development history, experiments and raw results live in
+[SPI input](docs/spi-input.md) accepts PV-SPI v1 messages over standard single-line SPI
+or optional quad SPI. The S3 frames, encodes and transmits the payload.
+The full development history, experiments and raw results live in
 [archive/dev-2026-10-17](https://github.com/Rivercraft911/esp-dvbs2/tree/archive/dev-2026-10-17).
 
 ## Transmitting

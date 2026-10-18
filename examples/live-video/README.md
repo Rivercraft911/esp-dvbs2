@@ -12,8 +12,8 @@ ceiling, before software overhead. Keep this mode; 5 Msym/s QPSK 3/4 would
 carry only 7.260381 Mb/s. The 9 Mb/s producer leaves DVB-S2 dummy frames
 between data frames; these are expected and do not enter recovered TS.
 
-See [SPI wiring and the unchanged pv-capture contract](../../docs/spi-input.md#cm5-with-unchanged-pv-capture).
-Use `spiinput pv`, mode 0, 20 MHz, one raw 1,332-byte message per CS,
+See [SPI wiring and the unchanged pv-capture contract](../../docs/spi-input.md).
+Use `spiinput on`, mode 0, 20 MHz, one raw 1,332-byte message per CS,
 READY on GPIO25. Do not add a command prefix or change the camera transport.
 
 ## Prepare
@@ -47,7 +47,7 @@ Set an operator-approved `FREQ_MHZ`/matching `FREQ_HZ`; the S3 accepts integer
 
    ```text
    spipins devkit
-   spiinput pv
+   spiinput on
    dvb FREQ_MHZ 7 10m 60 0 128
    ```
 

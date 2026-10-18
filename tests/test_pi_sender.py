@@ -1,23 +1,19 @@
-"""Exercise CM5 framing and READY ordering without opening GPIO, SPI or serial."""
+"""Reference sender framing and READY ordering without GPIO, SPI or serial."""
 import io
 import ctypes as ct
 import importlib.util
 import pathlib
-import sys
 import zlib
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / 'host'))
-from cm5_spi import message, send
 from test_ingress import Native
 
 
-def pv_checks():
+def main():
     path = pathlib.Path(__file__).resolve().parents[1]/'examples/pi-sender/send.py'
     spec = importlib.util.spec_from_file_location('pv_sender', path)
     pv = importlib.util.module_from_spec(spec); spec.loader.exec_module(pv)
     packet = bytes((0x47, 1, 0, 0x10))+bytes(range(184))
     assert pv.message(packet, 1)[-4:].hex() == '8d32be51'
     assert len(pv.message(packet, 1)) == 1332
-    assert pv.message(packet, 0) == message(packet, 0)[3:]
     class Pipe:
         def __init__(self, data): self.data = data
         def read(self, n):
@@ -52,12 +48,29 @@ def pv_checks():
     assert s['crc_chain'] == chain and s['ready_waits'] == 1
     with Native() as native:
         for frame in frames: assert native.lib.pv_check(frame, len(frame)) == 0
+        for kind, payload in ((0, b''), (2, b'x'), (2, bytes(range(256))*5+b'end')):
+            frame = pv.message(payload, 65535, kind)
+            assert len(frame) == 1332 and frame[3] == kind
+            assert frame[12:12+len(payload)] == payload
+            assert frame[12+len(payload):1328] == bytes(1316-len(payload))
+            assert native.lib.pv_check(frame, len(frame)) == 0
+            assert pv.message(payload, 65536, kind) == pv.message(payload, 0, kind)
+        for payload, kind in ((b'', 1), (b'', 2), (b'x', 0), (b'x', 3), (bytes(1317), 2)):
+            try: pv.message(payload, 0, kind)
+            except ValueError: pass
+            else: raise AssertionError('invalid PV type/length accepted')
         for seq in (0, 1, 15, 16, 65535):
             out = ct.create_string_buffer(1316)
             native.lib.ingress_pv_pattern(out, seq)
             want = b''.join(bytes((0x47, 1, 0, 0x10 | ((7*seq+i)&15))) +
                 bytes(((7*seq+i)%112+j)&255 for j in range(184)) for i in range(7))
             assert out.raw == want
+    frames.clear(); s = stats()
+    generic = bytes(range(256))*6
+    pv.send(Pipe(generic), SPI(), ready, s, kind=2, clock=clock)
+    assert len(frames) == 2 and all(frame[3] == 2 for frame in frames)
+    assert frames[0][12:1328]+frames[1][12:12+220] == generic
+    assert s['payload_bytes'] == len(generic) and s['ts_packets'] == s['crc_chain'] == 0
     s = stats()
     try: pv.send(io.BytesIO(packet), SPI(), lambda: False, s, clock=clock)
     except TimeoutError: pass
@@ -73,49 +86,5 @@ def pv_checks():
     print('PV raw sender: vector, fragmented stdin, READY/gap, CRC chain, timeout, no retry: ok')
 
 
-def main():
-    events = []
-    class Clock:
-        t = 0
-        def monotonic(self): return self.t
-        def sleep(self, seconds):
-            self.t += seconds
-            events.append(('sleep', seconds))
-    clock = Clock()
-    class SPI:
-        def xfer2(self, wire):
-            events.append(('spi', bytes(wire)))
-            clock.t += len(wire)*8/25e6
-    samples = iter([False, True, True, True])
-    def ready():
-        events.append(('ready', None))
-        return next(samples)
-    packet = b'\x47' + bytes(range(187))
-    assert send(io.BytesIO(packet*15), SPI(), ready, clock=clock) == 188*15
-    wires = [data for event, data in events if event == 'spi']
-    assert len(wires) == 3
-    for seq, wire in enumerate(wires):
-        assert wire[:3] == b'\x03\0\0' and len(wire) == 1335
-        m = wire[3:]
-        n = 188 if seq == 2 else 1316
-        assert m[:8] == b'PV\x01\x01' + seq.to_bytes(2,'little') + n.to_bytes(2,'little')
-        assert m[8:12] == bytes(4) and m[12:12+n] == packet*(n//188)
-        assert m[12+n:1328] == bytes(1316-n)
-        assert int.from_bytes(m[-4:], 'little') == zlib.crc32(m[:-4])
-    for i, (event, _) in enumerate(events):
-        if event == 'spi': assert events[i-1][0] == 'ready'
-        if event == 'ready': assert any(e == 'sleep' and t >= 10e-6 for e,t in events[:i])
-    with Native() as native:
-        for wire in wires:
-            assert native.lib.pv_check(wire[3:],1332) == 0
-    assert message(packet,65536) == message(packet,0)
-    for bad in (b'', packet[:-1], packet*8, bytes(188)):
-        try: message(bad,0)
-        except ValueError: pass
-        else: raise AssertionError('invalid TS accepted')
-    print('CM5: mode-0 single-line framing, CRC, short final batch, READY, gap, wrap: ok')
-
-
 if __name__ == '__main__':
     main()
-    pv_checks()

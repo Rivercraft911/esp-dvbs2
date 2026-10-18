@@ -115,7 +115,7 @@ fail:
 static unsigned build(uint8_t *m, uint16_t seq)
 {
     const uint32_t t0=esp_cpu_get_cycle_count();
-    if (tx.pv) ingress_pv_pattern(m+PV_HEADER_BYTES, seq);
+    if (tx.pv && tx.type == PV_TS) ingress_pv_pattern(m+PV_HEADER_BYTES, seq);
     else ingress_pattern(m+PV_HEADER_BYTES, seq, tx.type);
     pv_seal(m, tx.type, seq, PV_PAYLOAD_MAX);
     tx.build_cycles += esp_cpu_get_cycle_count()-t0;
@@ -277,7 +277,7 @@ void spi_input_print(void)
 {
     printf(",\"input\":\"%s\"", input_type==PV_TS ? "ts" : input_type==PV_GCS ? "gcs" : "synthetic");
     if (!input_type) return;
-    printf(",\"input_wire\":\"%s\"", pv_mode?"pv":"prefixed");
+    printf(",\"input_wire\":\"%s\"", pv_mode?"raw":"quad");
     printf(",\"input_fault\":%u,\"input_target\":%.3f,\"input_replay\":%s,\"input_borrowed_slots\":%u", fault, target, replay?"true":"false", saved_borrowed);
     printf(",\"input_loop\":%s,\"input_bytes\":%"PRIu32",\"input_calls\":%"PRIu32
            ",\"input_cycles\":%"PRIu64",\"input_call_max\":%"PRIu32,
@@ -303,7 +303,25 @@ void spi_input_print(void)
            saved.msgs, saved.ts_packets, saved.bytes, saved.crc_chain, next_seq);
 }
 
-static unsigned kind(const char *s) { return (!strcmp(s,"ts")||!strcmp(s,"pv"))?PV_TS:!strcmp(s,"gcs")?PV_GCS:0; }
+// One PV v1 message on either wire. Keep the old selectors as inexpensive aliases.
+static bool input_mode(const char *args, unsigned *type, bool *raw, const char **rest)
+{
+    char mode[16], stream[16]; int used=0, more=0;
+    if (sscanf(args,"%15s %n",mode,&used)!=1) return false;
+    *type=PV_TS;
+    *raw=!strcmp(mode,"on") || !strcmp(mode,"pv");
+    if (!*raw && strcmp(mode,"quad") && strcmp(mode,"ts") && strcmp(mode,"gcs")) return false;
+    if (!strcmp(mode,"gcs")) *type=PV_GCS;
+    if ((!strcmp(mode,"on") || !strcmp(mode,"quad")) &&
+        sscanf(args+used,"%15s %n",stream,&more)==1) {
+        if (!strcmp(stream,"ts") || !strcmp(stream,"gcs")) {
+            *type=!strcmp(stream,"ts")?PV_TS:PV_GCS;
+            used+=more;
+        }
+    }
+    *rest=args+used;
+    return true;
+}
 
 static void probe(unsigned ms)
 {
@@ -328,7 +346,7 @@ static void probe(unsigned ms)
         memcpy(copy, p, n);
         const uint32_t cycles=esp_cpu_get_cycle_count()-before;
         if (cycles>copy_max) copy_max=cycles;
-        if (pv_mode) ingress_pv_pattern(want, seq);
+        if (pv_mode && type == PV_TS) ingress_pv_pattern(want, seq);
         else ingress_pattern(want, seq, type);
         bad += memcmp(copy, want, n)!=0;
         crc=pv_crc32(crc, copy, n); messages++; bytes+=n;
@@ -368,27 +386,31 @@ void spi_input_command(const char *cmd, const char *args)
     }
     if (!strcmp(cmd,"spiinput")) {
         double mbps=0; unsigned f=0;
-        int n=sscanf(args,"%15s %15s %lf %u %c",a,b,&mbps,&f,&extra);
-        if (n<1 || n>4 || (!kind(a)&&strcmp(a,"off")) ||
-            (n>1 && strcmp(b,"loop") && strcmp(b,"replay")) || !isfinite(mbps) || mbps<0 || mbps>140 || f>6 ||
-            (!strcmp(a,"off") && n!=1)) goto usage;
-        if (!strcmp(b,"replay") && (n!=2 || !strcmp(a,"pv"))) goto usage;
-        input_type=kind(a); loop=n>1 && !strcmp(b,"loop"); replay=n>1 && !strcmp(b,"replay"); target=mbps; fault=f;
-        pv_mode=!strcmp(a,"pv");
-        printf("@{\"cmd\":\"spiinput\",\"input\":\"%s\",\"loop\":%s,\"replay\":%s,\"mbps\":%.3f,\"fault\":%u}\n",
-               a,loop?"true":"false",replay?"true":"false",target,fault); return;
+        unsigned type=0; bool raw=false; const char *rest=NULL; int used=0;
+        if (sscanf(args,"%15s %c",a,&extra)==1 && !strcmp(a,"off")) rest="";
+        else if (!input_mode(args,&type,&raw,&rest)) goto usage;
+        int n=sscanf(rest,"%15s %n%lf %n%u %n%c",b,&used,&mbps,&used,&f,&used,&extra);
+        if (rest[used] || n>3 || (n>0 && strcmp(b,"loop") && strcmp(b,"replay")) ||
+            !isfinite(mbps) || mbps<0 || mbps>140 || f>6) goto usage;
+        if (!strcmp(b,"replay") && (n!=1 || raw)) goto usage;
+        input_type=type; loop=n>0 && !strcmp(b,"loop"); replay=n>0 && !strcmp(b,"replay"); target=mbps; fault=f;
+        pv_mode=raw;
+        printf("@{\"cmd\":\"spiinput\",\"input\":\"%s\",\"wire\":\"%s\",\"loop\":%s,\"replay\":%s,\"mbps\":%.3f,\"fault\":%u}\n",
+               type==PV_TS?"ts":type==PV_GCS?"gcs":"off",type?(raw?"raw":"quad"):"off",loop?"true":"false",replay?"true":"false",target,fault); return;
     }
     unsigned ms=0, f=0; int mhz=40; double mbps=0;
+    unsigned type; bool raw; const char *rest; int used=0;
+    if (sscanf(args,"%u %n",&ms,&used)!=1 || ms<100 || ms>120000 ||
+        !input_mode(args+used,&type,&raw,&rest)) goto usage;
     if (!strcmp(cmd,"spisend")) {
-        int n=sscanf(args,"%u %15s %d %lf %u %c",&ms,a,&mhz,&mbps,&f,&extra);
-        if (n<2 || n>5 || !kind(a) || ms<100 || ms>120000 || mhz<1 || mhz>40 ||
+        mhz=raw?20:40; used=0;
+        int n=sscanf(rest,"%d %n%lf %n%u %n%c",&mhz,&used,&mbps,&used,&f,&used,&extra);
+        if (rest[used] || n>3 || mhz<1 || mhz>(raw?20:40) ||
             !isfinite(mbps) || mbps<0 || mbps>140 || f>6) goto usage;
         const bool oldpv=pv_mode;
-        pv_mode=!strcmp(a,"pv");
-        if (pv_mode && n<3) mhz=20;
-        if (pv_mode && mhz>20) { pv_mode=oldpv; goto usage; }
+        pv_mode=raw;
         gpio_set_direction(pins.ready, GPIO_MODE_INPUT); gpio_set_pull_mode(pins.ready, GPIO_PULLDOWN_ONLY);
-        esp_err_t err=tx_init(kind(a),mhz,mbps,f,ms);
+        esp_err_t err=tx_init(type,mhz,mbps,f,ms);
         if (err==ESP_OK) tx_run();
         printf("@{\"cmd\":\"spisend\",\"status\":\"%s\",\"sent\":%"PRIu32
                ",\"bytes\":%"PRIu32",\"crc32\":%"PRIu32",\"waits\":%"PRIu32
@@ -397,12 +419,13 @@ void spi_input_command(const char *cmd, const char *args)
         tx_free(); pv_mode=oldpv; return;
     }
     if (!strcmp(cmd,"spirx")) {
-        int n=sscanf(args,"%u %15s %15s %lf %u %c",&ms,a,b,&mbps,&f,&extra);
-        if (n<2 || n>5 || !kind(a) || ms<100 || ms>120000 || (n>2 && strcmp(b,"loop")) ||
+        used=0;
+        int n=sscanf(rest,"%15s %n%lf %n%u %n%c",b,&used,&mbps,&used,&f,&used,&extra);
+        if (rest[used] || n>3 || (n>0 && strcmp(b,"loop")) ||
             !isfinite(mbps) || mbps<0 || mbps>140 || f>6) goto usage;
         const unsigned old=input_type, oldfault=fault; const bool oldloop=loop, oldreplay=replay, oldpv=pv_mode; const double oldtarget=target;
-        input_type=kind(a); loop=n>2; replay=false; target=mbps; fault=f;
-        pv_mode=!strcmp(a,"pv");
+        input_type=type; loop=n>0; replay=false; target=mbps; fault=f;
+        pv_mode=raw;
         sender_core=1; // standalone verifier has no timed fill worker on core 1
         const esp_err_t err=spi_input_start();
         if (err==ESP_OK) probe(ms);
@@ -412,6 +435,6 @@ void spi_input_command(const char *cmd, const char *args)
     }
 usage:
     printf("@{\"cmd\":\"%s\",\"error\":\"usage: spipins devkit|xiao|CLK CS D0 D1 D2 D3 READY; "
-           "spiinput off|pv|ts|gcs [replay|loop [Mb/s [fault 0..6]]]; spisend ms pv|ts|gcs [MHz [Mb/s [fault]]]; "
-           "spirx ms pv|ts|gcs [loop [Mb/s [fault]]]\"}\n",cmd);
+           "spiinput off|on|quad [ts|gcs] [loop [Mb/s [fault 0..6]]]; spisend ms on|quad [ts|gcs] [MHz [Mb/s [fault]]]; "
+           "spirx ms on|quad [ts|gcs] [loop [Mb/s [fault]]]\"}\n",cmd);
 }
