@@ -1050,23 +1050,32 @@ static void lofty_frame(dvbs2_fast *f)
         unsigned k = 1440*run, n = 1440;
         uint16_t *dst = mapped+(f->lofty_prefix+90+k+(f->pilots ? 36*run : 0))/4;
         const uint16_t *src = mapped+k/4;
-        if (!offset) {
 #ifdef DVBS2_PIE
-            if (f->pie & DVBS2_PIE_MAP) {
-                uint32_t dvbs2_pie_lofty_copy(uint16_t *, const uint16_t *, unsigned, unsigned, uint32_t);
-                dvbs2_pie_lofty_copy(temp,src,n/32,0,0);
-                lofty_store(dst,temp,n/4);
-            } else
+        if (f->pie & DVBS2_PIE_MAP) {
+            // Move backwards once, including the optional two-symbol shift.
+            // The source's readable preceding vector is inside f; its first
+            // halfword is replaced by PL framing below. Keep both output edges.
+            void dvbs2_pie_lofty_move(uint16_t *, const uint16_t *, unsigned, unsigned);
+            unsigned prefix = (uintptr_t)dst&15;
+            uint8_t head[16], tail[16];
+            uint16_t last = src[n/4-1];
+            if (prefix) {
+                memcpy(head,(uint8_t *)dst-prefix,prefix);
+                memcpy(tail,dst+n/4,16-prefix);
+            }
+            dvbs2_pie_lofty_move(dst,src,n/32,offset);
+            if (prefix) {
+                memcpy((uint8_t *)dst-prefix,head,prefix);
+                memcpy(dst+n/4,tail,16-prefix);
+            }
+            if (offset) dst[n/4] = ((last&63)<<6) | (dst[n/4]&63);
+            continue;
+        }
 #endif
+        if (!offset) {
             memmove(dst,src,n/2);
         } else {
             uint16_t last = src[n/4-1];
-#ifdef DVBS2_PIE
-            if (f->pie & DVBS2_PIE_MAP) {
-                uint32_t dvbs2_pie_lofty_copy(uint16_t *, const uint16_t *, unsigned, unsigned, uint32_t);
-                dvbs2_pie_lofty_copy(temp,src,n/32,2,0);
-            } else
-#endif
             {
                 uint32_t h = 0;
                 for (unsigned j = 0; j < n/4; ++j) {
@@ -1209,17 +1218,8 @@ HOT unsigned dvbs2_fast_sign_read(const dvbs2_fast *f, dvbs2_sign_state *s, uint
             if ((f->pie & DVBS2_PIE_MAP) && packed && !pending && !(at&3) && n-used >= 20) {
                 const unsigned runs = (n-used)/20;
                 uint32_t dvbs2_pie_signs(uint32_t *, const uint8_t *, unsigned,
-                                        const uint32_t *, uint32_t, uint8_t *);
-                unsigned prefix = (uintptr_t)(dst+done)&15;
-                uint8_t *block = (uint8_t *)(dst+done)-prefix, keep[16];
-                uint8_t tail[16] __attribute__((aligned(16)));
-                memcpy(keep,block,prefix);
-                history = dvbs2_pie_signs(dst+done,src+at/4,runs,
-                    (const uint32_t *)((const uint8_t *)lut+f->ldxq_bias),history,tail);
-                if (prefix) {
-                    memcpy(block,keep,prefix);
-                    memcpy(block+16*runs,tail,prefix);
-                }
+                                        const uint32_t *, uint32_t);
+                history = dvbs2_pie_signs(dst+done,src+at/4,runs,lut,history);
                 at += 20*runs;
                 used += 20*runs;
                 done += 4*runs;

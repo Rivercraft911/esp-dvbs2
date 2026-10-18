@@ -593,70 +593,36 @@ dvbs2_pie_index8:
     .type dvbs2_pie_signs,@function
 dvbs2_pie_signs:
     entry a1,32
-    splat q7,0x7ff07ff0
-    ee.zero.q q4
-    ee.movi.32.q q4,a6,3
-    movi a12,12
-    wur.sar_byte a12
-    ssai 5
+    movi a14,0x7ff07ff0
+    mov a11,a6
     .macro signbyte off
     l8ui a9,a3,\off
     slli a8,a8,8
     or a8,a8,a9
     .endm
-    .macro signindex shift,lane
+    .macro signword shift,off
     extui a10,a8,\shift,10
-    ee.movi.32.q q2,a10,\lane
+    addx4 a10,a10,a5
+    l32i a10,a10,0
+    slli a11,a11,5
+    and a11,a11,a14
+    or a11,a11,a10
+    s32i a11,a2,\off
     .endm
-    .macro sign_groups unaligned
+    loopnez a4,.Lsigns_end
     l8ui a8,a3,0
     signbyte 1
-    signindex 6,0
+    signword 6,0
     signbyte 2
-    signindex 4,1
+    signword 4,4
     signbyte 3
-    signindex 2,2
+    signword 2,8
     signbyte 4
-    signindex 0,3
-    ee.ldxq.32 q0,q2,a5,0,0
-    ee.ldxq.32 q0,q2,a5,1,2
-    ee.ldxq.32 q0,q2,a5,2,4
-    ee.ldxq.32 q0,q2,a5,3,6
+    signword 0,12
     addi a3,a3,5
-    .if \unaligned
-    wur.sar_byte a12
-    .endif
-    // Two prefix steps supply ten older signs; duplicate bits OR together.
-    .rept 2
-    ee.src.q q1,q4,q0
-    ee.vsl.32 q1,q1
-    ee.andq q1,q1,q7
-    ee.orq q0,q0,q1
-    .endr
-    .if \unaligned
-    wur.sar_byte a13
-    ee.srcq.128.st.incp q4,q0,a2
-    .else
-    ee.vst.128.ip q0,a2,16
-    .endif
-    ee.orq q4,q0,q0
-    .endm
-    extui a13,a2,0,4
-    bnez a13,.Lsigns_unaligned
-    loopnez a4,.Lsigns_end
-    sign_groups 0
+    addi a2,a2,16
 .Lsigns_end:
-    ee.movi.32.a q4,a2,3
-    retw
-.Lsigns_unaligned:
-    sub a2,a2,a13
-    neg a13,a13
-    extui a13,a13,0,4
-    loopnez a4,.Lsigns_unaligned_end
-    sign_groups 1
-.Lsigns_unaligned_end:
-    ee.srcq.128.st.incp q4,q4,a7
-    ee.movi.32.a q4,a2,3
+    mov a2,a11
     retw
     .size dvbs2_pie_signs,.-dvbs2_pie_signs
 
@@ -929,6 +895,71 @@ dvbs2_pie_lofty_store:
     ee.srcq.128.st.incp q4,q0,a6
     retw
     .size dvbs2_pie_lofty_store,.-dvbs2_pie_lofty_store
+
+// Backwards in-place PL expansion: source aligned, destination at least 32 B
+// above it. The caller preserves bytes outside the destination. The preceding
+// source vector is readable; framing supplies the first shifted halfword.
+    .align 4
+    .global dvbs2_pie_lofty_move
+    .type dvbs2_pie_lofty_move,@function
+    .macro lofty_move_loop shift,unaligned,name
+    .if !\unaligned
+    addi a2,a2,-16
+    .endif
+    loopnez a4,.Lmove_end_\name
+    ee.vld.128.ip q0,a3,-16
+    .if \shift
+    ee.vld.128.ip q1,a3,0
+    wur.sar_byte a10
+    ee.src.q q2,q1,q0
+    ee.vsr.32 q3,q0
+    ee.andq q3,q3,q6
+    ee.vsl.32 q2,q2
+    ee.andq q2,q2,q7
+    ee.orq q0,q2,q3
+    .endif
+    .if \unaligned
+    wur.sar_byte a9
+    ee.src.q q3,q0,q4
+    ee.vst.128.ip q3,a2,-16
+    ee.orq q4,q0,q0
+    .else
+    ee.vst.128.ip q0,a2,-16
+    .endif
+.Lmove_end_\name:
+    .if \unaligned
+    ee.zero.q q0
+    ee.src.q q3,q0,q4
+    ee.vst.128.ip q3,a2,0
+    .endif
+    retw
+    .endm
+dvbs2_pie_lofty_move:
+    entry a1,32
+    slli a8,a4,4
+    add a3,a3,a8
+    addi a3,a3,-16
+    extui a9,a2,0,4
+    sub a2,a2,a9
+    add a2,a2,a8
+    movi a11,16
+    sub a9,a11,a9
+    ee.zero.q q4
+    bnez a5,.Lmove_shift
+    beqi a9,16,.Lmove_aligned
+    lofty_move_loop 0,1,plain
+.Lmove_aligned:
+    lofty_move_loop 0,0,aligned
+.Lmove_shift:
+    splat q6,0x003f003f
+    splat q7,0x0fc00fc0
+    ssai 6
+    movi a10,14
+    beqi a9,16,.Lmove_shift_aligned
+    lofty_move_loop 1,1,shift
+.Lmove_shift_aligned:
+    lofty_move_loop 1,0,shift_aligned
+    .size dvbs2_pie_lofty_move,.-dvbs2_pie_lofty_move
 
     .section .iram1,"ax"
 
