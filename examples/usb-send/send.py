@@ -153,6 +153,30 @@ def sender_stats():
                 zero_writes=0, write_uncertain=False, output_purged=False)
 
 
+def id_seconds(callsign):
+    # Same 20 WPM marks/spacing as station_id.c, including acquisition silence.
+    # Keep this file standalone; tests compare it with the actual C generator.
+    if not callsign:
+        return 0
+    codes = dict(zip('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/', (
+        '.- -... -.-. -.. . ..-. --. .... .. .--- -.- .-.. -- -. --- .--. '
+        '--.- .-. ... - ..- ...- .-- -..- -.-- --.. '
+        '----- .---- ..--- ...-- ....- ..... -.... --... ---.. ----. -..-.').split()))
+    return .06*(11+sum(sum(4 if mark == '-' else 2 for mark in codes[c])+2 for c in callsign))
+
+
+def stream_timing(cmd, seconds, opening_id, dump):
+    if dump:
+        return math.inf, 5, 120
+    # Radio-off pace adds IDs to payload time; keyed runs include them in the
+    # existing wall-time limit. A full output ring backpressures USB during CW.
+    repeats = max(0, math.ceil(seconds/(540-opening_id))-1) if opening_id else 0
+    paced = cmd.startswith('dvbpace ')
+    extra = (1+repeats)*opening_id if paced else 0
+    wall = seconds+(2+repeats)*opening_id if paced else seconds
+    return max(.1, seconds-2)+extra, max(5, seconds+5, opening_id+5), wall+30
+
+
 def write_all(link, data, timeout=5, stats=None, cancel=None):
     # pyserial's POSIX write_timeout=0 path can busy-loop on EAGAIN inside
     # Serial.write(), bypassing our deadline and cancellation. Use its bounded
@@ -241,13 +265,18 @@ def collect(link, cmd, timeout=10, records=None):
 
 
 def stream(link, source, *, cmd, kind, seconds, dump=False, sink=None, mbps=0,
-           stats=None, rows=None, abort_after=None):
+           stats=None, rows=None, abort_after=None, opening_id=0):
     stop, ready, done = threading.Event(), threading.Event(), threading.Event()
     cancel = threading.Event()
     chunks = queue.Queue(8)
     stats = sender_stats() if stats is None else stats
     rows = [] if rows is None else rows
     parser = Records(sink)
+    if dump:
+        opening_id = 0
+    send_window, write_timeout, completion_timeout = stream_timing(cmd, seconds, opening_id, dump)
+    stats.update(opening_id_seconds=opening_id, write_timeout_seconds=write_timeout,
+                 send_window_seconds=None if dump else send_window)
 
     def produce():
         try:
@@ -277,7 +306,7 @@ def stream(link, source, *, cmd, kind, seconds, dump=False, sink=None, mbps=0,
             started = time.monotonic()
             # Finish early enough to drain the encoder queue before a timed run
             # ends. Source reads live in a daemon so a stalled pipe cannot block EOS.
-            limit = math.inf if dump else started+max(.1, seconds-2)
+            limit = started+send_window
             next_send = started
             while not stop.is_set() and time.monotonic() < limit:
                 try:
@@ -290,10 +319,10 @@ def stream(link, source, *, cmd, kind, seconds, dump=False, sink=None, mbps=0,
                     stats['errors'].append(str(data)); break
                 wire = message(data, stats['next_seq'], kind)
                 if abort_after is not None and stats['messages'] >= abort_after:
-                    write_all(link, wire[:17], stats=stats)
+                    write_all(link, wire[:17], timeout=write_timeout, stats=stats)
                     raise OSError('injected partial USB message for radio-off recovery check')
                 # Opening Morse ID/calibration can hold the encoder queue full.
-                write_all(link, wire, timeout=seconds+5 if cmd.startswith('dvb ') else 5, stats=stats, cancel=cancel)
+                write_all(link, wire, timeout=write_timeout, stats=stats, cancel=cancel)
                 stats['messages'] += 1; stats['payload_bytes'] += len(data)
                 stats['ts_packets'] += len(data)//188 if kind == 1 else 0
                 if kind == 1:
@@ -302,7 +331,7 @@ def stream(link, source, *, cmd, kind, seconds, dump=False, sink=None, mbps=0,
                 if mbps:
                     next_send = max(next_send, time.monotonic()-len(data)*8/(mbps*1e6)) + len(data)*8/(mbps*1e6)
                     stop.wait(max(0, min(next_send, limit)-time.monotonic()))
-            write_all(link, message(b'', stats['next_seq'], 0), stats=stats, cancel=cancel)
+            write_all(link, message(b'', stats['next_seq'], 0), timeout=write_timeout, stats=stats, cancel=cancel)
             stats['terminal_nop'] = True
         except Exception as e:
             # A write failure has an uncertain byte count. Never retry or append
@@ -325,7 +354,7 @@ def stream(link, source, *, cmd, kind, seconds, dump=False, sink=None, mbps=0,
     try:
         write_all(link, cmd.encode()+b'\n')
         producer.start(); sender.start(); launched = True
-        deadline = time.monotonic() + (120 if dump else seconds+30)
+        deadline = time.monotonic()+completion_timeout
         while time.monotonic() < deadline:
             data = link.read(8192)
             if data and dump:
@@ -405,7 +434,20 @@ def check_run(stats, rows, dump=False, require_eof=False):
     if r.get('encoder_stack_min_free', 256) < 256:
         raise ValueError('encoder stack reserve below 256 bytes')
     capacity = 8*r['payload_bytes_per_frame']*r['symbol_rate']/r['frame_symbols']/1e6
-    return dict(payload_mbps=u['mbps'], run_mbps=u['payload_bytes']*8/r['seconds']/1e6 if 'seconds' in r else None,
+    # Whole-second receive bins omit startup/CW backpressure and the partial
+    # final second. Retain the original wall rate and all raw counters too.
+    measured_us, measured_bytes, measured_mbps = u['us'], u['payload_bytes'], u['mbps']
+    start_second = None
+    if not dump and 'trace' in u:
+        opening = r.get('id_samples', 0)/r.get('dac_rate', 40000000)
+        start_second = math.ceil(opening+.2)  # encoder prefill is bounded at 100 ms
+        end_second = min(len(u['trace']), u['last_message_us']//1000000)
+        measured_us = max(0, end_second-start_second)*1000000
+        measured_bytes = sum(t['payload_bytes'] for t in u['trace'][start_second:end_second])
+        measured_mbps = measured_bytes*8/measured_us if measured_us else 0
+    return dict(payload_mbps=measured_mbps, measurement_us=measured_us,
+                measurement_payload_bytes=measured_bytes, measurement_start_second=start_second,
+                wall_payload_mbps=u['mbps'], run_mbps=u['payload_bytes']*8/r['seconds']/1e6 if 'seconds' in r else None,
                 mode_mbps=capacity, frames=r['frames_encoded'], dummies=r['underruns'], usb=u)
 
 
@@ -523,7 +565,8 @@ def main(argv=None):
             print(f'{cmd}; {capacity:.3f} Mb/s mode payload; callsign={callsign or "unset"}', file=sys.stderr)
             stats, rows = stream(link, source, cmd=cmd, kind=1 if kind == 'ts' else 2,
                                  seconds=a.seconds, dump=bool(a.dump), sink=sink, mbps=a.mbps,
-                                 stats=report['sender'], rows=report['records'], abort_after=a.abort_after)
+                                 stats=report['sender'], rows=report['records'], abort_after=a.abort_after,
+                                 opening_id=id_seconds(callsign))
             if stats['complete'] and not stats['recovery']:
                 collect(link, 'spiinput off', records=report['setup'])
             summary = check_run(stats, rows, bool(a.dump), kind == 'file')

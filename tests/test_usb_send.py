@@ -8,6 +8,7 @@ import io
 import json
 from pathlib import Path
 import struct
+import subprocess
 import sys
 import tempfile
 import threading
@@ -71,6 +72,40 @@ def test_pv():
     assert b''.join(send.payloads(Short(b'abc'*1000), 2)) == b'abc'*1000
     for payload, kind in ((b'a', 0), (b'', 1), (b'', 2), (packet[:-1], 1), (b'X'*188, 1), (b'a'*1317, 2)):
         rejects(send.message, payload, 0, kind)
+
+
+def test_id_timing():
+    # Compare laptop timing with the real station ID generator, not another
+    # Python copy. Cover every Morse character, max length and both DAC rates.
+    calls = ['N0CALL', 'A'+'0'*22]+['A0'+c for c in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789']+['A0/A']
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp); source = folder/'cw.c'; exe = folder/'cw'
+        source.write_text('''#include "station_id.h"
+#include <assert.h>
+#include <stdio.h>
+int main(int argc,char **argv) {
+    station_id_t id;
+    for(int i=1;i<argc;++i) for(unsigned scale=1;scale<=2;++scale) {
+        assert(station_id_init_rate(&id,argv[i],1,scale*STATION_RATE,NULL,NULL));
+        printf("%.9f\\n",(double)id.length/(scale*STATION_RATE));
+    }
+}''')
+        station = ROOT/'firmware/components/station_id'
+        subprocess.run(['cc', '-std=c11', '-O2', '-I'+str(station/'include'), str(source),
+                        str(station/'station_id.c'), '-lm', '-o', str(exe)], check=True)
+        actual = list(map(float, subprocess.check_output([str(exe), *calls], text=True).splitlines()))
+    for call, a, b in zip(calls, actual[::2], actual[1::2]):
+        assert abs(send.id_seconds(call)-a) < 1e-8 and a == b
+    assert abs(send.id_seconds('N0CALL')-5.22) < 1e-8 and send.id_seconds('') == 0
+    window, timeout, completion = send.stream_timing('dvbpace 4 20', 20, 5.22, False)
+    assert window == 23.22 and timeout == 25 and abs(completion-60.44) < 1e-8
+    assert send.stream_timing('dvb 2400 4 20 0', 20, 5.22, False) == (18, 25, 50)
+    assert send.stream_timing('dvbdump 4 24', 20, 5.22, True) == (float('inf'), 5, 120)
+    # A long callsign and the periodic ID in a 600 s radio-off run also fit.
+    cw = send.id_seconds(calls[1])
+    assert send.stream_timing('dvbpace 4 1', 1, cw, False)[1] > cw
+    assert send.stream_timing('dvbpace 4 600', 600, cw, False)[0] == 598+2*cw
+    print('ID timing: actual C Morse generator, all characters, long callsign, 40/80 MHz, paced/keyed/dump budgets: ok')
 
 
 class Peer:
@@ -148,6 +183,42 @@ class Peer:
             return data
 
 
+def test_id_backpressure():
+    class CWPeer(Peer):
+        write_timeout = 5
+        def __init__(self, before_pause):
+            super().__init__(); self.before_pause = before_pause; self.paused = False
+        def write(self, data):
+            # No wall-clock sleep: a finite-write transport rejects a timeout
+            # shorter than the opening CW pause. The native adapter scheduling
+            # model tests the actual queue/clock sequence separately.
+            if self.started and self.messages >= self.before_pause and not self.paused:
+                self.paused = True
+                if self.write_timeout < 5.22:
+                    with self.condition:
+                        self.finish(recovery=True); self.condition.notify_all()
+                    raise TimeoutError('write deadline expired during opening CW')
+            return super().write(data)
+    for before_pause in (0, 11, 27):
+        source = bytes(1316*before_pause)  # pause can block EOS too, not just data
+        peer = CWPeer(before_pause)
+        stats, rows = send.stream(peer, io.BytesIO(source), cmd='dvbpace 4 20', kind=2,
+                                  seconds=20, opening_id=5.22)
+        assert peer.paused and peer.nop and not stats['errors'] and stats['write_timeout_seconds'] == 25
+        if source:
+            send.check_run(stats, rows)
+    for before_pause in (11, 27):
+        peer = CWPeer(before_pause)
+        stats, rows = send.stream(peer, io.BytesIO(bytes(1316*30)), cmd='dvbpace 4 20', kind=2,
+                                  seconds=20, opening_id=5.22)
+        assert peer.paused and peer.nop and not stats['errors'] and stats['source_eof']
+        send.check_run(stats, rows)
+    # The regression peer actually rejects the previous five-second policy.
+    peer = CWPeer(0); send.write_all(peer, b'dvbpace 4 20\n')
+    rejects(send.write_all, peer, send.message(b'a', 0, 2), timeout=5)
+    print('USB writer: opening-ID backpressure survives on data and terminal NOP; old timeout fails: ok')
+
+
 def test_stream():
     data = b'hello\n'*1000
     for dump in (False, True):
@@ -169,6 +240,18 @@ def test_stream():
         rejects(send.check_run, stats, bad, dump)
         bad = copy.deepcopy(report); next(r['usb'] for r in bad['records'] if 'usb' in r)['mbps'] = 3.4
         rejects(check.gates, bad, saturation=True)
+        if not dump:
+            # A high aggregate rate cannot conceal a dead reader after CW.
+            bad = copy.deepcopy(report); run = next(r for r in bad['records'] if 'usb' in r)
+            run.update(id_samples=208800000, dac_rate=40000000)
+            run['usb'].update(last_message_us=23000001,
+                              trace=[dict(reads=20000, payload_bytes=0) for _ in range(31)])
+            rejects(check.gates, bad, saturation=True)
+            rejects(check.gates, bad, paced=True)
+            # Do not qualify a short burst as a sustainable 15-second run.
+            bad = copy.deepcopy(report); next(r['usb'] for r in bad['records'] if 'usb' in r)['us'] = 14999999
+            rejects(check.gates, bad, saturation=True)
+            rejects(check.gates, bad, paced=True)
     packet = bytes((0x47, 1, 0, 0x10))+bytes(184)
     stats, rows = send.stream(Peer(), Short(packet*80), cmd='dvbpace 4 20', kind=1, seconds=20)
     send.check_run(stats, rows)
@@ -421,6 +504,6 @@ if __name__ == '__main__':
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--receiver', type=Path)
     a = p.parse_args()
-    test_container(); test_pv(); test_stream(); test_safety(); test_failure_reports(); test_reenumeration_and_cancel(); test_coordinator()
+    test_container(); test_pv(); test_id_timing(); test_id_backpressure(); test_stream(); test_safety(); test_failure_reports(); test_reenumeration_and_cancel(); test_coordinator()
     if a.receiver:
         test_decode(a.receiver)

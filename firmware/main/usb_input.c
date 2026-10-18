@@ -23,9 +23,19 @@ static uint64_t wire_bytes;
 static uint32_t fifo_bytes, driver_bytes, fifo_reads, waits, timer_errors;
 static uint32_t rx_reenabled, driver_queue_max;
 static int64_t first, last;
+// First 64 seconds, relative to ready. No logging on either timed core. These
+// distinguish a full output ring during CW from a reader starved after CW.
+#define TRACE_SECONDS 64
+static struct { uint32_t reads, payload_bytes; } trace[TRACE_SECONDS];
+static int64_t trace_start;
 static esp_timer_handle_t timer;
 static TaskHandle_t waiter;
 static portMUX_TYPE rx_mux=portMUX_INITIALIZER_UNLOCKED;
+
+static unsigned trace_second(void)
+{
+    return (esp_timer_get_time()-trace_start)/1000000;
+}
 
 // Driver ISR and encoder are both on core 0. Protect the shared enable register
 // against the TX ISR's read/modify/write, without disabling console TX.
@@ -74,12 +84,15 @@ esp_err_t usb_input_start(unsigned type)
     partial=0; ended=false; active=true;
     wire_bytes=0; fifo_bytes=driver_bytes=fifo_reads=waits=timer_errors=0; first=last=0;
     rx_reenabled=driver_queue_max=0;
+    memset(trace,0,sizeof trace); trace_start=esp_timer_get_time();
     printf("@{\"cmd\":\"usbinput\",\"ready\":true,\"message_bytes\":1332,\"rx\":\"driver+fifo\"}\n");
     return ESP_OK;
 }
 
 static size_t read_bytes(uint8_t *dst, size_t n)
 {
+    const unsigned second=trace_second();
+    if (second<TRACE_SECONDS) trace[second].reads++;
     // Console TX uses the driver's unlocked interrupt-enable RMW. A task
     // preempted before our initial RX mask can later store its old RX bit.
     // Exclude the core-0 USB ISR throughout this ordered, nonblocking handoff:
@@ -109,7 +122,10 @@ static void wait_packet(void)
 {
     // A full USB packet is only 64 bytes. A one-tick poll would cap intake near
     // 0.5 Mb/s. A short timer sleep wakes the encoder without occupying core 1
-    // or spinning beside the PSRAM encoder. No timer runs during encoding.
+    // or spinning beside the PSRAM encoder. RX runs INLINE in the encoder on
+    // core 0, not in a lower-priority reader task. This notification blocks the
+    // task; output-slot waits also block. The timed core-1 fill never waits on
+    // USB: it uses dummy frames if the output queue is empty.
     waiter=xTaskGetCurrentTaskHandle();
     ulTaskNotifyTake(pdTRUE,0);
     if (esp_timer_start_once(timer,50)!=ESP_OK) { timer_errors++; vTaskDelay(1); return; }
@@ -146,7 +162,10 @@ size_t usb_input_read(uint8_t *dst, size_t n)
 {
     size_t got=0;
     while (got<n) {
-        got+=ingress_read(&ring,dst+got,n-got);
+        const size_t copied=ingress_read(&ring,dst+got,n-got);
+        const unsigned second=trace_second();
+        if (second<TRACE_SECONDS) trace[second].payload_bytes+=copied;
+        got+=copied;
         if (got==n || ended || !receive()) break;
     }
     return got;
@@ -168,11 +187,21 @@ void usb_input_print(void)
            ",\"next_seq\":%u,\"ts_packets\":%"PRIu32",\"crc_chain\":%"PRIu32
            ",\"wire_bytes\":%"PRIu64",\"partial_bytes\":%u,\"ended\":%s,\"us\":%lld,\"mbps\":%.3f"
            ",\"fifo_bytes\":%"PRIu32",\"driver_bytes\":%"PRIu32",\"fifo_reads\":%"PRIu32",\"waits\":%"PRIu32",\"timer_errors\":%"PRIu32
-           ",\"rx_reenabled\":%"PRIu32",\"driver_queue_max\":%"PRIu32",\"driver_pending\":%u,\"intr_ena\":%"PRIu32"}",
+           ",\"rx_reenabled\":%"PRIu32",\"driver_queue_max\":%"PRIu32",\"driver_pending\":%u,\"intr_ena\":%"PRIu32,
            s->bytes,s->msgs,s->bytes,s->nops,s->err_short,s->err_header,s->err_crc,s->err_sync,
            s->lost,s->seq_back,ring.wrong_type,ring.seq_next,s->ts_packets,s->crc_chain,
            wire_bytes,(unsigned)partial,ended?"true":"false",(long long)us,
            us ? s->bytes*8.0/us : 0.0,fifo_bytes,driver_bytes,fifo_reads,waits,timer_errors,rx_reenabled,driver_queue_max,(unsigned)pending,rx_mask);
+    const int64_t elapsed=esp_timer_get_time()-trace_start;
+    unsigned count=elapsed/1000000+1;
+    if (count>TRACE_SECONDS) count=TRACE_SECONDS;
+    printf(",\"last_message_us\":%lld,\"trace_elapsed_us\":%lld,\"trace\":[",
+           (long long)(last ? last-trace_start : 0),(long long)elapsed);
+    for (unsigned i=0;i<count;++i) {
+        printf("%s{\"reads\":%"PRIu32",\"payload_bytes\":%"PRIu32"}",
+               i ? "," : "",trace[i].reads,trace[i].payload_bytes);
+    }
+    printf("]}");
 }
 
 void usb_input_finish(void)

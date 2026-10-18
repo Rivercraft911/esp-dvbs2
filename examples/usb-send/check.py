@@ -26,7 +26,9 @@ def gates(report, *, saturation=False, paced=False):
     # These runs stop the sender two seconds early, leaving queue-drain time.
     if not u['ended'] or u['messages'] != report['sender']['messages'] or u['payload_bytes'] != report['sender']['payload_bytes']:
         raise ValueError('sender/board message or byte count differs')
-    if saturation and (u['us'] < 15000000 or summary['payload_mbps'] < 3.5):
+    if (saturation or paced) and summary['measurement_us'] < 15000000:
+        raise ValueError(f'less than 15 seconds of steady payload intake: {summary}')
+    if saturation and summary['payload_mbps'] < 3.5:
         raise ValueError(f'USB sustainable payload below 3.5 Mb/s: {summary}')
     if paced and summary['payload_mbps'] < .98*summary['mode_mbps']:
         raise ValueError(f'USB sender missed mode payload rate: {summary}')

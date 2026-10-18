@@ -168,6 +168,14 @@ Its console protocol:
   driver is essential: console TX can restore an older interrupt-enable value after a pause.
   Console TX remains with the driver; the prior RX-enable bit is restored after the session.
   When the encoder pauses, the endpoint applies USB backpressure.
+- The opening station ID also pauses the encoder once its output ring fills.
+  Write timeouts must cover the ID (5.22 seconds for N0CALL), including writes of
+  the final NOP. Radio-off pace adds ID time to the requested payload duration;
+  the keyed run retains its wall-time limit. RX runs in the encoder task itself,
+  with notification sleeps for input and output waits. `usb.trace[i]` records
+  read calls and payload bytes in each second after ready (first 64 seconds), so
+  the result exposes whether reception resumes after ID. `last_message_us` uses
+  the same origin; `us`/`mbps` retain the first-to-last-message wall measurement.
 - After a run, a missing NOP prints an error and restarts the S3 within three seconds, with
   RF already off. Partial binary data is never passed to the console parser. The sender keeps
   reading after write failures to save the board counters and restart status in its report,

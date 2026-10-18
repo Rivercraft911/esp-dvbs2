@@ -1,5 +1,7 @@
 """Compile the actual USB adapter and PV parser against fragmented fake driver reads. No ports."""
 from pathlib import Path
+import importlib.util
+import json
 import subprocess
 import tempfile
 
@@ -66,10 +68,12 @@ static unsigned ulTaskNotifyTake(int clear,unsigned wait) {
     if(wait && timer_active) { now+=50; timer_active=false; timer_callback(NULL); return 1; }
     return 0;
 }
-static uint8_t wire[1332*2048];
+static uint8_t wire[1332*8192];
 static bool paced_source;
 static size_t acknowledged, credit_stalls;
 static int64_t next_packet;
+static int64_t host_timeout, host_progress;
+static bool host_failed;
 static size_t wire_len, wire_at, fragment, calls, queued;
 static uint8_t driver_queue[8192];
 static size_t steal_after, stolen, steal_size=1024;
@@ -106,10 +110,11 @@ static unsigned usb_serial_jtag_ll_read_rxfifo(uint8_t *dst,unsigned n) {
     if (paced_source) {
         // Host offers one USB packet per 111 us (~4.6 Mb/s). The hardware
         // FIFO holds two packets; a full FIFO NAKs rather than dropping bytes.
-        while(next_packet<=now && acknowledged<wire_len) {
+        if(host_timeout && now-host_progress>=host_timeout) host_failed=true;
+        while(!host_failed && next_packet<=now && acknowledged<wire_len) {
             const size_t packet=wire_len-acknowledged<64 ? wire_len-acknowledged : 64;
             if(acknowledged-wire_at+packet>128) { ++credit_stalls; next_packet=now; break; }
-            acknowledged+=packet; next_packet+=111;
+            acknowledged+=packet; next_packet+=111; host_progress=now;
         }
         if(n>acknowledged-wire_at) n=acknowledged-wire_at;
     } else if (++calls%3==0) return 0;
@@ -172,6 +177,60 @@ static void competing_readers(void) {
     }
     steal_after=0; rx_enabled=true;
     puts("competing RX readers: old one-shot drain strands 1024 bytes; guarded reader recovers exact stream: ok");
+}
+
+// Run the actual blocking USB adapter with finite output slots, CW on core 1,
+// and a host that abandons writes after no progress. The core-0 encoder cannot
+// read more input while every output slot is occupied. Give both cores ideal
+// scheduling: a 5 s host timeout STILL expires during the 5.22 s opening ID.
+static void opening_id_backpressure(void) {
+    for(unsigned ts=0;ts<2;++ts) for(unsigned fixed=0;fixed<2;++fixed) {
+        wire_len=wire_at=queued=acknowledged=credit_stalls=0;
+        paced_source=true; fragment=64; steal_after=0;
+        const unsigned messages=ts?1834:7600;
+        for(unsigned i=0;i<messages;++i) append(ts?PV_TS:PV_GCS,i,1316,0);
+        append(PV_NOP,messages,0,0);
+        assert(usb_input_start(ts?PV_TS:PV_GCS)==ESP_OK);
+        const int64_t start=now;
+        next_packet=host_progress=now; host_failed=false;
+        host_timeout=fixed?25000000:5000000; // actual send.py policy for a 20 s run
+        const unsigned slots=ts?8:2, bytes=ts?4016:5370;
+        const int64_t frame_us=ts?33282:4439;
+        int64_t next_play=start+100000+5220000;
+        unsigned produced=0, consumed=0;
+        uint8_t frame[5370]; size_t pending=0, total=0;
+        uint32_t crc=0;
+        while(!ended && !host_failed) {
+            // Core 1 consumes one frame each frame interval, after CW. When
+            // full, the encoder BLOCKS on the consumer's slot notification.
+            while(produced>consumed && next_play<=now) { ++consumed; next_play+=frame_us; }
+            if(produced-consumed==slots) {
+                if(now<next_play) now=next_play;
+                ++consumed; next_play+=frame_us;
+            }
+            const size_t n=usb_input_read(frame+pending,bytes-pending);
+            crc=pv_crc32(crc,frame+pending,n); total+=n; pending+=n;
+            if(pending==bytes) { now+=ts?3000:2100; pending=0; ++produced; }
+            else if(!n) vTaskDelay(1);
+        }
+        if(fixed) {
+            uint32_t expected=0;
+            for(unsigned i=0;i<messages;++i) expected=pv_crc32(expected,wire+i*1332+12,1316);
+            assert(!host_failed && ended && total==messages*1316 && crc==expected);
+            assert(trace[6].reads && trace[6].payload_bytes); // live after the ID handoff
+            for(unsigned second=1;second<5;++second) assert(!trace[second].reads); // full output ring
+            assert(ring.st.err_crc==0 && ring.st.lost==0 && !queued);
+            printf("CW scheduling model: %s, 25 s timeout survives ID, %u intact messages; reader active after ID: ok\n",ts?"TS":"GCS",messages);
+        } else {
+            assert(host_failed && !ended && now-start>=5220000 && total<40000);
+            printf("CW scheduling negative control: %s, 5 s timeout abandons a healthy blocked reader before ID ends: reproduced\n",ts?"TS":"GCS");
+            // Discarding an uncertain write must recover through restart.
+            wire_len=wire_at; acknowledged=wire_at;
+        }
+        usb_input_stop(); usb_input_print(); puts(""); usb_input_finish();
+        assert(!allocated && !active && rx_enabled && !timer_exists);
+        host_timeout=0; host_failed=false;
+    }
 }
 int main(void) {
     competing_readers();
@@ -270,6 +329,7 @@ int main(void) {
         usb_input_stop(); usb_input_finish();
         assert(!allocated && !active && rx_enabled && !timer_exists && restarts==1);
     }
+    opening_id_backpressure();
     puts("USB adapter: short/idle reads, stream splits, wrap, CRC, gaps, duplicates, type, FIFO ownership without RX edges, bounded restart recovery and allocation failures: ok");
 }
 '''
@@ -289,7 +349,29 @@ def main():
                         '-I'+str(ROOT/'firmware/main'), '-I'+str(ingress/'include'),
                         str(folder/'app.c'), str(ingress/'ingress.c'), str(ingress/'ingress_pattern.c'),
                         '-o', str(exe)], check=True)
-        subprocess.run([str(exe)], check=True, timeout=10)
+        output = subprocess.check_output([str(exe)], text=True, timeout=10)
+        spec = importlib.util.spec_from_file_location('usb_send', ROOT/'examples/usb-send/send.py')
+        send = importlib.util.module_from_spec(spec); spec.loader.exec_module(send)
+        lines = output.splitlines()
+        for i, line in enumerate(lines):
+            if line.startswith('CW scheduling model:'):
+                u = json.loads('{'+lines[i+1][1:]+'}')['usb']
+                ts = 'TS,' in line
+                row = dict(usb=u, status='ESP_OK', encoder_failed=False, frames_encoded=1,
+                           underruns=0, late_fills=0, late_switches=0, fatal_late=0, min_fill_slack_cycles=1,
+                           id_samples=208800000, dac_rate=40000000, seconds=20,
+                           payload_bytes_per_frame=4016 if ts else 5370, symbol_rate=1000000 if ts else 5000000,
+                           frame_symbols=33282 if ts else 22194)
+                stats = dict(errors=[], terminal_nop=True, source_eof=True, messages=u['messages'],
+                             payload_bytes=u['payload_bytes'], next_seq=u['messages'],
+                             ts_packets=u['ts_packets'], crc_chain=u['crc_chain'])
+                summary = send.check_run(stats, [row])
+                assert summary['measurement_us'] >= 15000000
+                assert summary['payload_mbps'] >= (.98*summary['mode_mbps'] if ts else 3.5)
+                assert sum(t['payload_bytes'] for t in u['trace']) == u['payload_bytes']
+                print(f"{'TS' if ts else 'GCS'} scheduling model: steady {summary['payload_mbps']:.3f} Mb/s over {summary['measurement_us']/1e6:.0f} s; wall rate {u['mbps']:.3f} Mb/s (simulation only)")
+            if not line.startswith(('@', ',')):
+                print(line)
 
 
 if __name__ == '__main__':
