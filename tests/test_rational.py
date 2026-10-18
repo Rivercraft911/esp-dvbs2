@@ -39,6 +39,7 @@ def test(output=None, receiver=None):
             assert len(dumps) == 2 and dumps[0]['crc32'] == dumps[1]['crc32']
             r = dumps[0]
             assert r['rolloff'] == alpha and r['sps'] == num/den
+            assert r['warmup_frames'] == 3
             assert r['sps_num'] == num and r['sps_den'] == den
             assert r['symbol_rate'] == 80000000*den//num
             assert r['pulse_symbols'] == span and r['ring_slots'] == 0

@@ -30,6 +30,7 @@ def kernels(text):
         assert len(jitter) == 2
         for r in jitter:
             assert r['worst_bank']['cycles'] == 12345 and r['worst_bank']['irqs'] >= 1
+            assert r['worst_bank']['notify_calls'] == 1 and r['worst_bank']['notify_cycles'] == 321
             assert all(sum(p['calls'] for p in c) >= 1 for c in r['cores'])
             for core,c in enumerate(r['cores']):
                 assert any(f'FROM_CPU_INTR{core}' in p['sources'] for p in c)
@@ -75,6 +76,7 @@ def check(out, receiver=None):
         assert len(dumps) == 2 and dumps[0]['crc32'] == dumps[1]['crc32']
         r = dumps[0]
         assert r['fill_kernel'] == 'lofty-queue' and r['ring_format'] == 'words'
+        assert r['warmup_frames'] == 3 and r['bch_variant'] == ('resident-pair' if mc == 17 else 'resident-byte')
         assert r['sps_num'] == 3 and r['sps_den'] == 1 and r['rolloff'] == .35
         assert r['pulse_symbols'] == 5 and r['table_bytes'] == 36864
         assert r['queue_pages'] == {13:48,15:49,17:44}[mc] and r['queue_empty'] == r['underruns'] == r['overlap_mismatches'] == 0

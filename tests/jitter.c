@@ -76,16 +76,24 @@ int main(void)
         perf[ERI_PERFMON_PM0/4] = UINT32_MAX-10;
         perf[ERI_PERFMON_PM1/4] = UINT32_MAX-20;
         radio_s3_profile_bank_begin();
+        // Two wakes in separate callback fragments of the same bank. The
+        // following bank begins at zero, including one with no notification.
+        if (i%3) {
+            stream_jitter_notify(100+i);
+            stream_jitter_notify(200+i);
+        }
         for (unsigned n = 0; n < i%5; ++n) fire(7);
         perf[ERI_PERFMON_PM0/4] += 50;
         perf[ERI_PERFMON_PM1/4] += 60;
         radio_s3_profile_bank_end(elapsed[i],i&1,15740*i);
+        if (i == 8) assert(worst.notify_calls == 2 && worst.notify_cycles == 316 && worst.notify_max_cycles == 208);
     }
     radio_s3_profile_stop();
     assert(!memcmp(saved,_xt_interrupt_table,sizeof saved));
     assert(!memcmp(saved_perf,perf,sizeof perf));
     assert(worst.cycles == 47220 && worst.irqs == 4 && worst.irq_cycles == 400);
     assert(worst.data_busy == 50 && worst.high_irq_entries == 60 && worst.vectors == (1u<<7));
+    assert(worst.notify_calls == 0 && worst.notify_cycles == 0);
     assert(buckets[0][0].calls == 1 && buckets[0][0].histogram[0] == 1);
     assert(buckets[1][0].calls == 1 && buckets[1][0].histogram[3] == 1);
     printf("{\"test\":\"jitter\""); stream_jitter_print(); puts("}");
@@ -101,6 +109,8 @@ int main(void)
     stream_jitter_core_stop();
     assert(!memcmp(saved,_xt_interrupt_table,sizeof saved));
     stream_jitter_enable(0); stream_jitter_core_start(); stream_jitter_core_stop();
+    stream_jitter_notify(999);
+    assert(mark.notify_calls == 0);
     assert(!memcmp(saved,_xt_interrupt_table,sizeof saved));
     return 0;
 }

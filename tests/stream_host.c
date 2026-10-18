@@ -342,7 +342,7 @@ int main(int argc, char **argv)
         assert(live_allocations == 0);
         for (unsigned i = 0; i < 4; ++i) assert(native_ranges[i] == 0);
     }
-    if (!native_input && (mc == 11 || mc == 15 || mc == 17)) {
+    if (!native_input && (mc == 11 || mc == 13 || mc == 15 || mc == 17)) {
         // Legacy pace uses main's contiguous stream. New modes copy one repeated
         // internal frame. Compare actual output through many source/frame wraps.
         x = SEED;
@@ -360,6 +360,7 @@ int main(int argc, char **argv)
         const bool heap_input = enc.input && !enc.input_borrowed;
         assert(pace_allocations == allocations+(int)heap_input);
         assert((enc.input != NULL) == moon);
+        assert(enc.warmup_frames == (moon ? 3u : 0u));
         if (moon) {
             if (quads) {
                 assert(!enc.input_borrowed);

@@ -115,7 +115,6 @@ typedef struct {
     dvbs2_fast *fast;               // fast encoder context for this mode, internal RAM
     dvbs2_workspace *ws;            // internal for fast QPSK / 4-sps 8PSK, otherwise PSRAM
     uint8_t *tables;               // moon: complete resident encoder data
-    uint8_t *bch_slices;           // lofty t=10/12: optional four-byte tables in cached PSRAM
     uint8_t *bch;                  // resident byte table with internal workspace, t = 10/12
     bool bch_borrowed;
     bool ws_borrowed;
@@ -134,6 +133,7 @@ typedef struct {
     bool failed;
     volatile bool input_started;
     uint32_t input_waits, input_partial, input_pending, prefill_frames;
+    uint32_t warmup_frames, warmup_cycles;
     uint32_t input_frame_cycles_max;
     SemaphoreHandle_t exited;
     uint32_t frames;                // encoded and published
@@ -200,12 +200,12 @@ static void moon_wait(void)
     if (live && !enc.stop && cycles > dvb.queue_wait_live_max) dvb.queue_wait_live_max = cycles;
 }
 
-static IRAM_ATTR __attribute__((noinline)) int moon_map(void)
+static IRAM_ATTR __attribute__((noinline)) int moon_map(bool warmup)
 {
     if ((dvb.lofty ? dvbs2_fast_lofty_start(enc.fast,enc.ws,&dvb.mapper) :
                      dvbs2_fast_sign_start(enc.fast,enc.ws,&dvb.mapper))) return -1;
     while (!enc.stop && dvb.mapper.at < dvb.ring.frame_symbols) {
-        while (!enc.stop && dvb.produced-__atomic_load_n(&dvb.consumed,__ATOMIC_ACQUIRE) == dvb.queue_pages)
+        while (!warmup && !enc.stop && dvb.produced-__atomic_load_n(&dvb.consumed,__ATOMIC_ACQUIRE) == dvb.queue_pages)
             moon_wait();
         if (enc.stop) return -1;
         machine_page *page = dvb.pages ? dvb.pages+dvb.put_index : NULL;
@@ -218,6 +218,9 @@ static IRAM_ATTR __attribute__((noinline)) int moon_map(void)
             const uint16_t *words = dvbs2_fast_lofty_read(enc.fast,&dvb.mapper,&n);
             if (n) dvb.last_word = lofty_prepare(lp->words+dvb.page_blocks,words,n,dvb.last_word);
         } else n = dvbs2_fast_sign_read(enc.fast,&dvb.mapper,page->signs+dvb.page_blocks,room,dvb.sign_lut);
+        // Warm the same mapper/prepare kernels without publishing or advancing
+        // the stream. One owned queue page is enough for every discarded chunk.
+        if (warmup) { dvb.page_blocks = 0; continue; }
         const uint32_t cycles = esp_cpu_get_cycle_count()-before;
         if (cycles > dvb.prepare_max) {
             dvb.prepare_max = cycles;
@@ -252,7 +255,9 @@ static IRAM_ATTR void moon_wake(void)
         ++dvb.queue_wakes;
         const uint32_t before = esp_cpu_get_cycle_count();
         xTaskNotifyGive(enc.task);
-        dvb.wake_bank += esp_cpu_get_cycle_count()-before;
+        const uint32_t cycles = esp_cpu_get_cycle_count()-before;
+        dvb.wake_bank += cycles;
+        stream_jitter_notify(cycles);
     }
 }
 
@@ -300,6 +305,19 @@ static __attribute__((noinline)) void payload_fill(uint8_t *dst, size_t n, uint3
     }
     for (size_t i = 0; i < n; ++i) dst[i] = next_byte(&state);
     *x = state;
+}
+
+static void synthetic_payload(encoder_t *e, size_t bytes, uint32_t *seed)
+{
+    if (e->input) {
+        // Match real ingress copy granularity (PV_PAYLOAD_MAX = 1316 B).
+        // DMA, CRC and descriptor handling are outside this copy fixture.
+        for (size_t at = 0; at < bytes; at += PV_PAYLOAD_MAX) {
+            const size_t n = bytes-at < PV_PAYLOAD_MAX ? bytes-at : PV_PAYLOAD_MAX;
+            memcpy(e->payload+at,e->input+at,n);
+        }
+    } else payload_fill(e->payload,bytes,seed);
+    station_payload_header(e->payload,bytes,station_store_get());
 }
 
 // Legacy whole-symbol starts have n % sps == 0. Since sps = 4, 8 or 40 and
@@ -452,6 +470,23 @@ static void encoder_task(void *arg)
     dvbs2_ts_state ts = {0};
     if (spi_input_start() != ESP_OK) { e->failed = true; goto done; }
     e->input_started = true;
+    if (dvb.moon && !input) {
+        // Keep cold instruction/data misses outside playback, without another
+        // frame buffer. Reset seed and all framing history before publication.
+        const uint32_t before = esp_cpu_get_cycle_count();
+        for (unsigned n = 0; n < 3; ++n) {
+            uint32_t seed = SEED;
+            synthetic_payload(e,bytes,&seed);
+            if (dvbs2_fast_bb_gcs(e->fast,e->ws,payload,bytes*8)) { e->failed = true; goto done; }
+            dvbs2_fast_bch(e->fast,e->ws);
+            dvbs2_fast_ldpc(e->fast,e->ws);
+            if (moon_map(true)) { e->failed = true; goto done; }
+            ++e->warmup_frames;
+        }
+        e->warmup_cycles = esp_cpu_get_cycle_count()-before;
+        dvb.mapper = (dvbs2_sign_state){0};
+        dvb.last_word = dvb.page_blocks = 0;
+    }
     for (uint32_t f = 0; !e->stop; ++f) {
         uint8_t *out = NULL;
         while (!dvb.moon && !(out = ring_slot(&dvb.ring, f))) {
@@ -484,18 +519,7 @@ static void encoder_task(void *arg)
             }
             if (e->stop) goto done;
             if (input_cycles > e->input_frame_cycles_max) e->input_frame_cycles_max = input_cycles;
-        } else if (e->input) {
-            // Match the real ingress copy granularity (PV_PAYLOAD_MAX = 1316 B).
-            // DMA, CRC and descriptor handling are outside this copy fixture.
-            for (size_t at = 0; at < bytes; at += PV_PAYLOAD_MAX) {
-                const size_t n = bytes-at < PV_PAYLOAD_MAX ? bytes-at : PV_PAYLOAD_MAX;
-                memcpy(payload+at,e->input+at,n);
-            }
-            station_payload_header(payload, bytes, station_store_get());
-        } else {
-            payload_fill(payload, bytes, &x);
-            station_payload_header(payload, bytes, station_store_get());
-        }
+        } else synthetic_payload(e,bytes,&x);
         if (dvb.profile) {
             const encoder_mark_t after = encoder_mark();
             encoder_mark_t active = before;
@@ -516,7 +540,7 @@ static void encoder_task(void *arg)
                 dvbs2_fast_ldpc(e->fast, e->ws);
                 before = encoder_record(&e->stage[3],before);
                 if (dvb.moon) {
-                    rc = moon_map();
+                    rc = moon_map(false);
                 } else if (e->packed) {
                     dvbs2_fast_map_packed(e->fast, e->ws, out);
                 } else {
@@ -588,8 +612,6 @@ static void release(void)
     heap_caps_free(dvb.samples);
     dvb.samples = NULL;
     heap_caps_free(enc.tables);
-    heap_caps_free(enc.bch_slices);
-    enc.bch_slices = NULL;
     heap_caps_free(enc.fast);
     if (!enc.input_borrowed) heap_caps_free(enc.input);
     enc.input = NULL;
@@ -661,7 +683,7 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
     dvb.sample_end = dvb.sample_at = 0;
     dvb.wake_pending = false;
     dvb.profile = !strcmp(cmd, "dvbpace") || !strcmp(cmd, "dvbdump");
-    stream_jitter_enable(!strcmp(cmd,"dvbpace") && moon);
+    stream_jitter_enable(0);
     // The fill phases of a timed run record cycles only; an untimed dump also reads the
     // shared cache counters. Encoder stages always read them.
     dvb.copy.counters = dvb.whole.counters = dvb.partial.counters = !strcmp(cmd, "dvbdump");
@@ -855,14 +877,6 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
             printf("@{\"cmd\":\"%s\",\"error\":\"encoder cache allocation failed\"}\n",cmd);
             return 0;
         }
-        if (lofty && mode->t > 8) {
-            enc.bch_slices = heap_caps_aligned_alloc(16,DVBS2_BCH_SLICE_BYTES,MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-            if (!enc.bch_slices || dvbs2_fast_bch_slices(enc.fast,enc.bch_slices)) {
-                heap_caps_free(taps); release();
-                printf("@{\"cmd\":\"%s\",\"error\":\"BCH slice allocation failed\"}\n",cmd);
-                return 0;
-            }
-        }
     }
     if (enc.packed) {
         dvb.samples = heap_caps_aligned_alloc(16,dvb.cached_words*sizeof *dvb.samples,internal);
@@ -1011,6 +1025,7 @@ static void stop_encoder(void)
     if (dvb.moon) printf(",\"queue_wait_cycles\":%" PRIu64 ",\"queue_wait_max_cycles\":%u,\"queue_wait_live_max_cycles\":%u,\"prepare_max_ticks\":%u,\"queue_page_gap_max_cycles\":%u,\"queue_page_samples\":%u,\"queue_wake_pages\":%u",
                          dvb.queue_wait_cycles,(unsigned)dvb.queue_wait_max,(unsigned)dvb.queue_wait_live_max,(unsigned)dvb.prepare_ticks,(unsigned)dvb.page_gap_max,MACHINE_PAGE_SAMPLES,dvb.wake_pages);
     if (dvb.moon) printf(",\"queue_wake_policy\":\"%s\"",dvb.page_wake ? "page" : "bank");
+    if (dvb.moon) printf(",\"warmup_frames\":%u,\"warmup_cycles\":%u",(unsigned)enc.warmup_frames,(unsigned)enc.warmup_cycles);
     if (dvb.moon) printf(",\"encode_work_cycles_mean\":%" PRIu64 ",\"encode_work_cycles_live_max\":%" PRIu32,
                          enc.frames ? enc.work_cycles/enc.frames : 0,enc.work_live_max);
     if (dvb.moon) printf(",\"queue_pages\":%u,\"queue_low_pages\":%u,\"queue_empty\":%u,"
@@ -1035,10 +1050,9 @@ static void stop_encoder(void)
            (unsigned)heap_caps_get_allocated_size(enc.fast),
            enc.bch && !enc.bch_borrowed ? (unsigned)heap_caps_get_allocated_size(enc.bch) : 0,
            enc.bch || enc.tables ? DVBS2_BCH_CACHE_BYTES : 0,
-           enc.bch_slices ? "psram-slices" : enc.tables ? (enc.mode->t == 8 ? "resident-pair" : "resident-byte") : enc.bch ? "resident-byte" : enc.packed && (dvb.moon || enc.mode->bits_per_symbol == 2 || dvb.table.n == 4)
+           enc.tables ? (enc.mode->t == 8 ? "resident-pair" : "resident-byte") : enc.bch ? "resident-byte" : enc.packed && (dvb.moon || enc.mode->bits_per_symbol == 2 || dvb.table.n == 4)
                                       && enc.mode->t == 8 && (enc.quads || enc.mode->bits_per_symbol == 3) && !spi_input_type() ? "flash-pair" : "nibble",
            !enc.packed ? "none" : dvb.lofty ? "words" : dvb.moon ? "signs" : enc.quads ? "quads" : enc.mode->bits_per_symbol == 2 || dvb.table.n == 4 ? "direct" : "sparse");
-    printf(",\"bch_slice_memory\":\"%s\",\"bch_slice_bytes\":%u",enc.bch_slices ? "psram" : "none",enc.bch_slices ? DVBS2_BCH_SLICE_BYTES : 0);
     printf(",\"encoder_stack_bytes\":%u,\"encoder_stack_min_free\":%u", ENCODER_STACK, (unsigned)enc.stack_min_free);
     printf(",\"ring_memory\":\"%s\",\"ring_format\":\"%s\",\"ring_heap_bytes\":%u,"
            "\"payload_memory\":\"%s\",\"slot_waits\":%" PRIu32,
@@ -1048,10 +1062,10 @@ static void stop_encoder(void)
     printf(",\"layout\":{\"table\":\"0x%" PRIxPTR "\",\"fast\":\"0x%" PRIxPTR
            "\",\"workspace\":\"0x%" PRIxPTR "\",\"payload\":\"0x%" PRIxPTR
            "\",\"filler\":\"0x%" PRIxPTR "\",\"bch\":\"0x%" PRIxPTR
-           "\",\"bch_slices\":\"0x%" PRIxPTR "\",\"encoder_tables\":\"0x%" PRIxPTR "\",\"slots\":[",
+           "\",\"encoder_tables\":\"0x%" PRIxPTR "\",\"slots\":[",
            (uintptr_t)dvb.table.blocks, (uintptr_t)enc.fast, (uintptr_t)enc.ws,
            (uintptr_t)enc.payload, (uintptr_t)r->filler, (uintptr_t)enc.bch,
-           (uintptr_t)enc.bch_slices, (uintptr_t)enc.tables);
+           (uintptr_t)enc.tables);
     for (unsigned i = 0; i < r->nslots; ++i) {
         printf(i ? ",\"0x%" PRIxPTR "\"" : "\"0x%" PRIxPTR "\"", (uintptr_t)r->slots[i]);
     }
@@ -1143,17 +1157,18 @@ void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, 
 }
 
 void dvbtx_pace(unsigned modcod, uint32_t seconds, unsigned level, unsigned stall_ms,
-                 unsigned sps, uint32_t dac_rate, bool page_wake)
+                 unsigned sps, uint32_t dac_rate, bool page_wake, bool observer)
 {
     const size_t symbols = start_encoder("dvbpace", modcod, level, stall_ms, sps, dac_rate);
     if (!symbols) {
         return;
     }
     dvb.page_wake = page_wake;
+    stream_jitter_enable(observer && dvb.moon);
     radio_s3_stats_t s;
     const esp_err_t err = (dvb.moon ? radio_s3_paced_wifi_rate : radio_s3_paced_run_rate)(seconds, dac_rate, fill, NULL, &s);
     print_mode("dvbpace", modcod, symbols, level);
-    printf(",\"paced_wifi_up\":%s",dvb.moon ? "true" : "false");
+    printf(",\"paced_wifi_up\":%s,\"jitter_enabled\":%s",dvb.moon ? "true" : "false",observer && dvb.moon ? "true" : "false");
     if (dvb.moon) print_wifi(&s.wifi);
     printf(",\"seconds\":%" PRIu32 ",\"dac_rate\":%" PRIu32 ",\"step_words\":%u", seconds,
            dac_rate, RADIO_S3_STEP_FOR(dac_rate));

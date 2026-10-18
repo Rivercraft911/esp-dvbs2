@@ -31,7 +31,7 @@
 #define GOLD 2720               /* one 8PSK Gold plane, 169 x 16 bytes rounded */
 
 struct dvbs2_fast {
-    const uint8_t *bch, *gold, *prbs, *byte_bch, *bch_slices;
+    const uint8_t *bch, *gold, *prbs, *byte_bch;
     const uint32_t *map;
     const uint16_t *prog, *cols;
     const uint8_t *crc8;
@@ -167,7 +167,6 @@ int dvbs2_fast_prepare(dvbs2_fast *f, const dvbs2_mode *mode, int pilots, unsign
     f->pilot_blocks = pilots ? (f->data_symbols / 90 - 1) / 16 : 0;
     f->pie = pie & (PIE_MASK | DVBS2_BCH_NIBBLE | DVBS2_MAP_SPARSE | DVBS2_MAP_QUADS | DVBS2_RO_20);
     f->ldxq_bias = 0;
-    f->bch_slices = NULL;
 #ifdef DVBS2_PIE
     if (f->pie & DVBS2_PIE_MAP) {
         /* The TRM gives EE.LDXQ.32 the address as + 4 index; Espressif's QEMU
@@ -206,32 +205,6 @@ int dvbs2_fast_cache_bch(dvbs2_fast *f, uint8_t *table)
     const uint8_t *source = f->mode->t == 12 ? fast_bch_byte_12 : fast_bch_byte_10;
     if (table) memcpy(table, source, DVBS2_BCH_CACHE_BYTES);
     f->byte_bch = table ? table : source;
-    return 0;
-}
-
-int dvbs2_fast_bch_slices(dvbs2_fast *f, uint8_t *tables)
-{
-    if (!f || !f->mode || f->mode->t == 8 || ((uintptr_t)tables&15)) return -1;
-    f->bch_slices = tables;
-    if (!tables) return 0;
-    // T0[v] = v*x^r mod g. Tk[v] = v*x^(r+8k) mod g.
-    // Three extra 8 KiB tables, built once. Canonical bytes, low/high vectors
-    // separate as in T0. Dropping r[0] multiplies the canonical remainder
-    // by x^8 before reduction.
-    for (unsigned v = 0; v < 256; ++v) {
-        uint8_t r[32], next[32];
-        memcpy(r,f->byte_bch+16*v,16);
-        memcpy(r+16,f->byte_bch+4096+16*v,16);
-        for (unsigned k = 0; k < 3; ++k) {
-            unsigned first = r[0];
-            for (unsigned j = 0; j < 32; ++j)
-                next[j] = (j == 31 ? 0 : r[j+1]) ^
-                    f->byte_bch[4096*(j/16)+16*first+j%16];
-            memcpy(r,next,32);
-            memcpy(tables+8192*k+16*v,r,16);
-            memcpy(tables+8192*k+4096+16*v,r+16,16);
-        }
-    }
     return 0;
 }
 
@@ -487,11 +460,7 @@ HOT void dvbs2_fast_bch(dvbs2_fast *f, dvbs2_workspace *ws)
     uint32_t w[8] __attribute__((aligned(16))) = {0};
 #ifdef DVBS2_PIE
     if (f->pie & DVBS2_PIE_BCH) {
-        if (f->bch_slices && !(f->pie & DVBS2_BCH_NIBBLE)) {
-            void dvbs2_pie_bch_quad(const uint8_t *, unsigned, const uint8_t *, const uint8_t *, uint8_t *);
-            dvbs2_pie_bch_quad(ws->bits,bytes,f->byte_bch,f->bch_slices,(uint8_t *)w);
-            words = (bytes+3)/4;
-        } else if (f->bch_bytes == 16 && !(f->pie & DVBS2_BCH_NIBBLE)) {
+        if (f->bch_bytes == 16 && !(f->pie & DVBS2_BCH_NIBBLE)) {
             dvbs2_pie_bch_pair(ws->bits, bytes/2, f->byte_bch, (uint8_t *)w);
             words = (bytes + 3) / 4;
         } else if (f->bch_bytes > 16 && !(f->pie & DVBS2_BCH_NIBBLE)) {

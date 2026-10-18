@@ -1,12 +1,13 @@
 # 8PSK at 80/3 Msym/s
 
-The candidate keeps the base GCS tables in internal RAM. The round-three
-t=10/12 BCH path adds 24 KiB of generated tables in cached PSRAM. Its cache
-cost and bank-end wake policy still need a board run. All three
-16-frame waveforms retain their CRCs and decode without corrections. Board
-admission is pending. The coordinator's `3cbf37c` image decoded correctly but
-starved its queue under flash-cache pressure. This round accessed no board or
-radio. [Records and limits](../results/2026-10-17-lofty-ram/README.md).
+The candidate keeps the GCS tables in internal RAM and restores resident
+byte BCH after the round-three PSRAM tables were slower on silicon. Bank-end wakes
+remain the default. Three unpublished encoder warm-up frames reuse one queue
+page, then reset the payload seed and framing histories before prefill.
+The interrupt observer is opt-in. All three 16-frame host waveforms retain
+their pinned CRCs. Prior bit-exact dumps decoded without corrections. Board
+admission is pending. This round accessed no board or radio.
+[Records and limits](../results/2026-10-17-lofty-ram/README.md).
 
 ## Tables and framing
 
@@ -52,6 +53,12 @@ including the mapper, use 23,024/24,176/24,320 B. PRBS storage is sized to the
 active BB frame; BCH, Gold, LDPC program/columns and header CRC stay resident.
 All stage work and input copies remain timed. Only full-queue waits are excluded.
 
+Warm-up allocates no additional frame storage. Its frames and cycles are
+reported separately from published encoder work. Both 8PSK halfword offsets
+are exercised; resetting the mapper and descriptor histories preserves the
+first payload and every frame seam. External SPI input skips synthetic warm-up.
+Cache state after Wi-Fi startup and the opening ID still needs a board check.
+
 At 240 MHz and 80 MS/s, each page covers `1536*3 = 4608 cycles`. After the
 two-page wake threshold and a complete 16,380-sample bank burst, coverage is
 `((pages-2)*1536-16380)*3`: 162,828/167,436/144,396 cycles. The gate compares
@@ -78,12 +85,22 @@ Frame sizes follow EN 302 307-1 clause 5.5; bank geometry is in `radio_s3.h`.
 Trace replay excludes cache/bus stalls and interrupt delays. It establishes
 neither silicon timing nor admission; the full 15% goal remains open.
 
-For the round-three interrupt/bus diagnosis, use
-`caffeinate -i python3 host/jitter.py notes/eight-lofty-round3` after flashing.
-It compares page wakes with bank-end wakes on the same encoder, about 55 s
-per mode, and records per-core C interrupt handlers, per-bank histograms,
-SRAM busy cycles and higher-priority interrupt entries. `--plan` opens no
-device. Only coordinator measurements can establish the cause or timing win.
+For round four, after the coordinator flashes the committed revision, use:
+
+```sh
+caffeinate -i python3 host/jitter.py notes/eight-lofty-round4
+```
+
+Each mode gets a clean 20 s bank-wake gate, then 5 s page- and bank-wake runs
+with `observe`. Including the opening/closing IDs, this is about one minute
+per mode. Clean records require `jitter_enabled: false` and no observer object.
+The diagnostic records pair each worst bank's fill, IRQ and SRAM counters
+with the number, total cycles and longest `xTaskNotifyGive` call in that same
+bank, summed across both physical callbacks. A long call with no IRQ or SRAM
+stall is evidence consistent with a kernel-lock wait, not proof by itself.
+Only the clean run gates admission; diagnostic failures retain their status.
+The runner keeps going after a fault. `--plan` opens no device. No new board
+timing is claimed here; the coordinator must establish startup and margins.
 
 After the coordinator builds/flashes the committed revision with N0CALL:
 

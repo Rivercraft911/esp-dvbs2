@@ -40,7 +40,10 @@ static DRAM_ATTR cpu_t cpu[2];
 static uint8_t routes[2][ETS_MAX_INTR_SOURCE];
 static int enabled;
 static uint32_t perf_saved[5];
-typedef struct { uint32_t calls, cycles, data_busy, high_irq_entries; } mark_t;
+typedef struct {
+    uint32_t calls, cycles, data_busy, high_irq_entries;
+    uint32_t notify_calls, notify_cycles, notify_max_cycles;
+} mark_t;
 static mark_t mark;
 typedef struct {
     uint32_t calls, max_cycles, irq_cycles, data_busy, high_irq_entries;
@@ -49,6 +52,7 @@ typedef struct {
 static bucket_t buckets[2][5];
 static struct {
     uint32_t cycles, irqs, irq_cycles, vectors, data_busy, high_irq_entries, bank;
+    uint32_t notify_calls, notify_cycles, notify_max_cycles;
     uint64_t first;
 } worst;
 
@@ -166,7 +170,18 @@ void IRAM_ATTR radio_s3_profile_bank_begin(void)
     c->mask[0] = c->mask[1] = c->mask[2] = 0;
     mark.data_busy = eri_read(ERI_PERFMON_PM0);
     mark.high_irq_entries = eri_read(ERI_PERFMON_PM1);
+    mark.notify_calls = mark.notify_cycles = mark.notify_max_cycles = 0;
     portCLEAR_INTERRUPT_MASK_FROM_ISR(mask);
+}
+
+// Called on core 1 after timing xTaskNotifyGive itself. Sum both physical
+// callbacks, including page wakes inside shaping, in this bank's record.
+void IRAM_ATTR stream_jitter_notify(uint32_t cycles)
+{
+    if (!enabled) return;
+    ++mark.notify_calls;
+    mark.notify_cycles += cycles;
+    if (cycles > mark.notify_max_cycles) mark.notify_max_cycles = cycles;
 }
 
 void IRAM_ATTR radio_s3_profile_bank_end(uint32_t cycles, unsigned bank, uint64_t first)
@@ -194,6 +209,9 @@ void IRAM_ATTR radio_s3_profile_bank_end(uint32_t cycles, unsigned bank, uint64_
         worst.cycles = cycles; worst.irqs = calls; worst.irq_cycles = spent;
         worst.vectors = vectors; worst.data_busy = data; worst.high_irq_entries = high_irq;
         worst.bank = bank; worst.first = first;
+        worst.notify_calls = mark.notify_calls;
+        worst.notify_cycles = mark.notify_cycles;
+        worst.notify_max_cycles = mark.notify_max_cycles;
     }
     portCLEAR_INTERRUPT_MASK_FROM_ISR(mask);
 }
@@ -213,9 +231,11 @@ void stream_jitter_print(void)
         printf("]}");
     }
     printf("],\"worst_bank\":{\"cycles\":%u,\"irqs\":%u,\"irq_cycles\":%u,\"vectors\":%u,"
-           "\"data_busy\":%u,\"high_irq_entries\":%u,\"bank\":%u,\"first\":%"PRIu64"},\"cores\":[",
+           "\"data_busy\":%u,\"high_irq_entries\":%u,\"bank\":%u,\"first\":%"PRIu64","
+           "\"notify_calls\":%u,\"notify_cycles\":%u,\"notify_max_cycles\":%u},\"cores\":[",
            (unsigned)worst.cycles,(unsigned)worst.irqs,(unsigned)worst.irq_cycles,(unsigned)worst.vectors,(unsigned)worst.data_busy,
-           (unsigned)worst.high_irq_entries,(unsigned)worst.bank,worst.first);
+           (unsigned)worst.high_irq_entries,(unsigned)worst.bank,worst.first,
+           (unsigned)worst.notify_calls,(unsigned)worst.notify_cycles,(unsigned)worst.notify_max_cycles);
     for (unsigned core = 0; core < 2; ++core) {
         printf("%s[",core ? "," : "");
         unsigned printed = 0;
@@ -239,5 +259,6 @@ void stream_jitter_print(void)
 void stream_jitter_enable(int enabled) { (void)enabled; }
 void stream_jitter_core_start(void) {}
 void stream_jitter_core_stop(void) {}
+void stream_jitter_notify(uint32_t cycles) { (void)cycles; }
 void stream_jitter_print(void) {}
 #endif

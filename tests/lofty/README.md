@@ -6,9 +6,10 @@ failure cleanup, repeated commands, counter wraps and three 16-frame decodes.
 The kernel tests cover 4,320 guarded slices, 36 resident-cache mapper frames,
 96 QPSK sign-mapper frames and 4,095 fused QPSK render blocks. Context guards
 use each mode's actual allocation size. Native clocks and heap are synthetic.
-The PIE run also checks four-byte BCH against canonical parity, with guarded
-slice tables, and installs/restores real software interrupt handlers on both
-CPUs twice. Its synthetic observer bank length is not a timing measurement.
+Warm-up must preserve the first payload and all frame seams. The PIE run
+checks resident BCH against canonical parity and installs/restores real
+software interrupt handlers on both CPUs twice, including same-bank notify
+accounting. Its synthetic observer lengths are not timing measurements.
 
 With ESP-IDF v6.1 active:
 

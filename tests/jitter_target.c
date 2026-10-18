@@ -50,6 +50,7 @@ static void worker(void *arg)
         radio_s3_profile_start();
         ESP_ERROR_CHECK(esp_ipc_call_blocking(0,fire,NULL));
         radio_s3_profile_bank_begin();
+        stream_jitter_notify(321); // synthetic call length, independent of QEMU CCOUNT
         fire(NULL);
         radio_s3_profile_bank_end(12345,1,0); // synthetic bank length, not a timing result
         radio_s3_profile_stop();

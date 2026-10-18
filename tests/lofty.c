@@ -127,10 +127,7 @@ static void encoder(void)
     uint8_t *payload = aligned_alloc(16,8112), *raw = aligned_alloc(16,33312);
     uint32_t *map = aligned_alloc(16,32768), *cache = aligned_alloc(16,32768);
     uint8_t *bits = malloc(DVBS2_FEC_BYTES);
-    uint8_t *slice_guard = aligned_alloc(16,DVBS2_BCH_SLICE_BYTES+32);
-    assert(f && ws && payload && raw && map && cache && bits && slice_guard);
-    memset(slice_guard,0xa5,DVBS2_BCH_SLICE_BYTES+32);
-    uint8_t *slices = slice_guard+16;
+    assert(f && ws && payload && raw && map && cache && bits);
     const unsigned sizes[] = {0,1,2,3,7,128,131};
     unsigned cases = 0;
     for (unsigned mc = LOFTY_TRACE ? 18 : 12; mc <= 17; ++mc)
@@ -149,9 +146,6 @@ static void encoder(void)
                 memcpy(bits,ws->bits,DVBS2_FEC_BYTES);
                 assert(dvbs2_fast_cache_size(f) <= 32768);
                 assert(!dvbs2_fast_cache_tables(f,(uint8_t *)cache));
-                if (m->t > 8) assert(!dvbs2_fast_bch_slices(f,slices));
-                else assert(dvbs2_fast_bch_slices(f,slices) == -1);
-                assert(dvbs2_fast_bch_slices(f,slices+1) == -1);
                 assert(!dvbs2_fast_bb_gcs(f,ws,payload,8*bytes));
                 dvbs2_fast_bch(f,ws);
                 assert(!memcmp(bits,ws->bits,m->nbch/8));
@@ -179,8 +173,6 @@ static void encoder(void)
                             mc,pilots,frame,state.pending,(unsigned)state.history,pending,(unsigned)h);
                 assert(state.pending == pending && state.history == h);
                 for (unsigned j = 0; j < 16; ++j) assert(guard[j] == 0xa5);
-                for (unsigned j = 0; j < 16; ++j)
-                    assert(slice_guard[j] == 0xa5 && slices[DVBS2_BCH_SLICE_BYTES+j] == 0xa5);
                 ++cases;
             }
         }
@@ -194,7 +186,6 @@ static void encoder(void)
         for (unsigned i = 0; i < bytes; ++i) { x ^= x<<13; x ^= x>>17; x ^= x<<5; payload[i] = x; }
         assert(!dvbs2_fast_prepare(f,m,1,15 | (mc == 11 ? DVBS2_MAP_QUADS : 0)));
         assert(!dvbs2_fast_cache_tables(f,(uint8_t *)cache));
-        if (mc != 11 && m->t > 8) assert(!dvbs2_fast_bch_slices(f,slices));
         if (mc != 11) assert(!dvbs2_fast_lofty_cache(f,map));
         else for (unsigned w = 0; w < 1024; ++w) {
             table[w] = 0;
@@ -239,7 +230,7 @@ static void encoder(void)
     offsets[1365] = 0;
     lofty_begin(); lofty_render(got,offsets,1365,table); lofty_end();
 #endif
-    free(slice_guard); free(bits); free(cache); free(map); free(raw); free(payload); free(ws); free(f);
+    free(bits); free(cache); free(map); free(raw); free(payload); free(ws); free(f);
 #if !LOFTY_TRACE
     void sign_mapper_check(void);
     sign_mapper_check();

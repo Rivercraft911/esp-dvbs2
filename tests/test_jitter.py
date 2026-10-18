@@ -19,6 +19,7 @@ def main():
         assert r['cores'][0][0]['cycles'] == r['cores'][0][1]['cycles'] == 20
         assert r['cores'][1][0]['calls'] == 20
         assert r['worst_bank']['irq_cycles'] == 400
+        assert r['worst_bank']['notify_calls'] == r['worst_bank']['notify_cycles'] == 0
     print('jitter observer: nested handlers, original arguments, teardown, wraps and bin edges: ok')
     spec = importlib.util.spec_from_file_location('jitter_check',ROOT/'host/jitter.py')
     check = importlib.util.module_from_spec(spec); spec.loader.exec_module(check)
@@ -27,25 +28,41 @@ def main():
     def send(command):
         sent.append(command)
         if command == 'info': return [dict(firmware='abc1234',callsign='N0CALL')]
-        mc = int(command.split()[1]); policy = 'page' if command.endswith('pagewake') else 'bank'
-        if mc == 15 and policy == 'bank': raise TimeoutError('injected timeout')
-        return [dict(cmd='dvbpace',modcod=mc,queue_wake_policy=policy,paced_wifi_up=True,encoder_pie=15,
-                     bch_variant='psram-slices',bch_slice_bytes=24576,
-                     fills=1,jitter=dict(complete=True,banks_by_irq_count=[dict(calls=1,histogram=[0,0,0,0,1,0])],
-                     worst_bank=dict(cycles=40138 if mc == 13 else 40000)),
+        args = command.split(); mc = int(args[1]); policy = 'page' if 'pagewake' in args else 'bank'
+        observer = 'observe' in args
+        if mc == 15 and not observer: raise TimeoutError('injected timeout')
+        r = dict(cmd='dvbpace',modcod=mc,queue_wake_policy=policy,paced_wifi_up=True,encoder_pie=15,
+                     bch_variant='resident-pair' if mc in (11,17) else 'resident-byte',warmup_frames=3,
+                     fills=1,jitter_enabled=observer,seconds=int(args[3]),
+                     elapsed_samples=2400000000,planned_samples=2400000000,
                      status='ESP_ERR_TIMEOUT' if mc == 17 and policy == 'page' else 'ESP_OK',
                      encoder_failed=False,queue_empty=0,underruns=0,late_fills=0,late_switches=0,
                      fatal_late=0,min_fill_slack_cycles=1,max_fill_cycles=40138 if mc == 13 else 40000,
                      encode_cycles_mean=193848 if mc == 11 else 169784,wifi_min_free=20000,
-                     queue_wakes=1,queue_low_pages=1)]
+                     queue_wakes=1,queue_low_pages=1,prefill_frames=1,encoder_stack_min_free=512)
+        if observer:
+            r['jitter'] = dict(complete=True,banks_by_irq_count=[dict(calls=1,histogram=[0,0,0,0,1,0])],
+                              worst_bank=dict(cycles=r['max_fill_cycles'],notify_calls=2,
+                                              notify_cycles=9000,notify_max_cycles=7000))
+        return [r]
 
-    summary = check.suite(send,'abc1234',25)
-    assert sent == ['info']+[command for *_,command in check.commands(25)]
-    assert [r['verdict'] for r in summary] == ['OBSERVED','FAIL','OBSERVED','FAIL','OBSERVED','PASS','OBSERVED','PASS']
-    assert len(summary) == 8 and summary[-1]['modcod'] == 11
+    summary = check.suite(send,'abc1234',20)
+    assert sent == ['info']+[command for *_,command in check.commands(20)]
+    assert [r['verdict'] for r in summary] == ['FAIL','OBSERVED','OBSERVED','FAIL','OBSERVED','OBSERVED',
+                                            'PASS','OBSERVED','OBSERVED','PASS','OBSERVED','OBSERVED']
+    assert len(summary) == 12 and summary[-1]['modcod'] == 11
+    r, = send('dvbpace 17 26m667 20 128 0')
+    r['elapsed_samples'] -= 1
+    try: check.gate(r,17)
+    except AssertionError as e: assert str(e) == 'incomplete pace'
+    else: raise AssertionError('accepted a truncated run')
+    r['jitter_enabled'] = True
+    try: check.timing([r],17,'bank',False)
+    except AssertionError as e: assert str(e) == 'wrong observer state'
+    else: raise AssertionError('accepted observer in clean gate')
     plan = subprocess.check_output(['python3',str(ROOT/'host/jitter.py'),'/unused','--plan'],text=True)
-    assert len(plan.splitlines()) == 9 and all('dvbpace' in s for s in plan.splitlines()[1:])
-    print('jitter coordinator: fixed ceilings, both policies, keeps going after timing/transport faults: ok')
+    assert len(plan.splitlines()) == 13 and all('dvbpace' in s for s in plan.splitlines()[1:])
+    print('jitter coordinator: clean gate, same-bank notify times, keeps going after timing/transport faults: ok')
 
 
 if __name__ == '__main__': main()
