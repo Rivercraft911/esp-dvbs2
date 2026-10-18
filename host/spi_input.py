@@ -111,11 +111,15 @@ def record_check(r):
             if command:
                 assert r['seconds'] == int(command.split()[3]), r
             assert r['late_fills'] == r['late_switches'] == r['fatal_late'] == 0 and r['min_fill_slack_cycles'] > 0, r
-            if (r.get('input_fault') == 6 or 'starve' in r.get('test', '') or
-                    (r.get('input_wire') == 'raw' and 0 < r.get('input_target', 0) <= 9)):
+            target = r.get('input_target', 0)*1e6
+            capacity = 8*r['payload_bytes_per_frame']*r['symbol_rate']/r['frame_symbols']
+            source_limited = r.get('input_loop') and 0 < target < capacity
+            if r.get('input_fault') == 6 or source_limited:
                 assert r['underruns'] > 0 and r['frames_encoded'] > 0, r
             else:
                 assert r['underruns'] == 0, r
+            if source_limited and not r.get('input_fault'):
+                assert r['input_bytes']*8/r['seconds'] >= .98*target, r
             budget = 240000000*r['frame_symbols']/r['symbol_rate'] if 'frame_symbols' in r else 299538
             assert r['encode_cycles_live_max'] <= budget, r
 

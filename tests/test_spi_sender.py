@@ -52,6 +52,9 @@ static unsigned tasks;
 static uint16_t sequence;
 static int allocations;
 static bool raw_wire;
+static bool model_encoder;
+static int64_t wire_finished;
+static unsigned frame_bytes;
 static inline int64_t esp_timer_get_time(void) { return now_us++; }
 static inline uint32_t esp_cpu_get_cycle_count(void) { return now_us++*240; }
 static inline int xPortGetCoreID(void) { return 0; }
@@ -98,7 +101,18 @@ static inline void spi_bus_remove_device(spi_device_handle_t d) { (void)d; }
 static inline void spi_device_get_actual_freq(spi_device_handle_t d,int *khz) { (void)d; *khz=40000; }
 static inline const char *esp_err_to_name(int e) { return e ? "error" : "ESP_OK"; }
 int spi_device_polling_start(spi_device_handle_t,spi_transaction_t *,unsigned);
-static inline int spi_device_polling_end(spi_device_handle_t d,unsigned ticks) { (void)d;(void)ticks; now_us+=65; return 0; }
+static inline int spi_device_polling_end(spi_device_handle_t d,unsigned ticks) {
+    (void)d;(void)ticks;
+    if (!model_encoder) { now_us+=65; return 0; }
+    // A raw 20 MHz transfer runs independently, but its completion wakes the
+    // higher-priority consumer on this core before the sender returns from polling.
+    if (now_us < wire_finished) now_us=wire_finished;
+    now_us+=40; // per-message receive/CRC/copy work
+    frame_bytes+=1316;
+    if (frame_bytes>=5370) { frame_bytes-=5370; now_us+=2100; }
+    now_us+=26; // diagnostic sender CRC
+    return 0;
+}
 '''
 APP = r'''
 #include "spi_input.c"
@@ -116,6 +130,10 @@ int spi_device_polling_start(spi_device_handle_t d,spi_transaction_t *t,unsigned
     assert(m[3]==tx.type && (m[4] | m[5]<<8)==sequence++);
     if (!transfers) first_tx=now_us;
     else assert(now_us-last_tx >= (tx.mbps ? 470 : 75)); // rate ceiling or CS gap
+    if (model_encoder) {
+        wire_finished=now_us+533; // 1332 bytes at 20 MHz
+        now_us+=104; // GCS pattern/seal build, overlapped with the wire
+    }
     last_tx=now_us; ++transfers; return 0;
 }
 static ingress_ring receiver;
@@ -134,6 +152,21 @@ int main(void) {
         assert(first_tx < ready_at+100 && delays==0); // READY resumes within a poll, no 1 ms sleep
         tx_free(); assert(allocations==0 && !tx.timer);
     }
+    // Reproduce core-0 preemption using the 5 Msym/s PSRAM encoder's ~2.1 ms
+    // kernel. READY is always high: the polling sender alone misses 12 Mb/s.
+    for (unsigned rate=6;rate<=12;rate+=6) {
+        pv_mode=model_encoder=true;
+        now_us=alarms=delays=transfers=sequence=frame_bytes=ready_at=0;
+        assert(tx_init(PV_GCS,20,rate,0,1000)==ESP_OK);
+        tx_run();
+        const double achieved=tx.bytes*8.0/tx.us;
+        assert(!tx.waits && !tx.errors);
+        if (rate==6) assert(achieved>=.98*rate && achieved<=1.02*rate);
+        else assert(achieved<9.678); // below the selected output mode's demand
+        printf("shared-core sender model: target %u, achieved %.3f Mb/s, no READY stalls\n",rate,achieved);
+        tx_free(); assert(allocations==0);
+    }
+    model_encoder=false;
     pv_mode=false; input_type=PV_TS; loop=true;
     for (sender_core=0;sender_core<2;++sender_core) {
         assert(spi_input_start()==ESP_OK && tx.task);

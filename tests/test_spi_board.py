@@ -35,6 +35,8 @@ def main():
         assert commands[:3] == ['info', 'spipins devkit', 'spirx 3000 on loop 9']
         assert 'dvbpace 13 10m 30' in commands and 'spirx 1000 quad gcs loop 46.6' in commands
         assert 'spirx 1000 on gcs loop 9' in commands and 'spiinput on gcs loop 12' in commands
+        pace = commands.index('dvbpace 13 5m 10')
+        assert commands[pace-1] == 'spiinput on gcs loop 6'
         assert commands[-1] == 'spiinput off' and 'reg-8psk.iq' in calls and "'check'" in calls
         decode=[ast.literal_eval(line) for line in calls.splitlines()
                 if "'decode'" in line]

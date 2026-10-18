@@ -91,7 +91,8 @@ def main():
         bad = copy.deepcopy(r); bad['spi'][key] = 1; rejected(bad)
     pace = dict(cmd='dvbpace', command='dvbpace 11 26m667 30', status='ESP_OK',
                 encoder_failed=False, input='gcs', spi=spi, input_bytes=2632,
-                frames_encoded=10, seconds=30, late_fills=0, late_switches=0, fatal_late=0,
+                frames_encoded=10, seconds=30, payload_bytes_per_frame=7264,
+                frame_symbols=33282, symbol_rate=80000000/3, late_fills=0, late_switches=0, fatal_late=0,
                 min_fill_slack_cycles=7083, max_fill_cycles=40137, underruns=0,
                 sps=3, encode_cycles_mean=254607, encode_cycles_live_max=299538)
     record_check(pace)
@@ -105,12 +106,23 @@ def main():
     record_check(pace)
     demo = copy.deepcopy(pace)
     demo.update(command='dvbpace 13 10m 30', input_fault=0, underruns=0, sps=4,
-                frame_symbols=22194, symbol_rate=10000000, encode_cycles_live_max=532656)
+                frame_symbols=22194, symbol_rate=10000000, payload_bytes_per_frame=5370,
+                encode_cycles_live_max=532656)
     record_check(demo)
     pvpace = dict(demo, input='ts', input_wire='raw', input_loop=True, input_target=9, spi=pv['spi'])
     rejected(pvpace)  # a 9 Mb/s source cannot fill this 19.36 Mb/s mode
     pvpace['underruns'] = 1
+    rejected(pvpace)  # dummy frames alone cannot hide a sender that missed its target
+    pvpace['input_bytes'] = 33798780
     record_check(pvpace)
+    gcs_pace = dict(demo, command='dvbpace 13 5m 10', input_loop=True, input_wire='raw',
+                    input_target=6, payload_bytes_per_frame=5370, symbol_rate=5000000,
+                    seconds=10, input_bytes=7500000, underruns=1, spi=gcs['spi'])
+    record_check(gcs_pace)
+    rejected(dict(gcs_pace, input_bytes=7349999))
+    rejected(dict(gcs_pace, input_target=12))  # the original 12 Mb/s test still requires no dummies
+    rejected(dict(gcs_pace, input_loop=False))  # no exemption for an external source
+
     demo['encode_cycles_live_max'] += 1; rejected(demo)
     demo.update(encode_cycles_live_max=532656, input_copy_cycles=2, input_cycles=1)
     rejected(demo)

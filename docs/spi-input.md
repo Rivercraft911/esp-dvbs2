@@ -76,8 +76,7 @@ Raw SPI needs only SCK, CS, MOSI, READY and GND; leave MISO and D1..D3 disconnec
 | `spirx 3000 on loop 9` | Three-second on-chip receive/pattern check, radio off |
 
 Input selection applies to the next `dvbdump`, `dvbpace`, `wifimem` or `dvb`;
-it does not start reception or RF. Old `pv`, `ts`, `gcs` selectors remain aliases
-for `on ts`, `quad ts`, `quad gcs`. Pin/input choices last until changed or reset.
+it does not start reception or RF. Pin/input choices last until changed or reset.
 
 ## Rates
 
@@ -88,6 +87,7 @@ Raw at 20 MHz: **19.396 Mb/s** ideal. Quad at 40 MHz: **136.37 Mb/s** ideal;
 Encoder payload ceiling: `R = 8*DATA_FIELD_bytes*symbol_rate/PLFRAME_symbols`.
 8PSK 2/3 needs 9.678 Mb/s at 5 Msym/s, 19.357 Mb/s at 10 Msym/s.
 When input runs slower, the S3 emits DVB-S2 dummy frames and resumes data in order.
+At 5 Msym/s, raw loopback polls SPI beside the PSRAM encoder on core 0; the GCS pace test offers 6 Mb/s with dummies.
 
 ## Test your sender
 
@@ -110,9 +110,9 @@ bytes, initially zero). Require zero protocol/sequence/overrun errors and sender
 timeouts/uncertain writes. A completed write is not an acknowledgement.
 
 On-chip loopback needs no jumpers: SPI3 drives SPI2 through the same pads.
-Disconnect external SPI devices before using `loop`. The coordinator can check
-raw TS/GCS, quad, decoded payloads and synthetic waveform CRCs in about two minutes
-on an already flashed board with callsign `N0CALL` (radio off; logs under `notes/`):
+Disconnect external SPI devices before using `loop`. To check the whole input path
+on a flashed board with callsign `N0CALL`, run this radio-off check (about two minutes;
+raw TS/GCS, quad, decoded payloads and synthetic waveform CRCs; logs under `notes/`):
 
 ```sh
 PORT=/dev/cu.usbmodem101 PINS=devkit RX=/path/to/leandvb bash host/spi-board.sh
