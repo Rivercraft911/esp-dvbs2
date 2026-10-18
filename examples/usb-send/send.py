@@ -39,13 +39,15 @@ def fec_parameters(value):
 
 
 def message(payload, seq, kind=2):
-    if kind not in (0, 1, 2) or len(payload) > PAYLOAD:
+    if kind not in (0, 1, 2, 3) or len(payload) > PAYLOAD:
         raise ValueError('invalid PV type or length')
     if (kind == 0 and payload) or (kind != 0 and not payload):
         raise ValueError('NOP must be empty; data must be nonempty')
     if kind == 1 and (len(payload) % 188 or
                       any(payload[i] != 0x47 for i in range(0, len(payload), 188))):
         raise ValueError('TS needs whole 188-byte packets with 0x47 sync bytes')
+    if kind == 3 and (len(payload) != 1 or not 4 <= payload[0] <= 17):
+        raise ValueError('control needs one MODCOD byte, 4..17')
     body = struct.pack('<HBBHHI', 0x5650, 1, kind, seq & 65535, len(payload), 0)
     body += payload + bytes(PAYLOAD-len(payload))
     return body + struct.pack('<I', zlib.crc32(body))
@@ -182,7 +184,7 @@ def command(a):
 
 
 def sender_stats():
-    return dict(messages=0, payload_bytes=0, ts_packets=0, crc_chain=0, next_seq=0,
+    return dict(messages=0, controls=0, payload_bytes=0, ts_packets=0, crc_chain=0, next_seq=0,
                 source_eof=False, errors=[], terminal_nop=False, complete=False,
                 recovery=None, write_calls=0, wire_bytes_written=0, short_writes=0,
                 zero_writes=0, write_uncertain=False, output_purged=False)
@@ -300,7 +302,7 @@ def collect(link, cmd, timeout=10, records=None):
 
 
 def stream(link, source, *, cmd, kind, seconds, dump=False, sink=None, mbps=0,
-           stats=None, rows=None, abort_after=None, opening_id=0):
+           stats=None, rows=None, abort_after=None, opening_id=0, control=None, rate='1m', mixed=False, modcod=4):
     stop, ready, done = threading.Event(), threading.Event(), threading.Event()
     cancel = threading.Event()
     chunks = queue.Queue(8)
@@ -343,7 +345,24 @@ def stream(link, source, *, cmd, kind, seconds, dump=False, sink=None, mbps=0,
             # ends. Source reads live in a daemon so a stalled pipe cannot block EOS.
             limit = started+send_window
             next_send = started
+            last_modcod = None
             while not stop.is_set() and time.monotonic() < limit:
+                if control:
+                    selected = control.read_text().strip()
+                    if selected:
+                        mc = int(selected)
+                        if rate not in ('1m', '5m', '10m') or (rate == '1m' and mc >= 12):
+                            raise ValueError('VCM supports 1m QPSK and 5m/10m')
+                        if mixed and rate != '5m':
+                            raise ValueError('mixed VCM needs 5m; 10m exceeds encoder budget')
+                        if not mixed and (mc < 12) != (modcod < 12):
+                            raise ValueError('MODCOD changes must stay within the starting modulation; use --mixed at 5m')
+                        wire = message(bytes((mc,)), stats['next_seq'], 3)
+                        if mc != last_modcod:
+                            write_all(link, wire, timeout=write_timeout, stats=stats, cancel=cancel)
+                            stats['controls'] += 1
+                            stats['next_seq'] = (stats['next_seq']+1) & 65535
+                            last_modcod = mc
                 try:
                     data = chunks.get(timeout=.05)
                 except queue.Empty:
@@ -438,6 +457,10 @@ def check_run(stats, rows, dump=False, require_eof=False):
     if len(runs) != 1:
         raise ValueError('missing or duplicate USB run result')
     r = runs[0]; u = r['usb']
+    if r.get('control_rejected', 0) or r.get('controls', 0) > stats.get('controls', 0):
+        raise ValueError('MODCOD control rejected or counter mismatch')
+    if u.get('ended') and r.get('controls', 0) != stats.get('controls', 0):
+        raise ValueError('MODCOD controls were not fully consumed')
     if r.get('status') != 'ESP_OK' or r.get('encoder_failed') or not r.get('frames_encoded'):
         raise ValueError('encoder failed or encoded no data')
     if u.get('timer_errors', 0) or any(u[k] for k in ('short', 'header', 'crc', 'sync', 'lost', 'back', 'wrong_type', 'partial_bytes')):
@@ -558,6 +581,8 @@ def main(argv=None):
                    help='file erasure coding; default 16:4; one shard per GCS frame')
     s.add_argument('--port'); s.add_argument('--modcod', type=int, default=4)
     s.add_argument('--rate', choices=('1m', '5m', '10m', '20m', '26m667', '33m333'), default='1m')
+    s.add_argument('--control', type=Path, help='live MODCOD text file; enables GCS VCM at 1m/5m/10m')
+    s.add_argument('--mixed', action='store_true', help='allow QPSK/8PSK controls at 5m; requires --control')
     s.add_argument('--seconds', type=int, default=10); s.add_argument('--frames', type=int, default=24)
     safety = s.add_mutually_exclusive_group()
     safety.add_argument('--dump', type=Path, help='radio-off IQ dump instead of radio-off pace')
@@ -592,6 +617,19 @@ def main(argv=None):
         kind = a.kind or ('file' if a.fec else 'ts' if a.file == '-' or Path(a.file).suffix.lower() == '.ts' else 'file')
         if a.fec and kind != 'file':
             raise ValueError('--fec requires --kind file')
+        if a.mixed and (not a.control or a.rate != '5m'):
+            raise ValueError('--mixed needs --control and --rate 5m (10m exceeds encoder budget)')
+        if a.control and a.fec:
+            raise ValueError('--control with --fec is not supported')
+        if a.control:
+            if kind == 'ts' or a.rate not in ('1m', '5m', '10m'):
+                raise ValueError('--control needs file/GCS at 1m, 5m or 10m; TS VCM needs Annex D')
+            initial = int(a.control.read_text().strip())
+            message(bytes((initial,)), 0, 3)
+            mode(initial, a.rate)
+            if not a.mixed and (initial < 12) != (a.modcod < 12):
+                raise ValueError('control file must match the starting modulation; use --mixed at 5m')
+            frame_bytes = (58192-80)//8  # acquisition/tail padding for the largest selected frame
         with contextlib.ExitStack() as stack:
             source = sys.stdin.buffer if a.file == '-' else stack.enter_context(Path(a.file).open('rb'))
             if kind == 'file':
@@ -608,12 +646,13 @@ def main(argv=None):
             callsign = next((r.get('callsign', '') for r in report['info'] if r.get('cmd') == 'info' and not r.get('done')), '')
             if a.key and not callsign:
                 raise ValueError('no stored callsign; set your assigned callsign with the console first')
+            collect(link, 'vcm '+('mixed' if a.mixed else 'on' if a.control else 'off'), records=report['setup'])
             collect(link, 'spiinput usb '+('ts' if kind == 'ts' else 'gcs'), records=report['setup'])
             print(f'{cmd}; {capacity:.3f} Mb/s mode payload; callsign={callsign or "unset"}', file=sys.stderr)
             stats, rows = stream(link, source, cmd=cmd, kind=1 if kind == 'ts' else 2,
                                  seconds=a.seconds, dump=bool(a.dump), sink=sink, mbps=a.mbps,
                                  stats=report['sender'], rows=report['records'], abort_after=a.abort_after,
-                                 opening_id=id_seconds(callsign))
+                                 opening_id=id_seconds(callsign), control=a.control, rate=a.rate, mixed=a.mixed, modcod=a.modcod)
             if stats['complete'] and not stats['recovery']:
                 collect(link, 'spiinput off', records=report['setup'])
             summary = check_run(stats, rows, bool(a.dump), kind == 'file')

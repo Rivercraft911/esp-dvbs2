@@ -52,10 +52,24 @@ static inline uint32_t esp_cpu_get_cycle_count(void) { return 17; }
 static inline unsigned uxTaskGetStackHighWaterMark(void *task) { (void)task; return 1024; }
 static int fail_after = -1, live_allocations, allocation_count;
 static struct { void *p; size_t n; unsigned caps; } native_blocks[64];
+#ifdef STREAM_HEAP_LIMITS
+static size_t native_internal_limit=SIZE_MAX, native_internal_largest=SIZE_MAX;
+static size_t native_external_limit=SIZE_MAX;
+static size_t native_used(unsigned caps) {
+    size_t used=0;
+    for (unsigned i=0;i<64;++i) if (native_blocks[i].p && (native_blocks[i].caps&caps)) used+=native_blocks[i].n;
+    return used;
+}
+#endif
 static inline void *heap_caps_aligned_alloc(size_t a, size_t n, unsigned caps) {
     ++allocation_count;
     if (fail_after == 0) return NULL;
     if (fail_after > 0) --fail_after;
+#ifdef STREAM_HEAP_LIMITS
+    if ((caps&MALLOC_CAP_INTERNAL) && (n>native_internal_largest ||
+        n>native_internal_limit-native_used(MALLOC_CAP_INTERNAL))) return NULL;
+    if ((caps&MALLOC_CAP_SPIRAM) && n>native_external_limit-native_used(MALLOC_CAP_SPIRAM)) return NULL;
+#endif
     void *p = NULL; assert(!posix_memalign(&p, a < sizeof(void *) ? sizeof(void *) : a, n));
     for (unsigned i = 0; i < 64; ++i)
         if (!native_blocks[i].p) { native_blocks[i].p = p; native_blocks[i].n = n;
@@ -79,8 +93,20 @@ static inline void heap_caps_free(void *p) {
     for (unsigned i = 0; i < 64; ++i) if (native_blocks[i].p == p) native_blocks[i].p = NULL;
     --live_allocations; free(p);
 }
-static inline size_t heap_caps_get_free_size(unsigned c) { (void)c; return 65536; }
-#define heap_caps_get_largest_free_block heap_caps_get_free_size
+static inline size_t heap_caps_get_free_size(unsigned c) {
+#ifdef STREAM_HEAP_LIMITS
+    if (c&MALLOC_CAP_INTERNAL) return native_internal_limit-native_used(MALLOC_CAP_INTERNAL);
+    if (c&MALLOC_CAP_SPIRAM) return native_external_limit-native_used(MALLOC_CAP_SPIRAM);
+#endif
+    (void)c; return 65536;
+}
+static inline size_t heap_caps_get_largest_free_block(unsigned c) {
+    const size_t free=heap_caps_get_free_size(c);
+#ifdef STREAM_HEAP_LIMITS
+    if ((c&MALLOC_CAP_INTERNAL) && free>native_internal_largest) return native_internal_largest;
+#endif
+    return free;
+}
 #define heap_caps_get_minimum_free_size heap_caps_get_free_size
 static inline int heap_caps_monitor_local_minimum_free_size_start(void) { return 0; }
 static inline int heap_caps_monitor_local_minimum_free_size_stop(void) { return 0; }
@@ -185,6 +211,7 @@ def compile_stream(folder, source="stream_host.c", defines=()):
                     str(ROOT / "firmware/components/ingress/ingress.c"),
                     str(ROOT / "firmware/components/ingress/ingress_pattern.c"), str(ROOT / "firmware/main/ring.c"),
                     str(ROOT / "firmware/main/shaper.c"),
+                    str(ROOT / "firmware/main/shaper_axes.c"),
                     str(ROOT / "firmware/main/shaper_short.c"),
                     str(ROOT / "firmware/main/machine.c"),
                     str(ROOT / "firmware/main/lofty.c"),

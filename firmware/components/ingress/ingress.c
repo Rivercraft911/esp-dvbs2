@@ -121,6 +121,8 @@ HOT pv_status pv_check(const uint8_t *m, size_t len)
         return n == 0 ? PV_OK : PV_HEADER;
     case PV_GCS:
         return n >= 1 && n <= PV_PAYLOAD_MAX ? PV_OK : PV_HEADER;
+    case PV_CONTROL:
+        return n == 1 && m[PV_HEADER_BYTES] >= 4 && m[PV_HEADER_BYTES] <= 17 ? PV_OK : PV_HEADER;
     case PV_TS:
         if (n == 0 || n > PV_PAYLOAD_MAX || n % PV_TS_PACKET) {
             return PV_HEADER;
@@ -265,6 +267,12 @@ HOT static bool advance(ingress_ring *r)
         r->seq_next = seq + 1;
         if (m[3] == PV_NOP) {
             r->st.nops++;
+            release(r);
+            continue;
+        }
+        if (m[3] == PV_CONTROL) {
+            if (r->control && r->control(m[PV_HEADER_BYTES])) r->st.controls++;
+            else r->st.control_rejected++;
             release(r);
             continue;
         }

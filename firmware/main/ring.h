@@ -43,6 +43,7 @@ typedef struct {
     size_t cache_symbols;
     int64_t cache_first, cache_end;
     uint8_t packed;               // 1: unpack raw phases, 2: codes 16*k, 3: QPSK 16*(k>>1), 4: four codes/byte
+    uint32_t slot_symbols[RING_MAX_SLOTS]; // published with each frame; zero uses frame_symbols
 } ring_t;
 
 void ring_init(ring_t *r, uint8_t *slots, uint32_t nslots, const uint8_t *filler,
@@ -70,6 +71,8 @@ void ring_unpack_codes(uint8_t *dst, const uint8_t *packed, size_t at, size_t n)
 uint8_t *ring_slot(ring_t *r, uint32_t e);
 // Encoder: frame e is complete. Frames are published in order.
 void ring_publish(ring_t *r, uint32_t e);
+// Variable-length frames: metadata and symbols become visible in the same release.
+void ring_publish_frame(ring_t *r, uint32_t e, uint32_t symbols);
 
 // Fill: the symbols a shaper needs for samples [first, first + count) at sps samples per symbol,
 // starting `history` symbols before the first one, into dst (room bytes). Symbols before 0 read
@@ -80,6 +83,9 @@ void ring_publish(ring_t *r, uint32_t e);
 // the bank being filled, and that is at least first + count - bank_words.
 int ring_window(ring_t *r, uint8_t *dst, size_t room, uint64_t first, size_t count,
                 unsigned sps, unsigned history, unsigned bank_words);
+
+// VCM variant; fixed callers retain the original constant-length hot path.
+int ring_window_vcm(ring_t *, uint8_t *, size_t, uint64_t, size_t, unsigned, unsigned, unsigned);
 
 // Compact two-bit QPSK codes for the 4/8-sps shaper, with the same source/guard contract.
 void ring_packed_qpsk(ring_t *r);

@@ -116,6 +116,7 @@ static inline int spi_device_polling_end(spi_device_handle_t d,unsigned ticks) {
 '''
 APP = r'''
 #include "spi_input.c"
+void usb_input_control(bool (*control)(unsigned)) { (void)control; }
 esp_err_t usb_input_start(unsigned type) { (void)type; return ESP_OK; }
 size_t usb_input_read(uint8_t *dst,size_t n) { (void)dst; (void)n; return 0; }
 void usb_input_stop(void) {}

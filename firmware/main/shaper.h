@@ -19,9 +19,21 @@ typedef struct {
     uint32_t *blocks;      // window w's parts 0, 1, 2 at blocks + w * block_words
     uint16_t n;            // samples per symbol, 4..40
     uint16_t block_words;  // 3 * (n rounded up to 4) rounded up to a power of two
-    uint8_t parts;         // 0: three-part table; 2: six-symbol pulse
+    uint8_t parts;         // 0: three-part table; 2: six-symbol pulse; 5: five-level axes
     uint8_t bits;          // bits per symbol code: 3 (eight phases) or 2 (QPSK)
 } shaper_table_t;
+
+// Lossless five-level axis table: 125 rows/part padded to 128 (physical order 2,0,1),
+// eight uint16 samples/row,
+// followed by 512 pairs of 32-bit part-0 row addresses (offsets on 64-bit hosts).
+#define SHAPER_AXES_BYTES (3u * 128u * 16u + 512u * 8u)
+#define SHAPER_AXES_PARTS 5
+void shaper_axes_samples_profile(uint32_t *, const uint8_t *, unsigned, size_t,
+                                 const shaper_table_t *, stream_profile_t *, stream_profile_t *);
+void shaper_axes_build(shaper_table_t *, uint32_t *, const int32_t *);
+void shaper_axes_c(uint32_t *, const uint8_t *, int, const shaper_table_t *);
+// groups >=0 produces 6*groups+1 symbols; same history/alignment as fill8_pie.
+void shaper_axes8_pie(uint32_t *, const uint8_t *, int, const uint32_t *);
 
 // Words a table needs: 2^(3 bits) windows of block_words each.
 size_t shaper_table_words(int n, int bits);

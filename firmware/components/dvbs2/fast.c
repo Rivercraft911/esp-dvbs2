@@ -186,7 +186,7 @@ int dvbs2_fast_prepare(dvbs2_fast *f, const dvbs2_mode *mode, int pilots, unsign
     f->q = mode->q;
     f->data_symbols = 64800 / mode->bits_per_symbol;
     f->pilot_blocks = pilots ? (f->data_symbols / 90 - 1) / 16 : 0;
-    f->pie = pie & (PIE_MASK | DVBS2_BCH_NIBBLE | DVBS2_MAP_SPARSE | DVBS2_MAP_QUADS | DVBS2_RO_20);
+    f->pie = pie & (PIE_MASK | DVBS2_BCH_NIBBLE | DVBS2_MAP_SPARSE | DVBS2_MAP_QUADS | DVBS2_RO_20 | DVBS2_VCM);
     f->ldxq_bias = 0;
     f->pair_bch = NULL;
 #ifdef DVBS2_PIE
@@ -397,7 +397,8 @@ HOT int dvbs2_fast_bb_gcs(const dvbs2_fast *f, dvbs2_workspace *ws,
         return -1;
     }
     const size_t n = (dfl_bits + 7) / 8;
-    bb_header(ws->bits, f->crc8, 0x70 | ((f->pie & DVBS2_RO_20) ? 2 : 0), (unsigned)dfl_bits, 0, 0, 0);
+    bb_header(ws->bits, f->crc8, ((f->pie & DVBS2_VCM) ? 0x60 : 0x70) |
+              ((f->pie & DVBS2_RO_20) ? 2 : 0), (unsigned)dfl_bits, 0, 0, 0);
     bb_fill(f, ws->bits, payload, n);
     if (dfl_bits & 7) {
         /* Clear the unused low bits of the last data byte, then rescramble. */
@@ -411,7 +412,7 @@ HOT int dvbs2_fast_bb_gcs(const dvbs2_fast *f, dvbs2_workspace *ws,
 int dvbs2_fast_bb_ts(const dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_state *state,
                          const uint8_t *input, size_t input_bytes)
 {
-    if (!f || !ws || !state || !input || state->packet_pos >= 188 ||
+    if (!f || !ws || !state || !input || (f->pie & DVBS2_VCM) || state->packet_pos >= 188 ||
         input_bytes != ((size_t)f->mode->kbch - 80) / 8) {
         return -1;
     }

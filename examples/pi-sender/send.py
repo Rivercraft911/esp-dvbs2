@@ -12,7 +12,7 @@ import zlib
 
 
 def message(payload, seq, kind=1):
-    if kind not in (0, 1, 2) or len(payload) > 1316:
+    if kind not in (0, 1, 2, 3) or len(payload) > 1316:
         raise ValueError("invalid PV type or payload length")
     if (kind == 0 and payload) or (kind != 0 and not payload):
         raise ValueError("NOP must be empty; data must be nonempty")
@@ -21,6 +21,8 @@ def message(payload, seq, kind=1):
             raise ValueError("need 1..7 complete TS packets")
         if any(payload[i] != 0x47 for i in range(0, len(payload), 188)):
             raise ValueError("TS sync byte missing")
+    if kind == 3 and (len(payload) != 1 or not 4 <= payload[0] <= 17):
+        raise ValueError("control needs one MODCOD byte, 4..17")
     body = struct.pack("<HBBHHI", 0x5650, 1, kind, seq & 65535, len(payload), 0)
     body += payload + bytes(1316-len(payload))
     return body + struct.pack("<I", zlib.crc32(body))

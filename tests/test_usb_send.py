@@ -116,6 +116,7 @@ class Peer:
         self.messages = self.payload_bytes = self.ts_packets = self.crc_chain = 0
         self.iq = b'@{"done":true}\n\xff\0'*11  # JSON-looking binary is never a console record
         self.writes = 0; self.fail_after = fail_after
+        self.controls = []
 
     def __enter__(self): return self
     def __exit__(self, *args): pass
@@ -123,12 +124,12 @@ class Peer:
     def finish(self, recovery=False):
         u = dict(messages=self.messages, payload_bytes=self.payload_bytes, nops=0 if recovery else 1, short=0,
                  header=0, crc=0, sync=0, lost=0, back=0, wrong_type=0, partial_bytes=13 if recovery else 0,
-                 ended=not recovery, next_seq=(self.messages+(not recovery)) & 65535,
+                 ended=not recovery, next_seq=(self.messages+len(self.controls)+(not recovery)) & 65535,
                  ts_packets=self.ts_packets, crc_chain=self.crc_chain, us=18000000, mbps=4.0,
                  wire_bytes=1332*(self.messages+(not recovery))+(13 if recovery else 0),
                  fifo_bytes=1332*(self.messages+(not recovery))+(13 if recovery else 0),
                  driver_bytes=0, driver_pending=0)
-        self.emit(dict(cmd=self.cmd, usb=u, status="ESP_OK", encoder_failed=False,
+        self.emit(dict(cmd=self.cmd, usb=u, controls=len(self.controls), control_rejected=0, status="ESP_OK", encoder_failed=False,
                        frames_encoded=20, underruns=1, late_fills=0, late_switches=0,
                        fatal_late=0, min_fill_slack_cycles=1, input_bytes=self.payload_bytes, seconds=20,
                        payload_bytes_per_frame=4016, symbol_rate=1000000, frame_symbols=33282,
@@ -162,10 +163,13 @@ class Peer:
                 wire = bytes(self.tx[:1332]); del self.tx[:1332]
                 assert wire[:3] == b'PV\x01' and zlib.crc32(wire[:-4]) == int.from_bytes(wire[-4:], 'little')
                 kind = wire[3]; size = int.from_bytes(wire[6:8], 'little')
-                assert int.from_bytes(wire[4:6], 'little') == self.messages & 65535
+                assert int.from_bytes(wire[4:6], 'little') == (self.messages+len(self.controls)) & 65535
                 if kind == 0:
                     self.nop = True
                     self.finish()
+                elif kind == 3:
+                    assert size == 1 and 4 <= wire[12] <= 17
+                    self.controls.append(wire[12])
                 else:
                     self.messages += 1; self.payload_bytes += size
                     if kind == 1:
@@ -290,6 +294,39 @@ def test_stream():
     print('USB sender: full duplex, short/idle writes, exact IQ framing, TS chain, source errors, blocked pipe and stop handoff: ok')
 
 
+def test_live_controls():
+    with tempfile.TemporaryDirectory() as tmp:
+        control = Path(tmp)/'modcod'
+        for mixed, target, rate in ((False, 11, '5m'), (True, 13, '5m')):
+            control.write_text('4')
+            class LivePeer(Peer):
+                def write(self, data):
+                    n = super().write(data)
+                    if self.messages >= 3:
+                        control.write_text(str(target))
+                    return n
+            peer = LivePeer()
+            stats, rows = send.stream(peer, io.BytesIO(bytes(30000)), cmd=f'dvbpace 4 {rate} 20', kind=2,
+                                      seconds=20, control=control, rate=rate, mixed=mixed)
+            assert peer.controls == [4, target] and stats['controls'] == 2
+            assert stats['payload_bytes'] == peer.payload_bytes == 30000
+            send.check_run(stats, rows)
+        for mc in (0, 3, 18, 255):
+            rejects(send.message, bytes((mc,)), 0, 3)
+        # These preflight rejections must never open a serial port.
+        control.write_text('13')
+        source = Path(tmp)/'input.bin'; source.write_bytes(b'bytes')
+        for extra in (['--rate','5m'], ['--rate','10m','--mixed']):
+            with patch.object(send, 'open_port', side_effect=AssertionError('opened a port')), contextlib.redirect_stderr(io.StringIO()):
+                try:
+                    send.main(['send',str(source),'--control',str(control),'--report',str(Path(tmp)/'report.json'),*extra])
+                except SystemExit as e:
+                    assert e.code == 1
+                else:
+                    raise AssertionError('invalid modulation scope accepted')
+    print('USB live MODCOD file: same modulation by default, mixed at 5m, data preserved, preflight scope gate: ok')
+
+
 def test_safety():
     a = argparse.Namespace(modcod=4, rate='1m', dump=None, key=False, seconds=10, frequency=2400, gain=0, frames=24)
     assert send.command(a) == 'dvbpace 4 10'
@@ -327,7 +364,7 @@ def test_failure_reports():
         folder = Path(tmp); source = folder/'input.bin'; source.write_bytes(bytes(4000))
         peers = [Peer(fail_after=0), Peer()]
         def collect(link, cmd, timeout=10, records=None):
-            assert cmd in ('info', 'spiinput usb gcs', 'spiinput off')
+            assert cmd in ('info', 'vcm off', 'spiinput usb gcs', 'spiinput off')
             result = [dict(cmd=cmd.split()[0], firmware='mock', callsign='N0CALL'),
                       dict(cmd=cmd.split()[0], done=True)]
             if records is not None: records.extend(result)
@@ -507,6 +544,6 @@ if __name__ == '__main__':
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--receiver', type=Path)
     a = p.parse_args()
-    test_container(); test_pv(); test_id_timing(); test_id_backpressure(); test_stream(); test_safety(); test_failure_reports(); test_reenumeration_and_cancel(); test_coordinator()
+    test_container(); test_pv(); test_id_timing(); test_id_backpressure(); test_stream(); test_live_controls(); test_safety(); test_failure_reports(); test_reenumeration_and_cancel(); test_coordinator()
     if a.receiver:
         test_decode(a.receiver)

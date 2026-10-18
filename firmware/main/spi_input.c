@@ -31,6 +31,8 @@ static unsigned borrowed_count, saved_borrowed, sender_core;
 static double target;
 static unsigned fault;
 static ingress_ring *rx;
+static bool (*control_handler)(unsigned);
+void spi_input_control(bool (*control)(unsigned)) { control_handler=control; usb_input_control(control); }
 static ingress_stats saved;
 static ingress_spi_stats hw;
 static uint32_t wrong_type, read_bytes, read_calls, read_max;
@@ -246,7 +248,7 @@ esp_err_t spi_input_start(void)
     cfg.received=received; cfg.ctx=xTaskGetCurrentTaskHandle();
     err=ingress_spi_start(&cfg, &rx);
     if (err != ESP_OK) { tx_free(); return err; }
-    rx->type=input_type;
+    rx->type=input_type; rx->control=control_handler;
     if (replay) ingress_replay_fill(rx);
     if (loop && xTaskCreatePinnedToCore(tx_task, "spisend", 2048, NULL, TX_PRIORITY, &tx.task, sender_core)!=pdPASS) {
         ingress_spi_stop(); rx=NULL; tx_free(); return ESP_ERR_NO_MEM;
@@ -283,6 +285,7 @@ void spi_input_print(void)
     printf(",\"input\":\"%s\"", input_type==PV_TS ? "ts" : input_type==PV_GCS ? "gcs" : "synthetic");
     if (!input_type) return;
     if (usb_mode) { usb_input_print(); return; }
+    printf(",\"controls\":%"PRIu32",\"control_rejected\":%"PRIu32, saved.controls, saved.control_rejected);
     printf(",\"input_wire\":\"%s\"", pv_mode?"raw":"quad");
     printf(",\"input_fault\":%u,\"input_target\":%.3f,\"input_replay\":%s,\"input_borrowed_slots\":%u", fault, target, replay?"true":"false", saved_borrowed);
     printf(",\"input_loop\":%s,\"input_bytes\":%"PRIu32",\"input_calls\":%"PRIu32

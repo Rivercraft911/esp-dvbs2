@@ -98,13 +98,13 @@ def bbheader(mt1, dfl, upl=0, sync=0, syncd=0, mt2=0):
     return np.concatenate([b, int_bits(crc8(b), 8)])
 
 
-def bbframe(data, rate, short=False, ro=0.35, sync=0):
+def bbframe(data, rate, short=False, ro=0.35, sync=0, ccm=1):
     """GCS BBFRAME before scrambling (Kbch bits): BBHEADER, DATA FIELD of DFL = len(data)
     <= Kbch - 80 bits (5.1.5), then Kbch - DFL - 80 zero bits of padding (5.2.1)."""
     c = code(rate, short)
     data = np.asarray(data, np.uint8)
     assert len(data) <= c.kbch - 80
-    h = bbheader(matype1(GCS, ro), len(data), sync=sync)
+    h = bbheader(matype1(GCS, ro, ccm=ccm), len(data), sync=sync)
     return np.concatenate([h, data, np.zeros(c.kbch - 80 - len(data), np.uint8)])
 
 

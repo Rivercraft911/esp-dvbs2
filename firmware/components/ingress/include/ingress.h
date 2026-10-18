@@ -10,7 +10,8 @@
  *   6 payload length, 8 reserved, 12 payload (1316 bytes, zero padded),
  *   1328 CRC-32 of bytes 0..1327 (IEEE, zlib.crc32).
  * Types: 0 NOP (length 0), 1 TS (188*n bytes, n = 1..7, every packet starts 0x47),
- *        2 GCS (1..1316 bytes of a generic continuous stream).
+ *        2 GCS (1..1316 bytes of a generic continuous stream),
+ *        3 control (one MODCOD byte 4..17; never part of the payload).
  *
  * Ring ownership. Every slot has one GDMA descriptor whose owner bit says who may touch it:
  *   owner = 1  the DMA may write the slot (armed, empty or being filled);
@@ -33,7 +34,7 @@
 #define PV_PAYLOAD_MAX 1316
 #define PV_TS_PACKET 188
 
-enum { PV_NOP = 0, PV_TS = 1, PV_GCS = 2 };
+enum { PV_NOP = 0, PV_TS = 1, PV_GCS = 2, PV_CONTROL = 3 };
 
 typedef enum {
     PV_OK = 0,
@@ -91,6 +92,7 @@ typedef struct {
     uint32_t restarts;                      /* DMA restarts after an overrun */
     uint32_t ready_falls;                   /* READY high to low transitions */
     uint32_t ts_packets, crc_chain;         /* TS_DATA only; chain the four wire CRC bytes */
+    uint32_t controls, control_rejected;
 } ingress_stats;
 
 typedef struct {
@@ -106,6 +108,7 @@ typedef struct {
     uint16_t seq_next;
     volatile bool overrun;      /* set from the DMA interrupt, cleared by the restart */
     unsigned type;             /* 0 accepts both; otherwise lock TS or GCS for the session */
+    bool (*control)(unsigned modcod); // encoder-owned; NULL rejects controls
     uint32_t wrong_type;
     int ready;                  /* last level driven on READY */
     ingress_stats st;

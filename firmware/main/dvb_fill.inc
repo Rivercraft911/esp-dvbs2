@@ -43,7 +43,7 @@ static FILL_TEXT esp_err_t FILL_NAME(uint32_t *dst, uint64_t first, size_t count
     // sps is 4 or 8 there, so that parity is bit log2(sps) of first. Legacy n40 keeps the window.
     uint8_t *win = dvb.win + (!FILL_QUADS && FILL_PACKED && !FILL_MOON && (first & sps));
     uint64_t read_first = first*dvb.den, read_count = count*dvb.den;
-    if (!FILL_MOON && count && ring_window(&dvb.ring, win, dvb.win_bytes - 1, read_first, read_count, sps,
+    if (!FILL_MOON && count && (FILL_VCM ? ring_window_vcm : ring_window)(&dvb.ring, win, dvb.win_bytes - 1, read_first, read_count, sps,
                     dvb.history, RADIO_S3_BANK_WORDS*dvb.den) < 0) return ESP_FAIL;
     const uint32_t copied = esp_cpu_get_cycle_count() - before;
     const uint64_t w0 = dvb.whole.cycles, p0 = dvb.partial.cycles;
@@ -57,7 +57,8 @@ static FILL_TEXT esp_err_t FILL_NAME(uint32_t *dst, uint64_t first, size_t count
         const stream_mark_t whole = phases ? stream_mark_for(&dvb.whole) : (stream_mark_t){0};
         shaper_qpsk_samples(dst, win + 2, first % (4*sps), count, dvb.table.blocks, sps);
         if (phases) stream_record(&dvb.whole, whole, stream_mark_for(&dvb.whole));
-    } else (FILL_PACKED ? shaper_samples_codes_profile : shaper_samples_profile)(dst,
+    } else (FILL_VCM && enc.vcm_axes ? shaper_axes_samples_profile :
+               FILL_PACKED ? shaper_samples_codes_profile : shaper_samples_profile)(dst,
         win + SHAPER_HISTORY, first % sps, count, &dvb.table,
         phases ? &dvb.whole : NULL, phases ? &dvb.partial : NULL);
     if (FILL_PACKED && count) {

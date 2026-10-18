@@ -43,6 +43,18 @@ void ring_publish(ring_t *r, uint32_t e)
     __atomic_store_n(&r->published, e + 1, __ATOMIC_RELEASE);
 }
 
+void ring_publish_frame(ring_t *r, uint32_t e, uint32_t symbols)
+{
+    r->slot_symbols[e % r->nslots] = symbols;
+    ring_publish(r, e);
+}
+
+static inline uint32_t frame_length(const ring_t *r, uint32_t e)
+{
+    const uint32_t n = r->slot_symbols[e % r->nslots];
+    return n ? n : r->frame_symbols;
+}
+
 void ring_filler_length(ring_t *r, uint32_t symbols)
 {
     r->filler_symbols = symbols;
@@ -164,76 +176,16 @@ IRAM_ATTR void ring_copy_quads(uint8_t *dst, size_t to, const uint8_t *src, size
     }
 }
 
-// Copy absolute symbols, retaining choices until no future overlap can read them.
-static IRAM_ATTR int ring_read(ring_t *r, uint8_t *dst, size_t to, int64_t first, size_t count)
-{
-    const uint32_t published = __atomic_load_n(&r->published, __ATOMIC_ACQUIRE);
-    const int64_t end = first + (int64_t)count;
-    if (first < 0) {
-        const size_t zeros = end < 0 ? count : (size_t)-first;
-        // Before symbol zero, quad code zero is phase 1, as in the legacy shaper.
-        memset(dst, 0, r->packed == 4 ? (zeros+3)/4 : zeros);
-        if (r->packed == 4) to += zeros;
-        else dst += zeros;
-        count -= zeros, first = 0;
-    }
-    if (!count) {
-        return 0;
-    }
-    if ((uint64_t)first < (r->release_position == r->next_position ? r->chosen_end :
-                           r->start[r->release_position % RING_CHOICES])) {
-        return -1;
-    }
-    uint32_t p = r->release_position;
-    while (p < r->next_position && r->end[p % RING_CHOICES] <= (uint64_t)first) {
-        ++p;
-    }
-    while (r->chosen_end < (uint64_t)end) {
-        if (r->next_position - r->release_position >= RING_CHOICES) {
-            return -1;
-        }
-        const unsigned i = r->next_position++ % RING_CHOICES;
-        uint32_t c = RING_FILLER;
-        if (r->next_frame != published) {
-            c = r->next_frame++;
-        } else {
-            r->underruns++;
-        }
-        r->choice[i] = c;
-        r->start[i] = r->chosen_end;
-        r->chosen_end += c == RING_FILLER ? r->filler_symbols : r->frame_symbols;
-        r->end[i] = r->chosen_end;
-    }
-    const int64_t lead = (int64_t)r->chosen_end +
-                         (int64_t)(published - r->next_frame) * r->frame_symbols - end;
-    if (lead < r->min_lead) {
-        r->min_lead = lead;
-    }
-    while (count) {
-        const unsigned i = p++ % RING_CHOICES;
-        const uint32_t c = r->choice[i];
-        const uint8_t *src = c == RING_FILLER ? r->filler :
-                            r->slots[c % r->nslots];
-        const size_t at = (uint64_t)first - r->start[i];
-        const size_t avail = r->end[i] - (uint64_t)first;
-        const size_t part = avail < count ? avail : count;
-        if (r->packed == 4) {
-            ring_copy_quads(dst, to, src, at, part);
-        } else if (r->packed == 3) {
-            ring_unpack_qpsk(dst, src, at, part);
-        } else if (r->packed == 2) {
-            ring_unpack_codes(dst, src, at, part);
-        } else if (r->packed) {
-            ring_unpack(dst, src, at, part);
-        } else {
-            memcpy(dst, src + at, part);
-        }
-        if (r->packed == 4) to += part;
-        else dst += part;
-        count -= part, first += part;
-    }
-    return 0;
-}
+#define RING_READ ring_read
+#define RING_VARIABLE 0
+#include "ring_read.inc"
+#undef RING_READ
+#undef RING_VARIABLE
+#define RING_READ ring_read_vcm
+#define RING_VARIABLE 1
+#include "ring_read.inc"
+#undef RING_READ
+#undef RING_VARIABLE
 
 static IRAM_ATTR void ring_release(ring_t *r, int64_t oldest)
 {
@@ -250,54 +202,13 @@ static IRAM_ATTR void ring_release(ring_t *r, int64_t oldest)
     }
 }
 
-IRAM_ATTR int ring_window(ring_t *r, uint8_t *dst, size_t room, uint64_t first, size_t count,
-                          unsigned sps, unsigned history, unsigned bank_words)
-{
-    const uint64_t s0 = r->packed == 4 ? first / sps & ~(uint64_t)3 : first / sps;
-    const size_t nsym = (size_t)((first + count + sps - 1) / sps - s0);
-    const int64_t begin = (int64_t)s0 - history, end = (int64_t)s0 + nsym;
-    const size_t need = r->packed == 4 ? (history + nsym + 3)/4 : history + nsym;
-    if (need > room) {
-        return -1;
-    }
-    size_t cached = 0;
-    if (r->cache && r->cache_first != r->cache_end && begin < r->cache_end) {
-        if (begin < r->cache_first) return -1;
-        cached = (size_t)((end < r->cache_end ? end : r->cache_end) - begin);
-        if (r->packed == 4) ring_copy_quads(dst, 0, r->cache, begin - r->cache_first, cached);
-        else memcpy(dst, r->cache + (begin - r->cache_first), cached);
-    }
-    if (ring_read(r, r->packed == 4 ? dst : dst + cached, r->packed == 4 ? cached : 0,
-                  begin + cached, history + nsym - cached)) return -1;
-    if (r->cache) {
-        if (end > r->cache_end) {
-            int64_t keep = end - (int64_t)r->cache_symbols;
-            if (r->packed == 4) {
-                // Retain up to three full blocks plus the current partial block. A
-                // later fill may start earlier within this same four-symbol block.
-                keep = (end - (r->cache_symbols > 16 ? 24 : 12)) & ~(int64_t)3;
-                if (keep < begin) keep = begin;
-                ring_copy_quads(r->cache, 0, dst, keep - begin, end - keep);
-            } else if (keep < begin) {
-                // A short second piece at the physical bank wrap must retain the
-                // preceding piece's overlap too. Do not replace it with only this piece.
-                if (keep < r->cache_first || begin > r->cache_end) keep = begin;
-                const size_t prefix = begin - keep;
-                if (prefix) memmove(r->cache, r->cache + (keep - r->cache_first), prefix);
-                memcpy(r->cache + prefix, dst, end - begin);
-            } else {
-                memcpy(r->cache, dst + (keep - begin), end - keep);
-            }
-            r->cache_first = keep;
-            r->cache_end = end;
-        }
-        if (r->cache_first > 0) ring_release(r, r->cache_first);
-        return (int)nsym;
-    }
-    const uint64_t earliest = first + count > bank_words ? first + count - bank_words : 0;
-    const int64_t oldest = (int64_t)(earliest / sps) - history;
-    if (oldest > 0) {
-        ring_release(r, oldest);
-    }
-    return (int)nsym;
-}
+#define RING_WINDOW ring_window
+#define RING_READ ring_read
+#include "ring_window.inc"
+#undef RING_WINDOW
+#undef RING_READ
+#define RING_WINDOW ring_window_vcm
+#define RING_READ ring_read_vcm
+#include "ring_window.inc"
+#undef RING_WINDOW
+#undef RING_READ
