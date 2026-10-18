@@ -7,8 +7,10 @@ ASSERT(machine_axis_samples >= 0x40370000 && machine_axis_samples < 0x403e0000,
        "fractional bank-cut wrapper must be in IRAM")
 ASSERT(shaper_copy_pie >= 0x40370000 && shaper_copy_pie < 0x403e0000,
        "fractional cut copies must be in IRAM")
-ASSERT(shaper_axes8_pie >= 0x40370000 && shaper_axes8_pie < 0x403e0000,
-       "VCM axis renderer must be in IRAM")
+ASSERT(shaper_axes8_pie >= _vcm_text_start && shaper_axes8_pie < _vcm_text_end,
+       "VCM axis renderer must be in its optional cache lock")
+ASSERT((_vcm_text_start & 31) == 0 && _vcm_text_end-_vcm_text_start <= 8192,
+       "VCM code must fit at most two instruction-cache ways")
 ASSERT(shaper_store >= 0x3fc88000 && shaper_store + 65536 <= 0x3fd00000,
        "fractional tables, queue and scratch must be internal DRAM")
 

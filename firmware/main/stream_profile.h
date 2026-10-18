@@ -47,10 +47,12 @@ static inline stream_mark_t stream_mark(void)
 
 // Keep the repeated 64-bit accumulation out of every fill branch. IRAM shares
 // physical SRAM with the heap on the S3, even when that branch is never used.
+#ifndef STREAM_PROFILE_FN
 #ifdef __XTENSA__
 #define STREAM_PROFILE_FN static IRAM_ATTR __attribute__((noinline, unused))
 #else
 #define STREAM_PROFILE_FN static inline
+#endif
 #endif
 STREAM_PROFILE_FN void stream_record(stream_profile_t *p, stream_mark_t a, stream_mark_t b)
 {

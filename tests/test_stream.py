@@ -212,6 +212,7 @@ def compile_stream(folder, source="stream_host.c", defines=()):
                     str(ROOT / "firmware/components/ingress/ingress_pattern.c"), str(ROOT / "firmware/main/ring.c"),
                     str(ROOT / "firmware/main/shaper.c"),
                     str(ROOT / "firmware/main/shaper_axes.c"),
+                    str(ROOT / "firmware/main/vcm_cache.c"),
                     str(ROOT / "firmware/main/shaper_short.c"),
                     str(ROOT / "firmware/main/machine.c"),
                     str(ROOT / "firmware/main/lofty.c"),

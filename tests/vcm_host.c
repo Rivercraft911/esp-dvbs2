@@ -81,7 +81,7 @@ int main(int argc, char **argv)
     allocation_count=0;
     assert(start_encoder("dvbdump",initial,128,0,sps,40000000));
     const int allocations=allocation_count;
-    assert(enc.vcm_axes == (mixed && sps == 8));
+    assert(vcm_enc.vcm_axes == (mixed && sps == 8));
     if (mixed) assert(!enc.block && dvb.ring.nslots >= 2);
     if (control && !mixed) assert(!vcm_control(initial == 12 ? 4 : 13));
     size_t internal=0;
@@ -89,7 +89,7 @@ int main(int argc, char **argv)
         if (native_blocks[i].p && (native_blocks[i].caps&MALLOC_CAP_INTERNAL)) internal+=native_blocks[i].n;
     if (!(sps == 8 && initial == 12)) assert(internal == 0);
     printf("VCM n%u %s: internal heap %zu, store %zu, table %zu, context %zu, slots %u\n",sps,argv[6],internal,
-           enc.vcm_store_bytes,enc.vcm_axes ? SHAPER_AXES_BYTES : 4*shaper_table_words(sps,dvb.table.bits),dvbs2_fast_size(),dvb.ring.nslots);
+           vcm_enc.vcm_store_bytes,vcm_enc.vcm_axes ? SHAPER_AXES_BYTES : 4*shaper_table_words(sps,dvb.table.bits),dvbs2_fast_size(),dvb.ring.nslots);
     stop_encoder(); printf("}\n"); assert(!live_allocations);
     if (control) { rewind(native_wire); }
     // All startup allocations fail cleanly, without touching the radio.

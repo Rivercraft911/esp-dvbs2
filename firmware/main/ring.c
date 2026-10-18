@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "esp_attr.h"
+#include "vcm_cache.h"
 
 void ring_init(ring_t *r, uint8_t *slots, uint32_t nslots, const uint8_t *filler,
                uint32_t frame_symbols)
@@ -43,15 +44,15 @@ void ring_publish(ring_t *r, uint32_t e)
     __atomic_store_n(&r->published, e + 1, __ATOMIC_RELEASE);
 }
 
-void ring_publish_frame(ring_t *r, uint32_t e, uint32_t symbols)
+void ring_publish_frame(ring_t *r, uint32_t e, uint32_t symbols, uint32_t *lengths)
 {
-    r->slot_symbols[e % r->nslots] = symbols;
+    lengths[e % r->nslots] = symbols;
     ring_publish(r, e);
 }
 
-static inline uint32_t frame_length(const ring_t *r, uint32_t e)
+static inline uint32_t frame_length(const ring_t *r, uint32_t e, const uint32_t *lengths)
 {
-    const uint32_t n = r->slot_symbols[e % r->nslots];
+    const uint32_t n = lengths[e % r->nslots];
     return n ? n : r->frame_symbols;
 }
 
@@ -177,15 +178,31 @@ IRAM_ATTR void ring_copy_quads(uint8_t *dst, size_t to, const uint8_t *src, size
 }
 
 #define RING_READ ring_read
+#define RING_QUADS (r->packed == 4)
 #define RING_VARIABLE 0
+#define RING_TEXT IRAM_ATTR
+#define RING_LENGTHS
+#define RING_ARGUMENT
 #include "ring_read.inc"
 #undef RING_READ
+#undef RING_QUADS
 #undef RING_VARIABLE
+#undef RING_TEXT
+#undef RING_LENGTHS
+#undef RING_ARGUMENT
 #define RING_READ ring_read_vcm
+#define RING_QUADS 0
 #define RING_VARIABLE 1
+#define RING_TEXT VCM_TEXT
+#define RING_LENGTHS , const uint32_t *lengths
+#define RING_ARGUMENT , lengths
 #include "ring_read.inc"
 #undef RING_READ
+#undef RING_QUADS
 #undef RING_VARIABLE
+#undef RING_TEXT
+#undef RING_LENGTHS
+#undef RING_ARGUMENT
 
 static IRAM_ATTR void ring_release(ring_t *r, int64_t oldest)
 {
@@ -202,13 +219,29 @@ static IRAM_ATTR void ring_release(ring_t *r, int64_t oldest)
     }
 }
 
+#define RING_TEXT IRAM_ATTR
+#define RING_LENGTHS
+#define RING_ARGUMENT
+#define RING_QUADS (r->packed == 4)
 #define RING_WINDOW ring_window
 #define RING_READ ring_read
 #include "ring_window.inc"
+#undef RING_QUADS
 #undef RING_WINDOW
+#undef RING_TEXT
+#undef RING_LENGTHS
+#undef RING_ARGUMENT
 #undef RING_READ
+#define RING_TEXT VCM_TEXT
+#define RING_LENGTHS , const uint32_t *lengths
+#define RING_ARGUMENT , lengths
+#define RING_QUADS 0
 #define RING_WINDOW ring_window_vcm
 #define RING_READ ring_read_vcm
 #include "ring_window.inc"
+#undef RING_QUADS
 #undef RING_WINDOW
+#undef RING_TEXT
+#undef RING_LENGTHS
+#undef RING_ARGUMENT
 #undef RING_READ

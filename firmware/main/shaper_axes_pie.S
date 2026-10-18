@@ -41,7 +41,7 @@
     ee.vst.128.ip q1,a2,16
     .endm
 
-    .section .iram1.shaper_axes, "ax"
+    .section .vcm, "ax"
     .global shaper_axes8_pie
     .type shaper_axes8_pie,@function
     .align 4

@@ -151,6 +151,9 @@ def check_residency(current):
         subprocess.run(['cc','-O2','-Wall','-Wextra','-Werror','-I'+tmp,
                         str(ROOT/'tests/psk8_resident.c'),'-o',str(out/'resident')],check=True)
         subprocess.run([str(out/'resident')],check=True)
+        subprocess.run(['cc','-O2','-Wall','-Wextra','-Werror',
+                        str(ROOT/'tests/vcm_resident.c'),'-o',str(out/'vcm-resident')],check=True)
+        subprocess.run([str(out/'vcm-resident')],check=True)
     print('cache residency: dormant, timeout, ROM error, repeated setup and cleanup: ok')
     if not current: return
     m = symbols(current)
@@ -178,6 +181,13 @@ def check_residency(current):
     for name in ('lofty_render_pie','lofty_render_pages_pie','machine_axis_render_pie',
                  'machine_axis_samples','xTaskGenericNotify','shaper_copy_pie'):
         assert 0x40370000 <= m[name] < 0x403e0000,(name,m[name])
+    assert m['lofty_render_pages_pie'] % 32 == 4, "default PIE fetch alignment must match main"
+    assert m['lofty_render_pie'] - m['lofty_render_pages_pie'] == 16
+    assert m['_vcm_text_start'] % 32 == 0 and 0 < m['_vcm_text_end']-m['_vcm_text_start'] <= 8192
+    for name in ('fill_vcm', 'ring_read_vcm', 'ring_window_vcm', 'shaper_axes8_pie', 'shaper_axes_samples_profile'):
+        entries = [address for symbol, address in m.items() if symbol == name or symbol.startswith(name+'$') or symbol.startswith(name+'.')]
+        assert entries and all(m['_vcm_text_start'] <= address < m['_vcm_text_end'] for address in entries), name
+    assert not any(name == 'lofty_page_at' or name.startswith('lofty_page_at.') for name in m), "page accessor must stay inline"
     store = m['shaper_store']
     assert store%16 == 0 and 0x3fc88000 <= store < store+65536 <= 0x3fcc0000
     print(f'linked: {size} B default lock (main unchanged), separate fused lock {fused_end-fused_first} B; common 64 KiB store before DAC')

@@ -1,12 +1,18 @@
 static void ENCODER_TASK(void *arg)
 {
     encoder_t *e = arg;
+#if ENCODER_VCM
     size_t bytes = (e->mode->kbch - 80) / 8;
+#else
+    const size_t bytes = (e->mode->kbch - 80) / 8;
+#endif
     uint8_t *const payload = e->payload;
     uint32_t x = SEED;
     const unsigned input = spi_input_type();
     dvbs2_ts_state ts = {0};
-    spi_input_control(ENCODER_VCM ? vcm_control : NULL);
+#if ENCODER_VCM
+    spi_input_control(vcm_control);
+#endif
     if (spi_input_start() != ESP_OK) { e->failed = true; goto done; }
     e->input_started = true;
     // The worker starts Wi-Fi before choosing an automatic queue. Sleep here,
@@ -52,10 +58,12 @@ static void ENCODER_TASK(void *arg)
             const uint32_t t0=esp_cpu_get_cycle_count();
             if (vcm_boundary(e,f)) { e->failed=true; goto done; }
             mode_cycles=esp_cpu_get_cycle_count()-t0;
-            e->boundary_cycles+=mode_cycles;
-            if (mode_cycles > e->boundary_max) e->boundary_max=mode_cycles;
+            vcm_enc.boundary_cycles+=mode_cycles;
+            if (mode_cycles > vcm_enc.boundary_max) vcm_enc.boundary_max=mode_cycles;
         }
-        if (ENCODER_VCM) bytes=(e->mode->kbch-80)/8;
+    #if ENCODER_VCM
+        bytes=(e->mode->kbch-80)/8;
+#endif
         if (input) {
             size_t used = 0;
             while (used < bytes && !e->stop) {
@@ -135,8 +143,8 @@ static void ENCODER_TASK(void *arg)
         if (f >= (dvb.moon ? 2 : dvb.ring.nslots) && work > e->work_live_max) e->work_live_max = work;
         e->input_pending = 0;
         if (ENCODER_VCM) {
-            e->mode_frames[e->mode->modcod-4]++;
-            ring_publish_frame(&dvb.ring,f,dvbs2_frame_symbols(e->mode,PILOTS));
+            vcm_enc.mode_frames[e->mode->modcod-4]++;
+            ring_publish_frame(&dvb.ring,f,dvbs2_frame_symbols(e->mode,PILOTS),vcm_enc.lengths);
         } else if (!dvb.moon) ring_publish(&dvb.ring, f);
         e->frames = f + 1;
         e->cycles += spent;

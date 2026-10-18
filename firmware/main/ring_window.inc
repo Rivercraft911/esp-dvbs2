@@ -1,10 +1,10 @@
-IRAM_ATTR int RING_WINDOW(ring_t *r, uint8_t *dst, size_t room, uint64_t first, size_t count,
-                          unsigned sps, unsigned history, unsigned bank_words)
+RING_TEXT int RING_WINDOW(ring_t *r, uint8_t *dst, size_t room, uint64_t first, size_t count,
+                          unsigned sps, unsigned history, unsigned bank_words RING_LENGTHS)
 {
-    const uint64_t s0 = r->packed == 4 ? first / sps & ~(uint64_t)3 : first / sps;
+    const uint64_t s0 = RING_QUADS ? first / sps & ~(uint64_t)3 : first / sps;
     const size_t nsym = (size_t)((first + count + sps - 1) / sps - s0);
     const int64_t begin = (int64_t)s0 - history, end = (int64_t)s0 + nsym;
-    const size_t need = r->packed == 4 ? (history + nsym + 3)/4 : history + nsym;
+    const size_t need = RING_QUADS ? (history + nsym + 3)/4 : history + nsym;
     if (need > room) {
         return -1;
     }
@@ -12,15 +12,15 @@ IRAM_ATTR int RING_WINDOW(ring_t *r, uint8_t *dst, size_t room, uint64_t first, 
     if (r->cache && r->cache_first != r->cache_end && begin < r->cache_end) {
         if (begin < r->cache_first) return -1;
         cached = (size_t)((end < r->cache_end ? end : r->cache_end) - begin);
-        if (r->packed == 4) ring_copy_quads(dst, 0, r->cache, begin - r->cache_first, cached);
+        if (RING_QUADS) ring_copy_quads(dst, 0, r->cache, begin - r->cache_first, cached);
         else memcpy(dst, r->cache + (begin - r->cache_first), cached);
     }
-    if (RING_READ(r, r->packed == 4 ? dst : dst + cached, r->packed == 4 ? cached : 0,
-                  begin + cached, history + nsym - cached)) return -1;
+    if (RING_READ(r, RING_QUADS ? dst : dst + cached, RING_QUADS ? cached : 0,
+                  begin + cached, history + nsym - cached RING_ARGUMENT)) return -1;
     if (r->cache) {
         if (end > r->cache_end) {
             int64_t keep = end - (int64_t)r->cache_symbols;
-            if (r->packed == 4) {
+            if (RING_QUADS) {
                 // Retain up to three full blocks plus the current partial block. A
                 // later fill may start earlier within this same four-symbol block.
                 keep = (end - (r->cache_symbols > 16 ? 24 : 12)) & ~(int64_t)3;

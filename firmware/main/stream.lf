@@ -38,3 +38,33 @@ archive: libmain.a
 entries:
     * (lofty_fused_text);
         lofty_fused_text -> flash_text ALIGN(32, pre, post) SURROUND(lofty_fused_text)
+
+# VCM is mutually exclusive with 26m667. Lock its optional code only for VCM;
+# optional renderer code must not occupy permanent IRAM in fixed modes.
+[sections:vcm_text]
+entries:
+    .vcm.literal
+    .vcm
+
+[scheme:vcm_text]
+entries:
+    vcm_text -> flash_text
+
+[mapping:vcm_text]
+archive: libmain.a
+entries:
+    * (vcm_text);
+        vcm_text -> flash_text ALIGN(32, pre, post) SURROUND(vcm_text)
+
+[sections:vcm_bss]
+entries:
+    .vcm_bss
+
+[scheme:vcm_bss]
+entries:
+    vcm_bss -> dram0_bss
+
+[mapping:vcm_bss]
+archive: libmain.a
+entries:
+    * (vcm_bss)

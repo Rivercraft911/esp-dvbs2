@@ -1,13 +1,13 @@
 // Copy absolute symbols, retaining choices until no future overlap can read them.
-static IRAM_ATTR int RING_READ(ring_t *r, uint8_t *dst, size_t to, int64_t first, size_t count)
+static RING_TEXT int RING_READ(ring_t *r, uint8_t *dst, size_t to, int64_t first, size_t count RING_LENGTHS)
 {
     const uint32_t published = __atomic_load_n(&r->published, __ATOMIC_ACQUIRE);
     const int64_t end = first + (int64_t)count;
     if (first < 0) {
         const size_t zeros = end < 0 ? count : (size_t)-first;
         // Before symbol zero, quad code zero is phase 1, as in the legacy shaper.
-        memset(dst, 0, r->packed == 4 ? (zeros+3)/4 : zeros);
-        if (r->packed == 4) to += zeros;
+        memset(dst, 0, RING_QUADS ? (zeros+3)/4 : zeros);
+        if (RING_QUADS) to += zeros;
         else dst += zeros;
         count -= zeros, first = 0;
     }
@@ -35,13 +35,20 @@ static IRAM_ATTR int RING_READ(ring_t *r, uint8_t *dst, size_t to, int64_t first
         }
         r->choice[i] = c;
         r->start[i] = r->chosen_end;
-        r->chosen_end += c == RING_FILLER ? r->filler_symbols : (RING_VARIABLE ? frame_length(r, c) : r->frame_symbols);
+#if RING_VARIABLE
+        r->chosen_end += c == RING_FILLER ? r->filler_symbols : frame_length(r, c, lengths);
+#else
+        r->chosen_end += c == RING_FILLER ? r->filler_symbols : r->frame_symbols;
+#endif
         r->end[i] = r->chosen_end;
     }
+#if RING_VARIABLE
     int64_t lead = (int64_t)r->chosen_end - end;
-    if (RING_VARIABLE) {
-        for (uint32_t e = r->next_frame; e != published; ++e) lead += frame_length(r, e);
-    } else lead += (int64_t)(published-r->next_frame)*r->frame_symbols;
+    for (uint32_t e = r->next_frame; e != published; ++e) lead += frame_length(r, e, lengths);
+#else
+    const int64_t lead = (int64_t)r->chosen_end +
+                         (int64_t)(published - r->next_frame) * r->frame_symbols - end;
+#endif
     if (lead < r->min_lead) {
         r->min_lead = lead;
     }
@@ -53,7 +60,7 @@ static IRAM_ATTR int RING_READ(ring_t *r, uint8_t *dst, size_t to, int64_t first
         const size_t at = (uint64_t)first - r->start[i];
         const size_t avail = r->end[i] - (uint64_t)first;
         const size_t part = avail < count ? avail : count;
-        if (r->packed == 4) {
+        if (RING_QUADS) {
             ring_copy_quads(dst, to, src, at, part);
         } else if (r->packed == 3) {
             ring_unpack_qpsk(dst, src, at, part);
@@ -64,7 +71,7 @@ static IRAM_ATTR int RING_READ(ring_t *r, uint8_t *dst, size_t to, int64_t first
         } else {
             memcpy(dst, src + at, part);
         }
-        if (r->packed == 4) to += part;
+        if (RING_QUADS) to += part;
         else dst += part;
         count -= part, first += part;
     }

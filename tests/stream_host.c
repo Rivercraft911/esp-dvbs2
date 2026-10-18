@@ -181,7 +181,7 @@ static bool vcm_ready(size_t end)
     const ring_t *r=&dvb.ring;
     const unsigned published=__atomic_load_n(&r->published,__ATOMIC_ACQUIRE);
     uint64_t available=r->chosen_end;
-    for (unsigned f=r->next_frame;f!=published;++f) available+=r->slot_symbols[f%r->nslots];
+    for (unsigned f=r->next_frame;f!=published;++f) available+=vcm_enc.lengths[f%r->nslots];
     return available >= end;
 }
 
@@ -199,7 +199,7 @@ static void bank_fill(radio_s3_fill_fn fn, void *ctx, unsigned b, uint64_t first
         const size_t needed = (end_symbol + dvb.ring.frame_symbols - 1) / dvb.ring.frame_symbols;
         // Host correctness test only: wait for the native encoder, with a deadlock timeout.
         unsigned tries = 0;
-        while (enc.vcm ? !vcm_ready(end_symbol) : dvb.lofty ? false : dvb.moon ? dvb.queue_sample+
+        while (vcm_enc.vcm ? !vcm_ready(end_symbol) : dvb.lofty ? false : dvb.moon ? dvb.queue_sample+
                (uint32_t)(__atomic_load_n(&dvb.produced,__ATOMIC_ACQUIRE)-dvb.consumed)*MACHINE_PAGE_SAMPLES-
                dvb.page_sample < at+count :
                __atomic_load_n(&dvb.ring.published,__ATOMIC_ACQUIRE) < needed) {

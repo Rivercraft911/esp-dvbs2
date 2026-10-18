@@ -1,0 +1,14 @@
+# Standalone PIE oracle runs without the transmitter's optional cache admission.
+[sections:axes_test_text]
+entries:
+    .vcm.literal
+    .vcm
+
+[scheme:axes_test_text]
+entries:
+    axes_test_text -> iram0_text
+
+[mapping:axes_test_text]
+archive: libmain.a
+entries:
+    * (axes_test_text)

@@ -1,4 +1,8 @@
 // Five distinct axis amplitudes, with the legacy three-tap rounding intact.
+#include "vcm_cache.h"
+#ifdef __XTENSA__
+#define STREAM_PROFILE_FN static VCM_TEXT __attribute__((unused))
+#endif
 #include "shaper.h"
 #include "shaper_taps.h"
 #include "esp_attr.h"
@@ -53,7 +57,7 @@ void shaper_axes_build(shaper_table_t *t, uint32_t *store, const int32_t *taps)
     *t = (shaper_table_t){.blocks=store,.n=8,.bits=3,.parts=SHAPER_AXES_PARTS};
 }
 
-IRAM_ATTR void shaper_axes_c(uint32_t *dst, const uint8_t *sym, int nsym,
+void shaper_axes_c(uint32_t *dst, const uint8_t *sym, int nsym,
                              const shaper_table_t *t)
 {
     if (!nsym) return;
@@ -84,7 +88,7 @@ IRAM_ATTR void shaper_axes_c(uint32_t *dst, const uint8_t *sym, int nsym,
     }
 }
 
-static IRAM_ATTR void fill_axes(uint32_t *dst, const uint8_t *sym, int n,
+static VCM_TEXT void fill_axes(uint32_t *dst, const uint8_t *sym, int n,
                                 const shaper_table_t *t)
 {
 #ifdef __XTENSA__
@@ -97,7 +101,7 @@ static IRAM_ATTR void fill_axes(uint32_t *dst, const uint8_t *sym, int n,
 #endif
 }
 
-IRAM_ATTR void shaper_axes_samples_profile(uint32_t *dst, const uint8_t *sym, unsigned skip,
+VCM_TEXT void shaper_axes_samples_profile(uint32_t *dst, const uint8_t *sym, unsigned skip,
                                           size_t count, const shaper_table_t *t,
                                           stream_profile_t *whole, stream_profile_t *partial)
 {

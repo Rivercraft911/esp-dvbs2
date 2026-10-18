@@ -68,7 +68,14 @@
     .global lofty_render_pages_pie
     .type lofty_render_pie,@function
     .type lofty_render_pages_pie,@function
+#if LOFTY_FUSED
     .align 4
+#else
+    // Main 7391f86's entry and loop offsets within the 32-byte fetch line.
+    // Optional renderers must not change the default loop's fetch alignment.
+    .balign 32
+    .space 4
+#endif
 lofty_render_pages_pie:
     entry a1,32
     mov a15,a6
