@@ -1,5 +1,9 @@
 # Changing MODCOD while sending
 
+The opt-in [five-level table experiment](modswap.md) reclaims the full-table
+store for the queue and playback scratch at 5 Msym/s. Select `vcm axes on`
+before the pattern; `vcm axes off` selects the original full-table allocator.
+
 The prototype switches at PLFRAME boundaries, at a fixed symbol clock. Enable it
 before a run with `vcm on`, or repeat a test pattern with `vcm 4 4 11 13 17`
 (four data frames per MODCOD). `vcm off` restores the fixed-mode path. Settings
