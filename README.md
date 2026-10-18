@@ -145,6 +145,8 @@ shielded setup or into a dummy load, or through at least 30 dB attenuation into 
 Set your assigned callsign first. The firmware sends 20 WPM Morse before and after a run;
 synthetic test payloads also carry the callsign. External SPI/USB payload bytes are preserved
 without an added callsign header; Morse ID remains separate. [Setup and limitations](docs/transmitting.md).
+The [contained E200 RF check](examples/over-the-air/README.md) coordinates capture,
+explicit operator keying and exact payload verification; it also supports offline USB replay.
 
 ## More
 

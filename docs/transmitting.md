@@ -2,14 +2,21 @@
 
 Start with the [radio-off self-check](../examples/self-check/README.md). Key the radio only
 with the operator's authorization, a valid amateur licence and an assigned callsign.
-Use a closed shielded setup, a dummy load, or coax through at least 30 dB attenuation
-into a receiver. A shielded box is not proof of zero leakage. Do not attach an antenna
-for an initial bench check.
+For the [E200 RF check](../examples/over-the-air/README.md), use a closed Faraday box
+with both devices inside, or coax through at least 30 dB attenuation into the receiver.
+Antennas are allowed only inside the closed box. A shielded box is not proof of zero
+leakage. Never run this check with an exposed antenna or an unattenuated receiver path.
 
 The console accepts integer center frequencies 2390..2450 MHz. That range is a hardware
 limit, not authorization. Check your jurisdiction's band allocation, licence privileges
 and permitted emissions. The full occupied bandwidth, plus the station-ID tone, must fit
 inside your authorized band. Gain 0..17 is an uncalibrated vendor index, not dBm.
+In the US, consult [47 CFR §97.301](https://www.ecfr.gov/current/title-47/chapter-I/subchapter-D/part-97/subpart-D/section-97.301)
+for licence/band privileges, [§97.303](https://www.ecfr.gov/current/title-47/chapter-I/subchapter-D/part-97/subpart-D/section-97.303)
+for sharing restrictions, [§97.305](https://www.ecfr.gov/current/title-47/chapter-I/subchapter-D/part-97/subpart-D/section-97.305)
+for permitted emissions and [§97.307](https://www.ecfr.gov/current/title-47/chapter-I/subchapter-D/part-97/subpart-D/section-97.307)
+for emission standards. Check applicable local rules and band plans before keying;
+the coordinator's `--key` and stored-callsign checks do not establish legal authority.
 
 ## Board and USB
 
@@ -152,6 +159,10 @@ The automatic transmit-filter selector is retained. Register readbacks do not es
 filter flatness, radiated power or emission-mask compliance. Historical keyed records in
 [measurements.md](measurements.md) establish timing only. Wideband RF decoding, spectrum,
 sample continuity and measured station ID are still to do.
+The [contained RF coordinator](../examples/over-the-air/README.md) captures the E200
+before keying and checks LeanDVB's recovered synthetic payload bytes. Its `--plan` and
+`--dry-run` paths are device-free; only an explicit `--key` permits hardware access.
+No successful RF decode is established by adding this workflow.
 
 ## Payload input
 
