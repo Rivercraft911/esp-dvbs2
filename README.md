@@ -53,8 +53,8 @@ Roll-off is 0.35 unless noted. Data rates follow from the DVB-S2 normal frame wi
 exclude station-ID time. Every mode's samples decode bit-exact in LeanDVB, an independent
 receiver; a receiver decoding the signal over the air is not shown yet.
 \*Keyed with an earlier, longer pulse; the current pulse has radio-off evidence.
-Margins, raw records and limits: [measurements](docs/measurements.md). One 30 s keyed run
-of the 40 MHz mode met a 15% reserve on both cores.
+Margins, raw records and limits: [measurements](docs/measurements.md). With a prepared payload,
+30 s keyed tests of the 40 MHz mode left **37% mean encoder headroom and 16% bank-fill headroom**.
 
 ![Calculated payload rates from selected historical keyed records](docs/img/payload.png)
 

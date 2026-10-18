@@ -35,13 +35,21 @@ space becomes available.
 | Encoder and shaping | Standard vectors, independent stage digests, C/Python comparisons and waveform CRCs | Host tests do not establish board timing |
 | S3 output samples | USB dumps decoded bit-exact in LeanDVB | Before RF |
 | Bank deadlines | Timed radio-off and contained keyed runs | Timing does not establish RF continuity or quality |
-| 40 MHz reserve | e96795b: 198,879 mean encoder cycles/frame, 39,548 maximum fill cycles/bank | One 30 s keyed run; [records](measurements.md#40-mhz) |
+| 40 MHz reserve | 40fa63d: 150,667 mean encoder cycles/frame, 39,448 maximum fill cycles/bank | Prepared payload, 30 s keyed; [records](measurements.md#40-mhz) |
 | SPI input | Single-line and quad on-chip loopback | External sender throughput remains unmeasured |
 | Video | Host-model MPEG-2 TS → IQ → LeanDVB → TS | No S3, external camera or RF in the dry run |
 
-The 40 MHz run met the 15% reserve on both cores: frame duration 239,630 cycles,
-bank deadline 47,220 cycles. A wider receiver is needed to observe the complete signal;
-the E200 on the bench covers at most 20 MHz.
+With a prepared payload, the 40 MHz keyed tests left 37% mean encoder headroom against
+239,630 cycles/frame and 16% fill headroom against 47,220 cycles/bank. Keeping Wi-Fi
+running or tearing it down gave encoder means of 150,667 and 150,669 cycles/frame.
+The matched radio-off mean was 152,754, with additional profiling enabled.
+
+The historical e96795b run used 198,879 encoder cycles/frame and 39,548 fill cycles/bank,
+meeting the 15% reserve while generating fresh xorshift payload bytes for every frame.
+Its roughly 47k-cycle gap from radio-off pacing came from different payload sources.
+The matched-source tests show no measurable encoder penalty from keying.
+A wider receiver is needed to observe the complete signal; the E200 on the bench
+covers at most 20 MHz.
 
 Synthetic test payloads carry a callsign header. External SPI/USB payload bytes receive
 no added header. The transmitter sends separate 20 WPM Morse ID before and after a run;

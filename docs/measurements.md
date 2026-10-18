@@ -20,7 +20,7 @@ different firmware versions. The video-example row is a host-model check only.
 
 | Mode | Symbol rate | Bandwidth | Data rate | Tested | Fill headroom |
 |---|---:|---:|---:|---|---|
-| QPSK 9/10, roll-off 0.20 | 33.33 Msym/s | 40 MHz | 58.2 Mb/s | keyed | 16% ([record](#40-mhz)); encoder 17% |
+| QPSK 9/10, roll-off 0.20 | 33.33 Msym/s | 40 MHz | 58.2 Mb/s | keyed | 16%; encoder 37%, prepared payload ([records](#40-mhz)) |
 | 8PSK 5/6 | 20 Msym/s | 27 MHz | 48.4 Mb/s | keyed | 14% [radio off, current pulse](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/results/2026-10-17-next4/README.md); 5% keyed, [earlier pulse](#8psk-at-20-msyms) |
 | QPSK 9/10 | 26.67 Msym/s | 36 MHz | 46.6 Mb/s | keyed | 18% ([record](#qpsk-at-2667-msyms)) |
 | 8PSK 2/3 | 20 Msym/s | 27 MHz | 38.7 Mb/s | keyed | 14% radio off, current pulse |
@@ -56,7 +56,36 @@ they are not measured sustained video-input throughput.
 
 ## 40 MHz
 
-Firmware **e96795b** keyed QPSK 9/10 at 100/3 Msym/s, roll-off 0.20, for 30 s inside the
+On 2026-10-18, firmware **40fa63d** on `exp/phy-solo` ran QPSK 9/10 at 100/3 Msym/s,
+roll-off 0.20, with the same prepared payload in radio-off pacing and two 30 s keyed
+runs inside the closed box. The keyed runs used 2412 MHz, gain 0 and peak 128.
+All three reported ESP_OK, zero late fills, late switches, fatal lateness, underruns
+and empty-queue events.
+
+| Quantity | [Radio off, Wi-Fi running](measurements/2026-10-18-qpsk-fixture-pace.jsonl) | [Keyed, Wi-Fi running](measurements/2026-10-18-qpsk-fixture-keyed-wifi.jsonl) | [Keyed, PHY solo](measurements/2026-10-18-qpsk-fixture-keyed-solo.jsonl) |
+|---|---:|---:|---:|
+| Encoder mean / live maximum, cycles/frame | 152,754 / 174,627 | 150,667 / 170,229 | 150,669 / 168,743 |
+| Encoder kernel mean, cycles/frame | 146,992 | 145,365 | 145,366 |
+| Longest bank fill, cycles | 44,649 | 39,448 | 39,421 |
+| Minimum fill slack, cycles | 2,276 | 7,368 | 7,395 |
+| Minimum queued lead, symbols | 40,320 | 41,600 | 41,600 |
+| Minimum free internal RAM during command, B | 29,327 | 31,171 | 31,171 |
+| Free internal RAM during playback, B | 31,179 | 31,171 | 46,475 |
+
+The commands were `dvbpace 11 33m333 30 128 0`,
+`dvb 2412 11 33m333 30 0 128 --fixture`, and the same keyed command with `--phy-solo`.
+The fixture copies one prepared payload in 1316-byte chunks and encodes every frame;
+external input transport is outside this test. Pacing enables extra profiling and runs
+30 s of payload plus both IDs; keyed duration includes the IDs. Means compare per-frame
+encoder work, excluding waits for queue space.
+
+Keying added no measurable encoder cost here. Removing Wi-Fi changed the keyed mean
+by two cycles and reclaimed 15,304 internal bytes during playback. With Wi-Fi running,
+the encoder used 150,667 of 239,630.4 cycles/frame (**37% mean headroom**); the longest
+fill used 39,448 of 47,220 cycles/bank (**16% headroom**).
+
+The earlier **e96795b** run generated fresh xorshift payload bytes for every frame.
+It keyed QPSK 9/10 at 100/3 Msym/s, roll-off 0.20, for 30 s inside the
 shielded box with `dvb 2420 11 33m333 30 4 128` (firmware revision read with `info` just
 before the run). Status was ESP_OK, with zero late fills, late switches, fatal lateness,
 underruns or empty-queue events.
@@ -72,13 +101,15 @@ underruns or empty-queue events.
 | Minimum queued lead | 34,901 symbols | |
 | Minimum free internal RAM during command | 30,395 B | 20,000 B |
 
-RAM columns use `wifi_min_free`, the low-water mark since command start, including Wi-Fi
-startup. They are not the instantaneous `wifi_free_up` measurement after Wi-Fi starts.
+Minimum RAM figures use `wifi_min_free`, the low-water mark since command start,
+including Wi-Fi startup. The new records also sample free RAM during playback.
 
-The same build ran radio off for 30 s with an encoder mean of 152,128 cycles/frame, so keying
-the radio costs core 0 about 46.8k cycles per frame. The reserve is now met on both cores, in
-one 30 s keyed run. Spectrum, filter flatness near ±20 MHz, RF decoding and live input at this
-rate remain unmeasured. [Sign-window design](how-it-works.md#sign-windows-and-40-mhz).
+Its radio-off mean of 152,128 cycles/frame used a prepared payload. Comparing that with
+the keyed mean of 198,879 mixed payload sources: the roughly 46.8k-cycle gap came from
+synthetic payload generation, not keying. The historical run still met the 15% reserve
+on both cores with that work included. Spectrum, filter flatness near ±20 MHz, RF decoding
+and live input at this rate remain unmeasured.
+[Sign-window design](how-it-works.md#sign-windows-and-40-mhz).
 
 ## QPSK at 26.67 Msym/s
 

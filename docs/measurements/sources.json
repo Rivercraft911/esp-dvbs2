@@ -36,6 +36,24 @@
       "source": "results/2026-10-16-keyed-next2/runs.jsonl (QPSK 1/2 record)",
       "records": 1,
       "sha256": "87df0a3b85a12a56d400e7ed4d29fd4a4aa1aba6c9514c05bbc143c75357df60"
+    },
+    {
+      "file": "2026-10-18-qpsk-fixture-pace.jsonl",
+      "source": "board run 2026-10-18, firmware 40fa63d on exp/phy-solo",
+      "records": 1,
+      "sha256": "6fc2fbb22cbed6a49afccdd668c078f9d5f6c5b7c756ebdf5d63aa7ebce84040"
+    },
+    {
+      "file": "2026-10-18-qpsk-fixture-keyed-wifi.jsonl",
+      "source": "board run 2026-10-18, firmware 40fa63d on exp/phy-solo",
+      "records": 1,
+      "sha256": "df209d589aaa6746b33aa651733d1b2ac60a30f0254be69405f7348b68732be3"
+    },
+    {
+      "file": "2026-10-18-qpsk-fixture-keyed-solo.jsonl",
+      "source": "board run 2026-10-18, firmware 40fa63d on exp/phy-solo",
+      "records": 1,
+      "sha256": "3bd3de61ed0d9d9eeb26705d13aa0d5010d05069f1a2423977786c1da8bec56d"
     }
   ]
 }
