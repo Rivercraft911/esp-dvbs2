@@ -23,7 +23,7 @@ from receive import stop
 
 RADIOCONDA = "/Users/river/radioconda/bin/python"
 DEFAULT_RX = "/Users/river/Documents/stanford/SSI/esp-dvbs2/notes/leansdr/src/apps/leandvb"
-MODES = {7: "QPSK 3/4", 13: "8PSK 2/3", 11: "QPSK 9/10"}
+MODES = {7: "QPSK 3/4", 13: "8PSK 2/3", 11: "QPSK 9/10", 15: "8PSK 5/6", 17: "8PSK 9/10"}
 
 
 def settings(a):
@@ -60,7 +60,7 @@ def settings(a):
 
 
 def tx_command(a):
-    return f"dvb {a.mhz} {a.modcod} {a.rate} {a.seconds} {a.gain} {a.peak}"
+    return f"dvb {a.mhz} {a.modcod} {a.rate} {a.seconds} {a.gain} {a.peak}" + (" --phy-solo" if a.phy_solo else "")
 
 
 def plan(a, s):
@@ -120,6 +120,14 @@ def board_result(rows, a, call):
                     freq_mhz=a.mhz, seconds=a.seconds, gain=a.gain, peak_level=a.peak)
     if "error" in r or any(r.get(k) != v for k, v in expected.items()):
         raise ValueError("board mode/payload/status mismatch; see board.jsonl")
+    if a.phy_solo:
+        state, after = r.get("session", {}), r.get("after", {})
+        if (not r.get("phy_solo") or state.get("wifi_initialized") is not False or
+                state.get("wifi_mode_result") != 0x3001 or state.get("phy_users") != 2 or
+                state.get("wifi_irq_routes") != [0, 0] or state.get("irq_sampled_cores") != 3 or
+                after.get("wifi_initialized") is not False or after.get("phy_users") != 0 or
+                not 0 < r.get("wifi_deinit_at_us", 0) < state.get("at_us", 0)):
+            raise ValueError("PHY-solo handoff/cleanup mismatch; see board.jsonl")
     if r.get("fatal_late", 0) or r.get("frames_played", 0) < 1:
         raise ValueError("board failed to play healthy DVB frames")
     if not isinstance(r.get("frames_encoded"), int) or r["frames_encoded"] < r["frames_played"]:
@@ -241,6 +249,7 @@ def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("out", type=Path, nargs="?", help="new evidence directory (default notes/ota-TIMESTAMP)")
     p.add_argument("--plan", action="store_true")
+    p.add_argument("--phy-solo", action="store_true", help="experimental Wi-Fi teardown during playback")
     p.add_argument("--key", action="store_true", help="explicitly authorize contained hardware run")
     p.add_argument("--dry-run", type=Path, metavar="USB_DUMP", help="offline int16 IQ, never opens devices")
     p.add_argument("--dump-rate", type=float, help="saved USB samples/s after decimation")

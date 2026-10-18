@@ -91,6 +91,41 @@ Then repeat with fresh directories and `--rate 10m --modcod 7`, `--rate 10m --mo
 and `--rate 10m --modcod 11`. If acquisition fails, inspect spectrum and logs before
 changing manual RX gain or RF settings; gain 0 on either device is not a power guarantee.
 
+## PHY-solo A/B
+
+Wi-Fi teardown removes periodic recalibration. CPU/heap records cannot establish
+RF quality. After the radio-off self-check and paired `dvbpace` runs, the coordinator
+runs this A/B **only inside the closed Faraday box**, keeping the path, supply,
+attenuation, RX gain, peak and callsign fixed. Use fresh output directories. Repeat
+in reverse order to distinguish warmup/drift from the option; the labels below record
+both orders. Use the same `E200_IP`, `RX` and compatible UHD Python as above.
+
+```sh
+for mc in 13 15 17; do
+  for arm in wifi-a solo-a solo-b wifi-b; do
+    opt=''; case "$arm" in solo-*) opt='--phy-solo';; esac
+    python3 examples/over-the-air/check.py "notes/ota-phy-$mc-$arm" \
+      --args "addr=${E200_IP:?set E200_IP}" --receiver "${RX:?set RX}" \
+      --mhz 2420 --modcod "$mc" --rate 10m --seconds 30 --gain 0 --peak 128 \
+      $opt --key || exit 1
+  done
+done
+```
+
+Compare exact payload recovery, frame-lock continuity, decoded frame count, LDPC/BCH
+corrections/failures, locked MER, carrier offset and PSD. Require the existing exact-byte
+pass in every arm, complete/error-free captures, and solo records showing Wi-Fi absent,
+PHY users 2, both cores' Wi-Fi IRQ routes zero before setup, then PHY users 0 after
+cleanup. Investigate a repeated solo-only loss of lock, MER degradation, correction
+increase, carrier drift or new spectral feature before accepting the option.
+
+This E200 workflow uses `10m` (13.5 MHz occupied) for all three 8PSK modes. Its configured
+20 MHz analog bandwidth cannot validate the full **36 MHz** `26m667` emission, and the
+fused renderer runs only at that higher rate. A passing E200 A/B therefore tests the
+PHY lifetime at 10 Msym/s; full-rate RF quality and fused-path RF validation remain
+pending a receiver covering the complete occupied bandwidth. Do not infer those results
+from the 26m667 keyed timing runs or from a narrow cropped capture.
+
 ## Offline USB replay
 
 Use an **existing** radio-off USB dump and its exact metadata. This command does not
