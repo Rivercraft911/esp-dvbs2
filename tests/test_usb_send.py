@@ -89,7 +89,10 @@ class Peer:
         u = dict(messages=self.messages, payload_bytes=self.payload_bytes, nops=0 if recovery else 1, short=0,
                  header=0, crc=0, sync=0, lost=0, back=0, wrong_type=0, partial_bytes=13 if recovery else 0,
                  ended=not recovery, next_seq=(self.messages+(not recovery)) & 65535,
-                 ts_packets=self.ts_packets, crc_chain=self.crc_chain, us=18000000, mbps=4.0)
+                 ts_packets=self.ts_packets, crc_chain=self.crc_chain, us=18000000, mbps=4.0,
+                 wire_bytes=1332*(self.messages+(not recovery))+(13 if recovery else 0),
+                 fifo_bytes=1332*(self.messages+(not recovery))+(13 if recovery else 0),
+                 driver_bytes=0, driver_pending=0)
         self.emit(dict(cmd=self.cmd, usb=u, status="ESP_OK", encoder_failed=False,
                        frames_encoded=20, underruns=1, late_fills=0, late_switches=0,
                        fatal_late=0, min_fill_slack_cycles=1, input_bytes=self.payload_bytes, seconds=20,
@@ -159,7 +162,7 @@ def test_stream():
         check.gates(report, paced=True)
         if dump:
             assert sink.getvalue() == peer.iq
-        for field in ('crc', 'lost', 'back', 'wrong_type', 'partial_bytes'):
+        for field in ('crc', 'lost', 'back', 'wrong_type', 'partial_bytes', 'driver_pending', 'driver_bytes'):
             bad = copy.deepcopy(rows); next(r['usb'] for r in bad if 'usb' in r)[field] = 1
             rejects(send.check_run, stats, bad, dump)
         bad = copy.deepcopy(rows); next(r for r in bad if 'usb' in r)['encoder_failed'] = True

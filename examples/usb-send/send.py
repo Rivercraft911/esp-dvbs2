@@ -378,6 +378,11 @@ def check_run(stats, rows, dump=False, require_eof=False):
         raise ValueError('encoder failed or encoded no data')
     if u.get('timer_errors', 0) or any(u[k] for k in ('short', 'header', 'crc', 'sync', 'lost', 'back', 'wrong_type', 'partial_bytes')):
         raise ValueError(f'USB protocol errors: {u}')
+    if {'wire_bytes', 'fifo_bytes', 'driver_bytes'} <= u.keys():
+        if u['wire_bytes'] != u['fifo_bytes']+u['driver_bytes']:
+            raise ValueError('USB FIFO/driver byte accounting disagrees')
+    if u.get('driver_pending', 0):
+        raise ValueError('USB driver still holds unread session bytes')
     # A run can end before a live source. Accepted bytes must never exceed sent
     # bytes; finite input must be entirely consumed, including the terminal NOP.
     if not 0 < u['payload_bytes'] <= stats['payload_bytes'] or u['messages'] > stats['messages']:

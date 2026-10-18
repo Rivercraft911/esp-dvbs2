@@ -76,11 +76,13 @@ no missed output bank deadlines. Dummies at startup/end or during saturation
 are expected. Checks continue after failures; `summary.json` records the outcome.
 **Sustainable USB+encoder throughput still needs a board rerun.** The earlier
 image passed file recovery but stalled on sustained GCS; archived USB-only intake
-was 4.6 Mb/s intact. The revised FIFO reader is not yet measured on hardware.
+was 4.6 Mb/s intact. The guarded driver/FIFO reader still needs hardware verification.
 
 Host tests never open ports: `python3 tests/test_usb_input.py` and
 `python3 tests/test_usb_send.py`. Add `--receiver "$RX"` to the latter for a C
-encoder → LeanDVB → unpack/hash proof, independent of hardware.
+encoder → LeanDVB → unpack/hash proof, independent of hardware. The RX model also
+injects a late driver-queue refill after the initial handoff: the old one-time
+drain strands bytes, while the guarded reader recovers the complete stream.
 
 `spiinput usb [ts|gcs]` selects USB for the next run. The sender handles the
 ready/stop/NOP handoff, reads IQ and console results concurrently, and checks
@@ -93,5 +95,7 @@ USB re-enumeration. It never retries a write with an uncertain byte count.
 Every send writes a report, including on failure: `usb-send-report.json` by
 default, or `--report PATH`. Reports include confirmed host write progress,
 uncertain-write status, FIFO/driver byte counts, reader waits, encoder results,
-and recovery status. If the board disconnects before counters can be read,
+and recovery status. `rx_reenabled` counts RX-enable bits restored during a run;
+`driver_queue_max` and `driver_pending` expose queued bytes, and `intr_ena` records
+the final interrupt-enable register. FIFO plus driver bytes must equal wire bytes. If the board disconnects before counters can be read,
 `board_counters_available` is false; host diagnostics are still saved.

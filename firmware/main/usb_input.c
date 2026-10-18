@@ -1,8 +1,9 @@
-// The encoder owns USB RX during a binary session. IDF keeps console TX, but
-// its RX ISR is masked because it drops bytes when its software queue fills.
-// Resuming an already nonempty FIFO never depends on a new interrupt edge.
+// The encoder consumes USB RX during a binary session; IDF retains console TX.
+// Re-mask RX and drain the driver queue before EVERY FIFO read. A driver's
+// interrupt-enable read/modify/write can restore RX after our initial mask.
 #include "usb_input.h"
 #include "driver/usb_serial_jtag.h"
+#include "driver/usb_serial_jtag_select.h"
 #include "hal/usb_serial_jtag_ll.h"
 #include "esp_heap_caps.h"
 #include "esp_system.h"
@@ -17,9 +18,10 @@ static ingress_ring ring;
 static uint8_t *buffers;
 static uint32_t *tables;
 static size_t partial;
-static bool ended, active, driver_empty;
+static bool ended, active, saved_rx_enabled;
 static uint64_t wire_bytes;
 static uint32_t fifo_bytes, driver_bytes, fifo_reads, waits, timer_errors;
+static uint32_t rx_reenabled, driver_queue_max;
 static int64_t first, last;
 static esp_timer_handle_t timer;
 static TaskHandle_t waiter;
@@ -63,30 +65,43 @@ esp_err_t usb_input_start(unsigned type)
     if (!buffers || !tables || (err=esp_timer_create(&cfg,&timer))!=ESP_OK) {
         free_buffers(); return err;
     }
-    rx_interrupt(false);
+    portENTER_CRITICAL(&rx_mux);
+    saved_rx_enabled=(usb_serial_jtag_ll_get_intr_ena_status() & USB_SERIAL_JTAG_INTR_SERIAL_OUT_RECV_PKT)!=0;
+    usb_serial_jtag_ll_disable_intr_mask(USB_SERIAL_JTAG_INTR_SERIAL_OUT_RECV_PKT);
+    portEXIT_CRITICAL(&rx_mux);
     pv_crc32_tables(tables);
     ingress_init(&ring,buffers,&hw); ring.type=type;
-    partial=0; ended=false; active=true; driver_empty=false;
+    partial=0; ended=false; active=true;
     wire_bytes=0; fifo_bytes=driver_bytes=fifo_reads=waits=timer_errors=0; first=last=0;
-    printf("@{\"cmd\":\"usbinput\",\"ready\":true,\"message_bytes\":1332,\"rx\":\"fifo\"}\n");
+    rx_reenabled=driver_queue_max=0;
+    printf("@{\"cmd\":\"usbinput\",\"ready\":true,\"message_bytes\":1332,\"rx\":\"driver+fifo\"}\n");
     return ESP_OK;
 }
 
 static size_t read_bytes(uint8_t *dst, size_t n)
 {
-    // Preserve any bytes queued before the console-to-binary handoff. Once
-    // drained, the driver never reads RX again until this session is finished.
-    if (!driver_empty) {
-        const int got=usb_serial_jtag_read_bytes(dst,n,0);
-        if (got>0) { driver_bytes+=got; return got; }
-        driver_empty=true;
+    // Console TX uses the driver's unlocked interrupt-enable RMW. A task
+    // preempted before our initial RX mask can later store its old RX bit.
+    // Exclude the core-0 USB ISR throughout this ordered, nonblocking handoff:
+    // queued bytes are older than the hardware FIFO and must be consumed first.
+    portENTER_CRITICAL(&rx_mux);
+    if (usb_serial_jtag_ll_get_intr_ena_status() & USB_SERIAL_JTAG_INTR_SERIAL_OUT_RECV_PKT) rx_reenabled++;
+    usb_serial_jtag_ll_disable_intr_mask(USB_SERIAL_JTAG_INTR_SERIAL_OUT_RECV_PKT);
+    const int from_driver=usb_serial_jtag_read_bytes(dst,n,0);
+    size_t got;
+    if (from_driver>0) {
+        got=from_driver; driver_bytes+=got;
+        const size_t queued=got+usb_serial_jtag_get_read_bytes_available();
+        if (queued>driver_queue_max) driver_queue_max=queued;
+    } else {
+        // Match IDF's endpoint service order: acknowledge, then drain at most
+        // one 64-byte packet. Never clear an event AFTER draining its FIFO.
+        usb_serial_jtag_ll_clr_intsts_mask(USB_SERIAL_JTAG_INTR_SERIAL_OUT_RECV_PKT);
+        fifo_reads++;
+        got=usb_serial_jtag_ll_read_rxfifo(dst,n<64?n:64);
+        fifo_bytes+=got;
     }
-    fifo_reads++;
-    const size_t got=usb_serial_jtag_ll_read_rxfifo(dst,n);
-    fifo_bytes+=got;
-    // Poll data_avail itself, never the packet interrupt edge. Clear stale RX
-    // status while masked; future console packets can raise a fresh event.
-    usb_serial_jtag_ll_clr_intsts_mask(USB_SERIAL_JTAG_INTR_SERIAL_OUT_RECV_PKT);
+    portEXIT_CRITICAL(&rx_mux);
     return got;
 }
 
@@ -143,6 +158,8 @@ void usb_input_print(void)
 {
     const ingress_stats *s=&ring.st;
     const int64_t us=last>first ? last-first : 0;
+    const uint32_t rx_mask=usb_serial_jtag_ll_get_intr_ena_status();
+    const size_t pending=usb_serial_jtag_get_read_bytes_available();
     printf(",\"input_wire\":\"usb\",\"input_bytes\":%"PRIu32
            ",\"usb\":{\"messages\":%"PRIu32",\"payload_bytes\":%"PRIu32
            ",\"nops\":%"PRIu32",\"short\":%"PRIu32",\"header\":%"PRIu32
@@ -150,11 +167,12 @@ void usb_input_print(void)
            ",\"back\":%"PRIu32",\"wrong_type\":%"PRIu32
            ",\"next_seq\":%u,\"ts_packets\":%"PRIu32",\"crc_chain\":%"PRIu32
            ",\"wire_bytes\":%"PRIu64",\"partial_bytes\":%u,\"ended\":%s,\"us\":%lld,\"mbps\":%.3f"
-           ",\"fifo_bytes\":%"PRIu32",\"driver_bytes\":%"PRIu32",\"fifo_reads\":%"PRIu32",\"waits\":%"PRIu32",\"timer_errors\":%"PRIu32"}",
+           ",\"fifo_bytes\":%"PRIu32",\"driver_bytes\":%"PRIu32",\"fifo_reads\":%"PRIu32",\"waits\":%"PRIu32",\"timer_errors\":%"PRIu32
+           ",\"rx_reenabled\":%"PRIu32",\"driver_queue_max\":%"PRIu32",\"driver_pending\":%u,\"intr_ena\":%"PRIu32"}",
            s->bytes,s->msgs,s->bytes,s->nops,s->err_short,s->err_header,s->err_crc,s->err_sync,
            s->lost,s->seq_back,ring.wrong_type,ring.seq_next,s->ts_packets,s->crc_chain,
            wire_bytes,(unsigned)partial,ended?"true":"false",(long long)us,
-           us ? s->bytes*8.0/us : 0.0,fifo_bytes,driver_bytes,fifo_reads,waits,timer_errors);
+           us ? s->bytes*8.0/us : 0.0,fifo_bytes,driver_bytes,fifo_reads,waits,timer_errors,rx_reenabled,driver_queue_max,(unsigned)pending,rx_mask);
 }
 
 void usb_input_finish(void)
@@ -179,5 +197,5 @@ void usb_input_finish(void)
         esp_restart();
         return;
     }
-    rx_interrupt(true);
+    rx_interrupt(saved_rx_enabled);
 }
