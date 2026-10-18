@@ -890,9 +890,15 @@ dvbs2_pie_run8_packed:
     .type dvbs2_pie_lofty,@function
 dvbs2_pie_lofty:
     entry a1,32
+    mov a9,a6                         /* chunk count */
+    mov a6,a4                         /* output */
+    mov a7,a5                         /* spread table */
+    mov a5,a3                         /* Gold plane 0 */
+    l32i a4,a2,8                      /* plane C */
+    l32i a3,a2,4                      /* plane B */
+    l32i a2,a2,0                      /* plane A */
     movi a8,2720
     add a8,a8,a5
-    movi a9,169
     loopnez a9,.Llofty_end
     ee.ld.128.usar.ip q0,a2,16
     ee.vld.128.ip q5,a2,0

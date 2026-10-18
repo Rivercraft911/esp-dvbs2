@@ -185,6 +185,7 @@ unsigned dvbs2_fast_sign_read(const dvbs2_fast *f, dvbs2_sign_state *s, uint32_t
 // table is 1024 caller-owned internal bytes; prepare first, then cache once.
 #define DVBS2_LOFTY_CACHE_BYTES 1024
 int dvbs2_fast_lofty_cache(dvbs2_fast *, uint32_t *table);
+// ws->bits must remain unchanged through the last read: mapping is incremental.
 int dvbs2_fast_lofty_start(dvbs2_fast *, const dvbs2_workspace *, dvbs2_sign_state *);
 // Borrow up to *blocks framed words, with 16 readable guard bytes; advance at.
 // Consume the view before the next read, encoder stage or prepare.

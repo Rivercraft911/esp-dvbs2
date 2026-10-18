@@ -41,6 +41,7 @@ struct dvbs2_fast {
     const uint8_t *pair_bch;
     uint16_t lofty_history;
     uint8_t lofty_prefix, lofty_framed;
+    const uint8_t *lofty_bits;
     uint8_t carry[ROW] __attribute__((aligned(16)));
     uint8_t tail[16] __attribute__((aligned(16)));
     uint8_t packed_header[48], packed_pilots[400];
@@ -50,6 +51,9 @@ struct dvbs2_fast {
     unsigned bch_bytes, groups, q, data_symbols, pilot_blocks;
     uint8_t scratch[] __attribute__((aligned(16)));
 };
+#ifdef __XTENSA__
+_Static_assert(offsetof(dvbs2_fast,scratch) == 608, "retain main's QPSK scratch placement");
+#endif
 
 size_t dvbs2_fast_mode_size(const dvbs2_mode *mode)
 {
@@ -1076,8 +1080,37 @@ static uint16_t *lofty_temp(dvbs2_fast *f)
     return (uint16_t *)(f->scratch+((2*((end+5)/4)+15)&~15u));
 }
 
+// One chunk is 128 symbols. Map the first 512 symbols before publication,
+// then defer the rest until the first page is visible to the consumer.
+static void lofty_map(dvbs2_fast *f, unsigned first, unsigned chunks)
+{
+    const uint8_t *a = f->lofty_bits, *b = a+2700, *c = a+5400;
+    if (f->mode->modcod == 12) { a = f->lofty_bits+5400; c = f->lofty_bits; }
+#ifdef DVBS2_PIE
+    if (f->pie & DVBS2_PIE_MAP) {
+        void dvbs2_pie_lofty(const uint8_t *const *, const uint8_t *, uint16_t *,
+                             const uint32_t *, unsigned);
+        const uint8_t *planes[] = {a+16*first,b+16*first,c+16*first};
+        const uint32_t *table = (const uint32_t *)((const uint8_t *)f->map+f->ldxq_bias);
+        dvbs2_pie_lofty(planes,f->gold+16*first,(uint16_t *)f->scratch+32*first,table,chunks);
+        return;
+    }
+#endif
+    uint16_t *out = (uint16_t *)f->scratch+32*first;
+    unsigned end = 16*(first+chunks);
+    if (end > f->data_symbols/8) end = f->data_symbols/8;
+    for (unsigned j = 16*first; j < end; ++j) {
+        unsigned x = b[j]^c[j], p0 = a[j]^x, p1 = a[j]^f->gold[j];
+        unsigned p2 = b[j]^(a[j]&x)^f->gold[GOLD+j]^(a[j]&f->gold[j]);
+        uint32_t v = f->map[(~p0)&255] | (f->map[p1&255]<<1) | (f->map[p2&255]<<2);
+        *out++ = v;
+        *out++ = v>>16;
+    }
+}
+
 static void lofty_frame(dvbs2_fast *f)
 {
+    lofty_map(f,4,164); // tail chunk 168 was mapped at start for frame history
     // Expand backwards so each source run is consumed before framing overwrites it.
     // One 720 B run buffer fits after the framed words in every mode's scratch.
     uint16_t *mapped = (uint16_t *)f->scratch;
@@ -1136,8 +1169,7 @@ static void lofty_frame(dvbs2_fast *f)
     f->lofty_framed = 2;
 }
 
-/* Publish a first page before the bulk expansion. The producer can replenish
- * the queue after BCH/LDPC/indexing without adding the entire framing gap. */
+/* Publish a first page before bulk mapping and expansion. */
 static const uint16_t *lofty_head(dvbs2_fast *f)
 {
     uint16_t *temp = lofty_temp(f), *head = temp+360;
@@ -1168,26 +1200,10 @@ static const uint16_t *lofty_head(dvbs2_fast *f)
 __attribute__((noinline)) int dvbs2_fast_lofty_start(dvbs2_fast *f, const dvbs2_workspace *ws, dvbs2_sign_state *s)
 {
     if (!f || !ws || !s || f->mode->bits_per_symbol != 3) return -1;
-    const uint8_t *a = ws->bits, *b = ws->bits+2700, *c = ws->bits+5400;
-    if (f->mode->modcod == 12) { a = ws->bits+5400; c = ws->bits; }
-#ifdef DVBS2_PIE
-    if (f->pie & DVBS2_PIE_MAP) {
-        void dvbs2_pie_lofty(const uint8_t *, const uint8_t *, const uint8_t *,
-                              const uint8_t *, uint16_t *, const uint32_t *);
-        const uint32_t *table = (const uint32_t *)((const uint8_t *)f->map+f->ldxq_bias);
-        dvbs2_pie_lofty(a,b,c,f->gold,(uint16_t *)f->scratch,table);
-    } else
-#endif
-    {
-        uint16_t *out = (uint16_t *)f->scratch;
-        for (unsigned j = 0; j < f->data_symbols/8; ++j) {
-            unsigned x = b[j]^c[j], p0 = a[j]^x, p1 = a[j]^f->gold[j];
-            unsigned p2 = b[j]^(a[j]&x)^f->gold[GOLD+j]^(a[j]&f->gold[j]);
-            uint32_t v = f->map[(~p0)&255] | (f->map[p1&255]<<1) | (f->map[p2&255]<<2);
-            *out++ = v;
-            *out++ = v>>16;
-        }
-    }
+    f->lofty_bits = ws->bits;
+    lofty_map(f,0,4);
+    // Preserve the next frame's history without mapping the middle yet.
+    lofty_map(f,168,1);
     const unsigned end = 90+f->data_symbols+36*f->pilot_blocks;
     f->lofty_prefix = s->pending;
     f->lofty_history = s->history;

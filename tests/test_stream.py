@@ -43,12 +43,7 @@ static inline TickType_t xTaskGetTickCount(void) {
     struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
     return (uint32_t)((uint64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000);
 }
-#ifdef QUEUE_STRESS
-uint32_t queue_stress_clock(void);
-#define esp_cpu_get_cycle_count queue_stress_clock
-#else
 static inline uint32_t esp_cpu_get_cycle_count(void) { return 17; }
-#endif
 static inline unsigned uxTaskGetStackHighWaterMark(void *task) { (void)task; return 1024; }
 static int fail_after = -1, live_allocations, allocation_count;
 static struct { void *p; size_t n; unsigned caps; } native_blocks[64];
@@ -108,23 +103,6 @@ static inline unsigned ulTaskNotifyTake(int clear, unsigned timeout) {
     unsigned n = t->notifications; t->notifications = 0;
     pthread_mutex_unlock(&t->mutex); return n;
 }
-static unsigned native_control_priority = 1;
-static inline TaskHandle_t xTaskGetCurrentTaskHandle(void) { return current; }
-static inline unsigned uxTaskPriorityGet(TaskHandle_t t) {
-    if (!t) t = current;
-    return t ? __atomic_load_n(&t->priority,__ATOMIC_ACQUIRE) : native_control_priority;
-}
-static inline void vTaskPrioritySet(TaskHandle_t t, unsigned priority) {
-    if (!t) t = current;
-    if (t) __atomic_store_n(&t->priority,priority,__ATOMIC_RELEASE);
-    else native_control_priority = priority;
-}
-static unsigned native_watch_add, native_watch_delete;
-static inline TaskHandle_t xTaskGetIdleTaskHandleForCore(int core) { assert(core == 0); return NULL; }
-static inline int esp_task_wdt_status(TaskHandle_t t) { (void)t; return ESP_OK; }
-static inline int esp_task_wdt_add(TaskHandle_t t) { (void)t; ++native_watch_add; return ESP_OK; }
-static inline int esp_task_wdt_delete(TaskHandle_t t) { (void)t; ++native_watch_delete; return ESP_OK; }
-static inline int esp_task_wdt_reset(void) { return ESP_OK; }
 static inline void vTaskSuspend(TaskHandle_t t) { (void)t; pthread_exit(NULL); }
 static inline void vTaskDelete(TaskHandle_t t) {
     pthread_join(t->thread, NULL);
@@ -179,7 +157,7 @@ int usb_serial_jtag_write_bytes(const void *, size_t, unsigned);
 def compile_stream(folder, source="stream_host.c", defines=()):
     tmp = str(folder)
     (folder / "native.h").write_text(NATIVE)
-    for header in ("esp_err.h", "esp_cpu.h", "esp_task_wdt.h", "esp_attr.h", "esp_heap_caps.h", "esp_rom_crc.h",
+    for header in ("esp_err.h", "esp_cpu.h", "esp_attr.h", "esp_heap_caps.h", "esp_rom_crc.h",
                    "driver/usb_serial_jtag.h", "freertos/FreeRTOS.h", "freertos/semphr.h",
                    "freertos/task.h"):
         path = folder / header

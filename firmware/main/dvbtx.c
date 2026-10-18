@@ -24,7 +24,6 @@
 #include "esp_cpu.h"
 #include "esp_heap_caps.h"
 #include "esp_rom_crc.h"
-#include "esp_task_wdt.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -71,7 +70,6 @@ typedef struct {
     unsigned den, history, span;   // exact sps = table.n / den
     bool moon;                    // core-0 sign mapper / core-1 renderer
     bool lofty;
-    bool poll;
     bool page_wake;                // diagnostic comparison with the original publication path
     unsigned queue_pages, wake_pages;
     lofty_page *lofty_pages;
@@ -122,11 +120,7 @@ typedef struct {
     uint8_t *bch;                  // resident byte table with internal workspace, t = 10/12
     bool bch_borrowed;
     uint8_t *pair_bch;
-    bool watch_worker;
-    uint32_t watch_clock;
-    unsigned priority, control_priority;
-    TaskHandle_t control;
-    bool control_boosted;
+    unsigned priority;
     bool ws_borrowed;
     bool quads;                     // four QPSK codes/byte, block shaper
     bool packed;                    // all fast rates: packed internal ring
@@ -194,17 +188,6 @@ static uint32_t next_byte(uint32_t *x)
 
 enum { QUEUE_FEC = 1, QUEUE_MAP, QUEUE_WAIT, QUEUE_PL };
 
-// Polling runs below Wi-Fi's priority. Full-queue waits, including polling,
-// are excluded from work; interrupts while encoding remain in the stage times.
-static void encoder_watch(void)
-{
-    uint32_t now = esp_cpu_get_cycle_count();
-    if (enc.watch_worker && now-enc.watch_clock >= 24000000) {
-        (void)esp_task_wdt_reset();
-        enc.watch_clock = now;
-    }
-}
-
 static void moon_wait(void)
 {
     const uint32_t before = esp_cpu_get_cycle_count();
@@ -213,23 +196,12 @@ static void moon_wait(void)
     __atomic_store_n(&dvb.wait_put,dvb.produced,__ATOMIC_RELAXED);
     __atomic_store_n(&dvb.wait_get,get,__ATOMIC_RELAXED);
     __atomic_store_n(&dvb.producer_phase,QUEUE_WAIT,__ATOMIC_RELEASE);
-    if (dvb.poll) {
-        // Single producer/single consumer: the acquire pairs with each released
-        // page. Core 1 makes no kernel call, even at a physical bank wrap.
-        while (!enc.stop && dvb.produced-__atomic_load_n(&dvb.consumed,__ATOMIC_ACQUIRE) == dvb.queue_pages) {
-#ifdef __XTENSA__
-            // Space shared-SRAM reads by 32 issue cycles (133 ns at 240 MHz).
-            __asm__ volatile(".rept 32\n nop\n .endr\n");
-#endif
-            encoder_watch();
-        }
-    } else {
-        __atomic_store_n(&dvb.waiting,1,__ATOMIC_RELEASE);
-        if (!enc.stop && dvb.produced-__atomic_load_n(&dvb.consumed,__ATOMIC_ACQUIRE) == dvb.queue_pages)
-            ulTaskNotifyTake(pdTRUE,enc.watch_worker ? pdMS_TO_TICKS(100) : portMAX_DELAY);
-        encoder_watch();
-        __atomic_store_n(&dvb.waiting,0,__ATOMIC_RELEASE);
-    }
+    // Arm before rechecking space. A release before this store is observed by
+    // the recheck; a later bank-end notification remains pending until taken.
+    __atomic_store_n(&dvb.waiting,1,__ATOMIC_RELEASE);
+    if (!enc.stop && dvb.produced-__atomic_load_n(&dvb.consumed,__ATOMIC_ACQUIRE) == dvb.queue_pages)
+        ulTaskNotifyTake(pdTRUE,portMAX_DELAY);
+    __atomic_store_n(&dvb.waiting,0,__ATOMIC_RELEASE);
     const uint32_t cycles = esp_cpu_get_cycle_count()-before;
     dvb.queue_wait_cycles += cycles;
     if (cycles > dvb.queue_wait_max) dvb.queue_wait_max = cycles;
@@ -329,7 +301,7 @@ static IRAM_ATTR esp_err_t moon_shape(uint32_t *dst, uint64_t first, size_t coun
             dvb.page_sample = 0;
             if (++dvb.get_index == dvb.queue_pages) dvb.get_index = 0;
             __atomic_store_n(&dvb.consumed,get+1,__ATOMIC_RELEASE);
-            if (!dvb.poll && put-get-1 <= dvb.queue_pages-dvb.wake_pages) {
+            if (put-get-1 <= dvb.queue_pages-dvb.wake_pages) {
                 if (dvb.page_wake) moon_wake();
                 else dvb.wake_pending = true;
             }
@@ -512,20 +484,7 @@ static void encoder_task(void *arg)
     uint8_t *const payload = e->payload;
     uint32_t x = SEED;
     const unsigned input = spi_input_type();
-    bool watch_idle = false;
     dvbs2_ts_state ts = {0};
-    if (dvb.lofty) {
-        // As on core 1, watch the busy task instead of its idle task. Keep
-        // this subscription through diagnostic wake policies and restore it.
-        TaskHandle_t idle = xTaskGetIdleTaskHandleForCore(0);
-        if (esp_task_wdt_status(idle) == ESP_OK) {
-            if (esp_task_wdt_delete(idle) != ESP_OK) { e->failed = true; goto done; }
-            watch_idle = true;
-        }
-        if (esp_task_wdt_add(NULL) != ESP_OK) { e->failed = true; goto done; }
-        e->watch_worker = true;
-        e->watch_clock = esp_cpu_get_cycle_count();
-    }
     if (spi_input_start() != ESP_OK) { e->failed = true; goto done; }
     e->input_started = true;
     if (dvb.moon && !input) {
@@ -547,7 +506,6 @@ static void encoder_task(void *arg)
     }
     for (uint32_t f = 0; !e->stop; ++f) {
         __atomic_store_n(&dvb.producer_phase,QUEUE_FEC,__ATOMIC_RELEASE);
-        encoder_watch();
         uint8_t *out = NULL;
         while (!dvb.moon && !(out = ring_slot(&dvb.ring, f))) {
             if (e->stop) {
@@ -573,7 +531,6 @@ static void encoder_task(void *arg)
                     if (got) e->input_partial++;
                     else {
                         e->input_waits++;
-                        encoder_watch();
                         ulTaskNotifyTake(pdTRUE, 1);
                     }
                 }
@@ -653,8 +610,6 @@ static void encoder_task(void *arg)
         }
     }
 done:
-    if (e->watch_worker) (void)esp_task_wdt_delete(NULL);
-    if (watch_idle) (void)esp_task_wdt_add(xTaskGetIdleTaskHandleForCore(0));
     spi_input_stop();
     e->stack_min_free = uxTaskGetStackHighWaterMark(NULL);
     xSemaphoreGive(e->exited);
@@ -694,10 +649,6 @@ static void release(void)
     }
     enc.tables = enc.pair_bch = NULL;
     enc.fast = NULL, enc.ws = NULL, enc.bch = enc.block = enc.payload = enc.slots = enc.filler = NULL;
-    if (enc.control_boosted) {
-        enc.control_boosted = false;
-        vTaskPrioritySet(enc.control,enc.control_priority);
-    }
 }
 
 // Bytes for a packed part, 16-byte aligned, with the 16 spare bytes the vector unpack may read.
@@ -728,10 +679,9 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
     dvb.dac_rate = dac_rate;
     dvb.moon = moon;
     dvb.lofty = lofty;
-    dvb.poll = lofty;
     dvb.page_wake = !lofty;
     dvb.queue_pages = lofty ? (modcod == 17 ? 46 : modcod == 13 ? 54 : LOFTY_PAGES) : MACHINE_PAGES;
-    dvb.wake_pages = lofty ? 1 : MACHINE_WAKE_PAGES;
+    dvb.wake_pages = lofty ? LOFTY_WAKE : MACHINE_WAKE_PAGES;
     dvb.pages = NULL;
     dvb.lofty_pages = NULL;
     dvb.last_word = 0;
@@ -1023,18 +973,9 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
                       resident && !moon && !(enc.ws_borrowed && sps == 3) ? (uint8_t *)enc.ws+ws_used : NULL,
                       resident && !moon && !(enc.ws_borrowed && sps == 3) && ws_used < sizeof *enc.ws ? sizeof *enc.ws-ws_used : 0);
 
-    // Poll above background priority-1 peers. The command must also be able
-    // to finish prefill and stop a full producer, so keep it one level above.
-    // Both remain below Wi-Fi; neither scheduling nor work time is masked.
-    enc.priority = moon && !lofty ? MOON_PRIORITY : ENCODER_PRIORITY;
-    if (lofty) {
-        enc.control = xTaskGetCurrentTaskHandle();
-        enc.control_priority = uxTaskPriorityGet(NULL);
-        if (enc.control_priority <= enc.priority) {
-            enc.control_boosted = true;
-            vTaskPrioritySet(enc.control,enc.priority+1);
-        }
-    }
+    // Bounded bursts above Wi-Fi, then sleep on the full queue. Startup and
+    // stop need no controller boost because a full producer always blocks.
+    enc.priority = moon ? MOON_PRIORITY : ENCODER_PRIORITY;
     enc.exited = xSemaphoreCreateBinaryStatic(&exited_storage);
     if (xTaskCreatePinnedToCore(encoder_task, "encoder", ENCODER_STACK, &enc, enc.priority, &enc.task, 0)
             != pdPASS) {
@@ -1116,7 +1057,7 @@ static void stop_encoder(void)
            enc.frames ? enc.frame_work_cycles/enc.frames : 0,enc.frame_work_live_max);
     if (dvb.moon) printf(",\"queue_wait_cycles\":%" PRIu64 ",\"queue_wait_max_cycles\":%u,\"queue_wait_live_max_cycles\":%u,\"prepare_max_ticks\":%u,\"queue_page_gap_max_cycles\":%u,\"queue_page_samples\":%u,\"queue_wake_pages\":%u",
                          dvb.queue_wait_cycles,(unsigned)dvb.queue_wait_max,(unsigned)dvb.queue_wait_live_max,(unsigned)dvb.prepare_ticks,(unsigned)dvb.page_gap_max,MACHINE_PAGE_SAMPLES,dvb.wake_pages);
-    if (dvb.moon) printf(",\"queue_wake_policy\":\"%s\"",dvb.poll ? "poll" : dvb.page_wake ? "page" : "bank");
+    if (dvb.moon) printf(",\"queue_wake_policy\":\"%s\"",dvb.page_wake ? "page" : "bank");
     if (dvb.moon && dvb.queue_empty) printf(",\"queue_fault\":{\"produced\":%"PRIu32",\"consumed\":%"PRIu32
         ",\"producer_phase\":%"PRIu32",\"last_wait_produced\":%"PRIu32",\"last_wait_consumed\":%"PRIu32"}",
         dvb.queue_fault.put,dvb.queue_fault.get,dvb.queue_fault.phase,
@@ -1261,7 +1202,6 @@ void dvbtx_pace(unsigned modcod, uint32_t seconds, unsigned level, unsigned stal
         return;
     }
     if (wake_policy) {
-        dvb.poll = false;
         dvb.page_wake = wake_policy == 1;
         if (dvb.lofty) dvb.wake_pages = LOFTY_WAKE;
     }

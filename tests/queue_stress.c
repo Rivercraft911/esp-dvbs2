@@ -1,31 +1,37 @@
-// The real encoder/page consumer, with a deterministic peer-task preemption.
+// Real encoder/consumer and notification wait, without a hardware timing claim.
+#include "native.h"
+static unsigned checked_take(int, unsigned);
+#define ulTaskNotifyTake checked_take
 #define main stream_lifecycle_main
 #include "stream_host.c"
 #undef main
+#undef ulTaskNotifyTake
 #include <sched.h>
 
 static pthread_mutex_t gate = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t changed = PTHREAD_COND_INITIALIZER;
-static unsigned armed, paused, resume_task, requested, peer_priority, progressed, initial_frames;
-static uint32_t clock_cycles, pause_put, pause_get, pause_phase;
+static unsigned armed, paused, resume_task, early_notifications;
+static uint32_t pause_put, pause_get;
 
-uint32_t queue_stress_clock(void)
+static unsigned checked_take(int clear, unsigned timeout)
 {
-    if (current && __atomic_load_n(&armed,__ATOMIC_ACQUIRE) &&
-        __atomic_load_n(&dvb.producer_phase,__ATOMIC_ACQUIRE) == requested &&
-        uxTaskPriorityGet(NULL) <= peer_priority && __atomic_exchange_n(&armed,0,__ATOMIC_ACQ_REL)) {
-        pthread_mutex_lock(&gate);
+    pthread_mutex_lock(&gate);
+    if (armed) {
+        armed = 0;
         pause_put = dvb.produced;
         pause_get = __atomic_load_n(&dvb.consumed,__ATOMIC_ACQUIRE);
-        pause_phase = requested;
+        assert(pause_put-pause_get == dvb.queue_pages);
         paused = 1;
         pthread_cond_broadcast(&changed);
         while (!resume_task) pthread_cond_wait(&changed,&gate);
-        pthread_mutex_unlock(&gate);
+        resume_task = paused = 0;
+        pthread_mutex_lock(&current->mutex);
+        assert(current->notifications); // bank wake happened before the take
+        pthread_mutex_unlock(&current->mutex);
+        ++early_notifications;
     }
-    if (current && resume_task && enc.frames > initial_frames)
-        __atomic_store_n(&progressed,1,__ATOMIC_RELEASE);
-    return __atomic_add_fetch(&clock_cycles,17,__ATOMIC_RELAXED);
+    pthread_mutex_unlock(&gate);
+    return ulTaskNotifyTake(clear,timeout);
 }
 
 static uint32_t checksum(uint32_t h, const void *data, size_t bytes)
@@ -35,84 +41,78 @@ static uint32_t checksum(uint32_t h, const void *data, size_t bytes)
     return h;
 }
 
+static void full_queue(void)
+{
+    TickType_t end = xTaskGetTickCount()+5000;
+    while (__atomic_load_n(&dvb.produced,__ATOMIC_ACQUIRE)-dvb.consumed != dvb.queue_pages ||
+           !__atomic_load_n(&dvb.waiting,__ATOMIC_ACQUIRE)) {
+        assert((int32_t)(xTaskGetTickCount()-end) < 0);
+        sched_yield();
+    }
+}
+
 int main(int argc, char **argv)
 {
-    assert(argc == 5);
+    assert(argc == 3);
     unsigned mc = atoi(argv[1]);
-    requested = atoi(argv[2]);
-    peer_priority = atoi(argv[3]);
-    unsigned expect_fault = atoi(argv[4]);
+    uint32_t x = atoi(argv[2]);
     callsign = "N0CALL";
     assert(start_encoder("dvbpace",mc,128,0,3,80000000));
-    const unsigned priority = enc.priority;
-    initial_frames = enc.frames;
-    __atomic_store_n(&armed,1,__ATOMIC_RELEASE);
-    if (expect_fault && requested == QUEUE_WAIT) {
-        pthread_mutex_lock(&gate);
-        while (!paused) pthread_cond_wait(&changed,&gate);
-        pthread_mutex_unlock(&gate);
-        assert(pause_put-pause_get == dvb.queue_pages);
-    }
-    unsigned pages = 0, wraps = 0, sequence_wraps = 0, last_index = dvb.get_index, idle = 0;
-    uint32_t last_sequence = dvb.consumed;
-    uint32_t x = 2026+requested, page_hash = 0, waveform_hash = 2166136261u;
+    unsigned pages = 0, wraps = 0, sequence_wraps = 0, banks_done = 0;
+    unsigned last_index = dvb.get_index;
+    uint32_t last_sequence = dvb.consumed, waveform_hash = 2166136261u;
     const unsigned slices[] = {1,11,12,47,512,1536};
+    full_queue();
     while (pages < 4096) {
-        pthread_mutex_lock(&gate);
-        unsigned suspended = paused;
-        pthread_mutex_unlock(&gate);
-        uint32_t get = dvb.consumed, put = __atomic_load_n(&dvb.produced,__ATOMIC_ACQUIRE);
-        uint32_t ready = put-get;
-        assert(ready <= dvb.queue_pages);
-        if (!ready) {
-            if (!suspended) { assert(++idle < 10000000); sched_yield(); continue; }
-            // Fail exactly as the real fill would. Its consumer never sleeps.
-            assert(moon_shape(reference,dvb.queue_sample,12) == ESP_FAIL);
-            assert(expect_fault && dvb.queue_fault.put == dvb.queue_fault.get);
-            printf("@{\"modcod\":%u,\"priority\":%u,\"phase\":%u,"
-                   "\"producer_put\":%u,\"producer_get\":%u,\"producer_ready\":%u,"
-                   "\"consumer_put\":%u,\"consumer_get\":%u,\"consumer_ready\":0}\n",
-                   mc,priority,pause_phase,pause_put,pause_get,pause_put-pause_get,put,get);
-            // A peer ran for longer than the queue's coverage. A kernel-stage
-            // pause must remain in that stage's timing, unlike full-queue waits.
-            __atomic_add_fetch(&clock_cycles,1219709,__ATOMIC_RELAXED);
-            pthread_mutex_lock(&gate);
-            resume_task = 1;
-            pthread_cond_broadcast(&changed);
-            pthread_mutex_unlock(&gate);
-            while (!__atomic_load_n(&progressed,__ATOMIC_ACQUIRE)) sched_yield();
-            break;
-        }
-        idle = 0;
-        lofty_page *page = lofty_page_at(dvb.get_index);
-        if (!dvb.page_sample) page_hash = checksum(2166136261u,page,sizeof *page);
-        // Yield while owning a partial page. Its contents must not change.
-        sched_yield();
-        assert(page_hash == checksum(2166136261u,page,sizeof *page));
-        x ^= x<<13; x ^= x>>17; x ^= x<<5;
-        size_t n = slices[x%6], left = MACHINE_PAGE_SAMPLES-dvb.page_sample;
-        if (n > left) n = left;
-        assert(moon_shape(reference,dvb.queue_sample,n) == ESP_OK);
-        waveform_hash = checksum(waveform_hash,reference,4*n);
-        if (!dvb.page_sample) {
+        unsigned bank_pages = banks_done%3 ? 10 : 11;
+        if (bank_pages > 4096-pages) bank_pages = 4096-pages;
+        const unsigned sent = enc.task->notifications_sent;
+        for (unsigned p = 0; p < bank_pages; ++p) {
+            uint32_t get = dvb.consumed, put = __atomic_load_n(&dvb.produced,__ATOMIC_ACQUIRE);
+            assert(put-get > 0 && put-get <= dvb.queue_pages);
+            lofty_page *page = lofty_page_at(dvb.get_index);
+            uint32_t page_hash = checksum(2166136261u,page,sizeof *page);
+            do {
+                sched_yield(); // consumer retains a partial page across switches
+                assert(page_hash == checksum(2166136261u,page,sizeof *page));
+                x ^= x<<13; x ^= x>>17; x ^= x<<5;
+                size_t n = slices[x%6], left = MACHINE_PAGE_SAMPLES-dvb.page_sample;
+                if (n > left) n = left;
+                // No wait/retry inside this consumer, including bank bursts.
+                assert(moon_shape(reference,dvb.queue_sample,n) == ESP_OK);
+                waveform_hash = checksum(waveform_hash,reference,4*n);
+            } while (dvb.page_sample);
             ++pages;
             if (dvb.get_index < last_index) ++wraps;
             last_index = dvb.get_index;
             if (dvb.consumed < last_sequence) ++sequence_wraps;
             last_sequence = dvb.consumed;
         }
+        assert(dvb.wake_pending && enc.task->notifications_sent == sent);
+        // The producer sees the bank's releases, but sleeps until its one wake.
+        assert(dvb.produced-dvb.consumed == dvb.queue_pages-bank_pages);
+        pthread_mutex_lock(&gate);
+        unsigned suspended = paused;
+        if (suspended) {
+            assert(pause_put-pause_get == dvb.queue_pages);
+            assert(pause_put == dvb.produced && dvb.consumed-pause_get == bank_pages);
+        }
+        if (!suspended && banks_done%16 == 0) armed = 1;
+        moon_wake();
+        dvb.wake_pending = false;
+        assert(enc.task->notifications_sent == sent+1);
+        if (suspended) { resume_task = 1; pthread_cond_broadcast(&changed); }
+        if (armed) while (!paused) pthread_cond_wait(&changed,&gate);
+        pthread_mutex_unlock(&gate);
+        ++banks_done;
+        // Host-only pacing: verify progress after the wake before the next
+        // unpaced bank. This cannot establish a silicon deadline or lead.
+        full_queue();
     }
-    if (!expect_fault) assert(pages == 4096 && !paused && !dvb.queue_empty && wraps >= 75 && sequence_wraps == 1);
-    else assert(paused && dvb.queue_empty == 1);
-    stop_encoder(); printf("}\n");
-    assert(live_allocations == 0 && native_watch_add == native_watch_delete && native_control_priority == 1);
-    assert(dvb.queue_wakes == 0);
-    if (expect_fault) {
-        unsigned stage = requested == QUEUE_PL ? 5 : 4;
-        if (requested == QUEUE_WAIT) {
-            assert(dvb.queue_wait_max >= 1219709 && enc.stage[4].max_cycles < 1219709);
-        } else assert(enc.stage[stage].max_cycles >= 1219709);
-    }
-    printf("@{\"test\":\"queue_stress\",\"pages\":%u,\"wraps\":%u,\"priority\":%u,\"fault\":%u,\"waveform_hash\":%u}\n",
-           pages,wraps,priority,expect_fault,(unsigned)waveform_hash);
+    assert(!dvb.queue_empty && wraps >= 75 && sequence_wraps == 1 && early_notifications >= 20);
+    stop_encoder(); printf("}\n"); // stop must wake and join a full sleeping producer
+    assert(live_allocations == 0);
+    printf("@{\"test\":\"queue_stress\",\"modcod\":%u,\"pages\":%u,\"wraps\":%u,"
+           "\"banks\":%u,\"early_notifications\":%u,\"waveform_hash\":%u}\n",
+           mc,pages,wraps,banks_done,early_notifications,(unsigned)waveform_hash);
 }

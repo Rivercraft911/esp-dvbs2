@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Radio-off clean gate plus polling/page/bank wake diagnosis, about one minute per mode.
+"""Radio-off clean gate plus bank/page wake diagnosis, about one minute per mode.
 
 No flashing or transmitter commands. Keep the Mac awake, for example:
-  caffeinate -i python3 host/jitter.py notes/eight-lofty-round6
+  caffeinate -i python3 host/jitter.py notes/eight-lofty-round7
 """
 import argparse
 import datetime as dt
@@ -17,7 +17,7 @@ CASES = ((13,'26m667'),(15,'26m667'),(17,'26m667'),(11,'33m333'))
 def commands(seconds, observe_seconds=5):
     rows = []
     for mc,rate in CASES:
-        default = 'page' if mc == 11 else 'poll'
+        default = 'page' if mc == 11 else 'bank'
         comparison = 'bank' if mc == 11 else 'page'
         for policy,observer,duration in ((default,False,seconds),(default,True,observe_seconds),
                                          (comparison,True,observe_seconds)):
@@ -32,11 +32,9 @@ def timing(rows, mc, policy, observer):
     assert r['modcod'] == mc and r['queue_wake_policy'] == policy, 'wrong mode/policy'
     assert r['paced_wifi_up'] and r['encoder_pie'] == 15, 'Wi-Fi/PIE missing'
     assert r['bch_variant'] == ('resident-pair' if mc in (11,17) else 'split-pair'), 'wrong BCH variant'
-    assert r['encoder_priority'] == (24 if mc == 11 else 5), 'wrong encoder priority'
+    assert r['encoder_priority'] == 24, 'wrong encoder priority'
     assert r['warmup_frames'] == 3, 'encoder warm-up missing'
     assert r['jitter_enabled'] == observer and ('jitter' in r) == observer, 'wrong observer state'
-    if policy == 'poll':
-        assert r['queue_wakes'] == r['queue_wake_max_cycles'] == 0, 'polling called the kernel'
     if observer:
         j = r['jitter']
         assert j['complete'], 'interrupt observer capacity exceeded'
@@ -46,7 +44,6 @@ def timing(rows, mc, policy, observer):
         assert w['cycles'] == r['max_fill_cycles'], 'wrong worst bank'
         assert 0 <= w['notify_max_cycles'] <= w['notify_cycles'] <= w['cycles'], 'bad notify timing'
         assert bool(w['notify_calls']) == bool(w['notify_max_cycles']), 'missing notify timing'
-        if policy == 'poll': assert w['notify_calls'] == 0, 'polling bank notified'
     return r
 
 
