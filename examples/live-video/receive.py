@@ -69,6 +69,10 @@ def run(a):
         output = (sys.stdout.buffer if a.output == "-" else
                   stack.enter_context(open(a.output, "xb")))
         try:
+            # Player startup must not consume the live capture's queue headroom.
+            if a.player:
+                player = subprocess.Popen(shlex.split(a.player), stdin=subprocess.PIPE,
+                                          stdout=sys.stderr, stderr=sys.stderr)
             if source_cmd:
                 os.mkfifo(fifo)
                 # Nonblocking read lets us detect a failed UHD startup instead of
@@ -86,9 +90,6 @@ def run(a):
             else:
                 iq = (sys.stdin.buffer if a.iq == "-" else
                       stack.enter_context(open(a.iq, "rb")))
-            if a.player:
-                player = subprocess.Popen(shlex.split(a.player), stdin=subprocess.PIPE,
-                                          stdout=sys.stderr, stderr=sys.stderr)
             decoder = subprocess.Popen(rx_cmd, stdin=iq, stdout=subprocess.PIPE, stderr=sys.stderr)
             count = 0
             while data := decoder.stdout.read(188 * 256):
