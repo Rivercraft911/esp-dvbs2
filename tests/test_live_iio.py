@@ -227,11 +227,12 @@ def test_guards_and_plans():
 
 def test_timing_and_rate_gate():
     timing = worker.Timing(10e6, 1000000, 0)
-    timing.refill(0, .1)
-    timing.refill(.1, .2)
-    assert timing.passed()
-    timing.refill(.2, .5)
-    assert not timing.passed() and timing.rows["slow_refills"] == 1
+    timing.refill(0, .3)  # slow start-up is allowed
+    timing.refill(.3, .4)
+    timing.refill(.4, .6)  # one slow refill within kernel buffering
+    assert timing.passed() and timing.rows["slow_refills"] == 1
+    timing.refill(.6, .9)
+    assert not timing.passed()
     # Individually plausible refill times can still build an excessive lag.
     timing = worker.Timing(10e6, 1000000, 0)
     for k in range(20):

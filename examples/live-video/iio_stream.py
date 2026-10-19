@@ -76,12 +76,16 @@ class Timing:
         r = self.rows
         r["refills"] += 1
         r["refill_seconds_max"] = max(r["refill_seconds_max"], after-before)
-        r["slow_refills"] += int(after-before > 1.5*self.duration)
-        lag = max(0, after-self.started-r["refills"]*self.duration)
+        if r["refills"] == 1:
+            self.first = after  # stream start-up latency is not sample loss
+            return
+        r["slow_refills"] += int(after-before > 1.5*self.duration)  # diagnostic only
+        lag = max(0, after-self.first-(r["refills"]-1)*self.duration)
         r["host_lag_seconds_max"] = max(r["host_lag_seconds_max"], lag)
 
     def passed(self):
-        return not self.rows["slow_refills"] and self.rows["host_lag_seconds_max"] <= 4*self.duration
+        # Samples drop only once the host trails the device's four kernel buffers; fail at half that.
+        return self.rows["host_lag_seconds_max"] <= 2*self.duration
 
 
 def write_iq(fd, raw, failed):
