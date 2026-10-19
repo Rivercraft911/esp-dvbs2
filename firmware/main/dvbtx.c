@@ -30,7 +30,7 @@
 #include "freertos/task.h"
 #include "radio_s3.h"
 #include "ring.h"
-#include "vcm_cache.h"
+#include "vcm_sections.h"
 #include "station_id.h"
 #include "station_store.h"
 #include "station_commands.h"
@@ -546,7 +546,6 @@ static void release(void)
     }
     (void)heap_caps_monitor_local_minimum_free_size_stop();
     if (vcm_enc.vcm) {
-        (void)vcm_resident(0);
         for (unsigned i=0;i<vcm_enc.vcm_allocations;++i) heap_caps_free(vcm_enc.vcm_heap[i]);
         vcm_enc.vcm_allocations=0;
         enc.fast=NULL; enc.ws=NULL; enc.payload=enc.slots=enc.filler=enc.block=NULL;
@@ -695,10 +694,6 @@ static __attribute__((noinline)) bool vcm_memory(const char *cmd, const dvbs2_mo
     }
     ring_filler_length(&dvb.ring,DVBS2_DUMMY_SYMBOLS);
     spi_input_buffers(NULL,0,NULL,0);
-    if (vcm_resident(1)) {
-        printf("@{\"cmd\":\"%s\",\"error\":\"VCM cache admission failed\"}\n",cmd);
-        return false;
-    }
     return true;
 }
 
@@ -1235,10 +1230,6 @@ static void lofty_try_fused(size_t reserve, unsigned caps)
 
 esp_err_t radio_s3_stream_ready(void)
 {
-    if (enc.task && vcm_enc.vcm) {
-        if (vcm_resident(0)) return ESP_FAIL;
-        return vcm_resident(1) ? ESP_FAIL : ESP_OK;
-    }
     if (!enc.task || !dvb.lofty) return ESP_OK;
     // Wi-Fi setup may have suspended/invalidated cache since prepare.
     if (enc.fused ? (lofty_fused_resident(0) || lofty_fused_resident(1)) :
@@ -1283,8 +1274,7 @@ static void stop_encoder(void)
     xSemaphoreTake(enc.exited, portMAX_DELAY);
     vTaskDelete(enc.task);
     if (vcm_enc.vcm) {
-        printf(",\"vcm_axes\":%s,\"vcm_icache_bytes\":%u",vcm_enc.vcm_axes ? "true" : "false",
-               (unsigned)vcm_resident_bytes());
+        printf(",\"vcm_axes\":%s",vcm_enc.vcm_axes ? "true" : "false");
         printf(",\"vcm\":true,\"vcm_changes\":%u,\"last_modcod\":%u,"
                "\"vcm_boundary_cycles_mean\":%"PRIu64",\"vcm_boundary_cycles_max\":%u,\"mode_frames\":[",
                vcm_enc.vcm_changes,enc.mode->modcod,enc.frames ? vcm_enc.boundary_cycles/enc.frames : 0,(unsigned)vcm_enc.boundary_max);

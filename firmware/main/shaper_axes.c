@@ -1,5 +1,5 @@
 // Five distinct axis amplitudes, with the legacy three-tap rounding intact.
-#include "vcm_cache.h"
+#include "vcm_sections.h"
 #ifdef __XTENSA__
 #define STREAM_PROFILE_FN static VCM_TEXT __attribute__((unused))
 #endif

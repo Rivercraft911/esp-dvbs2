@@ -1,8 +1,10 @@
-# Standalone PIE oracle runs without the transmitter's optional cache admission.
+# Standalone PIE oracle uses the same SRAM instruction bus as the transmitter.
 [sections:axes_test_text]
 entries:
     .vcm.literal
     .vcm
+    .vcm.axis.literal
+    .vcm.axis
 
 [scheme:axes_test_text]
 entries:

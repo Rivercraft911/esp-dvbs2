@@ -151,9 +151,6 @@ def check_residency(current):
         subprocess.run(['cc','-O2','-Wall','-Wextra','-Werror','-I'+tmp,
                         str(ROOT/'tests/psk8_resident.c'),'-o',str(out/'resident')],check=True)
         subprocess.run([str(out/'resident')],check=True)
-        subprocess.run(['cc','-O2','-Wall','-Wextra','-Werror',
-                        str(ROOT/'tests/vcm_resident.c'),'-o',str(out/'vcm-resident')],check=True)
-        subprocess.run([str(out/'vcm-resident')],check=True)
     print('cache residency: dormant, timeout, ROM error, repeated setup and cleanup: ok')
     if not current: return
     m = symbols(current)
@@ -181,16 +178,21 @@ def check_residency(current):
     for name in ('lofty_render_pie','lofty_render_pages_pie','machine_axis_render_pie',
                  'machine_axis_samples','xTaskGenericNotify','shaper_copy_pie'):
         assert 0x40370000 <= m[name] < 0x403e0000,(name,m[name])
-    assert m['lofty_render_pages_pie'] % 32 == 4, "default PIE fetch alignment must match main"
-    assert m['lofty_render_pie'] - m['lofty_render_pages_pie'] == 16
-    assert m['_vcm_text_start'] % 32 == 0 and 0 < m['_vcm_text_end']-m['_vcm_text_start'] <= 8192
+    assert m['fill'] == 0x4037752c, "default fill entry must match main 7391f86"
+    assert m['lofty_render_pages_pie'] == 0x4037a324, "default PIE placement must match main"
+    assert m['lofty_render_pie'] == 0x4037a334
+    assert first % 4096 == 0x720, "default lock cache indices must match main 7391f86"
+    assert 0x40370000 <= m['_vcm_text_start'] < m['_vcm_text_end'] < 0x403e0000
+    assert m['shaper_axes8_pie'] % 32 == 8, "axis PIE fetch alignment must match modswap 154692d"
+    assert m['_vcm_text_end'] <= m['_iram_text_end'] <= m['_iram_end']
+    assert m['_data_start'] >= m['_iram_end'] - (0x40378000-0x3fc88000)
     for name in ('fill_vcm', 'ring_read_vcm', 'ring_window_vcm', 'shaper_axes8_pie', 'shaper_axes_samples_profile'):
         entries = [address for symbol, address in m.items() if symbol == name or symbol.startswith(name+'$') or symbol.startswith(name+'.')]
         assert entries and all(m['_vcm_text_start'] <= address < m['_vcm_text_end'] for address in entries), name
     assert not any(name == 'lofty_page_at' or name.startswith('lofty_page_at.') for name in m), "page accessor must stay inline"
     store = m['shaper_store']
     assert store%16 == 0 and 0x3fc88000 <= store < store+65536 <= 0x3fcc0000
-    print(f'linked: {size} B default lock (main unchanged), separate fused lock {fused_end-fused_first} B; common 64 KiB store before DAC')
+    print(f'linked: main fill/PIE entries, {size} B default lock with main cache indices; separate VCM IRAM; common 64 KiB store before DAC')
 
 if __name__ == '__main__':
     p = argparse.ArgumentParser(description=__doc__)

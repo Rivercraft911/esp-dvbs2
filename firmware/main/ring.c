@@ -6,7 +6,7 @@
 #include <string.h>
 
 #include "esp_attr.h"
-#include "vcm_cache.h"
+#include "vcm_sections.h"
 
 void ring_init(ring_t *r, uint8_t *slots, uint32_t nslots, const uint8_t *filler,
                uint32_t frame_symbols)

@@ -8,6 +8,20 @@ entries:
 
 # Only 8PSK 26m667 loads and locks this control code in instruction cache.
 # Keep the vector renderer in IRAM. All custom literals precede the code.
+[sections:lofty_cache_index]
+entries:
+    .loft0
+
+[scheme:lofty_cache_index]
+entries:
+    lofty_cache_index -> flash_text
+
+[mapping:lofty_cache_index]
+archive: libmain.a
+entries:
+    * (lofty_cache_index);
+        lofty_cache_index -> flash_text ALIGN(4096, pre) KEEP()
+
 [sections:lofty_text]
 entries:
     .lofty.literal
@@ -38,23 +52,6 @@ archive: libmain.a
 entries:
     * (lofty_fused_text);
         lofty_fused_text -> flash_text ALIGN(32, pre, post) SURROUND(lofty_fused_text)
-
-# VCM is mutually exclusive with 26m667. Lock its optional code only for VCM;
-# optional renderer code must not occupy permanent IRAM in fixed modes.
-[sections:vcm_text]
-entries:
-    .vcm.literal
-    .vcm
-
-[scheme:vcm_text]
-entries:
-    vcm_text -> flash_text
-
-[mapping:vcm_text]
-archive: libmain.a
-entries:
-    * (vcm_text);
-        vcm_text -> flash_text ALIGN(32, pre, post) SURROUND(vcm_text)
 
 [sections:vcm_bss]
 entries:

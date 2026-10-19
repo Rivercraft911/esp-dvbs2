@@ -41,10 +41,13 @@
     ee.vst.128.ip q1,a2,16
     .endm
 
-    .section .vcm, "ax"
+    .section .vcm.axis, "ax"
     .global shaper_axes8_pie
     .type shaper_axes8_pie,@function
-    .align 4
+    // exp/modswap 154692d: preserve the loop's 32-byte SRAM fetch position.
+    // This input belongs to its own output section, never the fixed .iram0.text.
+    .balign 32
+    .space 8
 // groups >=0 produces 6*groups+1 symbols. Eight history bytes, scaled phases 16*k.
 shaper_axes8_pie:
     entry a1,32

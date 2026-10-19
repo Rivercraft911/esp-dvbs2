@@ -68,12 +68,10 @@
     .global lofty_render_pages_pie
     .type lofty_render_pie,@function
     .type lofty_render_pages_pie,@function
-#if LOFTY_FUSED
     .align 4
-#else
-    // Main 7391f86's entry and loop offsets within the 32-byte fetch line.
-    // Optional renderers must not change the default loop's fetch alignment.
-    .balign 32
+#if !LOFTY_FUSED
+    // Preserve 7391f86's fetch position without raising .iram0.text alignment.
+    // The linker assertion below the stream mappings guards this placement.
     .space 4
 #endif
 lofty_render_pages_pie:
@@ -149,6 +147,12 @@ lofty_render_pie:
     .size lofty_render_pie,.-lofty_render_pie
     .size lofty_render_pages_pie,.-lofty_render_pages_pie
 
+#if !LOFTY_FUSED
+    // Main 7391f86's cache indices; linker aligns this padding, not .iram1.
+    // ldgen sorts .loft0 before the .lofty code mapping.
+    .section .loft0,"ax"
+    .space 0x720
+#endif
 // Eight four-symbol words -> eight offsets. Output aligned; source has 16 guard bytes.
     .section .text.lofty_prepare,"ax"
     .global lofty_prepare_pie
