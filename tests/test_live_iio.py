@@ -239,7 +239,7 @@ def test_timing_and_rate_gate():
         timing.refill(k*.14, (k+1)*.14)
     assert not timing.passed() and timing.rows["slow_refills"] == 0
     a = coordinator.parser().parse_args(["keyed", "unused", "--uri", "ip:fake", "--mhz", "2420"])
-    probe = dict(uri=a.uri, frequency=2420e6, rx_gain=0, rates=[dict(requested_rate=rate,
+    probe = dict(uri=a.uri, frequency=2420e6, rx_gain=a.rx_gain, rates=[dict(requested_rate=rate,
         complete=True, host_timing_passed=True, exit=0, requested_seconds=30, sample_seconds=30) for rate in coordinator.RATES])
     assert coordinator.choose_rate(probe, a) == 10e6
     a.modcod = 7
