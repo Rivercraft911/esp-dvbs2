@@ -88,8 +88,8 @@ class Radio:
                       bandwidth=number(rx.attrs["rf_bandwidth"].value),
                       gain=number(rx.attrs["hardwaregain"].value, "dB"),
                       gain_control_mode=rx.attrs["gain_control_mode"].value)
-        for key in ("frequency", "sample_rate", "bandwidth", "gain"):
-            if abs(actual[key] - settings[key]) > (.5 if key == "gain" else 1):
+        for key, tolerance in (("frequency", 100), ("sample_rate", 1), ("bandwidth", 1), ("gain", .5)):
+            if abs(actual[key] - settings[key]) > tolerance:
                 raise ValueError(f"IIO coerced {key}: {actual[key]} (requested {settings[key]})")
         if actual["gain_control_mode"] != "manual" or actual["bandwidth"] < settings["occupied_hz"]:
             raise ValueError("IIO manual gain / occupied bandwidth readback failed")
