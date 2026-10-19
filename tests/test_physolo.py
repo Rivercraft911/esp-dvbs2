@@ -157,7 +157,7 @@ typedef struct {
     radio_s3_fill_fn *payload_fill;
     radio_s3_startup_t *startup;
     bool wifi_pace, probe;
-    struct { uint32_t rate; } geo;
+    struct { uint32_t rate, lead, step; } geo;
     uint64_t samples;
     uint32_t freq_mhz;
     unsigned gain;
@@ -228,7 +228,7 @@ int main(void) {
         ready_failure=ready_fail;
         radio_s3_stats_t stats={0};
         run_t run={.stats=&stats, .options={.phy_solo=solo}, .wifi_pace=pace,
-                   .probe=pace, .freq_mhz=2412, .geo={80000000}, .samples=2400000000ULL};
+                   .probe=pace, .freq_mhz=2412, .geo={.rate=80000000, .lead=128, .step=15740}, .samples=2400000000ULL};
         radio_s3_fill_fn payload=payload_fill;
         run.payload_fill=&payload;
         run.options.select_fill=pick ? select_payload : NULL;
@@ -262,6 +262,62 @@ int main(void) {
 }
 '''
 
+
+TRACE_MODEL = r'''
+#include "native.h"
+#include "radio_s3.h"
+#define EXTMEM_DBUS_ACS_SPIRAM_MISS_CNT_REG 0
+static uint32_t clock_now;
+uint32_t regs[20];
+static uint32_t storage[2][RADIO_S3_BANK_WORDS];
+static unsigned callbacks;
+static bool abort_fill;
+static uint32_t cycles(void) { return ++clock_now; }
+uint32_t *radio_s3_bank(unsigned n) { return storage[n]; }
+typedef struct {
+    radio_s3_fill_fn fill;
+    void *ctx;
+    radio_s3_stats_t *stats;
+    radio_s3_startup_t *startup;
+} run_t;
+static esp_err_t payload(uint32_t *dst, uint64_t first, size_t count, void *ctx)
+{
+    assert(ctx == storage && count && dst >= storage[0] && dst < storage[1]+RADIO_S3_BANK_WORDS);
+    (void)first;
+    ++callbacks; clock_now += 100; regs[0] += 7;
+    return abort_fill ? ESP_FAIL : ESP_OK;
+}
+'''
+
+TRACE_MAIN = r'''
+int main(void)
+{
+    radio_s3_stats_t stats={.id_samples=417600000};
+    radio_s3_startup_t trace={.first_sample=417597812};
+    run_t run={.fill=payload, .ctx=storage, .stats=&stats, .startup=&trace};
+    assert(!fill_bank(&run,0,0) && callbacks==1 && !trace.count);
+    // The first intersecting bank is split at physical wrap. Unsigned miss
+    // deltas must also survive counter wrap; this is one complete bank record.
+    regs[0]=UINT32_MAX-3;
+    assert(!fill_bank(&run,1,trace.first_sample) && callbacks==3);
+    assert(trace.count==1 && trace.bank[0].cycles==201 && trace.bank[0].psram_miss==14);
+    assert(trace.bank[0].trace_cycles && stats.max_fill_cycles==201);
+    assert(stats.max_fill_sample==trace.first_sample);
+    for (unsigned i=1;i<32;++i)
+        assert(!fill_bank(&run,i&1,trace.first_sample+15740*i));
+    assert(trace.count==32);
+    unsigned old=trace.bank[31].cycles;
+    assert(!fill_bank(&run,0,trace.first_sample+15740*32) && trace.count==32 && trace.bank[31].cycles==old);
+    // Abort after the first callback; retain the failing bank's evidence.
+    trace.count=0; callbacks=0; abort_fill=true;
+    assert(fill_bank(&run,0,trace.first_sample)==ESP_FAIL && callbacks==1 && trace.count==1);
+    assert(trace.bank[0].cycles==101 && trace.bank[0].psram_miss==7);
+    run.startup=NULL; callbacks=0;
+    assert(fill_bank(&run,0,0)==ESP_FAIL && callbacks==1 && trace.count==1);
+    puts("startup trace: ID edge, split bank, counter wrap, 32-bank bound, disabled trace and abort evidence pass");
+}
+'''
+
 with tempfile.TemporaryDirectory() as folder:
     tmp = Path(folder)
     (tmp / 'native.h').write_text(NATIVE)
@@ -280,3 +336,11 @@ with tempfile.TemporaryDirectory() as folder:
                     str(tmp / 'test.c'), str(RADIO / 'physolo.c'),
                     '-o', str(exe)], check=True)
     subprocess.run([str(exe)], check=True)
+    bank = function((RADIO / 'radio_s3.c').read_text(), 'fill_bank')
+    bank = bank.replace('__asm__ volatile ("memw" ::: "memory");', '')
+    (tmp / 'trace.c').write_text(TRACE_MODEL + bank + TRACE_MAIN)
+    trace_exe = tmp / 'trace'
+    subprocess.run(['cc', '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror',
+                    '-I'+str(tmp), '-I'+str(RADIO / 'include'),
+                    str(tmp / 'trace.c'), '-o', str(trace_exe)], check=True)
+    subprocess.run([str(trace_exe)], check=True)

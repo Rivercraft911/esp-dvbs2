@@ -186,6 +186,9 @@ LOFTY_TEXT void lofty_samples(uint32_t *dst, const uint32_t *src, unsigned skip,
 _Static_assert(CONFIG_ESP32S3_INSTRUCTION_CACHE_SIZE == 16384 &&
                CONFIG_ESP32S3_INSTRUCTION_CACHE_LINE_SIZE == 32,
                "lofty residency requires the qualified 16 KiB / 32-byte cache");
+_Static_assert(CONFIG_ESP32S3_DATA_CACHE_SIZE >= 32768 &&
+               CONFIG_ESP32S3_DATA_CACHE_LINE_SIZE == 32,
+               "dummy residency requires at least 32 KiB / 32-byte data cache");
 extern const uint8_t _lofty_text_start[], _lofty_text_end[];
 extern const uint8_t _lofty_fused_text_start[], _lofty_fused_text_end[];
 #endif
@@ -253,6 +256,31 @@ int lofty_fused_resident(int on)
     return resident_set(on,2);
 #else
     (void)on;
+    return 0;
+#endif
+}
+
+int lofty_dummy_resident(const uint32_t *dummy, size_t bytes, int on)
+{
+#if defined(__XTENSA__) || defined(LOFTY_CACHE_HOST)
+    const uintptr_t first = (uintptr_t)dummy;
+    // An aligned allocation owns every locked line, including the renderer's
+    // prefetch guards. Leave over half the 32 KiB data cache for the encoder.
+    if (!bytes || (first&31) || (bytes&31) || bytes > 16384 ||
+        first < 0x3c000000 || first+bytes > 0x3e000000) return -1;
+    if (!on) return Cache_Unlock_Addr(first,bytes);
+    const uint32_t before = esp_cpu_get_cycle_count();
+    const uint32_t autoload = Cache_Start_DCache_Preload(first,bytes,0);
+    while (!Cache_DCache_Preload_Done()) {
+        if (esp_cpu_get_cycle_count()-before > 240000) {
+            Cache_End_DCache_Preload(autoload);
+            return -1;
+        }
+    }
+    Cache_End_DCache_Preload(autoload);
+    return Cache_Lock_Addr(first,bytes);
+#else
+    (void)dummy; (void)bytes; (void)on;
     return 0;
 #endif
 }

@@ -72,7 +72,7 @@ typedef struct {
     uint64_t first_sample;
     uint32_t count;
     struct {
-        uint32_t cycles, psram_miss, instruction_miss, trace_cycles;
+        uint32_t cycles, psram_miss, trace_cycles;
     } bank[RADIO_S3_STARTUP_BANKS];
 } radio_s3_startup_t;
 

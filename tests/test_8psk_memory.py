@@ -112,6 +112,7 @@ int main(void) {
             assert auto['queue_sizing']['free_before'] == 32000
             assert auto['queue_sizing']['free_after'] == 32000
             assert auto['renderer_warm_words'] == 39983 and pair[0]['renderer_warm_words'] == 0
+            assert auto['dummy_dcache_bytes'] == 13376 and not pair[0]['dummy_dcache_bytes']
             assert not auto['ring_heap_bytes'] and auto['workspace_heap_bytes'] == 8144
             layout = auto['queue_layout']
             assert layout['contiguous'] and layout['resident_pages'] == 54 and layout['page_bytes'] == 528
