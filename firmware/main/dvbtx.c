@@ -402,9 +402,9 @@ static inline __attribute__((always_inline)) uint32_t lofty_descriptor(uint32_t 
 
 static bool lofty_dummy_init(void)
 {
-    lofty_mux.dummy = heap_caps_aligned_alloc(16,2*LOFTY_DUMMY_STRIDE*4,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    lofty_mux.dummy = heap_caps_aligned_alloc(16,2*LOFTY_DUMMY_STRIDE*4+sizeof(radio_s3_startup_t),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
     if (!lofty_mux.dummy) return false;
-    memset(lofty_mux.dummy,0,2*LOFTY_DUMMY_STRIDE*4);
+    memset(lofty_mux.dummy,0,2*LOFTY_DUMMY_STRIDE*4+sizeof(radio_s3_startup_t));
     // Setup only, before the encoder owns this workspace. No internal buffer.
     uint8_t *phases = enc.ws->bits;
     dvbs2_dummy(phases);
@@ -1464,6 +1464,22 @@ static void print_timing(const radio_s3_stats_t *s)
            ",\"planned_samples\":%" PRIu64, s->id_count, s->id_samples, s->planned_samples);
 }
 
+static radio_s3_startup_t *lofty_startup(void)
+{
+    return (radio_s3_startup_t *)(lofty_mux.dummy+2*LOFTY_DUMMY_STRIDE);
+}
+
+static void print_startup(void)
+{
+    if (!dvb.lofty) return;
+    const radio_s3_startup_t *t = lofty_startup();
+    printf(",\"startup\":{\"first_sample\":%"PRIu64",\"columns\":[\"fill_cycles\",\"psram_miss\",\"instruction_miss\",\"trace_cycles\"],\"banks\":[",t->first_sample);
+    for (unsigned i = 0; i < t->count; ++i)
+        printf("%s[%"PRIu32",%"PRIu32",%"PRIu32",%"PRIu32"]",i ? "," : "",
+               t->bank[i].cycles,t->bank[i].psram_miss,t->bank[i].instruction_miss,t->bank[i].trace_cycles);
+    printf("]}");
+}
+
 static void print_wifi(const radio_s3_wifi_heap_t *w)
 {
     printf(",\"wifi_free_before\":%" PRIu32 ",\"wifi_largest_before\":%" PRIu32
@@ -1546,8 +1562,9 @@ void dvbtx_pace_options(unsigned modcod, uint32_t seconds, unsigned level, unsig
     if (!symbols) return;
     radio_s3_stats_t s;
     const bool wifi = dvb.moon || phy_solo || vcm_enc.vcm;
-    const radio_s3_options_t options = {.phy_solo=phy_solo, .select_fill=fused ? select_fill : NULL};
-    const esp_err_t err = phy_solo || fused ? radio_s3_paced_wifi_options(seconds,dac_rate,encoder_fill(),NULL,&options,&s) :
+    const radio_s3_options_t options = {.phy_solo=phy_solo, .select_fill=fused ? select_fill : NULL,
+                                      .startup=dvb.lofty ? lofty_startup() : NULL};
+    const esp_err_t err = phy_solo || fused || dvb.lofty ? radio_s3_paced_wifi_options(seconds,dac_rate,encoder_fill(),NULL,&options,&s) :
         (wifi ? radio_s3_paced_wifi_rate : radio_s3_paced_run_rate)(seconds,dac_rate,encoder_fill(),NULL,&s);
     print_mode("dvbpace", modcod, symbols, level);
     printf(",\"paced_wifi_up\":%s",wifi ? "true" : "false");
@@ -1557,6 +1574,7 @@ void dvbtx_pace_options(unsigned modcod, uint32_t seconds, unsigned level, unsig
            dac_rate, RADIO_S3_STEP_FOR(dac_rate));
     printf(",\"pulse_symbols\":%u", dvb.moon ? dvb.span : dvb.table.parts == 2 ? 6 : 9);
     print_timing(&s);
+    print_startup();
     stop_encoder();
     printf(",\"status\":\"%s\"%s}\n", esp_err_to_name(err),
            err != ESP_OK ? ",\"error\":\"paced run failed\"" : "");

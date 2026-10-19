@@ -67,10 +67,22 @@ esp_err_t radio_s3_stream_ready(void);
 
 /* Experimental Wi-Fi teardown while an independent PHY lifetime remains held.
  * No BT controller may coexist. RF quality without Wi-Fi recalibration is unverified. */
+#define RADIO_S3_STARTUP_BANKS 32
+typedef struct {
+    uint64_t first_sample;
+    uint32_t count;
+    struct {
+        uint32_t cycles, psram_miss, instruction_miss, trace_cycles;
+    } bank[RADIO_S3_STARTUP_BANKS];
+} radio_s3_startup_t;
+
 typedef struct {
     bool phy_solo;
     // Optional once-only selection after stream admission, before the first fill.
     radio_s3_fill_fn (*select_fill)(radio_s3_fill_fn original);
+    // Optional radio-off diagnostic. Collected on the existing worker stack;
+    // copied here after playback, so this destination may live in PSRAM.
+    radio_s3_startup_t *startup;
 } radio_s3_options_t;
 typedef struct {
     int64_t at_us;

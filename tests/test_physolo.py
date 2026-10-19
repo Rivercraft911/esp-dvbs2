@@ -155,6 +155,7 @@ typedef struct {
     radio_s3_stats_t *stats;
     radio_s3_options_t options;
     radio_s3_fill_fn *payload_fill;
+    radio_s3_startup_t *startup;
     bool wifi_pace, probe;
     struct { uint32_t rate; } geo;
     uint64_t samples;
@@ -192,6 +193,11 @@ static int play(run_t *r, bool pace) {
         REG_WRITE(FE_CTRL,2);
         r->stats->filter.applied=true;
     }
+    if (r->startup) {
+        r->startup->count=1;
+        r->startup->first_sample=123;
+        r->startup->bank[0].cycles=456;
+    }
     played=true; return stream_error;
 }
 static int paced(run_t *r) { return play(r,true); }
@@ -226,7 +232,12 @@ int main(void) {
         radio_s3_fill_fn payload=payload_fill;
         run.payload_fill=&payload;
         run.options.select_fill=pick ? select_payload : NULL;
+        radio_s3_startup_t trace={.count=99};
+        run.options.startup=&trace;
         worker(&run);
+        assert(!run.startup);
+        assert(trace.count==(pace ? (played ? 1u : 0u) : 99u));
+        if (pace && played) assert(trace.first_sample==123 && trace.bank[0].cycles==456);
         assert(selection_calls==(pick && played));
         assert(payload==(pick && played ? selected_fill : payload_fill));
         assert(!initialized && !started && !users && !domains && !backups);
