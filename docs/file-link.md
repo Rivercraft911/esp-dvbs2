@@ -141,13 +141,48 @@ This board check is provided for the coordinator; it has not been run here.
 
 ## Coordinator only: keyed, closed Faraday box
 
-After the radio-off check passes, with the box closed and an assigned callsign
-already stored, the coordinator may run this separate timed send:
+With both devices/antennas inside the **closed box**, compatible firmware already
+flashed, and an assigned callsign stored, run from the repository root:
 
 ```sh
-python3 examples/usb-send/send.py send notes/filelink/input.bin --port "$PORT" \
-  --fec 16:4 --key --frequency 2400 --seconds 20 --gain 0 \
-  --report notes/filelink/keyed.json
+python3 examples/over-the-air/file_check.py docs/img/fill-history.png notes/file-ota \
+  --port /dev/cu.usbmodem1101 --uri ip:192.168.1.10 --closed-box --key
 ```
 
-This checks sending/counters only; it does not itself capture or prove RF recovery.
+Defaults: real 237,171-byte PNG, FEC 16:4, QPSK 3/4 at 5 Msym/s, 2420 MHz,
+TX gain 0/peak 128, manual RX gain 30 dB, 30 seconds including both Morse IDs.
+Choose the actual port and authorized frequency (`--port`/`--mhz`);
+`--modcod 4` selects QPSK 1/2. Override the existing LeanDVB/Radioconda paths
+with `--receiver`/`--iio-python`; see the [RF checker](../examples/over-the-air/README.md).
+Allow 5.15 GB free disk and use a fresh output directory.
+
+The coordinator snapshots the file, reserves the exact serial port without reset,
+validates the stored callsign/airtime budget, and starts the existing receive-only
+libiio worker with fail-closed TX inhibits. After one second of IQ it runs the
+USB FEC sender once, requires complete file acceptance/playback and healthy
+counters, then decodes with LeanDVB and the public `unpack --fec --bbf` path.
+It never flashes or writes callsigns. Ctrl-C cannot stop already keyed firmware;
+keep the box closed until the timed transmission ends.
+
+Two recovery runs use the same RF capture: `received` keeps all decoded frames;
+`dropped` discards one received source frame per block, including duplicates,
+then unpacks again. `--drop-per-block N` increases the injection. Both original
+file SHA-256 values must match. Each arm prints **sent, lost (channel + injected),
+source shards recovered, and remaining erasure frames per block**. Margin is
+`distinct received shards - K`; zero passes. Channel loss consumes the same
+four-erasure budget, so injection may fail after normal recovery succeeds.
+Entire missing blocks count; guards/dummy positions are reported separately.
+
+`PASS`/exit 0 requires both recoveries, instrumented GCS lock in the requested
+mode, healthy board counters, complete capture and TX inhibit readbacks.
+Failures exit nonzero and preserve `report.json`, USB/capture/decoder evidence,
+and received/dropped BBFRAMEs. libiio's unavailable overflow counter stays `null`.
+Replace `--closed-box --key` with `--plan` for a device-free plan, or with
+`--recheck notes/file-ota` and a fresh output directory for an offline BBFRAME
+audit using the same source/settings.
+
+Host tests: `python3 tests/test_file_ota.py`; add `--receiver /path/to/leandvb`
+for model IQ through an independent decoder. These pass with the real PNG,
+including one source-frame drop in each of three blocks (three erasures of
+margin left per block). This is **offline evidence**; the closed-box RF run
+still needs operator evidence.

@@ -1,5 +1,10 @@
 # Contained RF check
 
+For a real file with erasure recovery, use the
+[file coordinator](../../docs/file-link.md#coordinator-only-keyed-closed-faraday-box).
+It wraps the USB FEC sender, this libiio RX worker, LeanDVB and two SHA-256-checked
+unpack runs, including deliberate receive-frame drops, in one command.
+
 Capture with UHD or a Pluto-firmware ADALM-Pluto / ANTSDR E200 (libiio), decode with
 LeanDVB, and compare every recovered payload byte against the synthetic source.
 Bench runs recovered exact payloads at 2.5 and 10 MS/s streaming, and at 20 MS/s

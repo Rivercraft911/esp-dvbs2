@@ -27,6 +27,7 @@ jobs:
       - run: python tests/test_self_check.py
       - run: python tests/test_live_video.py
       - run: python tests/test_ota.py
+      - run: python tests/test_file_ota.py
       - run: python tests/test_ota_vcm.py
       - name: SPI input
         run: |
