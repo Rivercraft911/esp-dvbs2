@@ -16,11 +16,13 @@ Historical development evidence remains in
 
 The S3 transmitted at **2420 MHz** to a receive-only ANTSDR E200 running Pluto firmware,
 both inside a closed Faraday box. LeanDVB recovered the synthetic payloads byte-exact
-against the host model. Frames below count recovered payload frames; MER is the reported
-median. Roll-off is 0.35. The DAC ran at 40 MS/s for 1–10 Msym/s and 80 MS/s for 20 Msym/s.
+against the host model. Frames count recovered payload frames. The linked LeanDVB reports
+give median PLHEADER MER after phase/amplitude fitting; this is not payload MER.
+Summary-only values marked † retain the operator's metric, whose estimator was not recorded.
+Roll-off is 0.35. The DAC ran at 40 MS/s for 1–10 Msym/s and 80 MS/s for 20 Msym/s.
 The [public example](../examples/over-the-air/README.md) supplied the libiio run.
 
-| Mode | Symbol rate | Capture / drive | Frames | MER, dB |
+| Mode | Symbol rate | Capture / drive | Frames | Reported MER, dB |
 |---|---:|---|---:|---:|
 | [QPSK 1/2](measurements/ota/ota1-qpsk12-1m/report.json) | 1 Msym/s | peak 128, gain 0 | 587 | 16.7 |
 | [QPSK 3/4](measurements/ota/ota2-qpsk34-5m/report.json) | 5 Msym/s | peak 128, gain 4 | 1,436 | 20.5 |

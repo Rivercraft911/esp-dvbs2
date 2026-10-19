@@ -160,6 +160,8 @@ def summarize(status, frames, payload, expected=None):
     # fd-bbf contains valid headers only. Count receiver-side rejection messages too.
     report["bbheader_rejected_frames"] = status.count("Bad bbframe")
     # fd-info FREQ is in Hz (LeanDVB scales its normalized estimate by Fs).
+    # The pinned DVB-S2 receiver fits fd-info MER from known PLHEADER symbols,
+    # not the payload constellation.
     # Exclude unlocked acquisition, silence and the station-ID windows.
     locked, metrics = False, {"MER": [], "FREQ": []}
     for line in status.splitlines():

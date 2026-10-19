@@ -17,18 +17,17 @@ ever built for. Read [How it got here](docs/story.md) to learn about the tumultu
 
 ## Live video
 
-> **[Placeholder: demo clip, camera feeds received off the air and played on a laptop]**
+> **[Demo clip to add: S3 transmission and live laptop reception]**
 
 ```
-CM5 + cameras --SPI, 9 Mb/s TS--> ESP32-S3 --DVB-S2--> SDR --> LeanDVB --> video player
+TS file --USB--> ESP32-S3 --DVB-S2 RF--> SDR --IQ--> LeanDVB --TS--> player
 ```
 
-The [live-video example](examples/live-video/README.md) targets a 9 Mb/s MPEG transport
-stream over SPI, QPSK 3/4 at 10 Msym/s (14.5 Mb/s capacity in 13.5 MHz), and an SDR running
-LeanDVB. Its working dry run is **host-model TS → DVB-S2 IQ → LeanDVB → TS**, using MPEG-2
-video. S3 USB sample dumps decode independently, and SPI has on-chip loopback tests.
-Synthetic QPSK payloads now decode over RF; external camera/SPI input and H.264 playback
-still need validation.
+The [live-video example](examples/live-video/README.md) uses **8PSK 2/3 at 5 Msym/s**:
+9.68 Mb/s TS capacity in 6.75 MHz. In closed-box tests on October 18, a finite
+2.4 Mb/s H.264 file passed the USB → S3 → E200 → LeanDVB path and played on the laptop.
+External camera input at 9 Mb/s over SPI still needs an end-to-end test; USB cannot carry
+that live mux. SPI has on-chip loopback tests and a [Linux sender](examples/pi-sender/README.md).
 
 ## What it can do
 

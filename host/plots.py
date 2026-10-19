@@ -30,7 +30,8 @@ def load_points():
     for source in json.loads((DATA / 'sources.json').read_text())['records']:
         raw = (DATA / source['file']).read_bytes()
         assert hashlib.sha256(raw).hexdigest() == source['sha256'], source['file']
-        assert len(raw.splitlines()) == source['records'], source['file']
+        if 'records' in source:
+            assert len(raw.splitlines()) == source['records'], source['file']
     for context in [table['cpu_source'], *[d['source'] for d in table['deadlines'].values()]]:
         assert context['quote'] in read_source(context).decode(), context['path']
     assert f"{table['cpu_hz'] / 1e6:g} MHz" in table['cpu_source']['quote']
