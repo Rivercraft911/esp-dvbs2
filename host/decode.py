@@ -189,10 +189,15 @@ def summarize(status, frames, payload, expected=None):
 
 
 def receiver_command(executable, fs, rs, alpha, bb_fd, *, tune=0.0, rrc_rej=20):
-    """Shared executable argv, with a placeholder BB descriptor allowed for plans."""
+    """Shared executable argv, with a placeholder BB descriptor allowed for plans.
+
+    LeanDVB searches for the next PLHEADER within +-round(sr_tol * slots), so the default
+    100 ppm gives a 3,240-symbol dummy frame a zero-symbol window. Two separate crystals
+    (~25 ppm apart here) then slip timing across runs of dummies; 500 ppm gives +-2 symbols.
+    """
     command = [str(executable), "--standard", "DVB-S2", "--f32", "-f", str(fs),
                "--sr", str(rs), "--sampler", "rrc", "--rrc-rej", str(rrc_rej), "--fastdrift",
-               "--roll-off", str(alpha), "--ldpc-bf", "100",
+               "--sr-tol", "0.0005", "--roll-off", str(alpha), "--ldpc-bf", "100",
                "--fd-bbf", str(bb_fd), "--fd-info", "2", "-d", "-d"]
     if tune:
         command += ["--tune", str(tune)]
