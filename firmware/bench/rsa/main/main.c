@@ -214,9 +214,9 @@ void app_main(void)
         used = 0;
         if (!strcmp(line, "rsa_bench")) bench();
         else if (!strcmp(line, "info")) {
-            printf("@{\"cmd\":\"info\",\"firmware\":\"rsa-bench-01\",\"radio_off\":true,\"cpu_hz\":%d}\n",
+            printf("@{\"cmd\":\"info\",\"firmware\":\"rsa-bench-02\",\"radio_off\":true,\"cpu_hz\":%d}\n",
                    esp_clk_cpu_freq());
         } else printf("@{\"error\":\"use info or rsa_bench\"}\n");
-        printf("@done\n");
+        printf("@{\"done\":true}\n");
     }
 }
