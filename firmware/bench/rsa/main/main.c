@@ -136,7 +136,7 @@ static bool bch_case(unsigned mc)
     size_t bytes = dvbs2_fast_cache_size(f);
     cache = heap_caps_aligned_alloc(16, bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if (!cache || dvbs2_fast_cache_tables(f, cache)) goto done;
-    if (mode->t != 8) {
+    if (mode->t != 8 && mode->kbch % 16 == 0) {
         pairs = heap_caps_aligned_alloc(16, DVBS2_BCH_PAIR_BYTES, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
         if (!pairs || dvbs2_fast_cache_bch_pair(f, pairs)) goto done;
     }
@@ -155,7 +155,7 @@ static bool bch_case(unsigned mc)
     printf("@{\"cmd\":\"bch_baseline\",\"modcod\":%u,\"kbch\":%u,\"parity_bits\":%u,"
            "\"trials\":%u,\"exact_frames\":%u,\"variant\":\"%s\",",
            mc, mode->kbch, mode->nbch - mode->kbch, TRIALS, TRIALS,
-           pairs ? "resident-split-pair" : "resident-pair");
+           pairs ? "resident-split-pair" : mode->t == 8 ? "resident-pair" : "resident-byte");
     metric("cycles", cycles);
     printf("}\n");
     ok = true;
@@ -214,7 +214,7 @@ void app_main(void)
         used = 0;
         if (!strcmp(line, "rsa_bench")) bench();
         else if (!strcmp(line, "info")) {
-            printf("@{\"cmd\":\"info\",\"firmware\":\"rsa-bench-02\",\"radio_off\":true,\"cpu_hz\":%d}\n",
+            printf("@{\"cmd\":\"info\",\"firmware\":\"rsa-bench-03\",\"radio_off\":true,\"cpu_hz\":%d}\n",
                    esp_clk_cpu_freq());
         } else printf("@{\"error\":\"use info or rsa_bench\"}\n");
         printf("@{\"done\":true}\n");
