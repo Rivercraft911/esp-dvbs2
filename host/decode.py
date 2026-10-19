@@ -354,6 +354,67 @@ def vcm_checks(report):
                 payload_fec_valid=bool(interval and interval["bch_failed_frames"] == 0))
 
 
+def live_vcm_match(frames, modcods, expected, controls):
+    """Match USB DATA FIELDs against confirmed sent bytes, including live switches.
+
+    Controls are ordered PV writes with payload byte offsets. They are consumed
+    while filling a frame; their MODCOD takes effect at the next frame boundary.
+    Acquisition/EOF loss is allowed, but every scheduled run must be recovered.
+    """
+    sizes = {mc: (kbch-80)//8 for mc, kbch in enumerate(
+        (32208, 38688, 43040, 48408, 51648, 53840, 57472, 58192,
+         38688, 43040, 48408, 53840, 57472, 58192), 4)}
+    result = dict(payload_match=False, host_model_exact=False, contiguous=False,
+                  pattern_complete=False, control_boundaries_valid=False,
+                  compared_bytes=0, compared_bits=0, segments=[], first_mismatch=None)
+    if not frames or len(frames) != len(modcods) or not controls:
+        result['first_mismatch'] = dict(reason='missing_frames_pls_or_controls')
+        return result
+    got = b''.join(f['payload'] for f in frames)
+    at = expected.find(got) if got else -1
+    headers_ok = True
+    for i, (frame, mc) in enumerate(zip(frames, modcods)):
+        size = sizes.get(mc, 0)
+        header = b'\x60\0\0\0' + (size*8).to_bytes(2, 'big') + b'\0\0\0'
+        header += bytes((crc8(header),))
+        if not size or len(frame['payload']) != size or frame['header'] != header:
+            headers_ok = False
+            if result['first_mismatch'] is None:
+                result['first_mismatch'] = dict(reason='header_or_pls', recovered_frame=i)
+    result['payload_match'] = result['contiguous'] = at >= 0
+    result['host_model_exact'] = at >= 0 and headers_ok
+    if at < 0:
+        result['first_mismatch'] = dict(reason='payload_not_one_contiguous_sent_slice')
+    offset = at if at >= 0 else None
+    for i, (frame, mc) in enumerate(zip(frames, modcods)):
+        size = len(frame['payload'])
+        segments = result['segments']
+        if not segments or segments[-1]['modcod'] != mc:
+            segments.append(dict(modcod=mc, mode=MODCODS.get(mc, str(mc)), frames=0,
+                first_recovered_frame=i, last_recovered_frame=i,
+                first_payload_byte=offset, end_payload_byte=offset))
+        segment = segments[-1]
+        segment['frames'] += 1
+        segment['last_recovered_frame'] = i
+        if offset is not None:
+            offset += size
+            segment['end_payload_byte'] = offset
+    segments = result['segments']
+    result['pattern_complete'] = [s['modcod'] for s in segments] == [c['modcod'] for c in controls]
+    if result['pattern_complete']:
+        for segment, control in zip(segments, controls):
+            segment.update(control_sent_seconds=control.get('seconds'),
+                           control_payload_byte=control['payload_bytes'])
+        if at >= 0:
+            result['control_boundaries_valid'] = all(
+                0 <= s['first_payload_byte']-c['payload_bytes'] <= sizes[segments[i-1]['modcod']]
+                for i, (s, c) in enumerate(zip(segments, controls)) if i)
+    if result['host_model_exact']:
+        result.update(compared_bytes=len(got), compared_bits=8*len(got),
+                      first_payload_byte=at, end_payload_byte=at+len(got))
+    return result
+
+
 def stream_match(expected, got, per_frame):
     if not got or len(got) % per_frame:
         return None

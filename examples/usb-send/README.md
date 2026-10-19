@@ -27,7 +27,8 @@ is ignored. Linux and Windows port names work too.
 
 `--modcod`, `--rate`, `--seconds`, and optional `--mbps` choose the mode, duration
 and offered payload ceiling; see `send --help`. USB backpressure normally paces
-sending. Timed senders finish two payload seconds early so input can drain;
+sending. Timed senders finish two payload seconds early so input can drain
+(before the trailing ID on keyed runs);
 radio-off pace adds the opening and any periodic Morse ID to the send window.
 Write deadlines cover those pauses, including the terminal NOP. Longer files
 need more seconds; incomplete containers fail. Raw streams can leave a partial
@@ -145,3 +146,11 @@ FIFO plus driver bytes must equal wire bytes. If the board disconnects before co
 QPSK/8PSK changes. Write a decimal MODCOD to that file before starting, then replace the
 file atomically during the run. The sender inserts PV type 3 controls without
 altering payload bytes. It defaults to radio off; TS VCM is rejected.
+
+For scripted changes, replace `--control` with
+`--schedule 0:4,3:7,6:11,9:4 --modcod 4 --rate 5m`. Times are seconds after
+USB-ready plus the opening ID duration; the initial control is sent immediately.
+The report includes each control's host time, PV sequence and preceding payload
+byte count. Use a source long enough to span the schedule. The
+[live OTA coordinator](../over-the-air/README.md#laptop-driven-live-vcm) generates
+that source, captures the E200, and verifies exact payload and ordered switches.

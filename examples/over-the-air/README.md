@@ -119,6 +119,49 @@ VCM uses this same verifier: `--pattern 4,7,11 --hold 4` or
 automatically; mixed `10m` is refused before device access.
 [Measured results and exact rerun commands](../../docs/vcm.md).
 
+## Laptop-driven live VCM
+
+The **coordinator**, with both devices in the closed box and the assigned callsign
+already stored, runs from the repository root (new evidence directory each time):
+
+```sh
+python3 examples/over-the-air/live.py notes/live-vcm \
+  --backend libiio --uri ip:192.168.1.10 --port /dev/cu.usbmodem1101 \
+  --receiver /Users/river/Documents/stanford/SSI/esp-dvbs2/notes/leansdr/src/apps/leandvb \
+  --mhz 2420 --rate 5m --sample-rate 10000000 --rx-gain 30 --gain 4 \
+  --seconds 30 --schedule 0:4,3:7,6:11,9:4 --key
+```
+
+Add `--plan` and omit `--key` for a device-free preview. The script reuses the
+receive-only worker and its fail-closed TX inhibits. It calls the USB sender to
+stream unique GCS bytes at 2 Mb/s, inserting PV type-3 controls during one keyed
+run: QPSK 1/2 → 3/4 → 9/10 → 1/2. Times are seconds after USB-ready plus the
+opening Morse duration; control 0 is sent immediately. Firmware applies changes
+at frame boundaries. The stored callsign must leave three seconds after the last
+change and before the trailing ID; otherwise the script refuses before keying.
+This demo uses 5 Msym/s streaming to capture every change in one run.
+
+`report.json` lists `segments` in receive order: MODCOD, frame count, recovered
+frame indices, exact sent-payload byte range, and host control time/byte offset.
+These are host request times, not SDR sample timestamps. Every segment needs at
+least eight frames. All full recovered BBHEADERs, PLS modes and payload bytes must
+match one contiguous slice of `sent.bin`, including across every switch. A switch
+must follow its control within one old-mode frame of payload. Leading acquisition
+and trailing partial-frame loss are allowed; interior loss, repeats, corruption,
+missing/reordered runs and rejected controls fail. USB-limited dummy frames are
+expected and reported separately from payload continuity. FEC checks reuse the
+pattern verifier. No live OTA result is claimed until the coordinator runs it.
+
+`sender.json` retains confirmed writes and control logs; `input.bin` is the offered
+source, and `sent.bin` its confirmed sent prefix. Capture/readbacks, raw IQ,
+BBFRAMEs, decoder logs, board counters, revision and cleanup acknowledgements stay
+in the evidence directory. Replay needs no devices and leaves originals unchanged:
+
+```sh
+python3 examples/over-the-air/live.py notes/live-vcm-audit --recheck notes/live-vcm
+python3 tests/test_live_vcm.py  # device-free; add --receiver "$RX" for C → LeanDVB proof
+```
+
 ## Offline replay and evidence
 
 An existing radio-off USB dump needs its original frame count, callsign and saved

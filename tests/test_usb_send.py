@@ -99,7 +99,8 @@ int main(int argc,char **argv) {
     assert abs(send.id_seconds('N0CALL')-5.22) < 1e-8 and send.id_seconds('') == 0
     window, timeout, completion = send.stream_timing('dvbpace 4 20', 20, 5.22, False)
     assert window == 23.22 and timeout == 25 and abs(completion-60.44) < 1e-8
-    assert send.stream_timing('dvb 2400 4 20 0', 20, 5.22, False) == (18, 25, 50)
+    window, timeout, completion = send.stream_timing('dvb 2400 4 20 0', 20, 5.22, False)
+    assert abs(window-12.78) < 1e-8 and (timeout, completion) == (25, 50)
     assert send.stream_timing('dvbdump 4 24', 20, 5.22, True) == (float('inf'), 5, 120)
     # A long callsign and the periodic ID in a 600 s radio-off run also fit.
     cw = send.id_seconds(calls[1])
