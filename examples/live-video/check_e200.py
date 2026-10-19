@@ -189,7 +189,7 @@ def parser():
     p.add_argument("--uri", required=True)
     p.add_argument("--mhz", type=int, required=True, help="assigned integer MHz")
     p.add_argument("--iio-python", default=sys.executable)
-    p.add_argument("--rx-gain", type=float, default=0)
+    p.add_argument("--rx-gain", type=float, default=30)
     p.add_argument("--probe-seconds", type=float, default=30)
     p.add_argument("--probe-report", type=Path, help="required for keyed runs; gates rate selection")
     p.add_argument("--receiver", default=os.environ.get("RX", "leandvb"))

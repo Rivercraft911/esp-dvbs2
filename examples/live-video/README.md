@@ -62,7 +62,7 @@ setup is outside this example. The file and ffmpeg routes use only the shipped s
 ### E200 with Pluto firmware (libiio)
 
 Use gigabit Ethernet and an explicit URI, **`ip:192.168.1.10`**. The capture Python
-needs pylibiio; 15 MS/s interpolation also needs numpy/scipy (Radioconda has these).
+needs pylibiio; optional `--upsample` interpolation also needs numpy/scipy (Radioconda has these).
 No discovery, flashing or TX buffer is used. The unchanged `Radio` implementation from
 `over-the-air/capture_iio.py` powers down TX LO, sets every RF TX gain to **-89.75 dB**
 and every DDS raw to **0**, with readbacks before RX setup, before the buffer and after
@@ -73,7 +73,12 @@ capture. Cleanup reapplies the inhibits; it never restores previous TX settings.
 | 8PSK 2/3, MODCOD 13, 5 Msym/s | 9.68 Mb/s | 6.75 MHz | 10 MS/s |
 | QPSK 3/4, MODCOD 7, 10 Msym/s | 14.52 Mb/s | 13.5 MHz | 15 MS/s (1.5 samples/symbol); 20 MS/s exceeded E200 Ethernet throughput |
 
-Both fit the 9 Mb/s demo mux. Firmware accepts `dvb FREQ_MHZ 13 5m 60 0`
+Both fit the 9 Mb/s demo mux. Measured 2026-10-18 in the closed box at 2420 MHz, RX gain
+30 dB (0 dB left the signal near the noise floor, MER ~4 dB): the probe passed 10 and 15 MS/s;
+20 MS/s fell behind at about 15.5 MS/s. **8PSK 2/3 at 5 Msym/s passed**: 47,672 TS packets,
+zero continuity/PSI errors, one exact contiguous slice, 99.6% of the sent file. QPSK 3/4
+at 10 Msym/s (15 MS/s) reached MER 19.5 dB but lost frame lock four times in a minute and
+dropped a frame; it is not yet reliable. Firmware accepts `dvb FREQ_MHZ 13 5m 60 0`
 with **SPI or USB TS input**: named `5m` selects 8 samples/symbol at the 40 MS/s DAC,
 and external input uses the TS encoder with PSRAM workspace. See [SPI modes](../../docs/spi-input.md#which-wire-for-which-mode).
 USB's measured ~3.2 Mb/s intake inserts dummy frames; it cannot sustain a 9 Mb/s live
@@ -103,7 +108,7 @@ python3 examples/live-video/check_e200.py keyed notes/e200-qpsk --modcod 7 \
 ```
 
 QPSK refuses before opening the S3 unless a matching 20 or 15 MS/s probe passes;
-20 is preferred, otherwise 15 is interpolated continuously with FIR history/lookahead.
+20 is preferred, otherwise LeanDVB decodes 15 MS/s directly at 1.5 samples/symbol.
 The probe discards IQ: its pass is a prerequisite, not proof the decoder can keep up.
 The keyed command generates 8 seconds of 9 Mb/s MPEG-2 TS (or takes `--ts FILE`),
 starts `receive.py --backend libiio`, waits for one second of delivered IQ, then invokes
@@ -115,8 +120,9 @@ reports and logs remain in the evidence directory. Add `--player 'ffplay -i pipe
 
 There are no sample timestamps/overflow counters in this libiio API: `overflows` stays
 `null`. Capture reports refill wall time versus buffer duration, cumulative host lag,
-queue depth and queue age. A refill over 1.5 buffer durations, lag beyond four kernel
-buffers, full host queue, short read or transport failure fails the run. A bounded queue
+queue depth and queue age. Host lag beyond two buffer durations after the first refill
+(half the four kernel buffers), a full host queue, short read or transport failure fails
+the run; slow single refills are reported, not failed. A bounded queue
 separates refills from decoder writes; it never silently drops IQ. Payload comparison
 detects losses that host timing and wrapping TS counters can miss. LeanDVB retains
 `--sr-tol 0.0005`, `--fastdrift` and `--ldpc-bf 100` for dummy runs and clock mismatch.
