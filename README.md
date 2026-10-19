@@ -84,7 +84,7 @@ The activation path below is the tested macOS EIM path; substitute your installa
 activation/export script. Parentheses keep IDF's Python inside the build subshell.
 Without a board, run the [host suite and build](docs/how-it-works.md#checking-changes),
 the self-check `--plan`, the [sender vector](examples/pi-sender/README.md), and the
-[video dry run](examples/live-video/README.md#rf-free-dry-run).
+[video dry run](examples/live-video/README.md#prepare).
 
 For board checks, the measured module is N16R8 (8 MB octal PSRAM, 16 MB flash).
 The optional 8 MB flash XIAO uses a [separate configuration](docs/transmitting.md#board-and-usb).
