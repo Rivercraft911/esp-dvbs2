@@ -1,0 +1,425 @@
+{
+  "passed": true,
+  "file": {
+    "name": "fill-history.png",
+    "bytes": 237171,
+    "sha256": "cc9b3d12ae39182c7a808691c09ea8166915619de8b2ec3fe9a074ef84044828",
+    "identity": "863feb9ab5114293b90c175b5dd852634afeabbd313ad1b2aff6faebc6767ab5",
+    "container_bytes": 237237,
+    "modcod": 7,
+    "k": 16,
+    "m": 4,
+    "shard_bytes": 5985,
+    "frame_bytes": 6041,
+    "blocks": 3,
+    "coded_frames": 60,
+    "guard_frames": 12,
+    "frames": 72
+  },
+  "evidence": "rf-capture",
+  "callsign": "N0CALL",
+  "sent": {
+    "data_frames_sent": 72,
+    "coded_frames_sent": 60,
+    "guard_frames": 12,
+    "dummy_positions": 28650
+  },
+  "capture": {
+    "backend": "libiio",
+    "complete": true,
+    "samples": 327155712,
+    "overflows": null,
+    "continuity": "No sample timestamps or hardware overflow counter exposed by this API",
+    "capture_mode": "stream",
+    "actual": {
+      "frequency": 2420000000.0,
+      "sample_rate": 10000000.0,
+      "bandwidth": 7762500.0,
+      "gain": 30.0,
+      "gain_control_mode": "manual"
+    },
+    "tx_inhibit": {
+      "lo_powerdown": 1.0,
+      "hardwaregain": {
+        "voltage0": -89.75
+      },
+      "dds_raw": {
+        "altvoltage0": 0.0,
+        "altvoltage1": 0.0,
+        "altvoltage2": 0.0,
+        "altvoltage3": 0.0
+      }
+    },
+    "device": {
+      "description": "192.168.1.10 Linux (none) 5.4.0-00535-g9c04de11ae53-dirty #3 SMP PREEMPT Fri Jul 7 13:18:11 CST 2023 armv7l",
+      "attrs": {
+        "hw_model": "Analog Devices PlutoSDR Rev.C (Z7010-AD9364)",
+        "hw_model_variant": "1",
+        "hw_serial": "",
+        "fw_version": "v0.34-dirty",
+        "ad9361-phy,xo_correction": "40000000",
+        "ad9361-phy,model": "ad9364",
+        "local,kernel": "5.4.0-00535-g9c04de11ae53-dirty",
+        "uri": "ip:192.168.1.10",
+        "ip,ip-addr": "192.168.1.10"
+      }
+    },
+    "libiio_version": [
+      0,
+      26,
+      "v0.26"
+    ],
+    "buffer_samples": 1048576,
+    "kernel_buffers": 4,
+    "buffered_seconds": 0.4194304,
+    "capture_format": "sc16_le",
+    "processing_seconds_max": 0.004311791999498382,
+    "tx_before_buffer": {
+      "lo_powerdown": 1.0,
+      "hardwaregain": {
+        "voltage0": -89.75
+      },
+      "dds_raw": {
+        "altvoltage0": 0.0,
+        "altvoltage1": 0.0,
+        "altvoltage2": 0.0,
+        "altvoltage3": 0.0
+      }
+    },
+    "buffer_started_monotonic": 106069.4107495,
+    "buffer_filled_monotonic": 106102.232251041,
+    "tx_after_capture": {
+      "lo_powerdown": 1.0,
+      "hardwaregain": {
+        "voltage0": -89.75
+      },
+      "dds_raw": {
+        "altvoltage0": 0.0,
+        "altvoltage1": 0.0,
+        "altvoltage2": 0.0,
+        "altvoltage3": 0.0
+      }
+    },
+    "tx_final": {
+      "lo_powerdown": 1.0,
+      "hardwaregain": {
+        "voltage0": -89.75
+      },
+      "dds_raw": {
+        "altvoltage0": 0.0,
+        "altvoltage1": 0.0,
+        "altvoltage2": 0.0,
+        "altvoltage3": 0.0
+      }
+    },
+    "conversion_seconds": 2.6481244579917984
+  },
+  "telemetry": {
+    "decoded_bb_frames": 69,
+    "invalid_packet_frames": 0,
+    "duplicate_shards": 0
+  },
+  "cases": {
+    "received": {
+      "passed": true,
+      "blocks": [
+        {
+          "block": 0,
+          "sent": 20,
+          "received": 20,
+          "channel_lost": 0,
+          "injected_dropped": 0,
+          "lost": 0,
+          "source_shards_to_recover": 0,
+          "source_shards_recovered": 0,
+          "margin_frames": 4,
+          "missing_sequences": [],
+          "dropped_sequences": []
+        },
+        {
+          "block": 1,
+          "sent": 20,
+          "received": 20,
+          "channel_lost": 0,
+          "injected_dropped": 0,
+          "lost": 0,
+          "source_shards_to_recover": 0,
+          "source_shards_recovered": 0,
+          "margin_frames": 4,
+          "missing_sequences": [],
+          "dropped_sequences": []
+        },
+        {
+          "block": 2,
+          "sent": 20,
+          "received": 20,
+          "channel_lost": 0,
+          "injected_dropped": 0,
+          "lost": 0,
+          "source_shards_to_recover": 0,
+          "source_shards_recovered": 0,
+          "margin_frames": 4,
+          "missing_sequences": [],
+          "dropped_sequences": []
+        }
+      ],
+      "min_margin_frames": 4,
+      "file": {
+        "file": "/Users/river/Documents/stanford/SSI/esp-dvbs2-work/file-ota/notes/file-ota-2/received-fill-history.png",
+        "name": "fill-history.png",
+        "bytes": 237171,
+        "sha256": "cc9b3d12ae39182c7a808691c09ea8166915619de8b2ec3fe9a074ef84044828"
+      }
+    },
+    "dropped": {
+      "passed": true,
+      "blocks": [
+        {
+          "block": 0,
+          "sent": 20,
+          "received": 19,
+          "channel_lost": 0,
+          "injected_dropped": 1,
+          "lost": 1,
+          "source_shards_to_recover": 1,
+          "source_shards_recovered": 1,
+          "margin_frames": 3,
+          "missing_sequences": [
+            0
+          ],
+          "dropped_sequences": [
+            0
+          ]
+        },
+        {
+          "block": 1,
+          "sent": 20,
+          "received": 19,
+          "channel_lost": 0,
+          "injected_dropped": 1,
+          "lost": 1,
+          "source_shards_to_recover": 1,
+          "source_shards_recovered": 1,
+          "margin_frames": 3,
+          "missing_sequences": [
+            20
+          ],
+          "dropped_sequences": [
+            20
+          ]
+        },
+        {
+          "block": 2,
+          "sent": 20,
+          "received": 19,
+          "channel_lost": 0,
+          "injected_dropped": 1,
+          "lost": 1,
+          "source_shards_to_recover": 1,
+          "source_shards_recovered": 1,
+          "margin_frames": 3,
+          "missing_sequences": [
+            40
+          ],
+          "dropped_sequences": [
+            40
+          ]
+        }
+      ],
+      "min_margin_frames": 3,
+      "file": {
+        "file": "/Users/river/Documents/stanford/SSI/esp-dvbs2-work/file-ota/notes/file-ota-2/dropped-fill-history.png",
+        "name": "fill-history.png",
+        "bytes": 237171,
+        "sha256": "cc9b3d12ae39182c7a808691c09ea8166915619de8b2ec3fe9a074ef84044828"
+      }
+    }
+  },
+  "injection": "Discard whole decoded receive BBFRAMEs (all copies of each selected sequence); no second RF transmission",
+  "receiver": {
+    "receiver": "leandvb",
+    "frame_lock": true,
+    "lock_at_end": false,
+    "modcods": [
+      7
+    ],
+    "frames_per_modcod": {
+      "7": 69
+    },
+    "frame_modcods": [
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7
+    ],
+    "attempted_modcods": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      28
+    ],
+    "modes": [
+      "QPSK 3/4"
+    ],
+    "fec_frames": 1518,
+    "bb_frames": 69,
+    "empty_bb_frames": 0,
+    "payload_frames": 69,
+    "ldpc_bit_flips": 2688275,
+    "ldpc_checks_before": 8069590,
+    "ldpc_checks_after": 2691207,
+    "ldpc_residual_frames": 1449,
+    "bch_corrected_bits": 0,
+    "bch_failed_frames": 1449,
+    "stream": "gcs",
+    "payload_bytes": 416829,
+    "payload_sha256": "1ea518cc7434b83be88e8c058bafdf3340e6dc154db6ff9ef0206721268d0d4c",
+    "status_complete": true,
+    "payload_fec": {
+      "first_attempt": 691,
+      "last_attempt": 759,
+      "attempted_frames": 69,
+      "bch_failed_frames": 0,
+      "bch_corrected_bits": 0,
+      "ldpc_bit_flips": 0,
+      "failed_before": 691,
+      "failed_after": 758
+    },
+    "bbheader_rejected_frames": 0,
+    "mer_db": {
+      "count": 221,
+      "min": -23.4,
+      "median": 21.2,
+      "max": 24.0,
+      "last": -12.4
+    },
+    "frequency_offset_hz": {
+      "count": 195,
+      "min": 61917.0,
+      "median": 63274.0,
+      "max": 64733.0,
+      "last": 61917.0
+    },
+    "sample_rate": 10000000.0,
+    "symbol_rate": 5000000.0,
+    "rolloff": 0.35,
+    "rrc_rej_db": 20,
+    "command": [
+      "/Users/river/Documents/stanford/SSI/esp-dvbs2/notes/leansdr/src/apps/leandvb",
+      "--standard",
+      "DVB-S2",
+      "--f32",
+      "-f",
+      "10000000.0",
+      "--sr",
+      "5000000.0",
+      "--sampler",
+      "rrc",
+      "--rrc-rej",
+      "20",
+      "--fastdrift",
+      "--sr-tol",
+      "0.0005",
+      "--roll-off",
+      "0.35",
+      "--ldpc-bf",
+      "100",
+      "--fd-bbf",
+      "3",
+      "--fd-info",
+      "2",
+      "-d",
+      "-d"
+    ]
+  },
+  "receiver_passed": true
+}

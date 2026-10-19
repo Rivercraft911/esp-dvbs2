@@ -112,6 +112,8 @@ five minutes: six dumps and decodes, a real-time pace of every modulation and ra
 Wi-Fi memory check. All console commands are in [transmitting](docs/transmitting.md#console).
 
 Opt-in [VCM](docs/vcm.md) switches MODCOD per frame, including mixed QPSK/8PSK at 5 Msym/s.
+The laptop can change it mid-transmission: QPSK 1/2 → 3/4 → 9/10 → 1/2 over USB decoded
+exact and in order over the air ([live VCM](examples/over-the-air/README.md)).
 
 ## Send it your data
 
@@ -121,6 +123,8 @@ at 5 Msym/s with the PSRAM encoder (radio off, 2026-10-17). It defaults to radio
 and includes SHA-256 file recovery. USB and SPI senders accept `--fec 16:4` to
 recover from any four missing frames per 20-frame block on a one-way link;
 see [file transfer](docs/file-link.md) for overhead and the IQ-to-LeanDVB proof.
+Over the air, a 237 KB PNG arrived with a matching SHA-256, including with one frame
+per block deliberately dropped at the receiver ([run](docs/measurements.md#over-the-air)).
 
 SPI carries higher rates. The sender clocks fixed 1,332-byte messages: a 12-byte
 header (`PV`, version, type, sequence, length), up to seven 188-byte MPEG-TS packets and a

@@ -31,12 +31,19 @@ The [public example](../examples/over-the-air/README.md) supplied the libiio run
 | [QPSK 9/10, overdriven](measurements/ota/ota5-qpsk910-20m/report.json) | 20 Msym/s | peak 128, gain 4; no payload decoded | 0 | — |
 | QPSK VCM, 1/2 → 3/4 → 9/10† | 5 Msym/s | rate switching | 2,936 | — |
 | Mixed QPSK/8PSK VCM† | 5 Msym/s | modulation switching every frame; 21 MB recovered | 3,517 | — |
+| [Live VCM from the laptop](measurements/ota/live-vcm-5m/report.json) | 5 Msym/s | USB stream; QPSK 1/2 → 3/4 → 9/10 → 1/2 sent mid-run; 4.36 MB exact, contiguous | 938 | 21.4 |
+| [File, erasure-coded](measurements/ota/file-png-5m/report.json) | 5 Msym/s | QPSK 3/4, FEC 16:4; 237 KB PNG, SHA-256 match; 0 frames lost, 1 dropped per block recovered | 72 | 21.2 |
 
 † [Operator's run summary](measurements/ota/operator-summary.json); corresponding raw reports
 were not supplied in this snapshot. The copied [QPSK VCM report](measurements/ota/vcm-qpsk-5m/report.json)
 records 2,938 frames and 20.5 dB MER, differing from the summary's 2,936-frame count.
 Full-capture FEC totals can include failed acquisition, Morse-ID and silence hypotheses;
 byte-exact recovered payloads do not establish lossless RF capture.
+
+USB streams fill gaps with standard dummy PLFRAMEs. LeanDVB's default `--sr-tol` (100 ppm)
+gives a 3,240-symbol dummy body a zero-symbol window to find the next header, so the
+~25 ppm clock difference between the S3 and E200 slipped timing and lost lock (5 of 72
+file frames). The receiver now uses `--sr-tol 0.0005`; the same capture decodes all 72.
 
 At 80 MS/s, peak 128 overdrives the radio: the 20 Msym/s signal is non-linear and
 undecodable. Reducing peak to 32–64 restores decoding; **48 was best**, at 14.2 dB MER.
@@ -49,8 +56,8 @@ is about **−3 dB at ±10 MHz and −20 dB by ±14 MHz** from center.
 
 The 26.67 Msym/s (36 MHz) and 33.33 Msym/s (40 MHz) modes generate correct on-chip
 samples and meet their deadlines keyed, but radiate through this ~20 MHz filter and
-do not decode over the air yet. A wider HT40 setting is being investigated;
-the [current comparison](measurements/ht40-compare.png) does not show a wider passband.
+do not decode over the air yet. The [HT40 comparison](measurements/ht40-compare.png)
+did not show a wider passband.
 The README's [5 Msym/s spectrum](measurements/qpsk34-5m-spectrum.png) is a real RF capture;
 it includes station ID and silence and is not a calibrated power or emission-mask measurement.
 
