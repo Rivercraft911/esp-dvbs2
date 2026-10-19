@@ -458,9 +458,83 @@ def test_model_receiver(receiver):
                 print(f"model MODCOD {mc}, {rate/1e6:g} MS/s x{factor}: {len(got)/len(source):.1%} exact TS; zero CC errors")
 
 
+def test_processor_delivery():
+    """Readiness follows actual writes, including the real finite tail."""
+    import hashlib
+
+    class Delay:
+        def __init__(self):
+            self.pending, self.eof = b"", 0
+        def push(self, raw):
+            previous, self.pending = self.pending, b"" if raw is None else raw
+            self.eof += raw is None
+            return previous
+
+    for fault in (None, "refill", "short", "post_tx", "consumer", "processor"):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            a = args(out)
+            a.probe, a.output = False, str(out/"iq")
+            Path(a.output).touch()
+            module, events, _ = fake_iio(fault)
+            delay = Delay()
+            expected, got = hashlib.sha256(), hashlib.sha256()
+            count, ready = [0], []
+            original_read = module.Buffer.read
+            def read(buffer):
+                raw = original_read(buffer)
+                expected.update(raw)
+                return raw
+            module.Buffer.read = read
+            def write(fd, raw, failed):
+                if raw and fault == "consumer":
+                    raise RuntimeError("consumer failure")
+                if raw:
+                    got.update(raw)
+                    count[0] += len(raw)//4
+            original_push = delay.push
+            def push(raw):
+                if raw is not None and fault == "processor":
+                    raise ValueError("processor failure")
+                return original_push(raw)
+            delay.push = push
+            original_json = worker.write_json
+            def save(path, value):
+                if path == a.ready:
+                    assert count[0] >= a.rate and value["samples"] == count[0]
+                    ready.append(dict(samples=count[0], eof=delay.eof))
+                original_json(path, value)
+            with patch.object(worker, "write_iq", write), patch.object(worker, "write_json", save), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                code = worker.stream(a, module, delay)
+            report = json.loads(a.report.read_text())
+            assert (code == 0) == (fault is None), (fault, report)
+            assert ("cancel",) in events
+            if fault == "post_tx":
+                assert report.get("tx_readback_error") and report.get("tx_inhibit_error")
+            else:
+                assert report.get("tx_final", {}).get("lo_powerdown") == 1, (fault, report)
+            if fault is None:
+                expected.update(bytes(4096*4))  # existing decoder EOF lookahead, not capture
+                assert got.digest() == expected.digest()
+                assert count[0] == report["samples"]+4096
+                assert report["delivered_samples"] == report["samples"]
+                assert delay.eof == 1 and ready == [dict(samples=report["samples"], eof=1)]
+            elif fault != "post_tx":
+                assert delay.eof == 0 and not ready
+
+    with tempfile.TemporaryDirectory() as tmp:
+        a = args(Path(tmp), "--upsample", "2")
+        module, events, _ = fake_iio()
+        with contextlib.redirect_stderr(io.StringIO()):
+            assert worker.stream(a, module, Delay()) == 1
+        assert not any(event[0] == "context" for event in events)
+
+
 if __name__ == "__main__":
     test_worker()
     test_interpolation()
+    test_processor_delivery()
     test_backpressure()
     test_guards_and_plans()
     test_timing_and_rate_gate()

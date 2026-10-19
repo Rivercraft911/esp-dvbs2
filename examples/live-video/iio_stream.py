@@ -104,7 +104,7 @@ def write_iq(fd, raw, failed):
             remaining = remaining[size:]
 
 
-def stream(a, iio=None):
+def stream(a, iio=None, processor=None):
     """Only this function imports iio/opens a context. Injectable for host tests."""
     report = dict(backend="libiio", complete=False, samples=0, delivered_samples=0,
                   host_timing_passed=False,
@@ -118,6 +118,8 @@ def stream(a, iio=None):
     chunks = queue.Queue(4)
     finished = threading.Event()
     try:
+        if processor is not None and a.upsample != 1:
+            raise ValueError("IQ processor requires upsample 1")
         if a.upsample != 1:
             # Fail missing dependencies before opening a device.
             import numpy, scipy.signal  # noqa: F401
@@ -174,7 +176,16 @@ def stream(a, iio=None):
 
         reader = threading.Thread(target=capture, daemon=True)
         reader.start()
-        interpolator = Interpolator(a.upsample) if a.upsample > 1 else None
+        interpolator = processor if processor is not None else (Interpolator(a.upsample) if a.upsample > 1 else None)
+
+        def deliver(data):
+            if fd is not None:
+                write_iq(fd, data, failed)
+            report["delivered_samples"] += len(data)//4
+            if a.ready and report["delivered_samples"] >= a.rate*a.upsample and not a.ready.exists():
+                write_json(a.ready, dict(ready=True, tx_before_buffer=report["tx_before_buffer"],
+                                       samples=report["delivered_samples"], pid=os.getpid()))
+
         while not finished.is_set() or not chunks.empty():
             if failed:
                 raise RuntimeError(failed[0])
@@ -184,19 +195,11 @@ def stream(a, iio=None):
                 continue
             timing.rows["queue_age_seconds_max"] = max(timing.rows["queue_age_seconds_max"], time.monotonic()-arrived)
             data = interpolator.push(raw) if interpolator else raw
-            if fd is not None:
-                write_iq(fd, data, failed)
-            report["delivered_samples"] += len(data)//4
-            if a.ready and report["delivered_samples"] >= a.rate*a.upsample and not a.ready.exists():
-                write_json(a.ready, dict(ready=True, tx_before_buffer=report["tx_before_buffer"],
-                                       samples=report["delivered_samples"], pid=os.getpid()))
+            deliver(data)
         if failed:
             raise RuntimeError(failed[0])
         if interpolator:
-            data = interpolator.push(None)
-            if fd is not None:
-                write_iq(fd, data, failed)
-            report["delivered_samples"] += len(data)//4
+            deliver(interpolator.push(None))
         elapsed = time.monotonic()-started
         report.update(capture_wall_seconds=elapsed, sample_seconds=report["samples"]/a.rate,
                       host_timing_passed=timing.passed())
