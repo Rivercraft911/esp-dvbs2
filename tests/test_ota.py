@@ -282,9 +282,9 @@ def test_iio_worker():
     rejects(iio_capture.number, "1 dB")  # Powerdown/raw do not carry gain units.
     # Exercise the actual worker against a fake pylibiio context. Every attempt to
     # create a buffer asserts the TX state and RX device, including additional TX channels.
-    success = (None, "burst", "ad9364")
+    success = (None, "burst", "ad9364", "rx_freq_round")
     for fault in (*success, "lo", "gain", "dds", "write", "nan", "missing", "missing_tx0",
-                  "missing_gain0", "missing_gain1", "rx_rate", "manual", "format", "short", "refill", "post_tx"):
+                  "missing_gain0", "missing_gain1", "rx_rate", "rx_freq", "manual", "format", "short", "refill", "post_tx"):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)
             s = ota.settings(ota.parser().parse_args(["--backend", "libiio", "--uri", "ip:fake"]))
@@ -305,6 +305,8 @@ def test_iio_worker():
                         return "0.25"  # Ignored writes / unexpected hardware readback.
                     if fault == "rx_rate" and self.name == "sampling_frequency":
                         return "9900000"
+                    if fault in ("rx_freq_round", "rx_freq") and self.name == "frequency":
+                        return str(int(self.stored) - (2 if fault == "rx_freq_round" else 1000))
                     if fault == "manual" and self.name == "gain_control_mode":
                         return "slow_attack"
                     if fault == "post_tx" and created and self.name == "lo":
