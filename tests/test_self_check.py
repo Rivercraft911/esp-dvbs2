@@ -221,7 +221,7 @@ def test_tones():
         lib.radio_signal_fill.argtypes = [ct.c_void_p, ct.c_uint64, ct.c_size_t, ct.c_void_p]
         golden = json.loads((ROOT/"tests/data/tone_crcs.json").read_text())
         for name, crc in golden.items():
-            ctx = ct.create_string_buffer(164)  # bandwidth plus forty words
+            ctx = ct.create_string_buffer(8+4001*4)  # bandwidth, period and waveform scratch
             assert lib.radio_signal_init(ctx, name.encode())
             guarded = (ct.c_uint32*4099)(*([0xa5a5a5a5]*4099))
             dst = ct.byref(guarded, 4)
@@ -232,6 +232,12 @@ def test_tones():
             lib.radio_signal_fill(dst, 2**32+17, 39, ctx)
             lib.radio_signal_fill(ct.byref(guarded, 40*4), 2**32+56, 4058, ctx)
             assert zlib.crc32(bytes(guarded)[4:-4]) == crc, name
+        assert lib.radio_signal_init(ctx, b"chirpwide")
+        period = (ct.c_uint32*4001)()
+        lib.radio_signal_fill(period, 0, 4001, ctx)
+        lib.radio_signal_fill(dst, 2**32+17, 4097, ctx)
+        assert guarded[0] == guarded[-1] == 0xa5a5a5a5
+        assert list(guarded)[1:-1] == [period[(2**32+17+n) % 4001] for n in range(4097)]
         for name in ("tag", "sweep", "gap", "tone0", "tone512", "unknown"):
             assert not lib.radio_signal_init(ctx, name.encode()), name
 

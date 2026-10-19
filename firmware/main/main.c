@@ -201,7 +201,7 @@ static void cmd_tx(char *args)
         (msps && (!number(msps, 40, 80, &rate) || (rate != 40 && rate != 80))) || extra ||
         !radio_signal_init(tx_signal, name)) {
         printf("@{\"cmd\":\"tx\",\"error\":\"usage: tx <2390..2450 integer MHz> "
-               "<tone|tone<1..511>|two|neg|low|ionly|qonly|zero|dci|dcq> <1..60 seconds> [0..17 gain, default 0] "
+               "<tone|tone<1..511>|two|neg|low|ionly|qonly|zero|dci|dcq|chirpwide> <1..60 seconds> [0..17 gain, default 0] "
                "[40|80 MS/s]\"}\n");
         return;
     }

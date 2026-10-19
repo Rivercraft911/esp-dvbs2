@@ -39,6 +39,19 @@ static const struct {
 bool radio_signal_init(radio_signal_t *signal, const char *name)
 {
     signal->bandwidth_40m = 2000000;
+    signal->length = 40;
+    if (!strcmp(name, "chirpwide")) {
+        signal->length = RADIO_SIGNAL_MAX_WORDS;
+        signal->bandwidth_40m = 30000000;
+        for (unsigned n = 0; n < signal->length; ++n) {
+            // Same periodic LFM as the saved wideband captures: +/-30 MHz
+            // at DAC80, amplitude 32, an odd period to change bank/lane phase.
+            const double p = 3.14159265358979323846 * .75 * n *
+                             ((double)n - signal->length) / signal->length;
+            signal->tone[n] = pack(lround(32*cos(p)), lround(32*sin(p)));
+        }
+        return true;
+    }
     if (!strcmp(name, "two")) {
         signal->bandwidth_40m = 6000000;
         for (unsigned n = 0; n < 40; ++n) {
@@ -105,5 +118,5 @@ static void IRAM_ATTR periodic(uint32_t *dst, uint64_t first, size_t count,
 void IRAM_ATTR radio_signal_fill(uint32_t *dst, uint64_t first, size_t count,
                                  radio_signal_t *signal)
 {
-    periodic(dst, first, count, signal->tone, 40);
+    periodic(dst, first, count, signal->tone, signal->length);
 }

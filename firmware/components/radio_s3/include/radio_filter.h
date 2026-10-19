@@ -17,7 +17,7 @@ typedef struct {
 typedef struct {
     uint32_t occupied_hz;
     radio_filter_mode_t requested, selected;
-    bool applied, matches, retained;
+    bool applied, matches, retained, caps_overridden, restored;
     radio_filter_regs_t before, active, end;
 } radio_filter_stats_t;
 
