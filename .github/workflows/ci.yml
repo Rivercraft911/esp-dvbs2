@@ -29,6 +29,7 @@ jobs:
       - run: python tests/test_ota.py
       - run: python tests/test_file_ota.py
       - run: python tests/test_ota_vcm.py
+      - run: python tests/test_live_vcm.py
       - name: SPI input
         run: |
           python tests/test_ingress.py

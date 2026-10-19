@@ -184,10 +184,24 @@ def command(a):
 
 
 def sender_stats():
-    return dict(messages=0, controls=0, payload_bytes=0, ts_packets=0, crc_chain=0, next_seq=0,
+    return dict(messages=0, controls=0, control_log=[], payload_bytes=0, ts_packets=0, crc_chain=0, next_seq=0,
                 source_eof=False, errors=[], terminal_nop=False, complete=False,
                 recovery=None, write_calls=0, wire_bytes_written=0, short_writes=0,
                 zero_writes=0, write_uncertain=False, output_purged=False)
+
+
+def control_schedule(value):
+    """Seconds after the opening ID, e.g. 0:4,3:7,6:11,9:4."""
+    try:
+        entries = tuple((float(t), int(mc)) for t, mc in
+                        (part.split(':') for part in value.split(',')))
+        if (len(entries) < 2 or entries[0][0] != 0 or
+                any(not math.isfinite(t) or t < 0 or not 4 <= mc <= 17 for t, mc in entries) or
+                any(b[0] <= a[0] or b[1] == a[1] for a, b in zip(entries, entries[1:]))):
+            raise ValueError()
+        return entries
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError('need increasing seconds:MODCOD entries starting at 0, e.g. 0:4,3:7,6:11,9:4') from exc
 
 
 def id_seconds(callsign):
@@ -211,7 +225,10 @@ def stream_timing(cmd, seconds, opening_id, dump):
     paced = cmd.startswith('dvbpace ')
     extra = (1+repeats)*opening_id if paced else 0
     wall = seconds+(2+repeats)*opening_id if paced else seconds
-    return max(.1, seconds-2)+extra, max(5, seconds+5, opening_id+5), wall+30
+    # Keyed time includes the trailing ID. Stop feeding before that pause,
+    # leaving the same two-second drain margin as a radio-off payload run.
+    window = max(.1, seconds-2)+extra if paced else max(.1, seconds-opening_id-2)
+    return window, max(5, seconds+5, opening_id+5), wall+30
 
 
 def write_all(link, data, timeout=5, stats=None, cancel=None):
@@ -302,7 +319,7 @@ def collect(link, cmd, timeout=10, records=None):
 
 
 def stream(link, source, *, cmd, kind, seconds, dump=False, sink=None, mbps=0,
-           stats=None, rows=None, abort_after=None, opening_id=0, control=None, rate='1m', mixed=False, modcod=4):
+           stats=None, rows=None, abort_after=None, opening_id=0, control=None, schedule=(), rate='1m', mixed=False, modcod=4):
     stop, ready, done = threading.Event(), threading.Event(), threading.Event()
     cancel = threading.Event()
     chunks = queue.Queue(8)
@@ -341,14 +358,21 @@ def stream(link, source, *, cmd, kind, seconds, dump=False, sink=None, mbps=0,
                 if done.is_set():
                     return
             started = time.monotonic()
+            stats['ready_monotonic'] = started
             # Finish early enough to drain the encoder queue before a timed run
             # ends. Source reads live in a daemon so a stalled pipe cannot block EOS.
             limit = started+send_window
             next_send = started
             last_modcod = None
+            schedule_index = 0
             while not stop.is_set() and time.monotonic() < limit:
-                if control:
-                    selected = control.read_text().strip()
+                if control or schedule:
+                    selected = control.read_text().strip() if control else ''
+                    if schedule and (schedule_index == 0 or
+                            (schedule_index < len(schedule) and
+                             time.monotonic()-started >= opening_id+schedule[schedule_index][0])):
+                        selected = str(schedule[schedule_index][1])
+                        schedule_index += 1
                     if selected:
                         mc = int(selected)
                         if rate not in ('1m', '5m', '10m') or (rate == '1m' and mc >= 12):
@@ -359,10 +383,15 @@ def stream(link, source, *, cmd, kind, seconds, dump=False, sink=None, mbps=0,
                             raise ValueError('MODCOD changes must stay within the starting modulation; use --mixed at 5m')
                         wire = message(bytes((mc,)), stats['next_seq'], 3)
                         if mc != last_modcod:
+                            sent_at = time.monotonic()
                             write_all(link, wire, timeout=write_timeout, stats=stats, cancel=cancel)
+                            stats.setdefault('control_log', []).append(dict(modcod=mc, seq=stats['next_seq'],
+                                seconds=sent_at-started, completed_seconds=time.monotonic()-started,
+                                payload_bytes=stats['payload_bytes']))
                             stats['controls'] += 1
                             stats['next_seq'] = (stats['next_seq']+1) & 65535
                             last_modcod = mc
+                            print(f'VCM {mc} at {sent_at-started:.3f}s; payload byte {stats["payload_bytes"]}', file=sys.stderr)
                 try:
                     data = chunks.get(timeout=.05)
                 except queue.Empty:
@@ -385,6 +414,8 @@ def stream(link, source, *, cmd, kind, seconds, dump=False, sink=None, mbps=0,
                 if mbps:
                     next_send = max(next_send, time.monotonic()-len(data)*8/(mbps*1e6)) + len(data)*8/(mbps*1e6)
                     stop.wait(max(0, min(next_send, limit)-time.monotonic()))
+            if schedule and schedule_index < len(schedule):
+                stats['errors'].append('source/run ended before complete MODCOD schedule')
             write_all(link, message(b'', stats['next_seq'], 0), timeout=write_timeout, stats=stats, cancel=cancel)
             stats['terminal_nop'] = True
         except Exception as e:
@@ -581,8 +612,10 @@ def main(argv=None):
                    help='file erasure coding; default 16:4; one shard per GCS frame')
     s.add_argument('--port'); s.add_argument('--modcod', type=int, default=4)
     s.add_argument('--rate', choices=('1m', '5m', '10m', '20m', '26m667', '33m333'), default='1m')
-    s.add_argument('--control', type=Path, help='live MODCOD text file; enables GCS VCM at 1m/5m/10m')
-    s.add_argument('--mixed', action='store_true', help='allow QPSK/8PSK controls at 5m; requires --control')
+    controls = s.add_mutually_exclusive_group()
+    controls.add_argument('--control', type=Path, help='live MODCOD text file; enables GCS VCM at 1m/5m/10m')
+    controls.add_argument('--schedule', type=control_schedule, help='seconds after opening ID:MODCOD, e.g. 0:4,3:7,6:11,9:4')
+    s.add_argument('--mixed', action='store_true', help='allow QPSK/8PSK controls at 5m; requires --control or --schedule')
     s.add_argument('--seconds', type=int, default=10); s.add_argument('--frames', type=int, default=24)
     safety = s.add_mutually_exclusive_group()
     safety.add_argument('--dump', type=Path, help='radio-off IQ dump instead of radio-off pace')
@@ -617,18 +650,22 @@ def main(argv=None):
         kind = a.kind or ('file' if a.fec else 'ts' if a.file == '-' or Path(a.file).suffix.lower() == '.ts' else 'file')
         if a.fec and kind != 'file':
             raise ValueError('--fec requires --kind file')
-        if a.mixed and (not a.control or a.rate != '5m'):
-            raise ValueError('--mixed needs --control and --rate 5m (10m exceeds encoder budget)')
-        if a.control and a.fec:
-            raise ValueError('--control with --fec is not supported')
-        if a.control:
+        live = a.control or a.schedule
+        if a.mixed and (not live or a.rate != '5m'):
+            raise ValueError('--mixed needs --control/--schedule and --rate 5m (10m exceeds encoder budget)')
+        if live and a.fec:
+            raise ValueError('--control/--schedule with --fec is not supported')
+        if live:
             if kind == 'ts' or a.rate not in ('1m', '5m', '10m'):
                 raise ValueError('--control needs file/GCS at 1m, 5m or 10m; TS VCM needs Annex D')
-            initial = int(a.control.read_text().strip())
-            message(bytes((initial,)), 0, 3)
-            mode(initial, a.rate)
-            if not a.mixed and (initial < 12) != (a.modcod < 12):
-                raise ValueError('control file must match the starting modulation; use --mixed at 5m')
+            selected = [int(a.control.read_text().strip())] if a.control else [mc for _, mc in a.schedule]
+            if a.schedule and (selected[0] != a.modcod or a.schedule[-1][0] >= a.seconds-2):
+                raise ValueError('schedule must start at --modcod and finish before the send window ends')
+            for initial in selected:
+                message(bytes((initial,)), 0, 3)
+                mode(initial, a.rate)
+                if not a.mixed and (initial < 12) != (a.modcod < 12):
+                    raise ValueError('controls must match the starting modulation; use --mixed at 5m')
             frame_bytes = (58192-80)//8  # acquisition/tail padding for the largest selected frame
         with contextlib.ExitStack() as stack:
             source = sys.stdin.buffer if a.file == '-' else stack.enter_context(Path(a.file).open('rb'))
@@ -646,13 +683,15 @@ def main(argv=None):
             callsign = next((r.get('callsign', '') for r in report['info'] if r.get('cmd') == 'info' and not r.get('done')), '')
             if a.key and not callsign:
                 raise ValueError('no stored callsign; set your assigned callsign with the console first')
-            collect(link, 'vcm '+('mixed' if a.mixed else 'on' if a.control else 'off'), records=report['setup'])
+            if a.schedule and a.key and 2*id_seconds(callsign)+a.schedule[-1][0]+2 >= a.seconds:
+                raise ValueError('schedule does not fit between both Morse IDs; increase --seconds')
+            collect(link, 'vcm '+('mixed' if a.mixed else 'on' if live else 'off'), records=report['setup'])
             collect(link, 'spiinput usb '+('ts' if kind == 'ts' else 'gcs'), records=report['setup'])
             print(f'{cmd}; {capacity:.3f} Mb/s mode payload; callsign={callsign or "unset"}', file=sys.stderr)
             stats, rows = stream(link, source, cmd=cmd, kind=1 if kind == 'ts' else 2,
                                  seconds=a.seconds, dump=bool(a.dump), sink=sink, mbps=a.mbps,
                                  stats=report['sender'], rows=report['records'], abort_after=a.abort_after,
-                                 opening_id=id_seconds(callsign), control=a.control, rate=a.rate, mixed=a.mixed, modcod=a.modcod)
+                                 opening_id=id_seconds(callsign), control=a.control, schedule=a.schedule or (), rate=a.rate, mixed=a.mixed, modcod=a.modcod)
             if stats['complete'] and not stats['recovery']:
                 collect(link, 'spiinput off', records=report['setup'])
             summary = check_run(stats, rows, bool(a.dump), kind == 'file')
