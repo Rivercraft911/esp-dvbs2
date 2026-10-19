@@ -1,0 +1,84 @@
+{
+ "receiver": "leandvb",
+ "frame_lock": true,
+ "lock_at_end": true,
+ "modcods": [
+  7
+ ],
+ "attempted_modcods": [
+  7
+ ],
+ "modes": [
+  "QPSK 3/4"
+ ],
+ "fec_frames": 124,
+ "bb_frames": 124,
+ "empty_bb_frames": 0,
+ "payload_frames": 124,
+ "ldpc_bit_flips": 0,
+ "ldpc_checks_before": 0,
+ "ldpc_checks_after": 0,
+ "ldpc_residual_frames": 0,
+ "bch_corrected_bits": 0,
+ "bch_failed_frames": 0,
+ "stream": "gcs",
+ "payload_bytes": 749084,
+ "payload_sha256": "6eeae6066732317a4efbe9435ccb93c23cb4b982dd8b5f86631d1d41f0119838",
+ "status_complete": true,
+ "bbheader_rejected_frames": 0,
+ "mer_db": {
+  "count": 4,
+  "min": 19.3,
+  "median": 21.6,
+  "max": 22.1,
+  "last": 22.1
+ },
+ "frequency_offset_hz": {
+  "count": 4,
+  "min": 61116.0,
+  "median": 61169.5,
+  "max": 61206.0,
+  "last": 61170.0
+ },
+ "sample_rate": 20000000.0,
+ "symbol_rate": 10000000.0,
+ "rolloff": 0.35,
+ "rrc_rej_db": 20,
+ "command": [
+  "/Users/river/Documents/stanford/SSI/esp-dvbs2/notes/leansdr/src/apps/leandvb",
+  "--standard",
+  "DVB-S2",
+  "--f32",
+  "-f",
+  "20000000.0",
+  "--sr",
+  "10000000.0",
+  "--sampler",
+  "rrc",
+  "--rrc-rej",
+  "20",
+  "--fastdrift",
+  "--roll-off",
+  "0.35",
+  "--ldpc-bf",
+  "100",
+  "--fd-bbf",
+  "3",
+  "--fd-info",
+  "2",
+  "-d",
+  "-d"
+ ],
+ "adc_peak": 66,
+ "adc_rms": 23.671528646875007,
+ "e200": {
+  "rx_lo": "2420000000",
+  "fs": "20000000",
+  "bw": "15524999",
+  "gain": "30.000000 dB",
+  "tx_lo_powerdown": "1"
+ },
+ "payload_match": true,
+ "first_frame": 693,
+ "compared_bytes": 749084
+}

@@ -1,0 +1,22 @@
+{
+  "symbol_rate": 5000000.0,
+  "sample_rate": 10000000.0,
+  "bandwidth": 7762499.999999999,
+  "pattern": [
+    4,
+    7,
+    11
+  ],
+  "hold_frames": 4,
+  "board_setup": [
+    "info",
+    "spiinput off",
+    "vcm 4 4 7 11"
+  ],
+  "board_command": "dvb 2420 4 5m 30 4 128",
+  "burst_samples": 0,
+  "uri": "ip:192.168.1.10",
+  "receiver": "/Users/river/Documents/stanford/SSI/esp-dvbs2/notes/leansdr/src/apps/leandvb",
+  "callsign": "N0CALL",
+  "frames_encoded": 2940
+}

@@ -1,0 +1,56 @@
+{
+  "source": "Operator-provided OTA results in the documentation request, 2026-10-18",
+  "evidence_type": "operator_summary",
+  "note": "Transcribed summary, not raw receiver output. Raw reports for these results were not included in notes/ota-evidence at documentation time.",
+  "setup": {
+    "transmitter": "ESP32-S3",
+    "receiver": "ANTSDR E200, Pluto firmware, receive-only",
+    "containment": "Closed Faraday box with both devices inside",
+    "frequency_mhz": 2420,
+    "payload_verification": "Byte-exact against the host model"
+  },
+  "runs": [
+    {
+      "mode": "QPSK 9/10",
+      "symbol_rate": 10000000,
+      "payload_frames": 124,
+      "mer_db": 22.4
+    },
+    {
+      "mode": "QPSK 9/10",
+      "symbol_rate": 20000000,
+      "nominal_bandwidth_hz": 27000000,
+      "dac_rate": 80000000,
+      "decoding_peak_range": [32, 64],
+      "best_peak": 48,
+      "mer_db_at_best_peak": 14.2,
+      "payload_frames": null,
+      "peak_128": "Overdrives the radio; non-linear and undecodable"
+    },
+    {
+      "mode": "QPSK VCM",
+      "code_rates": ["1/2", "3/4", "9/10"],
+      "symbol_rate": 5000000,
+      "payload_frames": 2936,
+      "mer_db": null,
+      "snapshot_discrepancy": "notes/ota-evidence/vcm-qpsk-5m/report.json records 2938 recovered frames and median MER 20.5 dB. The operator summary's 2936-frame count is retained separately."
+    },
+    {
+      "mode": "Mixed QPSK/8PSK VCM",
+      "symbol_rate": 5000000,
+      "switch_interval_frames": 1,
+      "payload_frames": 3517,
+      "payload_mb_approx": 21,
+      "mer_db": null
+    }
+  ],
+  "transmit_filter": {
+    "chirp_half_span_hz": 30000000,
+    "dac_rate": 80000000,
+    "receiver_tunings_mhz": [2405, 2420, 2435],
+    "approx_3db_half_width_hz": 10000000,
+    "approx_20db_half_width_hz": 14000000,
+    "wide_modes": "26.67 Msym/s (36 MHz) and 33.33 Msym/s (40 MHz) generate correct on-chip samples and meet keyed deadlines, but do not yet decode over RF through the approximately 20 MHz transmit filter.",
+    "next_step": "Investigate a wider HT40 filter setting"
+  }
+}

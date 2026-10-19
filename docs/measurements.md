@@ -1,22 +1,67 @@
 # Measurements
 
-The chip's dumped samples decode bit-exact in LeanDVB. Keyed runs in a closed lab
-Faraday box met the bank deadlines. **No receiver has yet decoded this transmitter over RF.**
-Bandwidth below is the nominal shaped bandwidth, not a measured RF passband or emission mask.
+The chip's dumped samples and the recovered [over-the-air payloads](#over-the-air) decode
+byte-exact against the host model in LeanDVB. Keyed runs in a closed lab Faraday box met
+the bank deadlines. Capability-table bandwidths are nominal shaped bandwidths;
+the measured transmit-filter passband is about 20 MHz.
 
 All board records below used an ESP32-S3 at 240 MHz. The copied JSON lines are unchanged
 subsets of the development archive or of later board runs, including their original firmware
 versions and command names. [sources.json](measurements/sources.json) records their origins
 and SHA-256 hashes.
-The complete evidence remains in
+Historical development evidence remains in
 [archive/dev-2026-10-17](https://github.com/Rivercraft911/esp-dvbs2/tree/archive/dev-2026-10-17).
+
+## Over the air
+
+The S3 transmitted at **2420 MHz** to a receive-only ANTSDR E200 running Pluto firmware,
+both inside a closed Faraday box. LeanDVB recovered the synthetic payloads byte-exact
+against the host model. Frames below count recovered payload frames; MER is the reported
+median. Roll-off is 0.35. The DAC ran at 40 MS/s for 1–10 Msym/s and 80 MS/s for 20 Msym/s.
+The [public example](../examples/over-the-air/README.md) supplied the libiio run.
+
+| Mode | Symbol rate | Capture / drive | Frames | MER, dB |
+|---|---:|---|---:|---:|
+| [QPSK 1/2](measurements/ota/ota1-qpsk12-1m/report.json) | 1 Msym/s | peak 128, gain 0 | 587 | 16.7 |
+| [QPSK 3/4](measurements/ota/ota2-qpsk34-5m/report.json) | 5 Msym/s | peak 128, gain 4 | 1,436 | 20.5 |
+| [QPSK 3/4, public example](measurements/ota/pluto-backend-qpsk34-5m/report.json) | 5 Msym/s | `--backend libiio`; peak 128, gain 0 | 2,937 | 20.9 |
+| [QPSK 3/4](measurements/ota/ota4-qpsk34-10m-burst/report.json) | 10 Msym/s | burst; peak 128, gain 4; zero LDPC flips | 124 | 21.6 |
+| QPSK 9/10† | 10 Msym/s | — | 124 | 22.4 |
+| QPSK 9/10† | 20 Msym/s | 27 MHz nominal; peak 48, decodes at 32–64 | not supplied | 14.2 |
+| [QPSK 9/10, overdriven](measurements/ota/ota5-qpsk910-20m/report.json) | 20 Msym/s | peak 128, gain 4; no payload decoded | 0 | — |
+| QPSK VCM, 1/2 → 3/4 → 9/10† | 5 Msym/s | rate switching | 2,936 | — |
+| Mixed QPSK/8PSK VCM† | 5 Msym/s | modulation switching every frame; 21 MB recovered | 3,517 | — |
+
+† [Operator's run summary](measurements/ota/operator-summary.json); corresponding raw reports
+were not supplied in this snapshot. The copied [QPSK VCM report](measurements/ota/vcm-qpsk-5m/report.json)
+records 2,938 frames and 20.5 dB MER, differing from the summary's 2,936-frame count.
+Full-capture FEC totals can include failed acquisition, Morse-ID and silence hypotheses;
+byte-exact recovered payloads do not establish lossless RF capture.
+
+At 80 MS/s, peak 128 overdrives the radio: the 20 Msym/s signal is non-linear and
+undecodable. Reducing peak to 32–64 restores decoding; **48 was best**, at 14.2 dB MER.
+
+A ±30 MHz chirp at 80 MS/s, received with the E200 tuned to **2405, 2420 and 2435 MHz**,
+stitched together only the central ±9 MHz of each capture. The S3's transmit filter
+is about **−3 dB at ±10 MHz and −20 dB by ±14 MHz** from center.
+
+![S3 transmit-filter response stitched from three E200 receiver tunings](measurements/stitch.png)
+
+The 26.67 Msym/s (36 MHz) and 33.33 Msym/s (40 MHz) modes generate correct on-chip
+samples and meet their deadlines keyed, but radiate through this ~20 MHz filter and
+do not decode over the air yet. A wider HT40 setting is being investigated;
+the [current comparison](measurements/ht40-compare.png) does not show a wider passband.
+The README's [5 Msym/s spectrum](measurements/qpsk34-5m-spectrum.png) is a real RF capture;
+it includes station ID and silence and is not a calibrated power or emission-mask measurement.
 
 ## What it can do
 
-This is the README's capability table. Values are rounded; exact selected runs follow.
+These are the README's capability modes and timing records. Values are rounded;
+exact selected runs follow.
 Keyed means 30 s including station ID in the shielded box. Radio off means the encoder
 and bank schedule ran in real time without DAC playback. Different rows can refer to
-different firmware versions. The video-example row is a host-model check only.
+different firmware versions. The video-example timing row is a host-model TS check;
+the RF burst above used synthetic payloads.
 
 | Mode | Symbol rate | Bandwidth | Data rate | Tested | Fill headroom |
 |---|---:|---:|---:|---|---|

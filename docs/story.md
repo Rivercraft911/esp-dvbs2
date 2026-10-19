@@ -187,3 +187,26 @@ over the air. 8PSK now reaches 26.67 Msym/s (36 MHz), and 40 MHz stays QPSK.
 The current [implementation](how-it-works.md), [evidence](measurements.md) and
 [radio-off example](../examples/self-check/README.md) are the starting point. All development
 records remain in the [archive tag](https://github.com/Rivercraft911/esp-dvbs2/tree/archive/dev-2026-10-17).
+
+## Over the air
+
+The E200 finally went into the closed Faraday box with the S3, receive-only and running
+Pluto firmware. At 2420 MHz, QPSK 1/2 at 1 Msym/s came back as 587 frames, every payload
+byte matching the host model, at 16.7 dB MER. QPSK 3/4 at 5 Msym/s followed, then a
+124-frame burst at 10 Msym/s with zero LDPC flips. The samples had made it through the radio.
+
+At 80 MS/s, turning it up made it worse. QPSK 9/10 at 20 Msym/s would not decode at
+peak 128, even though the chip's samples were correct. The radio was being overdriven.
+Peaks 32–64 decoded; 48 was best, at 14.2 dB MER. The digital tests had never exercised
+that non-linearity.
+
+There was another limit after that. A ±30 MHz chirp, received with the E200 tuned to
+2405, 2420 and 2435 MHz and stitched from the middle of each capture, exposed the S3's
+transmit filter: about 20 MHz wide, down 3 dB at ±10 MHz and about 20 dB by ±14 MHz.
+The 36 and 40 MHz modes still meet their deadlines and generate correct samples, but
+the filter cuts their edges away. Neither decodes over the air yet. A wider HT40
+setting is the next investigation.
+
+VCM made it through too: 2,936 frames switching QPSK code rates at 5 Msym/s, then
+3,517 frames and 21 MB switching between QPSK and 8PSK every frame, byte-exact against
+the host model. ([runs, plots and provenance](measurements.md#over-the-air))

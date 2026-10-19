@@ -1,0 +1,18 @@
+{
+  "backend": "libiio",
+  "uri": "ip:192.168.1.10",
+  "sample_rate": 10000000.0,
+  "symbol_rate": 5000000.0,
+  "bandwidth": 7762500,
+  "occupied_hz": 6750000.0,
+  "frequency": 2420000000.0,
+  "gain": 30.0,
+  "wire_format": "sc16_le",
+  "file_format": "cf32_le",
+  "burst_samples": 0,
+  "burst_margin": 2.3,
+  "upsample": 1,
+  "pre_seconds": 1,
+  "post_seconds": 1,
+  "capture_limit_seconds": 42
+}

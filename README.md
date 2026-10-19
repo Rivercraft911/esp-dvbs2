@@ -13,7 +13,7 @@ It started with the goal of live video, 8PSK 2/3 at 5 Msym/s, 9.68 Mb/s. Then it
 the same $5 chip now pushes **58.2 Mb/s in 40 MHz**, the widest channel its Wi-Fi radio was
 ever built for. Read [How it got here](docs/story.md) to learn about the tumultuous journey.
 
-> **[Placeholder: spectrum of the 40 MHz signal and its constellation, from the chip's own samples]**
+![QPSK 3/4 at 5 Msym/s, captured over RF at 2420 MHz by an ANTSDR E200](docs/measurements/qpsk34-5m-spectrum.png)
 
 ## Live video
 
@@ -27,7 +27,8 @@ The [live-video example](examples/live-video/README.md) targets a 9 Mb/s MPEG tr
 stream over SPI, QPSK 3/4 at 10 Msym/s (14.5 Mb/s capacity in 13.5 MHz), and an SDR running
 LeanDVB. Its working dry run is **host-model TS → DVB-S2 IQ → LeanDVB → TS**, using MPEG-2
 video. S3 USB sample dumps decode independently, and SPI has on-chip loopback tests.
-External camera/SPI input, H.264 playback and RF reception still need validation.
+Synthetic QPSK payloads now decode over RF; external camera/SPI input and H.264 playback
+still need validation.
 
 ## What it can do
 
@@ -35,26 +36,30 @@ The best measured configurations, fastest first. **Keyed** means the S3 really t
 30 s and met every bank deadline; **radio off** means the same encoder and bank schedule ran in
 real time with the DAC output going nowhere.
 
-| Mode | Symbol rate | Bandwidth | **Data rate** | Tested |
-|---|---:|---:|---:|---|
-| 8PSK 9/10 | 26.67 Msym/s | 36 MHz | **69.8 Mb/s** | keyed |
-| 8PSK 5/6 | 26.67 Msym/s | 36 MHz | **64.6 Mb/s** | keyed |
-| QPSK 9/10, roll-off 0.20 | 33.33 Msym/s | **40 MHz** | **58.2 Mb/s** | keyed |
-| 8PSK 2/3 | 26.67 Msym/s | 36 MHz | **51.6 Mb/s** | keyed |
-| 8PSK 5/6 | 20 Msym/s | 27 MHz | **48.4 Mb/s** | keyed* |
-| QPSK 9/10 | 26.67 Msym/s | 36 MHz | 46.6 Mb/s | keyed |
-| 8PSK 2/3 | 20 Msym/s | 27 MHz | 38.7 Mb/s | keyed* |
-| QPSK 9/10 | 20 Msym/s | 27 MHz | 34.9 Mb/s | keyed |
-| 8PSK 5/6 | 10 Msym/s | 13.5 MHz | 24.2 Mb/s | keyed |
-| QPSK 9/10 | 10 Msym/s | 13.5 MHz | 17.5 Mb/s | radio off |
-| QPSK 3/4, current video example | 10 Msym/s | 13.5 MHz | 14.5 Mb/s | host-model TS dry run |
-| 8PSK 9/10 | 5 Msym/s | 6.75 MHz | 13.1 Mb/s | radio off |
-| 8PSK 2/3 | 5 Msym/s | 6.75 MHz | 9.68 Mb/s | keyed |
-| QPSK 1/2 | 1 Msym/s | 1.35 MHz | 0.97 Mb/s | keyed |
+| Mode | Symbol rate | Bandwidth | **Data rate** | Tested | Over the air |
+|---|---:|---:|---:|---|---|
+| 8PSK 9/10 | 26.67 Msym/s | 36 MHz | **69.8 Mb/s** | keyed | not yet |
+| 8PSK 5/6 | 26.67 Msym/s | 36 MHz | **64.6 Mb/s** | keyed | not yet |
+| QPSK 9/10, roll-off 0.20 | 33.33 Msym/s | **40 MHz** | **58.2 Mb/s** | keyed | not yet |
+| 8PSK 2/3 | 26.67 Msym/s | 36 MHz | **51.6 Mb/s** | keyed | not yet |
+| 8PSK 5/6 | 20 Msym/s | 27 MHz | **48.4 Mb/s** | keyed* | not yet |
+| QPSK 9/10 | 26.67 Msym/s | 36 MHz | 46.6 Mb/s | keyed | not yet |
+| 8PSK 2/3 | 20 Msym/s | 27 MHz | 38.7 Mb/s | keyed* | not yet |
+| QPSK 9/10 | 20 Msym/s | 27 MHz | 34.9 Mb/s | keyed | decoded, peak 32–64; 48 best |
+| 8PSK 5/6 | 10 Msym/s | 13.5 MHz | 24.2 Mb/s | keyed | not yet |
+| QPSK 9/10 | 10 Msym/s | 13.5 MHz | 17.5 Mb/s | radio off | decoded |
+| QPSK 3/4, current video example | 10 Msym/s | 13.5 MHz | 14.5 Mb/s | host-model TS dry run | decoded (synthetic burst) |
+| 8PSK 9/10 | 5 Msym/s | 6.75 MHz | 13.1 Mb/s | radio off | [decoded (mixed VCM)](docs/vcm.md) |
+| 8PSK 2/3 | 5 Msym/s | 6.75 MHz | 9.68 Mb/s | keyed | [decoded (mixed VCM)](docs/vcm.md) |
+| QPSK 1/2 | 1 Msym/s | 1.35 MHz | 0.97 Mb/s | keyed | decoded |
 
 Roll-off is 0.35 unless noted. Data rates follow from the DVB-S2 normal frame with pilots and
 exclude station-ID time. Every mode's samples decode bit-exact in LeanDVB, an independent
-receiver; a receiver decoding the signal over the air is not shown yet.
+receiver. QPSK at 1, 5, 10 and 20 Msym/s and mixed QPSK/8PSK VCM at 5 Msym/s now decode
+byte-exact against the host model over the air into a receive-only ANTSDR E200, running
+Pluto firmware, inside a closed Faraday box at 2420 MHz ([runs](docs/measurements.md#over-the-air)).
+The 36/40 MHz modes meet their deadlines keyed, but the measured ~20 MHz transmit filter
+cuts their RF bandwidth and they do not decode over the air yet.
 \*Keyed with an earlier, longer pulse; the current pulse has radio-off evidence.
 Margins, raw records and limits: [measurements](docs/measurements.md). With a prepared payload,
 30 s keyed tests of the 40 MHz mode left **37% mean encoder headroom and 16% bank-fill headroom**.
@@ -175,4 +180,4 @@ Additional experiments and raw results live in
 [Apache-2.0](LICENSE). Copyright 2026 River Dowdy; see [NOTICE](NOTICE). Findings from other projects are credited in
 [prior-art.md](docs/prior-art.md).
 
-A receiver decoding it over the air is next. Coming soon to a repo near you!
+Widening the transmit filter is next.
