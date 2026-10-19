@@ -8,8 +8,9 @@ files or stdin; an existing PV-SPI v1 source can connect directly.
 Measured in a closed box on 2026-10-18: S3 → E200 with Pluto firmware → LeanDVB
 recovered 47,672 packets as an exact contiguous source slice, 99.6% of the file,
 with zero continuity or PSI CRC errors. That test used USB input at about 2.8 Mb/s
-and a mostly null-padded MPEG-2 fixture. **Native 9 Mb/s camera input over SPI and
-live H.264 playback still need an end-to-end test.** USB intake tops out near
+and a mostly null-padded MPEG-2 fixture. A 2.4 Mb/s H.264 USB fixture also passed
+live reception and playback. **Native 9 Mb/s camera input over SPI still needs
+an end-to-end test.** USB intake tops out near
 3.2 Mb/s; it preserves a finite file but cannot carry the live 9 Mb/s mux.
 
 ## Prepare
