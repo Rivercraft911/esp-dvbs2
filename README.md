@@ -47,7 +47,7 @@ real time with the DAC output going nowhere.
 | QPSK 9/10 | 20 Msym/s | 27 MHz | 34.9 Mb/s | keyed | decoded, peak 32–64; 48 best |
 | 8PSK 5/6 | 10 Msym/s | 13.5 MHz | 24.2 Mb/s | keyed | not yet |
 | QPSK 9/10 | 10 Msym/s | 13.5 MHz | 17.5 Mb/s | radio off | decoded |
-| QPSK 3/4, current video example | 10 Msym/s | 13.5 MHz | 14.5 Mb/s | host-model TS dry run | decoded (synthetic burst) |
+| QPSK 3/4, video dry run | 10 Msym/s | 13.5 MHz | 14.5 Mb/s | host-model TS dry run | decoded (synthetic burst) |
 | 8PSK 9/10 | 5 Msym/s | 6.75 MHz | 13.1 Mb/s | radio off | [decoded (mixed VCM)](docs/vcm.md) |
 | 8PSK 2/3 | 5 Msym/s | 6.75 MHz | 9.68 Mb/s | keyed | [decoded (mixed VCM)](docs/vcm.md) |
 | QPSK 1/2 | 1 Msym/s | 1.35 MHz | 0.97 Mb/s | keyed | decoded |

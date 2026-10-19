@@ -84,7 +84,7 @@ the RF burst above used synthetic payloads.
 | QPSK 9/10 | 20 Msym/s | 27 MHz | 34.9 Mb/s | keyed | 22% ([record](#qpsk-at-2667-msyms)) |
 | 8PSK 5/6 | 10 Msym/s | 13.5 MHz | 24.2 Mb/s | keyed | 49% ([archive](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/results/2026-10-16-keyed-next2/README.md)) |
 | QPSK 9/10 | 10 Msym/s | 13.5 MHz | 17.5 Mb/s | radio off | 48% ([archive](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/results/2026-10-17-cleanup/README.md)) |
-| QPSK 3/4, current video example | 10 Msym/s | 13.5 MHz | 14.5 Mb/s | host-model TS dry run | — ([example](../examples/live-video/README.md#rf-free-dry-run)) |
+| QPSK 3/4, video dry run | 10 Msym/s | 13.5 MHz | 14.5 Mb/s | host-model TS dry run | — ([example](../examples/live-video/README.md#rf-free-dry-run)) |
 | 8PSK 9/10 | 5 Msym/s | 6.75 MHz | 13.1 Mb/s | radio off | 55% ([archive](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/results/2026-10-17-qpsk-goal/README.md)) |
 | 8PSK 2/3 | 5 Msym/s | 6.75 MHz | 9.68 Mb/s | keyed | 57% ([archive](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/results/2026-10-16-keyed-next2/README.md)) |
 | QPSK 1/2 | 1 Msym/s | 1.35 MHz | 0.97 Mb/s | keyed | 52% ([record](measurements/2026-10-16-keyed-qpsk-1m.jsonl), [report](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/results/2026-10-16-keyed-next2/README.md)) |
