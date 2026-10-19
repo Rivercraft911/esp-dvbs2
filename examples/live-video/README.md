@@ -87,8 +87,11 @@ Start the SPI source after the opening station ID; stop it several seconds
 before the payload window ends so it can drain. The 60 seconds includes both
 IDs. Keep the RF path contained until the board finishes.
 
-Append `--player 'ffplay -i pipe:0'` to receive while saving. The player must
+Append `--player 'ffplay -infbuf -autoexit -i pipe:0'` to receive while saving. The player must
 support MPEG-TS and the source codec (H.264 for cameras, MPEG-2 for the fixture).
+`-infbuf` lets ffplay keep reading TS while playback catches up, preventing its
+packet queue from blocking capture. The receiver still saves every TS byte and
+enforces the IQ backlog checks.
 Test playback of a recording first. Closing the player ends reception.
 
 Then run `python3 examples/live-video/check_ts.py received.ts`. Check visible
