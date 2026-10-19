@@ -39,8 +39,8 @@ def validate(a):
         raise ValueError("libiio duration must be 1..3600 seconds")
     if not 65536 <= a.buffer_samples <= 4194304 or a.upsample not in (1, 2):
         raise ValueError("need 65536..4194304 buffer samples and upsample 1 or 2")
-    if not getattr(a, "probe", False) and a.rate * a.upsample < 2 * a.symbol_rate:
-        raise ValueError("LeanDVB needs >=2 samples/symbol; use --upsample 2 at 15 MS/s / 10 Msym/s")
+    if not getattr(a, "probe", False) and a.rate * a.upsample < 1.5 * a.symbol_rate:
+        raise ValueError("LeanDVB needs at least 1.5 samples/symbol (see receive.py)")
 
 
 class Interpolator:
