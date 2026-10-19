@@ -59,6 +59,73 @@ setup is outside this example. The file and ffmpeg routes use only the shipped s
 
 ## Live reception
 
+### E200 with Pluto firmware (libiio)
+
+Use gigabit Ethernet and an explicit URI, **`ip:192.168.1.10`**. The capture Python
+needs pylibiio; 15 MS/s interpolation also needs numpy/scipy (Radioconda has these).
+No discovery, flashing or TX buffer is used. The unchanged `Radio` implementation from
+`over-the-air/capture_iio.py` powers down TX LO, sets every RF TX gain to **-89.75 dB**
+and every DDS raw to **0**, with readbacks before RX setup, before the buffer and after
+capture. Cleanup reapplies the inhibits; it never restores previous TX settings.
+
+| S3 mode (pilots, .35 roll-off) | TS capacity | Occupied | E200 capture |
+|---|---:|---:|---:|
+| 8PSK 2/3, MODCOD 13, 5 Msym/s | 9.68 Mb/s | 6.75 MHz | 10 MS/s |
+| QPSK 3/4, MODCOD 7, 10 Msym/s | 14.52 Mb/s | 13.5 MHz | 15 MS/s (1.5 samples/symbol); 20 MS/s exceeded E200 Ethernet throughput |
+
+Both fit the 9 Mb/s demo mux. Firmware accepts `dvb FREQ_MHZ 13 5m 60 0`
+with **SPI or USB TS input**: named `5m` selects 8 samples/symbol at the 40 MS/s DAC,
+and external input uses the TS encoder with PSRAM workspace. See [SPI modes](../../docs/spi-input.md#which-wire-for-which-mode).
+USB's measured ~3.2 Mb/s intake inserts dummy frames; it cannot sustain a 9 Mb/s live
+source. A finite 9 Mb/s TS file is sent more slowly, with its bytes preserved.
+
+The **coordinator**, with the S3 unkeyed, runs the receive-only probe (~30 s/rate).
+Set `FREQ_MHZ` to the assigned integer MHz, `PORT` to the native S3 USB port, `RX` to
+LeanDVB and `IIO_PYTHON` to the pylibiio Python (e.g. `$HOME/radioconda/bin/python`).
+Use new output directories; close other serial clients.
+
+```sh
+python3 examples/live-video/check_e200.py probe notes/e200-probe \
+  --uri ip:192.168.1.10 --mhz "$FREQ_MHZ" --iio-python "$IIO_PYTHON"
+```
+
+Then, **only inside the closed box**, with E200 connected as receive-only and the
+assigned callsign already stored, run (~one minute per command):
+
+```sh
+python3 examples/live-video/check_e200.py keyed notes/e200-8psk \
+  --uri ip:192.168.1.10 --mhz "$FREQ_MHZ" --iio-python "$IIO_PYTHON" \
+  --receiver "$RX" --port "$PORT" --probe-report notes/e200-probe/report.json --key --closed-box
+
+python3 examples/live-video/check_e200.py keyed notes/e200-qpsk --modcod 7 \
+  --uri ip:192.168.1.10 --mhz "$FREQ_MHZ" --iio-python "$IIO_PYTHON" \
+  --receiver "$RX" --port "$PORT" --probe-report notes/e200-probe/report.json --key --closed-box
+```
+
+QPSK refuses before opening the S3 unless a matching 20 or 15 MS/s probe passes;
+20 is preferred, otherwise 15 is interpolated continuously with FIR history/lookahead.
+The probe discards IQ: its pass is a prerequisite, not proof the decoder can keep up.
+The keyed command generates 8 seconds of 9 Mb/s MPEG-2 TS (or takes `--ts FILE`),
+starts `receive.py --backend libiio`, waits for one second of delivered IQ, then invokes
+`examples/usb-send/send.py` for a 60-second timed run including station IDs. It requires
+finite-source EOF, matching USB counts/CRC chain, healthy encoder deadlines, zero TS
+continuity/PSI errors and **at least 90% as one byte-exact contiguous sent TS slice**.
+Only acquisition/EOF trimming is allowed. `source.ts`, live `received.ts`, capture/sender
+reports and logs remain in the evidence directory. Add `--player 'ffplay -i pipe:0'`.
+
+There are no sample timestamps/overflow counters in this libiio API: `overflows` stays
+`null`. Capture reports refill wall time versus buffer duration, cumulative host lag,
+queue depth and queue age. A refill over 1.5 buffer durations, lag beyond four kernel
+buffers, full host queue, short read or transport failure fails the run. A bounded queue
+separates refills from decoder writes; it never silently drops IQ. Payload comparison
+detects losses that host timing and wrapping TS counters can miss. LeanDVB retains
+`--sr-tol 0.0005`, `--fastdrift` and `--ldpc-bf 100` for dummy runs and clock mismatch.
+`--plan` on either command opens no devices. Host checks: `python3 tests/test_live_iio.py`.
+Add `--receiver "$RX"` to that test for model IQ → int16 → LeanDVB proofs of both
+MODCODs, including dummy-heavy USB pacing and the 15 MS/s interpolation path.
+
+### UHD
+
 Install **GNU Radio with gr-uhd and UHD**, which supplies the
 [`uhd_rx_cfile` application](https://github.com/gnuradio/gnuradio/blob/aee9fd3f79389c4282a98e8d62c8405c73fd91df/gr-uhd/apps/uhd_rx_cfile),
 and put it on PATH. UHD alone does not supply this flowgraph.
