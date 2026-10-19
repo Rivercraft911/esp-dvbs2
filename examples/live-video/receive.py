@@ -22,7 +22,8 @@ def commands(a, fifo="IQ_FIFO"):
           "-f", str(a.rate), "--sr", str(a.symbol_rate),
           "--roll-off", str(a.rolloff), "--sampler", "rrc", "--rrc-rej", "20",
           "--modcods", str(1 << a.modcod), "--framesizes", "1",
-          "--ldpc-bf", "100", "--fastdrift", "--fd-info", "2", "-v"]
+          # Wider header search keeps lock through dummy-frame runs (see host/decode.py).
+          "--ldpc-bf", "100", "--fastdrift", "--sr-tol", "0.0005", "--fd-info", "2", "-v"]
     source = None
     if a.args is not None:
         source = [a.uhd_rx_cfile, "--args", a.args, "--channels", "0",
