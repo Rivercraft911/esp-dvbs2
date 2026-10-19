@@ -329,7 +329,7 @@ esp_err_t radio_s3_run_options(uint32_t freq, uint8_t gain, uint32_t sec, uint32
                                uint32_t bandwidth, radio_s3_fill_fn fn, void *ctx,
                                const radio_s3_options_t *options, radio_s3_stats_t *stats)
 {
-    assert(options && (options->phy_solo || options->select_fill));
+    assert(options && (options->phy_solo || options->select_fill || options->startup));
     if (options->select_fill) {
         assert(radio_s3_stream_ready() == ESP_OK);
         fn = options->select_fill(fn);
@@ -339,7 +339,7 @@ esp_err_t radio_s3_run_options(uint32_t freq, uint8_t gain, uint32_t sec, uint32
 esp_err_t radio_s3_paced_wifi_options(uint32_t sec, uint32_t rate, radio_s3_fill_fn fn,
                                       void *ctx, const radio_s3_options_t *options, radio_s3_stats_t *stats)
 {
-    assert(options && (options->phy_solo || options->select_fill));
+    assert(options && (options->phy_solo || options->select_fill || options->startup));
     if (options->select_fill) {
         assert(radio_s3_stream_ready() == ESP_OK);
         fn = options->select_fill(fn);

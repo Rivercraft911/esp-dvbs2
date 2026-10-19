@@ -172,7 +172,7 @@ typedef struct {
     union {
         uint8_t *slot[PACKED_SLOTS]; // legacy packed frames, internal
         struct { // queued 26m667 uses pages instead of frame slots
-            bool fused_requested, fused;
+            bool fused_requested, fused, dummy_locked;
             uint16_t peak, queue_split;
             uint8_t *queue_extra;
         };
@@ -402,9 +402,9 @@ static inline __attribute__((always_inline)) uint32_t lofty_descriptor(uint32_t 
 
 static bool lofty_dummy_init(void)
 {
-    lofty_mux.dummy = heap_caps_aligned_alloc(16,2*LOFTY_DUMMY_STRIDE*4,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    lofty_mux.dummy = heap_caps_aligned_alloc(32,2*LOFTY_DUMMY_STRIDE*4+sizeof(radio_s3_startup_t),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
     if (!lofty_mux.dummy) return false;
-    memset(lofty_mux.dummy,0,2*LOFTY_DUMMY_STRIDE*4);
+    memset(lofty_mux.dummy,0,2*LOFTY_DUMMY_STRIDE*4+sizeof(radio_s3_startup_t));
     // Setup only, before the encoder owns this workspace. No internal buffer.
     uint8_t *phases = enc.ws->bits;
     dvbs2_dummy(phases);
@@ -557,7 +557,14 @@ static void release(void)
     heap_caps_free(enc.tables);
     heap_caps_free(enc.table_tail);
     heap_caps_free(enc.pair_bch);
-    if (dvb.lofty) { heap_caps_free(lofty_mux.dummy); lofty_mux.dummy = NULL; (enc.fused ? lofty_fused_resident : lofty_resident)(0); }
+    if (dvb.lofty) {
+        if (enc.dummy_locked) {
+            lofty_dummy_resident(lofty_mux.dummy,2*LOFTY_DUMMY_STRIDE*4,0);
+            enc.dummy_locked = false;
+        }
+        heap_caps_free(lofty_mux.dummy); lofty_mux.dummy = NULL;
+        (enc.fused ? lofty_fused_resident : lofty_resident)(0);
+    }
     heap_caps_free(enc.fast);
     if (!enc.input_borrowed) heap_caps_free(enc.input);
     enc.input = NULL;
@@ -1261,6 +1268,12 @@ esp_err_t radio_s3_stream_ready(void)
     if (enc.failed || dvb.produced-dvb.consumed < pages) return ESP_FAIL;
     enc.prefill_frames = enc.frames;
     lofty_warm_renderer();
+    // The ID lasts seconds. A warm-at-setup PSRAM buffer can be evicted before
+    // the first data/dummy boundary, which also starts a cold encoder burst.
+    // Keep both immutable dummy variants resident for this session, without
+    // taking internal heap or changing any renderer, sample or queue choice.
+    if (lofty_dummy_resident(lofty_mux.dummy,2*LOFTY_DUMMY_STRIDE*4,1)) return ESP_FAIL;
+    enc.dummy_locked = true;
     return ESP_OK;
 }
 
@@ -1333,6 +1346,7 @@ static void stop_encoder(void)
     if (dvb.lofty) printf(",\"dummy_startup_frame\":%"PRIi32,(int32_t)lofty_mux.first_dummy_frame);
     if (dvb.lofty) printf(",\"render_warm_cycles\":%"PRIu32,lofty_mux.render_warm_cycles);
     if (dvb.lofty) printf(",\"renderer_icache_bytes\":%u",(unsigned)(enc.fused ? lofty_fused_resident_bytes() : lofty_resident_bytes()));
+    if (dvb.lofty) printf(",\"dummy_dcache_bytes\":%u",enc.dummy_locked ? 2*LOFTY_DUMMY_STRIDE*4 : 0);
     if (dvb.moon && dvb.queue_empty) printf(",\"queue_fault\":{\"produced\":%"PRIu32",\"consumed\":%"PRIu32
         ",\"producer_phase\":%"PRIu32",\"last_wait_produced\":%"PRIu32",\"last_wait_consumed\":%"PRIu32"}",
         dvb.queue_fault.put,dvb.queue_fault.get,dvb.queue_fault.phase,
@@ -1464,6 +1478,22 @@ static void print_timing(const radio_s3_stats_t *s)
            ",\"planned_samples\":%" PRIu64, s->id_count, s->id_samples, s->planned_samples);
 }
 
+static radio_s3_startup_t *lofty_startup(void)
+{
+    return (radio_s3_startup_t *)(lofty_mux.dummy+2*LOFTY_DUMMY_STRIDE);
+}
+
+static void print_startup(void)
+{
+    if (!dvb.lofty) return;
+    const radio_s3_startup_t *t = lofty_startup();
+    printf(",\"startup\":{\"first_sample\":%"PRIu64",\"columns\":[\"fill_cycles\",\"psram_miss\",\"trace_cycles\"],\"banks\":[",t->first_sample);
+    for (unsigned i = 0; i < t->count; ++i)
+        printf("%s[%"PRIu32",%"PRIu32",%"PRIu32"]",i ? "," : "",
+               t->bank[i].cycles,t->bank[i].psram_miss,t->bank[i].trace_cycles);
+    printf("]}");
+}
+
 static void print_wifi(const radio_s3_wifi_heap_t *w)
 {
     printf(",\"wifi_free_before\":%" PRIu32 ",\"wifi_largest_before\":%" PRIu32
@@ -1546,8 +1576,9 @@ void dvbtx_pace_options(unsigned modcod, uint32_t seconds, unsigned level, unsig
     if (!symbols) return;
     radio_s3_stats_t s;
     const bool wifi = dvb.moon || phy_solo || vcm_enc.vcm;
-    const radio_s3_options_t options = {.phy_solo=phy_solo, .select_fill=fused ? select_fill : NULL};
-    const esp_err_t err = phy_solo || fused ? radio_s3_paced_wifi_options(seconds,dac_rate,encoder_fill(),NULL,&options,&s) :
+    const radio_s3_options_t options = {.phy_solo=phy_solo, .select_fill=fused ? select_fill : NULL,
+                                      .startup=dvb.lofty ? lofty_startup() : NULL};
+    const esp_err_t err = phy_solo || fused || dvb.lofty ? radio_s3_paced_wifi_options(seconds,dac_rate,encoder_fill(),NULL,&options,&s) :
         (wifi ? radio_s3_paced_wifi_rate : radio_s3_paced_run_rate)(seconds,dac_rate,encoder_fill(),NULL,&s);
     print_mode("dvbpace", modcod, symbols, level);
     printf(",\"paced_wifi_up\":%s",wifi ? "true" : "false");
@@ -1557,6 +1588,7 @@ void dvbtx_pace_options(unsigned modcod, uint32_t seconds, unsigned level, unsig
            dac_rate, RADIO_S3_STEP_FOR(dac_rate));
     printf(",\"pulse_symbols\":%u", dvb.moon ? dvb.span : dvb.table.parts == 2 ? 6 : 9);
     print_timing(&s);
+    print_startup();
     stop_encoder();
     printf(",\"status\":\"%s\"%s}\n", esp_err_to_name(err),
            err != ESP_OK ? ",\"error\":\"paced run failed\"" : "");

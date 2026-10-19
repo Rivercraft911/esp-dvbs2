@@ -12,6 +12,9 @@
 #endif
 int lofty_resident(int on);
 size_t lofty_resident_bytes(void);
+// Immutable PSRAM dummy descriptors. Preload/lock after Wi-Fi admission and
+// unlock before freeing; the caller owns the successful-lock lifetime.
+int lofty_dummy_resident(const uint32_t *, size_t bytes, int on);
 
 #ifndef LOFTY_FUSED
 #define LOFTY_FUSED 0

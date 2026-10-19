@@ -45,6 +45,7 @@
 #include "freertos/task.h"
 #include "heap_memory_layout.h"
 #include "soc/soc.h"
+#include "soc/extmem_reg.h"
 #include "sdkconfig.h"
 
 #if !CONFIG_IDF_TARGET_ESP32S3
@@ -158,6 +159,7 @@ typedef struct {
     geometry_t geo;
     radio_s3_options_t options;
     station_fill_fn *payload_fill;
+    radio_s3_startup_t *startup;
 } run_t;
 
 static inline uint32_t IRAM_ATTR cycles(void)
@@ -188,6 +190,13 @@ static esp_err_t IRAM_ATTR fill_bank(run_t *run, unsigned bank, uint64_t start)
     uint32_t *base = radio_s3_bank(bank);
     size_t offset = start % RADIO_S3_BANK_WORDS;
     size_t first_count = RADIO_S3_BANK_WORDS - offset;
+    radio_s3_startup_t *trace = run->startup;
+    // Only the opening ID is traced. Its length is uint32_t, and collection
+    // finishes within 32 banks, before the timeline can wrap that range.
+    const bool record = trace && trace->count < RADIO_S3_STARTUP_BANKS &&
+                        (uint32_t)start >= (uint32_t)trace->first_sample;
+    uint32_t trace_before = cycles();
+    uint32_t psram = record ? REG_READ(EXTMEM_DBUS_ACS_SPIRAM_MISS_CNT_REG) : 0;
     uint32_t before = cycles();
     esp_err_t error = run->fill(base + offset, start, first_count, run->ctx);
     if (error == ESP_OK && offset) {
@@ -195,6 +204,12 @@ static esp_err_t IRAM_ATTR fill_bank(run_t *run, unsigned bank, uint64_t start)
     }
     __asm__ volatile ("memw" ::: "memory");
     uint32_t elapsed = cycles() - before;
+    if (record) {
+        const unsigned at = trace->count++;
+        trace->bank[at].cycles = elapsed;
+        trace->bank[at].psram_miss = REG_READ(EXTMEM_DBUS_ACS_SPIRAM_MISS_CNT_REG) - psram;
+        trace->bank[at].trace_cycles = cycles() - trace_before - elapsed;
+    }
     run->stats->fills++;
     if (elapsed > run->stats->max_fill_cycles) {
         run->stats->max_fill_cycles = elapsed;
@@ -419,6 +434,13 @@ static void watch_end(bool watch_idle, bool watch_worker)
 static void worker(void *arg)
 {
     run_t *run = arg;
+    radio_s3_startup_t startup = {0};
+    if (run->wifi_pace && run->options.startup) {
+        const uint64_t end = run->stats->id_samples;
+        startup.first_sample = end < RADIO_S3_BANK_WORDS ? 0 :
+            ((end+run->geo.lead-RADIO_S3_BANK_WORDS)/run->geo.step+1)*run->geo.step-run->geo.lead;
+        run->startup = &startup;
+    }
     bool initialized = false;
     bool started = false;
     bool watch_worker = false;
@@ -589,6 +611,10 @@ cleanup:
     }
 #endif
     if (initialized) run->stats->wifi.min_free = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+    if (run->startup) {
+        *run->options.startup = startup;
+        run->startup = NULL;
+    }
     run->error = error;
     xSemaphoreGive(run->done);
     vTaskDelete(NULL);
