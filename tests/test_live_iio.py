@@ -247,7 +247,7 @@ def test_timing_and_rate_gate():
     probe["rates"][2]["host_timing_passed"] = False
     assert coordinator.choose_rate(probe, a) == 15e6
     rx, _ = coordinator.keyed_commands(a, 15000000)
-    assert rx[rx.index("--upsample")+1] == "2"
+    assert rx[rx.index("--upsample")+1] == "1"
     probe["rates"][1]["complete"] = False
     rejects(coordinator.choose_rate, probe, a)
     probe["rates"][1]["complete"] = True

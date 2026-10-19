@@ -71,7 +71,7 @@ capture. Cleanup reapplies the inhibits; it never restores previous TX settings.
 | S3 mode (pilots, .35 roll-off) | TS capacity | Occupied | E200 capture |
 |---|---:|---:|---:|
 | 8PSK 2/3, MODCOD 13, 5 Msym/s | 9.68 Mb/s | 6.75 MHz | 10 MS/s |
-| QPSK 3/4, MODCOD 7, 10 Msym/s | 14.52 Mb/s | 13.5 MHz | 20 MS/s, or 15 MS/s with `--upsample 2` |
+| QPSK 3/4, MODCOD 7, 10 Msym/s | 14.52 Mb/s | 13.5 MHz | 15 MS/s (1.5 samples/symbol); 20 MS/s exceeded E200 Ethernet throughput |
 
 Both fit the 9 Mb/s demo mux. Firmware accepts `dvb FREQ_MHZ 13 5m 60 0`
 with **SPI or USB TS input**: named `5m` selects 8 samples/symbol at the 40 MS/s DAC,

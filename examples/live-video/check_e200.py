@@ -58,7 +58,7 @@ def keyed_commands(a, rate):
     rx = [sys.executable, str(HERE / "receive.py"), "--backend", "libiio", "--uri", a.uri,
           "--iio-python", a.iio_python, "--freq", str(a.mhz*1e6), "--gain", str(a.rx_gain),
           "--rate", str(rate), "--symbol-rate", str(rs), "--modcod", str(a.modcod),
-          "--upsample", "2" if rate == 15_000_000 else "1", "--seconds", str(a.seconds+25),
+          "--upsample", "1", "--seconds", str(a.seconds+25),
           "--receiver", a.receiver, "--output", str(out / "received.ts"),
           "--capture-report", str(out / "capture.json"), "--ready", str(out / "ready.json"),
           "--stop-file", str(out / "stop")]

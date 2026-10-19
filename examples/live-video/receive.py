@@ -124,7 +124,7 @@ def parser():
     p.add_argument("--iio-python", default=sys.executable, help="Python with pylibiio; scipy/numpy also needed for --upsample")
     p.add_argument("--bandwidth", type=float, help="libiio analog RX bandwidth, Hz (default 1.35 * symbol rate * 1.15)")
     p.add_argument("--buffer-samples", type=int, default=1048576)
-    p.add_argument("--upsample", type=int, choices=(1, 2), default=1, help="libiio streaming interpolation; use 2 for 15 MS/s / 10 Msym/s")
+    p.add_argument("--upsample", type=int, choices=(1, 2), default=1, help="libiio streaming interpolation (optional; 15 MS/s for 10 Msym/s decodes without it)")
     p.add_argument("--capture-report", type=Path, help="libiio timing and TX inhibit JSON")
     p.add_argument("--ready", type=Path, help="libiio readiness JSON, after one second of IQ reaches the decoder")
     p.add_argument("--stop-file", type=Path, help="libiio orderly stop when this path appears")
@@ -157,8 +157,10 @@ def validate(a):
         raise ValueError("bandwidth, interpolation and capture status paths require libiio")
     if any(not math.isfinite(v) or v <= 0 for v in (a.rate, a.symbol_rate, a.seconds)):
         raise ValueError("rates and duration must be finite and positive")
-    if a.rate * a.upsample < 2 * a.symbol_rate:
-        raise ValueError("LeanDVB requires at least 2 samples/symbol (libiio: try --upsample 2)")
+    # 1.5 samples/symbol still holds the 0.35 roll-off band (1.35 Rs < 1.5 Rs); LeanDVB
+    # decodes it with dummies and 25 ppm clock drift, and real-time interpolation fell behind.
+    if a.rate * a.upsample < 1.5 * a.symbol_rate:
+        raise ValueError("LeanDVB needs at least 1.5 samples/symbol")
     if a.args is not None and (not a.args or a.freq is None or not math.isfinite(a.freq) or a.freq <= 0):
         raise ValueError("hardware requires nonempty --args and a positive --freq")
     if not math.isfinite(a.gain):
