@@ -38,24 +38,25 @@ def rrc(sps=2, alpha=.35, span=12):
     return taps
 
 
-def encode(ts, path):
-    """Normal QPSK 3/4, pilots, .35 RRC; 20 MS/s complex float32 IQ.
+def encode(ts, path, modcod=7):
+    """Normal frames, pilots, .35 RRC; two samples/symbol complex float32 IQ.
 
     Byte mode adaptation retains packet CRC/SYNCD across BBFRAME boundaries.
-    Dummy frames model a 9 Mb/s producer feeding a 14.520762 Mb/s link.
+    Dummy frames model a 9 Mb/s producer feeding the selected link.
     """
-    bbframes = d.ts_bbframes(np.frombuffer(ts, np.uint8), "3/4")
+    rate, modulation, rs = {7: ("3/4", "qpsk", 10e6), 13: ("2/3", "8psk", 5e6)}[modcod]
+    bbframes = d.ts_bbframes(np.frombuffer(ts, np.uint8), rate)
     phases, total, dummy_count = [], 0, 0
-    frame_symbols = d.plframe_length(False, True)
-    payload_bytes = (d.code("3/4").kbch - 80) // 8
+    frame_symbols = d.plframe_length(False, True, modulation)
+    payload_bytes = (d.code(rate).kbch - 80) // 8
     dummy = d.dummy_phases()
     for n, bb in enumerate(bbframes):
         scrambled = d.bb_scramble(bb)
-        fec = d.ldpc_encode_groups(d.bch_encode_bytes(scrambled, "3/4"), "3/4")
-        phases.append(d.plframe_phases(fec, "3/4", pilots=True))
+        fec = d.ldpc_encode_groups(d.bch_encode_bytes(scrambled, rate), rate)
+        phases.append(d.plframe_phases(fec, rate, pilots=True, modulation=modulation))
         total += frame_symbols
         # Only whole frames are sent; residual credit carries to the next frame.
-        target = (n+1) * payload_bytes * 8 * 10e6 / 9e6
+        target = (n+1) * payload_bytes * 8 * rs / 9e6
         while total + len(dummy) <= target:
             phases.append(dummy)
             total += len(dummy)
@@ -67,9 +68,9 @@ def encode(ts, path):
         # Receiver pipeline lookahead at EOF, outside the transmitted waveform.
         np.zeros(8192, dtype="<c8").tofile(f)
     return {"data_frames": len(bbframes), "dummy_frames": dummy_count,
-            "sample_rate": 20e6, "symbol_rate": 10e6, "modcod": 7,
+            "sample_rate": 2*rs, "symbol_rate": rs, "modcod": modcod,
             "rolloff": .35, "pilots": True, "samples": len(samples),
-            "iq_seconds": len(samples) / 20e6, "unencoded_tail_bytes": len(ts) - len(bbframes)*payload_bytes}
+            "iq_seconds": len(samples) / (2*rs), "unencoded_tail_bytes": len(ts) - len(bbframes)*payload_bytes}
 
 
 def main():
@@ -78,6 +79,8 @@ def main():
     p.add_argument("--receiver", default=os.environ.get("RX", "leandvb"))
     p.add_argument("--ts", type=Path, help="use an existing complete TS file instead of test video")
     p.add_argument("--frames", type=int, default=25, help="number of generated 25 fps pictures")
+    p.add_argument("--modcod", type=int, choices=(7, 13), default=7,
+                   help="7: QPSK 3/4 at 10 Msym/s; 13: 8PSK 2/3 at 5 Msym/s")
     a = p.parse_args()
     if a.frames < 5:
         p.error("use at least 5 video pictures for acquisition and repeated PSI")
@@ -85,9 +88,11 @@ def main():
     ts = a.ts.read_bytes() if a.ts else make_ts(a.frames)
     source_report = check(ts)
     (a.output / "source.ts").write_bytes(ts)
-    report = encode(ts, a.output / "source.cf32")
+    report = encode(ts, a.output / "source.cf32", a.modcod)
     command = [sys.executable, str(Path(__file__).with_name("receive.py")),
                "--iq", str(a.output / "source.cf32"), "--receiver", a.receiver,
+               "--rate", str(report["sample_rate"]), "--symbol-rate", str(report["symbol_rate"]),
+               "--modcod", str(a.modcod),
                "--output", str(a.output / "received.ts")]
     started = time.monotonic()
     with (a.output / "receiver.log").open("w") as log:
