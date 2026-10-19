@@ -4,12 +4,15 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = ROOT / "examples/live-video"
 sys.path.insert(0, str(EXAMPLE))
 from check_ts import check
 from make_ts import make_ts
+import receive
 
 
 def rejects(data, reference=None):
@@ -61,6 +64,31 @@ def test_processes():
         result = subprocess.run(cmd, capture_output=True, timeout=10, check=True)
         assert result.stdout == ts
         assert b"UHD status" in result.stderr
+        # Simulate a cold player launch and a capture with finite queue headroom.
+        player = folder / "player"
+        player.write_text("#!" + sys.executable + "\nimport sys\n"
+                          f"open({str(folder/'played.ts')!r}, 'wb').write(sys.stdin.buffer.read())\n")
+        player.chmod(0o755)
+        source.write_text("#!" + sys.executable + "\nimport os,pathlib,sys,time\n"
+                          f"data=memoryview(pathlib.Path({str(folder/'source.ts')!r}).read_bytes())\n"
+                          "fd=os.open(sys.argv[-1],os.O_WRONLY|os.O_NONBLOCK)\n"
+                          "deadline=time.monotonic()+.3\n"
+                          "while data:\n"
+                          " if time.monotonic()>deadline: raise SystemExit(7)\n"
+                          " try: data=data[os.write(fd,data):]\n"
+                          " except BlockingIOError: time.sleep(.001)\n"
+                          "os.close(fd)\n")
+        popen = subprocess.Popen
+        def cold_player(command, **kwargs):
+            if command[0] == str(player):
+                time.sleep(.6)
+            return popen(command, **kwargs)
+        args = receive.parser().parse_args(cmd[2:] + ["--player", str(player),
+                                           "--output", str(folder/'saved.ts')])
+        receive.validate(args)
+        with patch.object(receive.subprocess, 'Popen', cold_player):
+            receive.run(args)
+        assert (folder/'saved.ts').read_bytes() == (folder/'played.ts').read_bytes() == ts
         # A source which fails before opening its FIFO must not hang.
         source.write_text("#!" + sys.executable + "\nraise SystemExit(3)\n")
         result = subprocess.run(cmd, capture_output=True, timeout=10)
