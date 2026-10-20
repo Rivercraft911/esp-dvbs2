@@ -797,7 +797,7 @@ esp_err_t radio_s3_paced_wifi_options(uint32_t seconds, uint32_t dac_rate, radio
                                       void *ctx, const radio_s3_options_t *options, radio_s3_stats_t *stats)
 {
     if (!fill || !stats || seconds == 0 || seconds > 600 || !known_rate(dac_rate) ||
-            (options && options->phy_solo && seconds > 60) ||
+            (options && options->phy_solo && seconds > RADIO_S3_PHY_SOLO_MAX_SECONDS) ||
             !station_store_get()[0]) return ESP_ERR_INVALID_ARG;
     memset(stats,0,sizeof *stats);
     stats->min_fill_slack_cycles = UINT32_MAX;
@@ -863,7 +863,8 @@ esp_err_t radio_s3_run_options(uint32_t freq_mhz, uint8_t gain, uint32_t seconds
                                void *ctx, const radio_s3_options_t *options, radio_s3_stats_t *stats)
 {
     if (!occupied_hz || occupied_hz > dac_rate || !fill || !stats || freq_mhz < 2390 || freq_mhz > 2450 ||
-            gain > RADIO_S3_GAIN_MAX || seconds == 0 || seconds > 60 || !known_rate(dac_rate)) {
+            gain > RADIO_S3_GAIN_MAX || seconds == 0 || seconds > RADIO_S3_MAX_SECONDS ||
+            (options && options->phy_solo && seconds > RADIO_S3_PHY_SOLO_MAX_SECONDS) || !known_rate(dac_rate)) {
         return ESP_ERR_INVALID_ARG;
     }
     // Refuse before task creation, Wi-Fi init, calibration or any register access.

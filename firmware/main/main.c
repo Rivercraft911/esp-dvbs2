@@ -110,11 +110,12 @@ static void cmd_dvb(char *args)
     if (!source_ok || !options_ok || !fused_ok || !number(mhz, 2390, 2450, &freq) || !mode_ok ||
         (fused && !(sps == 3 && modcod >= 12)) ||
         (fixture && !(sps == DVB_SPS_12_5 || (sps == 3 && modcod >= 12))) ||
-        !number(duration, 1, 60, &seconds) ||
+        !number(duration, 1, phy_solo ? RADIO_S3_PHY_SOLO_MAX_SECONDS : RADIO_S3_MAX_SECONDS, &seconds) ||
         (level && !number(level, 0, RADIO_S3_GAIN_MAX, &gain)) ||
         (peak && !number(peak, 16, 508, &top)) || extra) {
         printf("@{\"cmd\":\"dvb\",\"error\":\"usage: dvb <2390..2450 MHz> <modcod 4..17> [5m|10m|20m|26m667|33m333] "
-               "<1..60 seconds> [0..17 gain] [16..508 peak] [--fixture] [--phy-solo] [--fused (8PSK 26m667)]\"}\n");
+               "<1..%u seconds> [0..17 gain] [16..508 peak] [--fixture] [--phy-solo (<=%u s)] [--fused (8PSK 26m667)]\"}\n",
+               RADIO_S3_MAX_SECONDS, RADIO_S3_PHY_SOLO_MAX_SECONDS);
         return;
     }
     dvbtx_run_options(freq,modcod,seconds,gain,top,sps,rate,fixture,phy_solo,fused);
@@ -155,7 +156,7 @@ static void cmd_dvbpace(char *args)
     char *pause = strtok_r(NULL, " \t", &save);
     char *extra = strtok_r(NULL, " \t", &save);
     uint32_t seconds, top = 128, stall = 0;
-    if (!options_ok || !fused_ok || !mode_ok || !number(duration, 1, phy_solo ? 60 : 600, &seconds) ||
+    if (!options_ok || !fused_ok || !mode_ok || !number(duration, 1, phy_solo ? RADIO_S3_PHY_SOLO_MAX_SECONDS : 600, &seconds) ||
         (fused && !(sps == 3 && modcod >= 12)) ||
         (peak && !number(peak, 16, 508, &top)) || (pause && !number(pause, 0, 2000, &stall)) ||
         extra) {
