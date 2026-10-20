@@ -35,4 +35,4 @@ typedef struct {
 esp_err_t rx_capture(uint16_t mhz, uint8_t gain, uint8_t *record, uint32_t *snapshot,
                      rx_report *report, bool probe);
 void rx_pattern(uint8_t *record, rx_report *report);
-esp_err_t rx_memory(uint8_t *record, rx_memory_report *report, bool dma);
+esp_err_t rx_memory(uint8_t *record, rx_memory_report *report, unsigned dma_burst);

@@ -51,7 +51,8 @@ typedef struct {
     rx_report *report;
     uint16_t mhz;
     uint8_t gain;
-    bool probe, pattern, dma;
+    bool probe, pattern;
+    unsigned dma_burst;
     rx_memory_report *memory;
     SemaphoreHandle_t done;
 } run;
@@ -362,11 +363,11 @@ static void dma_run(run *r)
 {
     static const char *names[] = {"internal_psram_dma4k", "bank0_psram_dma",
                                   "bank1_psram_dma", "bank2_psram_dma"};
-    uint8_t *allocation = heap_caps_malloc(4096U + 32U,
+    uint8_t *allocation = heap_caps_malloc(4096U + 128U,
                                            MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
     if (!allocation) { r->report->error = ESP_ERR_NO_MEM; return; }
-    memset(allocation, 0x6d, 4096U + 32U);
-    uint32_t *internal = (uint32_t *)(allocation + 16U);
+    memset(allocation, 0x6d, 4096U + 128U);
+    uint32_t *internal = (uint32_t *)(((uintptr_t)allocation + 79U) & ~(uintptr_t)63U);
     for (unsigned n = 0; n < 1024; ++n) internal[n] = memory_word(n, 3);
     REG_WRITE(DUMP_CTRL, 0);
     REG_WRITE(DAC_CTRL, 0);
@@ -377,6 +378,7 @@ static void dma_run(run *r)
     async_memcpy_handle_t handle;
     async_memcpy_config_t config = ASYNC_MEMCPY_DEFAULT_CONFIG();
     config.backlog = 1;
+    config.dma_burst_size = r->dma_burst;
     r->report->error = esp_async_memcpy_install_gdma_ahb(&config, &handle);
     if (r->report->error != ESP_OK) { free(allocation); return; }
     StaticSemaphore_t storage;
@@ -433,7 +435,7 @@ static void dma_run(run *r)
         esp_restart();
     }
     for (unsigned n = 0; n < 16; ++n)
-        if (allocation[n] != 0x6d || allocation[16U + 4096U + n] != 0x6d)
+        if (((uint8_t *)internal - 16U)[n] != 0x6d || ((uint8_t *)internal)[4096U + n] != 0x6d)
             r->memory->guards_ok = false;
     if (!r->memory->guards_ok) r->report->error = ESP_FAIL;
     free(allocation);
@@ -445,7 +447,7 @@ static void worker(void *arg)
     rx_report *s = r->report;
     bool initialized = false, started = false, rf_setup = false;
     if (r->memory) {
-        if (r->dma) dma_run(r);
+        if (r->dma_burst) dma_run(r);
         else memory_run(r);
         goto done;
     }
@@ -556,12 +558,14 @@ void rx_pattern(uint8_t *record, rx_report *report)
     (void)execute(&r);
 }
 
-esp_err_t rx_memory(uint8_t *record, rx_memory_report *report, bool dma)
+esp_err_t rx_memory(uint8_t *record, rx_memory_report *report, unsigned dma_burst)
 {
     memset(report, 0, sizeof *report);
+    if (dma_burst && dma_burst != 16 && dma_burst != 32 && dma_burst != 64)
+        return ESP_ERR_INVALID_ARG;
     wifi_mode_t mode;
     if (esp_wifi_get_mode(&mode) != ESP_ERR_WIFI_NOT_INIT) return ESP_ERR_INVALID_STATE;
     rx_report capture = {0};
-    run r = {.record = record, .report = &capture, .memory = report, .dma = dma};
+    run r = {.record = record, .report = &capture, .memory = report, .dma_burst = dma_burst};
     return execute(&r);
 }
