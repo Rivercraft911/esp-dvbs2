@@ -24,7 +24,9 @@
 // settings, not copied software or a calibrated dBm table. Source doc:1383.
 
 #include <stdbool.h>
+#include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "radio_s3.h"
@@ -123,23 +125,52 @@ static uint16_t gain_baseband(unsigned gain)
 static portMUX_TYPE state_lock = portMUX_INITIALIZER_UNLOCKED;
 static bool running;
 static bool lo_divided;
+static int32_t lo_offset_khz;
 
 void radio_s3_lo_command(const char *args)
 {
-    if (!strcmp(args, "direct")) lo_divided = false;
-    else if (!strcmp(args, "five-sixths")) lo_divided = true;
-    else {
-        printf("@{\"cmd\":\"rflo\",\"error\":\"usage: rflo direct|five-sixths\"}\n");
-        return;
+    char mode[16], *end;
+    int at = 0;
+    if (sscanf(args, "%15s%n", mode, &at) != 1) goto usage;
+    const bool divided = !strcmp(mode, "five-sixths");
+    if (!divided && strcmp(mode, "direct")) goto usage;
+    const char *value = args + at;
+    while (*value == ' ' || *value == '\t') ++value;
+    long offset = 0;
+    if (*value) {
+        errno = 0;
+        offset = strtol(value, &end, 10);
+        if (errno || end == value || offset < -999 || offset > 999) goto usage;
+        while (*end == ' ' || *end == '\t') ++end;
+        if (*end) goto usage;
     }
-    printf("@{\"cmd\":\"rflo\",\"mode\":\"%s\"}\n", lo_divided ? "five-sixths" : "direct");
+    lo_divided = divided;
+    lo_offset_khz = offset;
+    printf("@{\"cmd\":\"rflo\",\"mode\":\"%s\",\"offset_khz\":%ld}\n", mode, offset);
+    return;
+usage:
+    printf("@{\"cmd\":\"rflo\",\"error\":\"usage: rflo direct|five-sixths [-999..999 offset kHz]\"}\n");
+}
+
+static uint32_t requested_rf_khz(uint32_t mhz)
+{
+    return (uint32_t)((int64_t)mhz * 1000 + lo_offset_khz);
+}
+
+void radio_s3_tuning_print(const radio_s3_stats_t *stats)
+{
+    printf(",\"requested_rf_khz\":%lu,\"lo_mode\":\"%s\",\"lo_offset_khz\":%ld,"
+           "\"requested_pll_khz\":%lu", (unsigned long)stats->requested_rf_khz,
+           stats->lo_divided ? "five-sixths" : "direct", (long)stats->lo_offset_khz,
+           (unsigned long)stats->requested_pll_khz);
 }
 
 /* Keep this cold setup out of the renderer's fixed IRAM literal layout. */
 static __attribute__((noinline)) void tune(uint32_t mhz)
 {
-    /* PLL kHz = LO MHz * 1000 * 6/5, exact for integer-MHz requests. */
-    const uint32_t khz = mhz * (lo_divided ? 1200U : 1000U);
+    const uint32_t rf = requested_rf_khz(mhz);
+    /* Nearest integer PLL kHz. Integer-MHz requests remain exact. */
+    const uint32_t khz = lo_divided ? (6U * rf + 2U) / 5U : rf;
     phy_set_freq(khz / 1000, khz % 1000);
     regi2c_ctrl_write_reg_mask(0x65, 0, 0, 4, 4, lo_divided);
 }
@@ -893,17 +924,24 @@ esp_err_t radio_s3_run_options(uint32_t freq_mhz, uint8_t gain, uint32_t seconds
                                uint32_t dac_rate, uint32_t occupied_hz, radio_s3_fill_fn fill,
                                void *ctx, const radio_s3_options_t *options, radio_s3_stats_t *stats)
 {
+    const int64_t rf = (int64_t)freq_mhz * 1000 + lo_offset_khz;
     if (stats) {
         memset(stats, 0, sizeof *stats);
         radio_calibration_attempt(&stats->calibration, true);
+        stats->requested_rf_khz = rf >= 0 && rf <= UINT32_MAX ? rf : 0;
+        stats->lo_offset_khz = lo_offset_khz;
+        stats->lo_divided = lo_divided;
+        if (rf >= RADIO_S3_FREQ_MIN_MHZ * 1000U && rf <= RADIO_S3_FREQ_MAX_MHZ * 1000U)
+            stats->requested_pll_khz = lo_divided ? (6U * rf + 2U) / 5U : rf;
     }
     if (!occupied_hz || occupied_hz > dac_rate || !fill || !stats ||
             freq_mhz < RADIO_S3_FREQ_MIN_MHZ || freq_mhz > RADIO_S3_FREQ_MAX_MHZ ||
+            rf < RADIO_S3_FREQ_MIN_MHZ * 1000U || rf > RADIO_S3_FREQ_MAX_MHZ * 1000U ||
             gain > RADIO_S3_GAIN_MAX || seconds == 0 || seconds > RADIO_S3_MAX_SECONDS ||
             (options && options->phy_solo && seconds > RADIO_S3_PHY_SOLO_MAX_SECONDS) || !known_rate(dac_rate)) {
         return ESP_ERR_INVALID_ARG;
     }
-    if (lo_divided && stats->calibration.requested) return ESP_ERR_NOT_SUPPORTED;
+    if ((lo_divided || lo_offset_khz) && stats->calibration.requested) return ESP_ERR_NOT_SUPPORTED;
     // Refuse before task creation, Wi-Fi init, calibration or any register access.
     if (!station_store_get()[0]) {
         return ESP_ERR_INVALID_STATE;

@@ -1563,11 +1563,12 @@ void dvbtx_run_options(uint32_t freq, unsigned modcod, uint32_t seconds, unsigne
     printf(",\"fe_gain_index\":%" PRIu32 ",\"chain\":\"cwgain\"", s.fe_gain_index);
     radio_filter_print(&s.filter);
     radio_calibration_print(&s.calibration);
+    radio_s3_tuning_print(&s);
     print_wifi(&s.wifi);
     print_session(phy_solo,&s);
     stop_encoder();
     printf(",\"status\":\"%s\"%s}\n", esp_err_to_name(err),
-           err == ESP_ERR_INVALID_ARG ? ",\"error\":\"duration too short for start/end ID\"" :
+           err == ESP_ERR_INVALID_ARG ? ",\"error\":\"RF frequency out of range or duration too short for start/end ID\"" :
            err != ESP_OK ? ",\"error\":\"radio run failed\"" : "");
 }
 

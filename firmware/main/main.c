@@ -231,9 +231,10 @@ static void cmd_tx(char *args)
            (unsigned long)s.fe_gain_index, "cwgain", esp_err_to_name(err));
     radio_filter_print(&s.filter);
     radio_calibration_print(&s.calibration);
+    radio_s3_tuning_print(&s);
     if (err != ESP_OK) {
         printf(",\"error\":\"%s\"", err == ESP_ERR_INVALID_ARG ?
-               "duration too short for start/end ID" : "radio run failed");
+               "RF frequency out of range or duration too short for start/end ID" : "radio run failed");
     }
     printf(",\"callsign\":\"%s\",\"id_count\":%lu,\"id_samples\":%lu,"
            "\"planned_samples\":%llu}\n", station_store_get(), (unsigned long)s.id_count,
