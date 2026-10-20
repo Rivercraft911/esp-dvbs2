@@ -27,6 +27,7 @@
 #include <string.h>
 
 #include "radio_s3.h"
+#include "radio_calibration.h"
 #include "physolo.h"
 #include "esp_timer.h"
 #include "esp_private/phy.h"
@@ -360,7 +361,7 @@ static esp_err_t IRAM_ATTR __attribute__((noinline)) stream(run_t *run)
     if (stats->fe_gain_index != 0) {
         return ESP_ERR_INVALID_STATE;
     }
-    if (!radio_filter_apply(&stats->filter)) {
+    if (!radio_calibration_filter(&stats->filter)) {
         return ESP_ERR_INVALID_STATE;
     }
     REG_CLR_BIT(TONE_CTRL, 1U << 18);
@@ -452,7 +453,12 @@ static void worker(void *arg)
     esp_pm_lock_handle_t sleep_lock = NULL;
 #endif
     wifi_mode_t existing;
-    esp_err_t error = esp_wifi_get_mode(&existing);
+    esp_err_t error = ESP_OK;
+    if (!run->probe && !run->wifi_pace &&
+        (error = radio_calibration_begin(run->freq_mhz, run->gain, run->geo.rate,
+                                         &run->stats->calibration)) != ESP_OK)
+        goto cleanup;
+    error = esp_wifi_get_mode(&existing);
     if (error != ESP_ERR_WIFI_NOT_INIT) {
         error = ESP_ERR_INVALID_STATE;
         goto cleanup;
@@ -566,6 +572,7 @@ static void worker(void *arg)
 cleanup:
     if (rf_setup) {
         REG_WRITE(DAC_CTRL, 0);
+        if (!radio_calibration_restore() && error == ESP_OK) error = ESP_ERR_INVALID_STATE;
         if (run->stats->filter.applied && !radio_filter_finish(&run->stats->filter) && error == ESP_OK) {
             error = ESP_ERR_INVALID_STATE;
         }
@@ -578,6 +585,7 @@ cleanup:
         rom_pbus_xpd_rx_on(0);
         REG_WRITE(BANK_USAGE, REG_READ(BANK_USAGE) & ~0xfU);
     }
+    if (!run->probe && !run->wifi_pace) radio_calibration_end(&run->stats->calibration);
     if (started) {
         (void)esp_wifi_set_promiscuous(false);
     }
@@ -862,6 +870,10 @@ esp_err_t radio_s3_run_options(uint32_t freq_mhz, uint8_t gain, uint32_t seconds
                                uint32_t dac_rate, uint32_t occupied_hz, radio_s3_fill_fn fill,
                                void *ctx, const radio_s3_options_t *options, radio_s3_stats_t *stats)
 {
+    if (stats) {
+        memset(stats, 0, sizeof *stats);
+        radio_calibration_attempt(&stats->calibration, true);
+    }
     if (!occupied_hz || occupied_hz > dac_rate || !fill || !stats || freq_mhz < 2390 || freq_mhz > 2450 ||
             gain > RADIO_S3_GAIN_MAX || seconds == 0 || seconds > RADIO_S3_MAX_SECONDS ||
             (options && options->phy_solo && seconds > RADIO_S3_PHY_SOLO_MAX_SECONDS) || !known_rate(dac_rate)) {
@@ -871,7 +883,6 @@ esp_err_t radio_s3_run_options(uint32_t freq_mhz, uint8_t gain, uint32_t seconds
     if (!station_store_get()[0]) {
         return ESP_ERR_INVALID_STATE;
     }
-    memset(stats, 0, sizeof *stats);
     stats->min_fill_slack_cycles = UINT32_MAX;
     stats->filter.occupied_hz = occupied_hz;
     stats->filter.requested = radio_filter_get();

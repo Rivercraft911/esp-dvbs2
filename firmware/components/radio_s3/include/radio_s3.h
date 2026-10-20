@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include "esp_err.h"
 #include "radio_filter.h"
+#include "radio_calibration.h"
 
 #define RADIO_S3_DAC_RATE 40000000U      /* DAC_CTRL bit 15 clear; keyed on air */
 #define RADIO_S3_DAC_RATE_80M 80000000U  /* bit 15 set; keyed at 20 and 80/3 Msym/s */
@@ -115,6 +116,7 @@ typedef struct {
     radio_s3_wifi_heap_t wifi; /* run and paced_wifi */
     int64_t wifi_stop_at_us, wifi_deinit_at_us;
     radio_s3_session_stats_t session, after; /* opt-in handoff / cleanup */
+    radio_calibration_stats_t calibration; /* per attempt, including admission failures */
 } radio_s3_stats_t;
 
 /* Synchronous, exclusive run on core 1, 240 MHz. Valid requests are integer MHz

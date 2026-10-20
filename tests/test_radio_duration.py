@@ -70,6 +70,9 @@ static int xTaskCreatePinnedToCore(TaskFunction_t task, const char *name, unsign
     ++tasks; task(arg); return pdPASS;
 }
 radio_filter_mode_t radio_filter_get(void) { return RADIO_FILTER_AUTO; }
+void radio_calibration_attempt(radio_calibration_stats_t *stats,bool keyed) {
+    (void)keyed; memset(stats,0,sizeof *stats);
+}
 static uint64_t clock_cycles;
 static uint32_t cycles(void) { return (uint32_t)clock_cycles++; }
 static void wait_until(uint32_t deadline) {

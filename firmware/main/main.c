@@ -21,6 +21,7 @@
 #include "spi_input.h"
 #include "usb_input.h"
 #include "radio_s3.h"
+#include "radio_calibration.h"
 #include "radio_signals.h"
 #include "shaper.h"
 #include "station_commands.h"
@@ -227,6 +228,7 @@ static void cmd_tx(char *args)
            (unsigned long)s.fatal_late, (unsigned long)s.fe_base_index,
            (unsigned long)s.fe_gain_index, "cwgain", esp_err_to_name(err));
     radio_filter_print(&s.filter);
+    radio_calibration_print(&s.calibration);
     if (err != ESP_OK) {
         printf(",\"error\":\"%s\"", err == ESP_ERR_INVALID_ARG ?
                "duration too short for start/end ID" : "radio run failed");
@@ -303,6 +305,9 @@ void app_main(void)
                    strncmp(line, "spisend ", 8) == 0 || strncmp(line, "spirx ", 6) == 0) {
             char *args = strchr(line, ' '); *args++ = 0;
             spi_input_command(line, args);
+        } else if (strncmp(line, "rfprofile ", 10) == 0) {
+            radio_calibration_command(line + 10);
+            strcpy(line, "rfprofile");
         } else if (strncmp(line, "vcm ", 4) == 0) {
             dvbtx_vcm_command(line + 4);
             strcpy(line, "vcm");
