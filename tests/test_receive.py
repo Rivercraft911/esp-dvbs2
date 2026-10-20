@@ -32,6 +32,19 @@ class ReceiveTests(unittest.TestCase):
                             "-o", str(program)], check=True)
             subprocess.run([str(program)], check=True)
 
+    def test_capture_size_bounds(self):
+        source = ROOT / "firmware/rx/main"
+        for packed, pairs, valid in ((0, 2000000, True), (0, 2000001, False),
+                                     (1, 3200000, True), (1, 3200001, False)):
+            with self.subTest(packed=packed, pairs=pairs):
+                result = subprocess.run(["cc", "-std=c11", "-fsyntax-only", "-x", "c",
+                                         "-I", str(source),
+                                         f"-DRX_PACKED_CAPTURE={packed}",
+                                         f"-DRX_RECORD_PAIRS={pairs}", "-"],
+                                        input='#include "samples.h"\n', text=True,
+                                        capture_output=True)
+                self.assertEqual(result.returncode == 0, valid, result.stderr)
+
     def test_download_validation(self):
         spec = importlib.util.spec_from_file_location("receive", ROOT / "host/receive.py")
         module = importlib.util.module_from_spec(spec)
@@ -51,6 +64,16 @@ class ReceiveTests(unittest.TestCase):
             module.validate(data, {**packed, "stage_guards_ok": False})
         with self.assertRaises(ValueError):
             module.validate(data, {**report, "capture_path": "packed"})
+        # The 1024-pair pattern period repeats exactly at the packed3.2M bound.
+        large = data[:2048] * 3125
+        large_report = {**packed, "retained_pairs": 3200000, "crc32": zlib.crc32(large)}
+        self.assertEqual(module.validate(large, large_report, pairs=3200000)["pairs"], 3200000)
+        with self.assertRaises(ValueError):
+            module.validate(large, {**large_report, "capture_path": "raw"}, pairs=3200000)
+        over = large + large[:2]
+        with self.assertRaises(ValueError):
+            module.validate(over, {**large_report, "retained_pairs": 3200001,
+                                   "crc32": zlib.crc32(over)}, pairs=3200001)
         for field in ("late", "overruns", "boundary_errors", "gap_events", "sentinel_errors"):
             with self.assertRaises(ValueError):
                 module.validate(data, {**report, field: 1})

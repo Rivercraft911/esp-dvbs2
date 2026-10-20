@@ -36,8 +36,9 @@ def inspect_banks(data, report):
 
 
 def validate(data, report, snapshot=None, *, pairs=PAIRS):
-    if not 512 <= pairs <= 2000000:
-        raise ValueError("expected pairs must be 512..2000000")
+    limit = 3200000 if report.get("capture_path") == "packed" else 2000000
+    if not 512 <= pairs <= limit:
+        raise ValueError(f"expected pairs must be 512..{limit}")
     if report.get("status") != "ESP_OK" or not report.get("complete"):
         raise ValueError("board did not complete the capture")
     if not report.get("guards_ok") or report.get("retained_pairs") != pairs:
