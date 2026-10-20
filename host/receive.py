@@ -1,0 +1,61 @@
+#!/usr/bin/env python3
+"""Check a stopped S3 RX download and its board.py JSON-lines report."""
+import argparse
+import json
+import pathlib
+import struct
+import zlib
+
+PAIRS = 1600000
+
+
+def validate(data, report, snapshot=None):
+    if report.get("status") != "ESP_OK" or not report.get("complete"):
+        raise ValueError("board did not complete the capture")
+    if not report.get("guards_ok") or report.get("retained_pairs") != PAIRS:
+        raise ValueError("board guards or retained sample count failed")
+    if len(data) != 2 * PAIRS or zlib.crc32(data) != report.get("crc32"):
+        raise ValueError("download length or CRC differs from the board")
+    for field in ("late", "overruns", "boundary_errors", "gap_events", "sentinel_errors"):
+        if report.get(field) != 0:
+            raise ValueError(f"board reported {field}={report.get(field)!r}")
+    if report.get("cmd") == "pattern":
+        for n in range(PAIRS):
+            if data[2 * n] != ((13 * n) & 1023) >> 2 or \
+               data[2 * n + 1] != ((29 * n + 7) & 1023) >> 2:
+                raise ValueError(f"memory pattern differs at complex pair {n}")
+    else:
+        acquired, cycles = report.get("acquired_pairs", 0), report.get("engine_cycles", 0)
+        if not PAIRS <= acquired < PAIRS + 12288 + 2000 or cycles <= 0:
+            raise ValueError("acquisition count or engine timing is invalid")
+        measured_rate = acquired * 240000000 / cycles
+        if not 15840000 <= measured_rate <= 16160000:
+            raise ValueError(f"index/cycle rate {measured_rate:.0f} differs from 16 MS/s")
+        if snapshot is None or len(snapshot) != 2048:
+            raise ValueError("capture needs the 512-word raw10 snapshot control")
+        if zlib.crc32(snapshot) != report.get("snapshot_crc32"):
+            raise ValueError("raw10 snapshot CRC differs from the board")
+        for n, (word,) in enumerate(struct.iter_unpack("<I", snapshot)):
+            if data[2 * n] != (word >> 12) & 255 or data[2 * n + 1] != (word >> 2) & 255:
+                raise ValueError(f"raw10/sc8 conversion differs at complex pair {n}")
+    result = {"pairs": PAIRS, "bytes": len(data), "crc32": zlib.crc32(data),
+              "source": report["cmd"], "raw10_control_pairs": len(snapshot or b"") // 4}
+    if report["cmd"] != "pattern": result["index_cycle_rate_sps"] = measured_rate
+    return result
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("iq", type=pathlib.Path)
+    parser.add_argument("--report", type=pathlib.Path, required=True)
+    parser.add_argument("--snapshot", type=pathlib.Path)
+    args = parser.parse_args()
+    records = [json.loads(line) for line in args.report.read_text().splitlines() if line.strip()]
+    report = next(r for r in reversed(records) if r.get("cmd") in ("capture", "pattern"))
+    snapshot = args.snapshot.read_bytes() if args.snapshot else None
+    result = validate(args.iq.read_bytes(), report, snapshot)
+    print(json.dumps(result))
+
+
+if __name__ == "__main__":
+    main()

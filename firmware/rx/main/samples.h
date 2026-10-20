@@ -1,0 +1,22 @@
+#pragma once
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#define RX_BANK_PAIRS 16384U
+#define RX_BANK_MASK (RX_BANK_PAIRS - 1U)
+#define RX_SENTINEL UINT32_C(0xa5a5a5a5)
+#define RX_EDGE_GUARD 64U
+#define RX_RECORD_PAIRS 1600000U
+#define RX_RECORD_BYTES (2U * RX_RECORD_PAIRS)
+
+typedef struct { uint16_t before, after; } rx_edge;
+
+/* A switch's actual index is recovered from sentinel transitions on both banks.
+ * Brackets wider than 64 pairs or ambiguous transitions are rejected. */
+bool rx_find_edge(const uint32_t *bank, rx_edge bracket, bool entering,
+                  uint16_t *index);
+bool rx_span(const uint32_t *bank, rx_edge begin, rx_edge end,
+             uint16_t *first, size_t *pairs);
+/* Caller owns this bank. The dump engine must already be writing another bank. */
+bool rx_pack(const uint32_t *bank, uint16_t first, size_t pairs, uint8_t *out);
