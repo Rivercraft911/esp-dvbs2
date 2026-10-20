@@ -2,6 +2,10 @@
 #include "esp_err.h"
 #include "samples.h"
 
+#ifndef RX_GAIN_REFRESH_CYCLES
+#define RX_GAIN_REFRESH_CYCLES 4800000U
+#endif
+
 typedef struct {
     uint32_t retained_pairs, acquired_pairs, units;
     uint32_t late, overruns, boundary_errors, gaps, sentinel_errors;

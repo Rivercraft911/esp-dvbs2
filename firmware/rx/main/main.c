@@ -40,6 +40,7 @@ static void report(void)
            "\"dma_errors\":%lu,\"dma_copies\":%lu,\"max_dma_setup_cycles\":%lu,"
            "\"dma_rx_flags\":%lu,\"dma_tx_flags\":%lu,\"clear_overlapped\":true,"
            "\"max_switch_late_pairs\":%lu,\"engine_cycles\":%lu,\"elapsed_cycles\":%lu,\"gain_refreshes\":%lu,"
+           "\"gain_refresh_cycles\":%lu,"
            "\"gain_max\":%u,\"guards_ok\":%s,\"sc8_rail_values\":%lu,"
            "\"snapshot_pairs\":%lu,\"snapshot_crc32\":%lu,"
            "\"format\":\"sc8\",\"order\":\"high10=I,low10=Q\",\"scaling\":\"floor(s10/4)\","
@@ -59,6 +60,7 @@ static void report(void)
            (unsigned long)last.dma_rx_flags, (unsigned long)last.dma_tx_flags,
            (unsigned long)last.max_switch_late_pairs,
            (unsigned long)last.engine_cycles, (unsigned long)last.elapsed_cycles, (unsigned long)last.gain_refreshes,
+           (unsigned long)RX_GAIN_REFRESH_CYCLES,
            last.gain_max, last.guards_ok ? "true" : "false", (unsigned long)rails,
            (unsigned long)last.snapshot_pairs, (unsigned long)last.snapshot_crc32);
     if (diagnostic) {
@@ -129,12 +131,13 @@ void app_main(void)
             ESP_ERROR_CHECK(esp_read_mac(mac, ESP_MAC_WIFI_STA));
             printf("@{\"cmd\":\"info\",\"app\":\"s3_receive\",\"firmware\":\"%s\","
                    "\"psram_bytes\":%u,\"record_allocated\":%s,\"capture_buffer_bytes\":%u,"
-                   "\"free_psram_bytes\":%u,\"tx\":false,"
+                   "\"free_psram_bytes\":%u,\"gain_refresh_cycles\":%lu,\"tx\":false,"
                    "\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\","
                    "\"banks\":[\"0x3fcb0000\",\"0x3fcc0000\",\"0x3fcd0000\"]}\n",
                    esp_app_get_description()->version, (unsigned)esp_psram_get_size(),
                    allocation ? "true" : "false", RX_CAPTURE_BYTES,
                    (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+                   (unsigned long)RX_GAIN_REFRESH_CYCLES,
                    mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
         } else if (capture && !strcmp(cmd, "adcprobe")) {
             valid = false;

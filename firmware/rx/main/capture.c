@@ -164,7 +164,10 @@ static esp_err_t IRAM_ATTR __attribute__((noinline)) collect(run *r)
     }
     position p = {.cycle = epoch, .changed = epoch};
     rx_edge begin = {0, 0};
-    uint32_t target = UNIT_PAIRS, refresh = epoch;
+    uint32_t target = UNIT_PAIRS;
+#if RX_GAIN_REFRESH_CYCLES
+    uint32_t refresh = epoch;
+#endif
     uint16_t expected = 0;
     unsigned current = 0, pending = 3;
     esp_err_t error = ESP_FAIL;
@@ -236,13 +239,15 @@ static esp_err_t IRAM_ATTR __attribute__((noinline)) collect(run *r)
         pending = current;
         if (s->retained_pairs == RX_RECORD_PAIRS) { error = ESP_OK; break; }
 
+#if RX_GAIN_REFRESH_CYCLES
         /* Vendor RX gain can drift during an extended capture. Refresh at bank
          * boundaries and retain the resulting worst-case poll/late measurements. */
-        if (esp_cpu_get_cycle_count() - refresh >= 4800000U) {
+        if (esp_cpu_get_cycle_count() - refresh >= RX_GAIN_REFRESH_CYCLES) {
             force_rx_gain(1, r->gain, 0);
             refresh = esp_cpu_get_cycle_count();
             ++s->gain_refreshes;
         }
+#endif
         begin = end;
         current = next;
         target += UNIT_PAIRS;
