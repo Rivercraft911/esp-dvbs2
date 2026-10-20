@@ -64,8 +64,10 @@ int main(void) {
     assert(!reads&&!writes&&!pbus&&!mac_reads&&filters==1);
     result("default");
     radio_calibration_command("bench2420");
-    const unsigned bad[][3]={{2419,0,40000000},{2420,1,40000000},{2420,0,80000000}};
-    for(unsigned i=0;i<3;++i) {
+    const unsigned bad[][3]={{2000,0,40000000},{2025,0,40000000},{2110,0,40000000},
+                            {2200,0,40000000},{2290,0,40000000},{2400,0,40000000},
+                            {2419,0,40000000},{2420,1,40000000},{2420,0,80000000}};
+    for(unsigned i=0;i<sizeof bad/sizeof *bad;++i) {
         baseline(); assert(begin(bad[i][0],bad[i][1],bad[i][2])!=ESP_OK);
         assert(!radio_calibration_filter(&filter)&&radio_calibration_restore());
         assert(!reads&&!writes&&!pbus&&!filters);

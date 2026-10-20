@@ -177,6 +177,7 @@ static void rom_pbus_xpd_rx_on(unsigned n) { assert(!n); }
 static void direct_lo(void) {}
 static void set_chanfreq(unsigned f, unsigned b) { assert(f==2412 && !b); }
 static void phy_set_freq(unsigned f, unsigned o) { assert(f==2412 && !o); }
+static void tune(uint32_t mhz) { phy_set_freq(mhz, 0); }
 static void vTaskDelay(unsigned n) { assert(n==3); }
 static unsigned cw_channel(unsigned f) { (void)f; return 1; }
 static unsigned cw_backoff(unsigned g) { (void)g; return 0; }

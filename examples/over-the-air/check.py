@@ -48,8 +48,8 @@ def settings(a):
         a.modcod = a.pattern[0]
     rs = RATES[a.rate]
     fs = 2 * rs
-    if not 2390 <= a.mhz <= 2450 or not 1 <= a.seconds <= 60:
-        raise ValueError("need 2390..2450 MHz and 1..60 seconds")
+    if not 2000 <= a.mhz <= 2450 or not 1 <= a.seconds <= 60:
+        raise ValueError("need 2000..2450 MHz and 1..60 seconds")
     if not 0 <= a.gain <= 17 or not 16 <= a.peak <= 508:
         raise ValueError("need TX gain 0..17 and peak 16..508")
     if not math.isfinite(a.rx_gain) or not 0 <= a.rx_gain <= 76:

@@ -108,14 +108,16 @@ static void cmd_dvb(char *args)
     char *peak = strtok_r(NULL, " \t", &save);
     char *extra = strtok_r(NULL, " \t", &save);
     uint32_t freq, seconds, gain = RADIO_S3_GAIN_DEFAULT, top = 128;
-    if (!source_ok || !options_ok || !fused_ok || !number(mhz, 2390, 2450, &freq) || !mode_ok ||
+    if (!source_ok || !options_ok || !fused_ok ||
+        !number(mhz, RADIO_S3_FREQ_MIN_MHZ, RADIO_S3_FREQ_MAX_MHZ, &freq) || !mode_ok ||
         (fused && !(sps == 3 && modcod >= 12)) ||
         (fixture && !(sps == DVB_SPS_12_5 || (sps == 3 && modcod >= 12))) ||
         !number(duration, 1, phy_solo ? RADIO_S3_PHY_SOLO_MAX_SECONDS : RADIO_S3_MAX_SECONDS, &seconds) ||
         (level && !number(level, 0, RADIO_S3_GAIN_MAX, &gain)) ||
         (peak && !number(peak, 16, 508, &top)) || extra) {
-        printf("@{\"cmd\":\"dvb\",\"error\":\"usage: dvb <2390..2450 MHz> <modcod 4..17> [5m|10m|20m|26m667|33m333] "
+        printf("@{\"cmd\":\"dvb\",\"error\":\"usage: dvb <%u..%u MHz> <modcod 4..17> [5m|10m|20m|26m667|33m333] "
                "<1..%u seconds> [0..17 gain] [16..508 peak] [--fixture] [--phy-solo (<=%u s)] [--fused (8PSK 26m667)]\"}\n",
+               RADIO_S3_FREQ_MIN_MHZ, RADIO_S3_FREQ_MAX_MHZ,
                RADIO_S3_MAX_SECONDS, RADIO_S3_PHY_SOLO_MAX_SECONDS);
         return;
     }
@@ -197,14 +199,14 @@ static void cmd_tx(char *args)
     char *msps = strtok_r(NULL, " \t", &save);
     char *extra = strtok_r(NULL, " \t", &save);
     uint32_t freq, seconds, gain = RADIO_S3_GAIN_DEFAULT, rate = 40;
-    if (!number(mhz, 2390, 2450, &freq) || !name ||
+    if (!number(mhz, RADIO_S3_FREQ_MIN_MHZ, RADIO_S3_FREQ_MAX_MHZ, &freq) || !name ||
         !number(duration, 1, 60, &seconds) ||
         (level && !number(level, 0, RADIO_S3_GAIN_MAX, &gain)) ||
         (msps && (!number(msps, 40, 80, &rate) || (rate != 40 && rate != 80))) || extra ||
         !radio_signal_init(tx_signal, name)) {
-        printf("@{\"cmd\":\"tx\",\"error\":\"usage: tx <2390..2450 integer MHz> "
+        printf("@{\"cmd\":\"tx\",\"error\":\"usage: tx <%u..%u integer MHz> "
                "<tone|tone<1..511>|two|neg|low|ionly|qonly|zero|dci|dcq> <1..60 seconds> [0..17 gain, default 0] "
-               "[40|80 MS/s]\"}\n");
+               "[40|80 MS/s]\"}\n", RADIO_S3_FREQ_MIN_MHZ, RADIO_S3_FREQ_MAX_MHZ);
         return;
     }
     rate *= 1000000;
@@ -308,6 +310,9 @@ void app_main(void)
         } else if (strncmp(line, "rfprofile ", 10) == 0) {
             radio_calibration_command(line + 10);
             strcpy(line, "rfprofile");
+        } else if (strncmp(line, "rflo ", 5) == 0) {
+            radio_s3_lo_command(line + 5);
+            strcpy(line, "rflo");
         } else if (strncmp(line, "vcm ", 4) == 0) {
             dvbtx_vcm_command(line + 4);
             strcpy(line, "vcm");

@@ -10,7 +10,7 @@ STATION = ROOT / "firmware/components/station_id"
 
 
 def function(source, name):
-    match = re.search(r"^[^\n]*\b(?:esp_err_t|geometry_t|bool|void) " + re.escape(name) + r"\(",source,re.M)
+    match = re.search(r"^[^\n]*\b(?:esp_err_t|geometry_t|bool|void|uint32_t) " + re.escape(name) + r"\(",source,re.M)
     start = match.start()
     at = source.index(name + "(",start)
     brace = source.index("{", at)
@@ -34,6 +34,7 @@ MODEL = r'''
 #define ESP_OK 0
 #define ESP_ERR_INVALID_ARG 0x102
 #define ESP_ERR_INVALID_STATE 0x103
+#define ESP_ERR_NOT_SUPPORTED 0x106
 #define ESP_ERR_NO_MEM 0x101
 #define ESP_ERR_TIMEOUT 0x107
 #define MALLOC_CAP_INTERNAL 1
@@ -53,7 +54,14 @@ typedef void (*TaskFunction_t)(void *);
 typedef int SemaphoreHandle_t;
 typedef int BaseType_t;
 static int state_lock, done_storage;
-static bool running;
+static bool running, lo_divided, profile_selected;
+static unsigned pll_mhz, pll_khz, selector;
+static void phy_set_freq(uint16_t mhz, int16_t khz) { pll_mhz=mhz; pll_khz=khz; }
+static void regi2c_ctrl_write_reg_mask(unsigned block, unsigned host, unsigned reg,
+                                      unsigned msb, unsigned lsb, unsigned value) {
+    assert(block==0x65 && !host && !reg && msb==4 && lsb==4 && value<=1);
+    selector=value;
+}
 static unsigned tasks, commands;
 static const char *call = "N0CALL";
 static const char *station_store_get(void) { return call; }
@@ -71,7 +79,7 @@ static int xTaskCreatePinnedToCore(TaskFunction_t task, const char *name, unsign
 }
 radio_filter_mode_t radio_filter_get(void) { return RADIO_FILTER_AUTO; }
 void radio_calibration_attempt(radio_calibration_stats_t *stats,bool keyed) {
-    (void)keyed; memset(stats,0,sizeof *stats);
+    memset(stats,0,sizeof *stats); stats->requested=keyed && profile_selected;
 }
 static uint64_t clock_cycles;
 static uint32_t cycles(void) { return (uint32_t)clock_cycles++; }
@@ -84,7 +92,7 @@ static int esp_task_wdt_reset(void) { return 0; }
 
 WORKERS = r'''
 static station_id_t observed;
-static uint32_t parsed_seconds;
+static uint32_t parsed_seconds, parsed_frequency, observed_frequency;
 static bool parsed_solo;
 static int payload(uint32_t *dst, uint64_t first, size_t count, void *ctx) {
     (void)ctx;
@@ -93,6 +101,7 @@ static int payload(uint32_t *dst, uint64_t first, size_t count, void *ctx) {
 }
 static void worker(void *arg) {
     run_t *run = arg;
+    observed_frequency = run->freq_mhz;
     station_id_t *id = run->ctx;
     observed = *id;
     assert(run->samples == id->total_samples);
@@ -132,8 +141,8 @@ static esp_err_t fill_bank(run_t *run, unsigned bank, uint64_t start) {
 static void dvbtx_run_options(uint32_t f, unsigned m, uint32_t seconds, unsigned g,
                             unsigned p, unsigned sps, uint32_t rate, bool fixture,
                             bool solo, bool fused) {
-    (void)f; (void)m; (void)g; (void)p; (void)sps; (void)rate; (void)fixture; (void)fused;
-    ++commands; parsed_seconds = seconds; parsed_solo = solo;
+    (void)m; (void)g; (void)p; (void)sps; (void)rate; (void)fixture; (void)fused;
+    ++commands; parsed_frequency = f; parsed_seconds = seconds; parsed_solo = solo;
 }
 '''
 
@@ -205,6 +214,21 @@ static void command(const char *text, bool accepted, bool solo) {
     if (accepted) assert(parsed_solo == solo);
 }
 int main(void) {
+    assert(!lo_divided);
+    for (unsigned divided=0; divided<2; ++divided) {
+        radio_s3_lo_command(divided ? "five-sixths" : "direct");
+        assert(lo_divided == (bool)divided);
+        radio_s3_lo_command("invalid"); assert(lo_divided == (bool)divided);
+        for (unsigned mhz=2000; mhz<=2450; ++mhz) {
+            direct_lo(); assert(!selector); tune(mhz);
+            assert(pll_mhz*1000+pll_khz == mhz*(divided ? 1200U : 1000U));
+            assert(pll_mhz<=UINT16_MAX && pll_khz<1000 && selector==divided);
+            unsigned channel=cw_channel(mhz);
+            assert(channel>=1 && channel<=13);
+            if (mhz<=2412) assert(channel==1);
+        }
+    }
+    radio_s3_lo_command("direct");
     command("2412 13 5m 540 0 128",true,false); assert(parsed_seconds == 540);
     command("2412 13 5m 61 17 508",true,false);
     command("2412 13 5m 541",false,false);
@@ -212,11 +236,23 @@ int main(void) {
     command("2412 13 5m 4294967295",false,false);
     command("2412 13 5m 60 --phy-solo",true,true);
     command("2412 13 5m 61 --phy-solo",false,true);
-    command("2389 13 5m 530",false,false);
+    command("1999 13 5m 530",false,false);
     command("2451 13 5m 530",false,false);
     command("2412 13 5m 530 18",false,false);
     command("2412 13 5m 530 0 509",false,false);
     radio_s3_stats_t stats;
+    profile_selected=true; radio_s3_lo_command("five-sixths");
+    unsigned before_profile=tasks;
+    assert(radio_s3_run_options(2420,0,30,RADIO_S3_DAC_RATE,6750000,payload,NULL,NULL,&stats)==ESP_ERR_NOT_SUPPORTED);
+    assert(tasks==before_profile && stats.calibration.requested);
+    profile_selected=false; radio_s3_lo_command("direct");
+    const unsigned frequencies[] = {2000,2025,2100,2110,2200,2250,2290,2390,2400,2420,2450};
+    for (unsigned i=0; i<sizeof frequencies/sizeof *frequencies; ++i) {
+        char text[64]; snprintf(text,sizeof text,"%u 13 5m 30 0 128",frequencies[i]);
+        command(text,true,false); assert(parsed_frequency == frequencies[i]);
+        assert(!radio_s3_run_options(frequencies[i],0,30,RADIO_S3_DAC_RATE,6750000,payload,NULL,NULL,&stats));
+        assert(observed_frequency == frequencies[i]);
+    }
     radio_s3_options_t solo = {.phy_solo=true};
     const char *calls[] = {"N0CALL","A0000000000000000000000"};
     for (unsigned c=0; c<2; ++c) for (unsigned scale=1; scale<=2; ++scale) {
@@ -231,7 +267,7 @@ int main(void) {
         unsigned before = tasks;
         assert(radio_s3_run_options(2412,0,541,rate,6750000,payload,NULL,NULL,&stats) == ESP_ERR_INVALID_ARG);
         assert(radio_s3_run_options(2412,0,61,rate,6750000,payload,NULL,&solo,&stats) == ESP_ERR_INVALID_ARG);
-        assert(radio_s3_run_options(2389,0,530,rate,6750000,payload,NULL,NULL,&stats) == ESP_ERR_INVALID_ARG);
+        assert(radio_s3_run_options(1999,0,530,rate,6750000,payload,NULL,NULL,&stats) == ESP_ERR_INVALID_ARG);
         assert(radio_s3_run_options(2451,0,530,rate,6750000,payload,NULL,NULL,&stats) == ESP_ERR_INVALID_ARG);
         assert(radio_s3_run_options(2412,18,530,rate,6750000,payload,NULL,NULL,&stats) == ESP_ERR_INVALID_ARG);
         assert(tasks == before);
@@ -262,7 +298,7 @@ int main(void) {
     command("2412 13 5m 530",false,false);
     assert(tasks == before);
     counters();
-    puts("duration: parser/API bounds, 530..540 s ID windows, paced IDs and 540 s cycle wraps at both DAC rates pass");
+    puts("duration/frequency: parser/API bounds, LO divider arithmetic, profile guard, ID windows and 540 s cycle wraps pass");
 }
 '''
 
@@ -275,6 +311,8 @@ if __name__ == "__main__":
     run = radio[run_at:radio.index("} run_t;", run_at)+len("} run_t;")]
     source = MODEL + geometry + function(radio,"geometry") + run + WORKERS
     source += function(radio,"schedule") + function(radio,"on_core1") + function(radio,"known_rate")
+    for name in ("radio_s3_lo_command","tune","direct_lo","cw_channel"):
+        source += function(radio,name)
     for name in ("radio_s3_run_options","radio_s3_paced_run_rate","radio_s3_paced_wifi_options"):
         source += function(radio,name)
     for name in ("number","tx_mode","take_option","cmd_dvb"):

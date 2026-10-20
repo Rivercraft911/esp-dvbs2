@@ -10,7 +10,7 @@
 //            physical bank3 contains ROM data and must never be granted.
 //   455-478: 0x60006000 force-TX1, base-index25:18, gain-index17:10;
 //            force_tx_gain writes slot0; the keying offset cancels the base index.
-//   1089-1121: analog 0x65:0[4] selects LO=PLL*5/6; clear for 2390..2450 MHz.
+//   1089-1121: analog 0x65:0[4] selects LO=PLL*5/6; clear for direct LO.
 //   1355-1365: TX I[9:0], Q[19:10], signed10; RX has the opposite order.
 //   1377-1386: vendor tuning/gain/chain entry points; Wi-Fi NULL/promiscuous setup.
 // Tone override 0x60006040[18]: jochenhammes/esp32-sdr-trx e1aebbf2ef508c7199a9b6c6c277b57fe0b51aa9,
@@ -24,6 +24,7 @@
 // settings, not copied software or a calibrated dBm table. Source doc:1383.
 
 #include <stdbool.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "radio_s3.h"
@@ -121,6 +122,28 @@ static uint16_t gain_baseband(unsigned gain)
 
 static portMUX_TYPE state_lock = portMUX_INITIALIZER_UNLOCKED;
 static bool running;
+static bool lo_divided;
+
+void radio_s3_lo_command(const char *args)
+{
+    if (!strcmp(args, "direct")) lo_divided = false;
+    else if (!strcmp(args, "five-sixths")) lo_divided = true;
+    else {
+        printf("@{\"cmd\":\"rflo\",\"error\":\"usage: rflo direct|five-sixths\"}\n");
+        return;
+    }
+    printf("@{\"cmd\":\"rflo\",\"mode\":\"%s\"}\n", lo_divided ? "five-sixths" : "direct");
+}
+
+/* Keep this cold setup out of the renderer's fixed IRAM literal layout. */
+static __attribute__((noinline)) void tune(uint32_t mhz)
+{
+    /* PLL kHz = LO MHz * 1000 * 6/5, exact for integer-MHz requests. */
+    const uint32_t khz = mhz * (lo_divided ? 1200U : 1000U);
+    phy_set_freq(khz / 1000, khz % 1000);
+    regi2c_ctrl_write_reg_mask(0x65, 0, 0, 4, 4, lo_divided);
+}
+
 /* Nearest 2.4 GHz Wi-Fi channel, for the vendor CW call (channels 1..13). */
 static uint32_t cw_channel(uint32_t mhz)
 {
@@ -353,8 +376,8 @@ static esp_err_t IRAM_ATTR __attribute__((noinline)) stream(run_t *run)
     esp_phy_cbw40m_en(false);
     esp_phy_wifi_tx_tone(1, cw_channel(run->freq_mhz), cw_backoff(run->gain));
     stop_tx_tone(1);
-    phy_set_freq(run->freq_mhz, 0);
     direct_lo();
+    tune(run->freq_mhz);
     force_tx_gain(gain_codes[run->gain], gain_baseband(run->gain), 0);
     force_txon_mode(1, 0, (uint8_t)(-base & 0xffU));
     stats->fe_gain_index = (REG_READ(FE_CTRL) >> 10) & 0xffU;
@@ -559,7 +582,7 @@ static void worker(void *arg)
     rom_pbus_xpd_rx_on(0);
     direct_lo();
     set_chanfreq(2412, 0); /* Real Wi-Fi channel. Final filter is applied after CW setup. */
-    phy_set_freq(run->freq_mhz, 0);
+    tune(run->freq_mhz);
     /* No MAC frames in NULL mode. Allow unkeyed retune to settle. */
     vTaskDelay(pdMS_TO_TICKS(3));
 
@@ -874,11 +897,13 @@ esp_err_t radio_s3_run_options(uint32_t freq_mhz, uint8_t gain, uint32_t seconds
         memset(stats, 0, sizeof *stats);
         radio_calibration_attempt(&stats->calibration, true);
     }
-    if (!occupied_hz || occupied_hz > dac_rate || !fill || !stats || freq_mhz < 2390 || freq_mhz > 2450 ||
+    if (!occupied_hz || occupied_hz > dac_rate || !fill || !stats ||
+            freq_mhz < RADIO_S3_FREQ_MIN_MHZ || freq_mhz > RADIO_S3_FREQ_MAX_MHZ ||
             gain > RADIO_S3_GAIN_MAX || seconds == 0 || seconds > RADIO_S3_MAX_SECONDS ||
             (options && options->phy_solo && seconds > RADIO_S3_PHY_SOLO_MAX_SECONDS) || !known_rate(dac_rate)) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (lo_divided && stats->calibration.requested) return ESP_ERR_NOT_SUPPORTED;
     // Refuse before task creation, Wi-Fi init, calibration or any register access.
     if (!station_store_get()[0]) {
         return ESP_ERR_INVALID_STATE;
