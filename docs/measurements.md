@@ -56,12 +56,28 @@ is about **−3 dB at ±10 MHz and −20 dB by ±14 MHz** from center.
 
 ![S3 transmit-filter response stitched from three E200 receiver tunings](measurements/stitch.png)
 
-The 26.67 Msym/s (36 MHz) and 33.33 Msym/s (40 MHz) modes generate correct on-chip
-samples and meet their deadlines keyed, but radiate through this ~20 MHz filter and
-do not decode over the air yet. The [HT40 comparison](measurements/ht40-compare.png)
-did not show a wider passband.
+Main's 26.67 Msym/s (36 MHz) and 33.33 Msym/s (40 MHz) modes generate correct on-chip
+samples and meet their deadlines keyed, but still radiate through this ~20 MHz filter.
+The earlier [HT40 comparison](measurements/ht40-compare.png) did not show a wider passband.
 The README's [5 Msym/s spectrum](measurements/qpsk34-5m-spectrum.png) is a real RF capture;
 it includes station ID and silence and is not a calibrated power or emission-mask measurement.
+
+### Wideband experiments
+
+Separate October 18–19 firmware restores the radio's wide analog-filter setting,
+PBUS(4,2)=32, after test-tone setup resets it. Repeated 36 MHz 8PSK and 40 MHz QPSK
+fixtures decoded after coherently averaging and stitching three E200 receiver tunings.
+Those reconstructions do not establish a continuous changing-payload link.
+
+A B200 later captured each whole band in one 83.886 ms burst at 50 MS/s, without
+stitching or averaging. Experimental firmware **f5feac3** and a private soft-LDPC
+receiver recovered **81 consecutive, byte-exact QPSK 3/4 frames in 40 MHz**,
+489,321 payload bytes; one acquisition attempt failed before that interval.
+Separate captures recovered 81/82 QPSK frames and 95/96 8PSK 2/3 frames in 36 MHz,
+each with one interior loss. The receiver processed these bursts slower than real time.
+Neither the wide firmware nor the receiver is adopted on main; sustained wideband
+video remains unqualified. The [run summary](measurements/2026-10-19-wide-rf.json)
+pins the retained captures and reports; it does not include raw RF or the receiver prototype.
 
 ## What it can do
 
@@ -232,8 +248,8 @@ including Wi-Fi startup. The new records also sample free RAM during playback.
 Its radio-off mean of 152,128 cycles/frame used a prepared payload. Comparing that with
 the keyed mean of 198,879 mixed payload sources: the roughly 46.8k-cycle gap came from
 synthetic payload generation, not keying. The historical run still met the 15% reserve
-on both cores with that work included. Spectrum, filter flatness near ±20 MHz, RF decoding
-and live input at this rate remain unmeasured.
+on both cores with that work included. That timing run did not measure spectrum,
+filter flatness near ±20 MHz, RF decoding or live input at this rate.
 [Sign-window design](how-it-works.md#sign-windows-and-40-mhz).
 
 ## QPSK at 26.67 Msym/s

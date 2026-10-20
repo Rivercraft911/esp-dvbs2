@@ -31,7 +31,7 @@ that live mux. SPI has on-chip loopback tests and a [Linux sender](examples/pi-s
 
 ## What it can do
 
-The best measured configurations, fastest first. **Keyed** means the S3 really transmitted for
+The best measured configurations on main, fastest first. **Keyed** means the S3 really transmitted for
 30 s and met every bank deadline; **radio off** means the same encoder and bank schedule ran in
 real time with the DAC output going nowhere.
 
@@ -57,8 +57,9 @@ exclude station-ID time. Every mode's samples decode bit-exact in LeanDVB, an in
 receiver. QPSK at 1, 5, 10 and 20 Msym/s and mixed QPSK/8PSK VCM at 5 Msym/s now decode
 byte-exact against the host model over the air into a receive-only ANTSDR E200, running
 Pluto firmware, inside a closed Faraday box at 2420 MHz ([runs](docs/measurements.md#over-the-air)).
-The 36/40 MHz modes meet their deadlines keyed, but the measured ~20 MHz transmit filter
-cuts their RF bandwidth and they do not decode over the air yet.
+Main still sends the 36/40 MHz modes through the measured ~20 MHz transmit filter.
+Separate experiments have widened replay and decoded both bandwidths over RF;
+[wideband reception](docs/measurements.md#wideband-experiments) still needs live-link qualification.
 \*Keyed with an earlier, longer pulse; the current pulse has radio-off evidence.
 Margins, raw records and limits: [measurements](docs/measurements.md). With a prepared payload,
 30 s keyed tests of the 40 MHz mode left **37% mean encoder headroom and 16% bank-fill headroom**.
@@ -182,5 +183,3 @@ Additional experiments and raw results live in
 
 [Apache-2.0](LICENSE). Copyright 2026 River Dowdy; see [NOTICE](NOTICE). Findings from other projects are credited in
 [prior-art.md](docs/prior-art.md).
-
-Widening the transmit filter is next.

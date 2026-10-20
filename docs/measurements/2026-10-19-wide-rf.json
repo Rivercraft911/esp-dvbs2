@@ -1,0 +1,255 @@
+{
+  "date": "2026-10-19",
+  "scope": "Excerpt of privately retained measurements, not a reproduction bundle. Source paths are relative to the local coordinator archive. No RF samples included.",
+  "native_capture_firmware": "f5feac38ec7d9b40d15cc284bffdd3a2aadbf263",
+  "receiver": {
+    "scope": "Private offline soft-LDPC prototype; not adopted on main.",
+    "manifest": {
+      "coordinator_source": "codex/b200-wide-20261019/soft-ldpc/prototype-manifest.json",
+      "sha256": "c06ca56f011ed894e6499ec9907e5c50d1b04c2627139f67d6a266cd701165a9"
+    },
+    "receiver_base_commit": "84c59e1c7a1a79338d5722d63f28640cc9d350f3",
+    "receiver_patch_sha256": "0e4abf9a9fdfa7fc1f01f8a37d72872db1cd029c4bcbf55c4e7bd157d65e217f",
+    "helper_upstream_commit": "6ada4aac6d853835eeaefb7e12a0136481647b01",
+    "helper_patch_sha256": "3dd7194275edfadb53a954cb0862ca5c2f522a32797c82caf6a45c6bb24fcee2",
+    "independent_audit": {
+      "coordinator_source": "codex/rf-path-20261018/soft-ldpc-independent-audit.json",
+      "sha256": "d74f1c4b09343508162d204139d232a7dcde24095d1a5c41d8463ec83cad85d3"
+    }
+  },
+  "stitched_fixtures": [
+    {
+      "bandwidth_hz": 36000000,
+      "method": "Coherently averaged repeated RF fixture, stitched across three E200 tunings.",
+      "source": {
+        "coordinator_source": "codex/ht40-reference-20261018/fixture-reconstruction/evidence.json",
+        "sha256": "a0701a29ddee945e38806f3a7ab9a5346bd6d200af668a407e546524f499adfa"
+      },
+      "verification_source": {
+        "coordinator_source": "codex/ht40-reference-20261018/fixture-reconstruction/payload-verification.json",
+        "sha256": "45c3875a5c37a612e8c4c91e66d169227c9e8e6b6948b1caaf55183d5e705864"
+      },
+      "unique_measured_payload_bytes": 5370,
+      "decoded_repeated_frames": 21,
+      "all_frames_exact": true,
+      "every_bbheader_crc_valid": true,
+      "expected_payload_sha256": "7792a0ffc41aa8e1e2430f473a58d59239fb46b4d4e1e9dba0523f5129f57d51",
+      "scope": "Known fixture checked only after received-only reconstruction and independent decoding; receiver copies of averaged measured RF period, not independent air frames."
+    },
+    {
+      "bandwidth_hz": 40000000,
+      "method": "Coherently averaged repeated RF fixture, stitched across three E200 tunings.",
+      "source": {
+        "coordinator_source": "codex/ht40-reference-20261018/qpsk40-reconstruction/evidence.json",
+        "sha256": "aeb3c2ecbe0f92c03e2d0e0e53ea5c66beead7bfa889dad63c1f6e42b61a2cc1"
+      },
+      "verification_source": {
+        "coordinator_source": "codex/ht40-reference-20261018/qpsk40-reconstruction/payload-verification.json",
+        "sha256": "62a0b9495283a3cc8ed64051b7ad161ffa6c845fd7fa795ad442a3f101f6032a"
+      },
+      "unique_measured_payload_bytes": 6041,
+      "decoded_repeated_frames": 28,
+      "all_frames_exact": true,
+      "every_bbheader_crc_valid": true,
+      "expected_payload_sha256": "604a0126bd5c1913255ec5c18c4c75111ebe4c80d1e2a208b14b2dbb0d72d743",
+      "scope": "Known fixture checked only after received-only reconstruction and independent decoding; receiver copies of averaged measured RF period, not independent air frames."
+    }
+  ],
+  "native_captures": [
+    {
+      "name": "prototype",
+      "settings": {
+        "modcod": 7,
+        "rate": "33m333",
+        "symbol_rate": 33333333.333333332,
+        "rolloff": 0.2,
+        "sample_rate": 50000000,
+        "burst_samples": 4194304,
+        "burst_delay_seconds": 7.52,
+        "frequency": 2420000000,
+        "gain": 30,
+        "tx_gain": 0,
+        "peak": 48,
+        "firmware": "f5feac3",
+        "capture_worker_sha256": "a3d57849453923517593d2f3e98820f79dc35a2382ce6f458c5137568eb467be"
+      },
+      "settings_source": {
+        "coordinator_source": "regress/b200-wide-20261019/qpsk40/settings.json",
+        "sha256": "c2bda4c92f13e4ecb46024db2f3763dab122d393292bf6a192d457e80c8770ee"
+      },
+      "capture_source": {
+        "coordinator_source": "regress/b200-wide-20261019/qpsk40/capture.json",
+        "sha256": "167337c70a876aadbf8dfdca1838d5f9299fcd02ab10523aeff21d9484819078"
+      },
+      "rf_sha256": "53a8e87155a76dd5f420643ee996ae8ea94fea3064f18010e6735c0f516601a2",
+      "capture_seconds": 0.08388608,
+      "timestamp_gaps": 0,
+      "overflows": 0,
+      "report_source": {
+        "coordinator_source": "regress/b200-wide-20261019/rechecks/soft-ldpc/prototype/report.json",
+        "sha256": "3248636e476a349a863f3b8d4b760571ae772fb056adb273bf450c9784f4d4b9"
+      },
+      "decoded_frames": 81,
+      "payload_bytes": 489321,
+      "all_payloads_headers_exact": true,
+      "all_source_frames_distinct": true,
+      "source_first_frame": 2131,
+      "source_last_frame": 2211,
+      "interior_missing_frames": 0,
+      "FEC": {
+        "attempts": 82,
+        "failed_indices": [
+          0
+        ],
+        "failed_before": 1,
+        "failed_after": 0,
+        "accepted_interval_first_attempt": 1,
+        "accepted_interval_last_attempt": 81,
+        "interior_failed": 0,
+        "accepted_interval_BCH_corrected_bits": 0,
+        "helper_drains": [
+          [
+            82,
+            82,
+            0,
+            0
+          ]
+        ],
+        "LDPC_parity": "unavailable"
+      },
+      "payload_interval_pass": true,
+      "whole_capture_pass": false,
+      "receiver_seconds": 1.3141574170149397
+    },
+    {
+      "name": "gain50-qpsk40-soft",
+      "settings": {
+        "modcod": 7,
+        "rate": "33m333",
+        "symbol_rate": 33333333.333333332,
+        "rolloff": 0.2,
+        "sample_rate": 50000000,
+        "burst_samples": 4194304,
+        "burst_delay_seconds": 7.52,
+        "frequency": 2420000000,
+        "gain": 50,
+        "tx_gain": 0,
+        "peak": 48,
+        "firmware": "f5feac3",
+        "capture_worker_sha256": "a3d57849453923517593d2f3e98820f79dc35a2382ce6f458c5137568eb467be"
+      },
+      "settings_source": {
+        "coordinator_source": "regress/b200-wide-20261019/receiver-gain50/qpsk40/settings.json",
+        "sha256": "ade60477aca8f6ed80c350cc9395fba174298543a5d3c53e78822c6aa82c8377"
+      },
+      "capture_source": {
+        "coordinator_source": "regress/b200-wide-20261019/receiver-gain50/qpsk40/capture.json",
+        "sha256": "27ddfadd625dc3198733c42b6ed181a099f75400ee95be8dc19bb5a4621334f0"
+      },
+      "rf_sha256": "ab98dcee26e435342c3f7ff694a3f7ee9c1ea7ff431e7eff32563d748d69d850",
+      "capture_seconds": 0.08388608,
+      "timestamp_gaps": 0,
+      "overflows": 0,
+      "report_source": {
+        "coordinator_source": "regress/b200-wide-20261019/rechecks/soft-ldpc/gain50-qpsk40-soft/report.json",
+        "sha256": "c234e02c6c0d19f50e9ef4c86d8c68574222fb150c14d4c03922b008f27b7777"
+      },
+      "decoded_frames": 81,
+      "payload_bytes": 489321,
+      "all_payloads_headers_exact": true,
+      "all_source_frames_distinct": true,
+      "source_first_frame": 2128,
+      "source_last_frame": 2209,
+      "interior_missing_frames": 1,
+      "FEC": {
+        "attempts": 82,
+        "failed_indices": [
+          14
+        ],
+        "failed_before": 0,
+        "failed_after": 0,
+        "accepted_interval_first_attempt": 0,
+        "accepted_interval_last_attempt": 81,
+        "interior_failed": 1,
+        "accepted_interval_BCH_corrected_bits": 0,
+        "helper_drains": [
+          [
+            82,
+            82,
+            0,
+            0
+          ]
+        ],
+        "LDPC_parity": "unavailable"
+      },
+      "payload_interval_pass": false,
+      "whole_capture_pass": false,
+      "receiver_seconds": 0.9565420839935541
+    },
+    {
+      "name": "gain50-8psk36-soft",
+      "settings": {
+        "modcod": 13,
+        "rate": "26m667",
+        "symbol_rate": 26666666.666666668,
+        "rolloff": 0.35,
+        "sample_rate": 50000000,
+        "burst_samples": 4194304,
+        "burst_delay_seconds": 7.52,
+        "frequency": 2420000000,
+        "gain": 50,
+        "tx_gain": 0,
+        "peak": 48,
+        "firmware": "f5feac3",
+        "capture_worker_sha256": "a3d57849453923517593d2f3e98820f79dc35a2382ce6f458c5137568eb467be"
+      },
+      "settings_source": {
+        "coordinator_source": "regress/b200-wide-20261019/receiver-gain50/8psk36/settings.json",
+        "sha256": "b1bf5780c737b782992e2b768d9484750c1be23cdb746811277444d9379abbe3"
+      },
+      "capture_source": {
+        "coordinator_source": "regress/b200-wide-20261019/receiver-gain50/8psk36/capture.json",
+        "sha256": "a6f2dba73636e9b47b8c57c38f4795a9ce69ddc4c0bf5f5ea3e6e0e79c162899"
+      },
+      "rf_sha256": "3d5d7049dd3b86e5f60cded50de9489cf308ed3e8e437151ce91e8e64f348e97",
+      "capture_seconds": 0.08388608,
+      "timestamp_gaps": 0,
+      "overflows": 0,
+      "report_source": {
+        "coordinator_source": "regress/b200-wide-20261019/rechecks/soft-ldpc/gain50-8psk36-soft/report.json",
+        "sha256": "bc0770f0ad3273e52ebabdf3adc0fb56d72b995ebba7dea1877379ce467a3692"
+      },
+      "decoded_frames": 95,
+      "payload_bytes": 510150,
+      "all_payloads_headers_exact": true,
+      "all_source_frames_distinct": true,
+      "source_first_frame": 2451,
+      "source_last_frame": 2546,
+      "interior_missing_frames": 1,
+      "FEC": {
+        "attempts": 96,
+        "failed_indices": [
+          18
+        ],
+        "failed_before": 0,
+        "failed_after": 0,
+        "accepted_interval_first_attempt": 0,
+        "accepted_interval_last_attempt": 95,
+        "interior_failed": 1,
+        "accepted_interval_BCH_corrected_bits": 0,
+        "helper_drains": [
+          [
+            96,
+            96,
+            0,
+            0
+          ]
+        ],
+        "LDPC_parity": "unavailable"
+      },
+      "payload_interval_pass": false,
+      "whole_capture_pass": false,
+      "receiver_seconds": 1.2058163750043605
+    }
+  ]
+}
