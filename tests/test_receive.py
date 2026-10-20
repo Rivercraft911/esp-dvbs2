@@ -58,6 +58,24 @@ class ReceiveTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             module.validate(data, {**capture, "engine_cycles": 1609728 * 3}, snapshot)
 
+    def test_frozen_probe(self):
+        spec = importlib.util.spec_from_file_location("receive", ROOT / "host/receive.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        words = [module.SENTINEL] * (3 * 16384)
+        words[3:12290] = [0x123456] * (12290 - 3)
+        words[16384 + 12290:16384 + 12300] = [0x789ab] * 10
+        data = struct.pack("<49152I", *words)
+        report = {"crc32": zlib.crc32(data), "probe": {"bytes": len(data), "before_switch": 12290}}
+        result = module.inspect_banks(data, report)
+        self.assertEqual(result["banks"][0]["runs_preview"], [[3, 12290]])
+        self.assertEqual(result["banks"][1]["changed_words"], 10)
+        self.assertEqual(result["banks"][2]["changed_words"], 0)
+        with self.assertRaises(ValueError):
+            module.inspect_banks(data[:-4], report)
+        with self.assertRaises(ValueError):
+            module.inspect_banks(data, {**report, "crc32": 0})
+
 
 if __name__ == "__main__":
     unittest.main()

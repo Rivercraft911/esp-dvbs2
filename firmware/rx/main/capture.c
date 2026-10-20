@@ -47,6 +47,7 @@ typedef struct {
     rx_report *report;
     uint16_t mhz;
     uint8_t gain;
+    bool probe;
     SemaphoreHandle_t done;
 } run;
 
@@ -107,7 +108,15 @@ static esp_err_t IRAM_ATTR collect(run *r)
      * configured interrupt-watchdog limit is unchanged. No prints/USB/allocations here. */
     uint32_t irq = portSET_INTERRUPT_MASK_FROM_ISR();
     uint32_t epoch = esp_cpu_get_cycle_count();
+    if (r->probe) s->probe.before_start = REG_READ(DUMP_INDEX);
     REG_WRITE(DUMP_CTRL, (1U << 31) | (1U << 17) | (1U << 16) | RX_BANK_PAIRS);
+    if (r->probe) {
+        s->probe.after_start = REG_READ(DUMP_INDEX);
+        s->probe.start_cycles = esp_cpu_get_cycle_count() - epoch;
+        s->probe.control = REG_READ(DUMP_CTRL);
+        s->probe.lanes = REG_READ(DUMP_LANES);
+        s->probe.bank_start = REG_READ(BANK_USAGE);
+    }
     position p = {.cycle = epoch, .changed = epoch};
     rx_edge begin = {0, 0};
     uint32_t target = UNIT_PAIRS, refresh = epoch;
@@ -126,6 +135,31 @@ static esp_err_t IRAM_ATTR collect(run *r)
         __asm__ volatile ("memw" ::: "memory");
         if (!advance(&p, s)) break;
         end.after = p.index;
+
+        if (r->probe) {
+            s->probe.before_switch = end.before;
+            s->probe.after_switch = end.after;
+            s->probe.switch_cycles = p.cycle - epoch;
+            s->probe.bank_switch = REG_READ(BANK_USAGE);
+            uint16_t first = 0, last = 0;
+            if (rx_find_edge(bank(current), begin, true, &first)) s->probe.edges |= 1U;
+            if (rx_find_edge(bank(current), end, false, &last)) s->probe.edges |= 2U;
+            s->probe.first = first;
+            s->probe.end = last;
+            s->probe.before_stop = REG_READ(DUMP_INDEX);
+            REG_WRITE(DUMP_CTRL, 0);
+            s->engine_cycles = esp_cpu_get_cycle_count() - epoch;
+            s->probe.after_stop = REG_READ(DUMP_INDEX);
+            REG_WRITE(BANK_USAGE, ownership);
+            __asm__ volatile ("memw" ::: "memory");
+            /* Geometry-only: preserve every word, including untouched sentinel,
+             * in the three allowed banks. No edge inference or gap repair. */
+            for (unsigned n = 0; n < 3; ++n)
+                memcpy(r->record + n * 65536U, bank(n), 65536U);
+            s->probe.bytes = 3U * 65536U;
+            error = ESP_OK;
+            break;
+        }
 
         uint16_t first;
         size_t count;
@@ -238,20 +272,22 @@ done:
             s->cleanup_error = deinitialized;
     }
     if (s->error == ESP_OK) s->error = s->cleanup_error;
-    s->crc32 = esp_rom_crc32_le(0, r->record, 2U * s->retained_pairs);
+    s->crc32 = esp_rom_crc32_le(0, r->record,
+                               r->probe ? s->probe.bytes : 2U * s->retained_pairs);
     s->snapshot_crc32 = esp_rom_crc32_le(0, (uint8_t *)r->snapshot, 4U * s->snapshot_pairs);
     xSemaphoreGive(r->done);
     vTaskDelete(NULL);
 }
 
 esp_err_t rx_capture(uint16_t mhz, uint8_t gain, uint8_t *record, uint32_t *snapshot,
-                     rx_report *report)
+                     rx_report *report, bool probe)
 {
     memset(report, 0, sizeof *report);
     if (mhz < 2390 || mhz > 2450) return report->error = ESP_ERR_INVALID_ARG;
     StaticSemaphore_t storage;
     run r = {.record = record, .snapshot = snapshot, .report = report,
-             .mhz = mhz, .gain = gain, .done = xSemaphoreCreateBinaryStatic(&storage)};
+             .mhz = mhz, .gain = gain, .probe = probe,
+             .done = xSemaphoreCreateBinaryStatic(&storage)};
     if (xTaskCreatePinnedToCore(worker, "capture", 8192, &r, configMAX_PRIORITIES - 1,
                                 NULL, 1) != pdPASS)
         return report->error = ESP_ERR_NO_MEM;

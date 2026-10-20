@@ -7,6 +7,32 @@ import struct
 import zlib
 
 PAIRS = 1600000
+SENTINEL = 0xa5a5a5a5
+
+
+def inspect_banks(data, report):
+    """Describe a frozen geometry probe without treating it as a valid capture."""
+    if len(data) != 3 * 65536 or report.get("probe", {}).get("bytes") != len(data):
+        raise ValueError("probe must contain exactly three 64 KiB banks")
+    if zlib.crc32(data) != report.get("crc32"):
+        raise ValueError("raw bank CRC differs from the board")
+    banks = []
+    for n in range(3):
+        words = struct.unpack("<16384I", data[n * 65536:(n + 1) * 65536])
+        runs, start = [], None
+        for at, word in enumerate((*words, SENTINEL)):
+            if word != SENTINEL and start is None: start = at
+            if word == SENTINEL and start is not None:
+                runs.append([start, at]); start = None
+        switch = report["probe"].get("before_switch", 0) & 16383
+        windows = {"start": [(i & 16383, f"{words[i & 16383]:08x}") for i in range(-8, 9)],
+                   "switch": [(i & 16383, f"{words[i & 16383]:08x}")
+                              for i in range(switch - 8, switch + 9)]}
+        banks.append({"address": hex(0x3fcb0000 + n * 65536),
+                      "changed_words": sum(end - begin for begin, end in runs),
+                      "changed_runs": len(runs), "runs_preview": runs[:16], "words": windows})
+    return {"mode": "frozen geometry only; no continuity claim", "registers": report["probe"],
+            "crc32": zlib.crc32(data), "banks": banks}
 
 
 def validate(data, report, snapshot=None):
@@ -49,11 +75,14 @@ def main():
     parser.add_argument("iq", type=pathlib.Path)
     parser.add_argument("--report", type=pathlib.Path, required=True)
     parser.add_argument("--snapshot", type=pathlib.Path)
+    parser.add_argument("--probe", action="store_true", help="inspect raw frozen banks")
     args = parser.parse_args()
     records = [json.loads(line) for line in args.report.read_text().splitlines() if line.strip()]
-    report = next(r for r in reversed(records) if r.get("cmd") in ("capture", "pattern"))
+    kinds = ("probe",) if args.probe else ("capture", "pattern")
+    report = next(r for r in reversed(records) if r.get("cmd") in kinds)
     snapshot = args.snapshot.read_bytes() if args.snapshot else None
-    result = validate(args.iq.read_bytes(), report, snapshot)
+    result = inspect_banks(args.iq.read_bytes(), report) if args.probe else \
+        validate(args.iq.read_bytes(), report, snapshot)
     print(json.dumps(result))
 
 

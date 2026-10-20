@@ -14,7 +14,7 @@
 static uint32_t control[512];
 static uint8_t *allocation, *record;
 static rx_report last;
-static bool pattern, valid;
+static bool pattern, valid, diagnostic;
 static unsigned last_mhz, last_gain;
 
 static bool guards_ok(void)
@@ -31,7 +31,7 @@ static void report(void)
         rails += record[n] == 0x80 || record[n] == 0x7f;
     printf("@{\"cmd\":\"%s\",\"status\":\"%s\",\"cleanup_status\":\"%s\",\"complete\":%s,"
            "\"freq_mhz\":%u,\"gain_index\":%u,\"rate_sps\":16000000,"
-           "\"requested_pairs\":1600000,\"retained_pairs\":%lu,"
+           "\"requested_pairs\":%u,\"retained_pairs\":%lu,"
            "\"acquired_pairs\":%lu,\"bytes\":%lu,\"crc32\":%lu,\"units\":%lu,"
            "\"late\":%lu,\"overruns\":%lu,\"boundary_errors\":%lu,\"gap_events\":%lu,"
            "\"sentinel_errors\":%lu,\"max_poll_cycles\":%lu,\"max_copy_cycles\":%lu,"
@@ -40,9 +40,9 @@ static void report(void)
            "\"snapshot_pairs\":%lu,\"snapshot_crc32\":%lu,"
            "\"format\":\"sc8\",\"order\":\"high10=I,low10=Q\",\"scaling\":\"floor(s10/4)\","
            "\"hardware_qualified\":false",
-           pattern ? "pattern" : "capture", esp_err_to_name(last.error),
+           pattern ? "pattern" : diagnostic ? "probe" : "capture", esp_err_to_name(last.error),
            esp_err_to_name(last.cleanup_error), valid ? "true" : "false",
-           last_mhz, last_gain,
+           last_mhz, last_gain, diagnostic ? 12288U : RX_RECORD_PAIRS,
            (unsigned long)last.retained_pairs, (unsigned long)last.acquired_pairs,
            (unsigned long)(2U * last.retained_pairs), (unsigned long)last.crc32,
            (unsigned long)last.units, (unsigned long)last.late, (unsigned long)last.overruns,
@@ -52,7 +52,23 @@ static void report(void)
            (unsigned long)last.engine_cycles, (unsigned long)last.elapsed_cycles, (unsigned long)last.gain_refreshes,
            last.gain_max, last.guards_ok ? "true" : "false", (unsigned long)rails,
            (unsigned long)last.snapshot_pairs, (unsigned long)last.snapshot_crc32);
-    if (!valid) printf(",\"error\":\"capture incomplete or guards failed\"");
+    if (diagnostic) {
+        printf(",\"probe\":{\"bytes\":%lu,\"before_start\":%lu,\"after_start\":%lu,"
+               "\"start_cycles\":%lu,\"before_switch\":%lu,\"after_switch\":%lu,"
+               "\"switch_cycles\":%lu,\"before_stop\":%lu,\"after_stop\":%lu,"
+               "\"control\":%lu,\"lanes\":%lu,\"bank_start\":%lu,\"bank_switch\":%lu,"
+               "\"edges\":%lu,\"first\":%lu,\"end\":%lu}",
+               (unsigned long)last.probe.bytes, (unsigned long)last.probe.before_start,
+               (unsigned long)last.probe.after_start, (unsigned long)last.probe.start_cycles,
+               (unsigned long)last.probe.before_switch, (unsigned long)last.probe.after_switch,
+               (unsigned long)last.probe.switch_cycles, (unsigned long)last.probe.before_stop,
+               (unsigned long)last.probe.after_stop, (unsigned long)last.probe.control,
+               (unsigned long)last.probe.lanes, (unsigned long)last.probe.bank_start,
+               (unsigned long)last.probe.bank_switch, (unsigned long)last.probe.edges,
+               (unsigned long)last.probe.first, (unsigned long)last.probe.end);
+    }
+    if (!valid && !(diagnostic && last.error == ESP_OK && last.guards_ok))
+        printf(",\"error\":\"capture incomplete or guards failed\"");
     printf("}\n");
 }
 
@@ -98,7 +114,7 @@ void app_main(void)
         char cmd[16], extra;
         unsigned mhz, gain;
         bool capture = sscanf(line, "%15s %u %u %c", cmd, &mhz, &gain, &extra) == 3 &&
-                       !strcmp(cmd, "capture");
+                       (!strcmp(cmd, "capture") || !strcmp(cmd, "probe"));
         if (!strcmp(line, "info")) {
             uint8_t mac[6];
             ESP_ERROR_CHECK(esp_read_mac(mac, ESP_MAC_WIFI_STA));
@@ -111,6 +127,7 @@ void app_main(void)
         } else if (capture || !strcmp(line, "pattern")) {
             valid = false;
             pattern = !capture;
+            diagnostic = capture && !strcmp(cmd, "probe");
             last_mhz = pattern ? 0 : mhz;
             last_gain = pattern ? 0 : gain;
             if (!allocation) {
@@ -120,18 +137,20 @@ void app_main(void)
                 else if (mhz < 2390 || mhz > 2450 || gain > 127) {
                     memset(&last, 0, sizeof last);
                     last.error = ESP_ERR_INVALID_ARG;
-                } else rx_capture(mhz, gain, record, control, &last);
+                } else rx_capture(mhz, gain, record, control, &last, diagnostic);
                 last.guards_ok = guards_ok();
-                valid = last.error == ESP_OK && last.guards_ok &&
+                valid = !diagnostic && last.error == ESP_OK && last.guards_ok &&
                         last.retained_pairs == RX_RECORD_PAIRS;
                 report();
+                if (diagnostic && last.probe.bytes)
+                    download(record, last.probe.bytes, last.crc32, "probe_banks");
             }
         } else if (!strcmp(line, "download") && valid) {
             download(record, RX_RECORD_BYTES, last.crc32, "download");
         } else if (!strcmp(line, "snapshot") && !pattern && last.snapshot_pairs) {
             download(control, 4U * last.snapshot_pairs, last.snapshot_crc32, "snapshot");
         } else {
-            printf("@{\"error\":\"use info, pattern, capture MHz gain, download, snapshot\"}\n");
+            printf("@{\"error\":\"use info, pattern, capture MHz gain, probe MHz gain, download, snapshot\"}\n");
         }
         printf("@{\"done\":true}\n");
     }
