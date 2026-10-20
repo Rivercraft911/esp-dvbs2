@@ -26,6 +26,8 @@ def check(out):
 #define RADIO_S3_DAC_RATE_80M 80000000u
 #define RADIO_S3_GAIN_DEFAULT 0
 #define RADIO_S3_GAIN_MAX 17
+#define RADIO_S3_MAX_SECONDS 540u
+#define RADIO_S3_PHY_SOLO_MAX_SECONDS 60u
 static bool station_require(const char *cmd) { (void)cmd; return true; }
 static unsigned keyed_calls;
 static bool expected_solo, expected_fused;
