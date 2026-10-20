@@ -59,7 +59,10 @@ static uint32_t *IRAM_ATTR bank(unsigned n)
 static void IRAM_ATTR clear_bank(unsigned n)
 {
     uint32_t *p = bank(n);
-    for (unsigned i = 0; i < RX_BANK_PAIRS; ++i) p[i] = RX_SENTINEL;
+    for (unsigned i = 0; i < RX_BANK_PAIRS; i += 8) {
+        p[i] = p[i + 1] = p[i + 2] = p[i + 3] = RX_SENTINEL;
+        p[i + 4] = p[i + 5] = p[i + 6] = p[i + 7] = RX_SENTINEL;
+    }
     __asm__ volatile ("memw" ::: "memory");
 }
 

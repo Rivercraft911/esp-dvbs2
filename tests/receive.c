@@ -21,13 +21,16 @@ static void packing(void)
     /* Exhaust every signed10 field combination against a signed arithmetic oracle. */
     for (int i = -512; i < 512; ++i) {
         for (int q = -512; q < 512; ++q) bank[q + 512] = word(i, q);
-        memset(packed, 0x6d, sizeof packed);
-        assert(rx_pack(bank, 0, 1024, packed + 1));
-        for (int q = -512; q < 512; ++q) {
-            assert(packed[1 + 2 * (q + 512)] == (uint8_t)divide4(i));
-            assert(packed[2 + 2 * (q + 512)] == (uint8_t)divide4(q));
+        for (unsigned offset = 0; offset < 4; ++offset) {
+            memset(packed, 0x6d, sizeof packed);
+            assert(rx_pack(bank, 0, 1024, packed + offset));
+            for (int q = -512; q < 512; ++q) {
+                assert(packed[offset + 2 * (q + 512)] == (uint8_t)divide4(i));
+                assert(packed[offset + 1 + 2 * (q + 512)] == (uint8_t)divide4(q));
+            }
+            if (offset) assert(packed[offset - 1] == 0x6d);
+            assert(packed[offset + 2048] == 0x6d);
         }
-        assert(packed[0] == 0x6d && packed[2049] == 0x6d);
     }
     const uint8_t positive_tone[] = {100, 0, 0, 100, 156, 0, 0, 156};
     bank[16382] = word(400, 0);
@@ -37,6 +40,9 @@ static void packing(void)
     assert(rx_pack(bank, 16382, 4, packed));
     assert(!memcmp(packed, positive_tone, sizeof positive_tone));
     bank[0] = RX_SENTINEL;
+    assert(!rx_pack(bank, 16382, 4, packed));
+    bank[0] = word(-400, 0);
+    bank[1] = RX_SENTINEL;
     assert(!rx_pack(bank, 16382, 4, packed));
 }
 
