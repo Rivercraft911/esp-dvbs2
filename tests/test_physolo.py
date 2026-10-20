@@ -98,6 +98,7 @@ MODEL = r'''
 uint32_t regs[20];
 static unsigned users, domains, backups, core, calls, fail_at;
 static bool initialized, started, expected_solo, expected_pace, played;
+static unsigned calibration_begins, calibration_ends, calibration_restores;
 static int64_t now;
 int64_t esp_timer_get_time(void) { return ++now; }
 static int stream_error;
@@ -181,6 +182,19 @@ static unsigned cw_channel(unsigned f) { (void)f; return 1; }
 static unsigned cw_backoff(unsigned g) { (void)g; return 0; }
 static void esp_phy_wifi_tx_tone(unsigned on, unsigned c, unsigned g) { assert(!on); (void)c; (void)g; }
 bool radio_filter_finish(radio_filter_stats_t *s) { s->retained=true; return true; }
+esp_err_t radio_calibration_begin(uint32_t mhz,unsigned gain,uint32_t rate,
+                                  radio_calibration_stats_t *stats) {
+    (void)mhz; (void)gain; (void)rate; (void)stats;
+    assert(!initialized && !started && !REG_READ(DAC_CTRL));
+    ++calibration_begins; return ESP_OK;
+}
+bool radio_calibration_restore(void) {
+    assert(!REG_READ(DAC_CTRL));
+    ++calibration_restores; return true;
+}
+void radio_calibration_end(radio_calibration_stats_t *stats) {
+    (void)stats; assert(!REG_READ(DAC_CTRL)); ++calibration_ends;
+}
 static int play(run_t *r, bool pace) {
     assert(pace==expected_pace && !played);
     assert(initialized==!expected_solo && started==!expected_solo);
@@ -221,6 +235,7 @@ int main(void) {
     for (unsigned pick=0; pick<2; ++pick) {
         if (!solo && failure>7) continue;
         selection_calls=0;
+        calibration_begins=calibration_ends=calibration_restores=0;
         users=domains=backups=calls=0; core=1; fail_at=failure;
         initialized=started=played=false; memset(regs,0,sizeof regs);
         for (unsigned i=0;i<8;++i) regs[i]=6;
@@ -235,6 +250,8 @@ int main(void) {
         radio_s3_startup_t trace={.count=99};
         run.options.startup=&trace;
         worker(&run);
+        assert(calibration_begins==!pace && calibration_ends==!pace);
+        assert(calibration_restores==(played && !pace));
         assert(!run.startup);
         assert(trace.count==(pace ? (played ? 1u : 0u) : 99u));
         if (pace && played) assert(trace.first_sample==123 && trace.bank[0].cycles==456);

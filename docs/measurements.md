@@ -53,7 +53,7 @@ undecodable. Reducing peak to 32–64 restores decoding; **48 was best**, at 14.
 On October 19, a CM5 sent a 9 Mb/s camera mux over 16 MHz SPI to a XIAO S3;
 a B200 received 5 Msymbol/s 8PSK 2/3 through 40 dB of coax attenuation.
 The [live RF records](../results/2026-10-19-live-rf/README.md) contain a 111 s interval
-with no TS continuity gaps, nonzero FEC reports or host queue drops. A completed
+with no TS continuity gaps or host queue drops. A completed
 140 s run accepted 106,227 SPI messages with no protocol errors or late bank events.
 These conducted checks used an optional correction measured on that board at
 2420 MHz and gain 0; they do not establish range or visible playback cadence.
