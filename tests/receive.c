@@ -146,10 +146,37 @@ static void plans(void)
     assert(!rx_plan_copy(0, RX_BANK_PAIRS + 1U, &p));
 }
 
+static void tuning(void)
+{
+    const unsigned rf[] = {2000, 2025, 2067, 2110, 2199, 2200, 2245, 2290, 2420, 2450};
+    const uint32_t pll[] = {2400000, 2430000, 2480400, 2532000, 2638800,
+                            2200000, 2245000, 2290000, 2420000, 2450000};
+    for (unsigned n = 0; n < sizeof rf / sizeof *rf; ++n) {
+        rx_lo_plan p;
+        assert(rx_plan_lo(rf[n], &p));
+        assert(p.rf_khz == rf[n] * 1000U && p.pll_khz == pll[n]);
+        assert(p.divided == (n < 5));
+        assert((p.divided ? 5U * p.pll_khz / 6U : p.pll_khz) == p.rf_khz);
+    }
+    rx_lo_plan p;
+    assert(!rx_plan_lo(1999, &p) && !rx_plan_lo(2451, &p));
+    /* Restore only the saved divider bit, including unrelated bits changed
+     * since setup. Every possible byte must survive the set/restore pair. */
+    for (unsigned saved = 0; saved < 256; ++saved)
+        for (unsigned current = 0; current < 256; ++current) {
+            uint8_t restored = rx_lo_value(current, (saved & 0x10U) != 0);
+            assert((restored & ~0x10U) == (current & ~0x10U));
+            assert((restored & 0x10U) == (saved & 0x10U));
+            assert(rx_lo_value(rx_lo_value(saved, false), (saved & 0x10U) != 0) == saved);
+            assert(rx_lo_value(rx_lo_value(saved, true), (saved & 0x10U) != 0) == saved);
+        }
+}
+
 int main(void)
 {
     packing();
     boundaries();
     plans();
+    tuning();
     puts("raw copy, in-place signed10 compaction, wrapping spans and fault rejection pass");
 }

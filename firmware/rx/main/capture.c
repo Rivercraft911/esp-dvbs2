@@ -66,6 +66,17 @@ static uint32_t *IRAM_ATTR bank(unsigned n)
     return (uint32_t *)(0x3fcb0000U + n * 65536U);
 }
 
+/* CKGEN 0x65:0[4], pinned register notes in samples.c: "LO 5/6 divider".
+ * Calibrate with direct conversion; select the RX divider after gain setup. */
+static bool lo_select(bool divided, uint8_t *actual)
+{
+    uint8_t before = regi2c_ctrl_read_reg(0x65, 0, 0);
+    uint8_t expected = rx_lo_value(before, divided);
+    if (expected != before) regi2c_ctrl_write_reg_mask(0x65, 0, 0, 4, 4, divided);
+    *actual = regi2c_ctrl_read_reg(0x65, 0, 0);
+    return *actual == expected;
+}
+
 static void IRAM_ATTR clear_bank(unsigned n)
 {
     uint32_t *p = bank(n);
@@ -536,7 +547,7 @@ static void worker(void *arg)
 {
     run *r = arg;
     rx_report *s = r->report;
-    bool initialized = false, started = false, rf_setup = false;
+    bool initialized = false, started = false, rf_setup = false, lo_saved = false;
     rx_spill spill = {0};
     if (r->memory) {
         if (r->dma_burst) dma_run(r);
@@ -549,6 +560,7 @@ static void worker(void *arg)
         if (s->error != ESP_OK) goto done;
     }
     if (r->pattern) { pattern_run(r); goto done; }
+    if (!rx_plan_lo(r->mhz, &s->tuning)) { s->error = ESP_ERR_INVALID_ARG; goto done; }
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     cfg.nvs_enable = 0;
     s->error = esp_wifi_init(&cfg);
@@ -570,14 +582,18 @@ static void worker(void *arg)
     stop_tx_tone(1);
     rom_pbus_workmode();
     rom_pbus_xpd_tx_off();
-    regi2c_ctrl_write_reg_mask(0x65, 0, 0, 4, 4, 0);
+    s->lo_saved = regi2c_ctrl_read_reg(0x65, 0, 0);
+    lo_saved = true;
+    if (!lo_select(false, &s->lo_active)) { s->error = ESP_ERR_INVALID_STATE; goto done; }
     set_chanfreq(2412, 0);
-    phy_set_freq(r->mhz, 0);
+    phy_set_freq(s->tuning.pll_khz / 1000U, s->tuning.pll_khz % 1000U);
     rom_pbus_xpd_rx_on(1);
     rom_set_rxclk_en(1);
     s->gain_max = (REG_READ(AGC_FORCE) >> 8) & 0x7f;
     if (r->gain > s->gain_max) { s->error = ESP_ERR_INVALID_ARG; goto done; }
     force_rx_gain(1, r->gain, 0);
+    s->lo_applied = lo_select(s->tuning.divided, &s->lo_active);
+    if (!s->lo_applied) { s->error = ESP_ERR_INVALID_STATE; goto done; }
     vTaskDelay(pdMS_TO_TICKS(3));
     if (r->adc) adc_run(r);
     else s->error = collect(r);
@@ -592,6 +608,11 @@ done:
         rom_pbus_xpd_tx_off();
         rom_pbus_xpd_rx_on(0);
         rom_set_rxclk_en(0);
+    }
+    if (lo_saved) {
+        s->lo_restore_ok = lo_select((s->lo_saved & 0x10U) != 0, &s->lo_restored);
+        if (!s->lo_restore_ok && s->cleanup_error == ESP_OK)
+            s->cleanup_error = ESP_ERR_INVALID_STATE;
     }
     if (started) {
         esp_err_t stopped = esp_wifi_set_promiscuous(false);
@@ -641,7 +662,7 @@ esp_err_t rx_capture(uint16_t mhz, uint8_t gain, uint8_t *record, uint32_t *snap
                      rx_report *report, bool probe)
 {
     memset(report, 0, sizeof *report);
-    if (mhz < 2390 || mhz > 2450) return report->error = ESP_ERR_INVALID_ARG;
+    if (mhz < RX_FREQ_MIN_MHZ || mhz > RX_FREQ_MAX_MHZ) return report->error = ESP_ERR_INVALID_ARG;
     run r = {.record = record, .snapshot = snapshot, .report = report,
              .mhz = mhz, .gain = gain, .probe = probe};
     return execute(&r);

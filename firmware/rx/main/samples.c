@@ -10,6 +10,19 @@
 #define IRAM_ATTR
 #endif
 
+bool rx_plan_lo(unsigned mhz, rx_lo_plan *plan)
+{
+    if (mhz < RX_FREQ_MIN_MHZ || mhz > RX_FREQ_MAX_MHZ) return false;
+    bool divided = mhz < 2200U;
+    *plan = (rx_lo_plan){mhz * 1000U, mhz * (divided ? 1200U : 1000U), divided};
+    return true;
+}
+
+uint8_t rx_lo_value(uint8_t value, bool divided)
+{
+    return (value & ~0x10U) | (divided ? 0x10U : 0);
+}
+
 bool IRAM_ATTR rx_find_edge(const uint32_t *bank, rx_edge bracket, bool entering,
                             uint16_t *index)
 {

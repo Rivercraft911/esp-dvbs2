@@ -15,6 +15,12 @@
 #endif
 #define RX_RECORD_BYTES (2U * RX_RECORD_PAIRS)
 #define RX_CAPTURE_BYTES (4U * RX_RECORD_PAIRS)
+#define RX_FREQ_MIN_MHZ 2000U
+#define RX_FREQ_MAX_MHZ 2450U
+
+typedef struct { uint32_t rf_khz, pll_khz; bool divided; } rx_lo_plan;
+bool rx_plan_lo(unsigned mhz, rx_lo_plan *plan);
+uint8_t rx_lo_value(uint8_t value, bool divided);
 
 typedef struct { uint16_t before, after; } rx_edge;
 

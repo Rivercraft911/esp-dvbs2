@@ -23,6 +23,9 @@ typedef struct {
     uint8_t gain_max;
     bool guards_ok;
     esp_err_t error, cleanup_error;
+    rx_lo_plan tuning;
+    uint8_t lo_saved, lo_active, lo_restored;
+    bool lo_applied, lo_restore_ok;
 } rx_report;
 
 #define RX_MEMORY_CASES 7U

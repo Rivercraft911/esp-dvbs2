@@ -63,6 +63,12 @@ static void report(void)
            (unsigned long)RX_GAIN_REFRESH_CYCLES,
            last.gain_max, last.guards_ok ? "true" : "false", (unsigned long)rails,
            (unsigned long)last.snapshot_pairs, (unsigned long)last.snapshot_crc32);
+    printf(",\"requested_rf_khz\":%lu,\"requested_pll_khz\":%lu,\"lo_mode\":\"%s\","
+           "\"lo_selector_saved\":%u,\"lo_selector_active\":%u,\"lo_selector_restored\":%u,"
+           "\"lo_applied\":%s,\"lo_restore_ok\":%s",
+           (unsigned long)last.tuning.rf_khz, (unsigned long)last.tuning.pll_khz,
+           last.tuning.divided ? "five-sixths" : "direct", last.lo_saved, last.lo_active,
+           last.lo_restored, last.lo_applied ? "true" : "false", last.lo_restore_ok ? "true" : "false");
     if (diagnostic) {
         printf(",\"probe\":{\"bytes\":%lu,\"before_start\":%lu,\"after_start\":%lu,"
                "\"start_cycles\":%lu,\"before_switch\":%lu,\"after_switch\":%lu,"
@@ -215,7 +221,7 @@ void app_main(void)
                 printf("@{\"error\":\"%u-byte PSRAM allocation unavailable\"}\n", RX_CAPTURE_BYTES);
             } else {
                 if (pattern) rx_pattern(record, &last);
-                else if (mhz < 2390 || mhz > 2450 || gain > 127) {
+                else if (mhz < RX_FREQ_MIN_MHZ || mhz > RX_FREQ_MAX_MHZ || gain > 127) {
                     memset(&last, 0, sizeof last);
                     last.error = ESP_ERR_INVALID_ARG;
                 } else rx_capture(mhz, gain, record, control, &last, diagnostic);
