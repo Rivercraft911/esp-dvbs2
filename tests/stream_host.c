@@ -450,7 +450,7 @@ int main(int argc, char **argv)
             assert(native_buffers[i]+INGRESS_SLOT_BYTES <= enc.bch ||
                    native_buffers[i] >= enc.bch+DVBS2_BCH_CACHE_BYTES);
     }
-    if (!moon) assert(allocations == (sps == 40 ? 7 : 4 - (quads && sps == 3) + (mc >= 12 && !short_pulse) +
+    if (!moon) assert(allocations == (sps == 40 ? 7 : 4 + (mc >= 12 && !short_pulse) +
                           (resident && mode->t > 8 && !native_input && !borrowed_bch) + !resident));
     for (unsigned i = 0; i < 64; ++i) {
         if (native_blocks[i].p == enc.ws)
@@ -468,7 +468,7 @@ int main(int argc, char **argv)
         const size_t fast = dvbs2_fast_mode_size(mode);
         const size_t expected = mc >= 12 && sps == 8 ? 22240+2058 :
             sps == 40 ? fast+420 : quads && !moon && sps == 4 ? fast+25056 :
-            fast+(quads && sps == 3 ? 0 : 12420)+(mc >= 12 && !short_pulse ? 11120 : 0);
+            fast+(quads && sps == 3 ? 8352 : 12420)+(mc >= 12 && !short_pulse ? 11120 : 0);
         assert(internal == expected+(sps == 40 ? 0 : CACHED_FOR(rate)*sizeof(uint32_t)));
         // Eight slots fit the slow QPSK tails and short-pulse 8PSK 8/9 or
         // 9/10 tails. All other layouts fall back to the DMA heap block.

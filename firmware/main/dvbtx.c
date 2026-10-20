@@ -819,10 +819,11 @@ static size_t start_encoder_options(const char *cmd, unsigned modcod, unsigned l
     enc.packed = sps != 40;
     enc.quads = quads;
     dvb.table.n = sps;
-    // QPSK n3 uses two slots and an 8144-byte fast workspace in the store.
+    // Three slots cover the first cold refill after the opening ID. QPSK n3 keeps
+    // two in the store and allocates the third through the existing path.
     // At 10 Msym/s the 5/6 encoder needs about 69% of a frame period; a two-frame model keeps
     // as little as 244 symbols of lead there, three frames keep 18,871 even at 95% (test_ring).
-    const unsigned nslots = moon ? 0 : !enc.packed ? RING_SLOTS : (quads && sps == 3) ? 2 : sps <= 4 ? 3 : 2;
+    const unsigned nslots = moon ? 0 : !enc.packed ? RING_SLOTS : sps <= 4 ? 3 : 2;
     dvbs2_workspace *moon_ws = NULL;
     if (moon) {
         dvb.produced = dvb.consumed = dvb.page_sample = dvb.waiting = 0;

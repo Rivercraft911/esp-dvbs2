@@ -280,6 +280,12 @@ switches, fatal lateness or underruns. The duration includes both IDs.
 These runs predate the wide-filter selection. They establish timing; attenuation
 of the band edges was unknown. `20mq4` in the original record is today's QPSK `20m` kernel.
 
+The October 20 wide-filter runs exposed two startup underruns with the two-slot
+QPSK queue. A third buffer covers the first refill after the opening ID. Three
+20 s reruns reported zero underruns and recovered 32/31/32 consecutive exact packets
+from single B200 captures. The extra buffer uses 8,352 bytes; minimum free internal
+memory was 41,527 bytes. [Startup records](../results/2026-10-20-qpsk-startup/README.md).
+
 ## 8PSK at 20 Msym/s
 
 Firmware **5dbfcea** keyed 8PSK 2/3 and 5/6 for 30 s each at 20 Msym/s in the

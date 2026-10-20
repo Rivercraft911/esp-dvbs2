@@ -283,7 +283,7 @@ def test_stream(output=None, receiver=None, input_only=False):
                 profile = r["profile"]
                 assert profile["shaped_words"] + profile["reused_words"] == profile["fill_words"]
                 assert profile["reused_words"] > 0 if packed else profile["reused_words"] == 0
-                assert r["ring_slots"] == (2 if quads and sps == 3 else 3 if sps <= 4 else 2 if packed else 8)
+                assert r["ring_slots"] == (3 if sps <= 4 else 2 if packed else 8)
                 assert r["prefill_frames"] == r["ring_slots"]
                 assert 0 <= r["encode_cycles_live_max"] <= r["encode_cycles_max"]
                 assert 0 <= r["encode_kernel_cycles_mean"] <= r["encode_cycles_mean"]

@@ -42,7 +42,7 @@ real time with the DAC output going nowhere.
 | QPSK 9/10, roll-off 0.20 | 33.33 Msym/s | **40 MHz** | **58.2 Mb/s** | keyed | decoded, prepared |
 | 8PSK 2/3 | 26.67 Msym/s | 36 MHz | **51.6 Mb/s** | keyed | decoded, prepared |
 | 8PSK 5/6 | 20 Msym/s | 27 MHz | **48.4 Mb/s** | keyed* | decoded (B200) |
-| QPSK 9/10 | 26.67 Msym/s | 36 MHz | 46.6 Mb/s | keyed | decoded burst; TX underruns |
+| QPSK 9/10 | 26.67 Msym/s | 36 MHz | 46.6 Mb/s | keyed | [decoded (B200)](results/2026-10-20-qpsk-startup/README.md) |
 | 8PSK 2/3 | 20 Msym/s | 27 MHz | 38.7 Mb/s | keyed* | decoded, soft LDPC |
 | QPSK 9/10 | 20 Msym/s | 27 MHz | 34.9 Mb/s | keyed | decoded, peak 32–64; 48 best |
 | 8PSK 5/6 | 10 Msym/s | 13.5 MHz | 24.2 Mb/s | keyed | decoded, soft LDPC |
@@ -60,8 +60,9 @@ Pluto firmware, inside a closed Faraday box at 2420 MHz ([runs](docs/measurement
 Main now restores the wide filter after test-tone setup. Single-capture B200 checks
 through 40 dB attenuation decoded the remaining eight table modes, including 36/40 MHz.
 The four fastest modes used prepared, repeated payloads; the other four used changing
-payloads. Each capture covers 41.94 ms. QPSK at 26.67 Msym/s decoded the burst but
-reported two TX underruns during its 20 s run. [RF records](results/2026-10-20-wide-filter/README.md).
+payloads. Each capture covers 41.94 ms. QPSK at 26.67 Msym/s now uses a third frame
+buffer: three 20 s runs had zero underruns, with 32/31/32 exact packets in the sampled RF.
+[RF records](results/2026-10-20-wide-filter/README.md), [startup fix](results/2026-10-20-qpsk-startup/README.md).
 \*The 30 s keyed timing used an earlier, longer pulse; the current pulse decoded in these 20 s RF tests.
 Margins, raw records and limits: [measurements](docs/measurements.md). With a prepared payload,
 30 s keyed tests of the 40 MHz mode left **37% mean encoder headroom and 16% bank-fill headroom**.
