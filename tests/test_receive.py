@@ -21,6 +21,17 @@ class ReceiveTests(unittest.TestCase):
                             "-o", str(program)], check=True)
             subprocess.run([str(program)], check=True)
 
+    def test_packed_samples(self):
+        source = ROOT / "firmware/rx/main"
+        with tempfile.TemporaryDirectory() as tmp:
+            program = pathlib.Path(tmp) / "receive-packed"
+            subprocess.run(["cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
+                            "-fsanitize=address,undefined", "-I", str(source),
+                            str(source / "samples.c"), str(source / "packed.c"),
+                            str(ROOT / "tests/receive_packed.c"),
+                            "-o", str(program)], check=True)
+            subprocess.run([str(program)], check=True)
+
     def test_download_validation(self):
         spec = importlib.util.spec_from_file_location("receive", ROOT / "host/receive.py")
         module = importlib.util.module_from_spec(spec)
@@ -34,6 +45,12 @@ class ReceiveTests(unittest.TestCase):
                   "crc32": zlib.crc32(data), "late": 0, "overruns": 0,
                   "boundary_errors": 0, "gap_events": 0, "sentinel_errors": 0}
         self.assertEqual(module.validate(data, report)["pairs"], module.PAIRS)
+        packed = {**report, "capture_path": "packed", "stage_guards_ok": True}
+        self.assertEqual(module.validate(data, packed)["pairs"], module.PAIRS)
+        with self.assertRaises(ValueError):
+            module.validate(data, {**packed, "stage_guards_ok": False})
+        with self.assertRaises(ValueError):
+            module.validate(data, {**report, "capture_path": "packed"})
         for field in ("late", "overruns", "boundary_errors", "gap_events", "sentinel_errors"):
             with self.assertRaises(ValueError):
                 module.validate(data, {**report, field: 1})

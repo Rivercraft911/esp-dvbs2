@@ -26,6 +26,10 @@ typedef struct {
     rx_lo_plan tuning;
     uint8_t lo_saved, lo_active, lo_restored;
     bool lo_applied, lo_restore_ok;
+    uint32_t max_pack_cycles, max_dma_cycles;
+    uint32_t stage_bytes, stage_free_internal, stage_largest_internal;
+    bool stage_guards_ok;
+    uint32_t max_head_tail_cycles, max_cache_prepare_cycles, max_cache_finish_cycles;
 } rx_report;
 
 #define RX_MEMORY_CASES 7U

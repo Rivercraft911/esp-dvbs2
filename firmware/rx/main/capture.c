@@ -8,6 +8,8 @@
 #include <string.h>
 #include "capture.h"
 #include "spill.h"
+#include "packed.h"
+#include "esp_heap_caps.h"
 #include "esp_attr.h"
 #include "esp_async_memcpy.h"
 #include "esp_cpu.h"
@@ -30,8 +32,8 @@
 #define BANK_USAGE 0x600c101cU
 #define AGC_FORCE 0x6001c02cU
 #define FE_CTRL 0x60006000U
-#define UNIT_PAIRS 12288U
-#define LATE_PAIRS 2000U
+#define UNIT_PAIRS RX_UNIT_PAIRS
+#define LATE_PAIRS RX_LATE_PAIRS
 #define PAIR_CYCLES 15U
 #define CONTROL_PAIRS 512U
 
@@ -59,6 +61,9 @@ typedef struct {
     rx_adc_report *adc;
     rx_spill *spill;
     SemaphoreHandle_t done;
+#if RX_PACKED_CAPTURE
+    uint8_t *stage;
+#endif
 } run;
 
 static uint32_t *IRAM_ATTR bank(unsigned n)
@@ -79,17 +84,87 @@ static bool lo_select(bool divided, uint8_t *actual)
 
 static void IRAM_ATTR clear_bank(unsigned n)
 {
+#if RX_PACKED_CAPTURE
+    uint32_t irq = portSET_INTERRUPT_MASK_FROM_ISR();
+    rx_pack_clear(bank(n));
+    portCLEAR_INTERRUPT_MASK_FROM_ISR(irq);
+#else
     uint32_t *p = bank(n);
     for (unsigned i = 0; i < RX_BANK_PAIRS; i += 8) {
         p[i] = p[i + 1] = p[i + 2] = p[i + 3] = RX_SENTINEL;
         p[i + 4] = p[i + 5] = p[i + 6] = p[i + 7] = RX_SENTINEL;
     }
     __asm__ volatile ("memw" ::: "memory");
+#endif
 }
+
+#if RX_PACKED_CAPTURE
+static esp_err_t stage_open(run *r)
+{
+    rx_report *s = r->report;
+    s->stage_bytes = RX_PACK_STAGE_BYTES;
+    s->stage_free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+    s->stage_largest_internal = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+    r->stage = heap_caps_aligned_alloc(64, RX_PACK_STAGE_BYTES,
+                                       MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
+    s->stage_guards_ok = r->stage != NULL;
+    return r->stage ? ESP_OK : ESP_ERR_NO_MEM;
+}
+
+static esp_err_t IRAM_ATTR packed_unit(run *r, unsigned current, uint16_t first, size_t count)
+{
+    rx_report *s = r->report;
+    uint32_t before = esp_cpu_get_cycle_count();
+    uint8_t *stage = r->stage + 64U + ((2U * first) & 63U);
+    memset(stage - 16U, 0x6d, 16);
+    memset(stage + 2U * count, 0x6d, 16);
+    if (!r->pattern && !s->retained_pairs && count >= CONTROL_PAIRS) {
+        rx_copy(bank(current), first, CONTROL_PAIRS, r->snapshot);
+        s->snapshot_pairs = CONTROL_PAIRS;
+    }
+    if (!rx_pack_bank(bank(current), first, count, stage)) {
+        ++s->sentinel_errors;
+        return ESP_FAIL;
+    }
+    uint32_t packed = esp_cpu_get_cycle_count();
+    if (packed - before > s->max_pack_cycles) s->max_pack_cycles = packed - before;
+    esp_err_t e = rx_spill_packed_begin(r->spill, stage, 2U * count,
+                                       r->record + 2U * s->retained_pairs);
+    uint32_t prepared = esp_cpu_get_cycle_count();
+    if (e != ESP_OK) { ++s->dma_errors; return e; }
+    /* All raw inspection is complete. DMA reads only private staging, so the
+     * entire old bank can be cleared while the next bank captures. */
+    clear_bank(current);
+    uint32_t cleared = esp_cpu_get_cycle_count();
+    e = rx_spill_finish(r->spill);
+    uint32_t completed = esp_cpu_get_cycle_count();
+    for (unsigned n = 0; n < 16; ++n)
+        if ((stage - 16U)[n] != 0x6d || stage[2U * count + n] != 0x6d)
+            s->stage_guards_ok = false;
+    if (!s->stage_guards_ok) e = ESP_FAIL;
+    uint32_t elapsed = esp_cpu_get_cycle_count() - before;
+    if (elapsed > s->max_copy_cycles) { s->max_copy_cycles = elapsed; s->max_copy_pairs = count; }
+    if (prepared - packed > s->max_dma_setup_cycles) s->max_dma_setup_cycles = prepared - packed;
+    if (completed - packed > s->max_dma_cycles) s->max_dma_cycles = completed - packed;
+    if (cleared - prepared > s->max_clear_cycles) s->max_clear_cycles = cleared - prepared;
+    s->dma_rx_flags |= r->spill->rx_flags;
+    s->dma_tx_flags |= r->spill->tx_flags;
+    s->max_head_tail_cycles = r->spill->max_head_tail_cycles;
+    s->max_cache_prepare_cycles = r->spill->max_cache_prepare_cycles;
+    s->max_cache_finish_cycles = r->spill->max_cache_finish_cycles;
+    if (e != ESP_OK) ++s->dma_errors;
+    else ++s->dma_copies;
+    return e;
+}
+#endif
 
 static esp_err_t IRAM_ATTR copy_unit(run *r, unsigned current, uint16_t first,
                                     size_t count, unsigned pending)
 {
+#if RX_PACKED_CAPTURE
+    (void)pending;
+    return packed_unit(r, current, first, count);
+#else
     rx_report *s = r->report;
     uint32_t before = esp_cpu_get_cycle_count();
     esp_err_t e = rx_spill_begin(r->spill, bank(current), first, count,
@@ -117,6 +192,7 @@ static esp_err_t IRAM_ATTR copy_unit(run *r, unsigned current, uint16_t first,
     if (e != ESP_OK) ++s->dma_errors;
     else ++s->dma_copies;
     return e;
+#endif
 }
 
 typedef struct {
@@ -247,7 +323,7 @@ static esp_err_t IRAM_ATTR __attribute__((noinline)) collect(run *r)
 
         if (copy_unit(r, current, first, keep, pending) != ESP_OK) break;
         s->retained_pairs += keep;
-        pending = current;
+        pending = RX_PACKED_CAPTURE ? 3U : current;
         if (s->retained_pairs == RX_RECORD_PAIRS) { error = ESP_OK; break; }
 
 #if RX_GAIN_REFRESH_CYCLES
@@ -296,7 +372,7 @@ static void IRAM_ATTR __attribute__((noinline)) pattern_run(run *r)
         esp_err_t error = copy_unit(r, current, first, count, pending);
         portCLEAR_INTERRUPT_MASK_FROM_ISR(irq);
         if (error != ESP_OK) { s->error = error; return; }
-        pending = current;
+        pending = RX_PACKED_CAPTURE ? 3U : current;
         s->retained_pairs += count;
     }
     if (pending < 3) clear_bank(pending);
@@ -559,7 +635,14 @@ static void worker(void *arg)
         s->error = rx_spill_open(&spill);
         if (s->error != ESP_OK) goto done;
     }
-    if (r->pattern) { pattern_run(r); goto done; }
+    if (r->pattern) {
+#if RX_PACKED_CAPTURE
+        s->error = stage_open(r);
+        if (s->error != ESP_OK) goto done;
+#endif
+        pattern_run(r);
+        goto done;
+    }
     if (!rx_plan_lo(r->mhz, &s->tuning)) { s->error = ESP_ERR_INVALID_ARG; goto done; }
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     cfg.nvs_enable = 0;
@@ -574,6 +657,12 @@ static void worker(void *arg)
         (s->error = esp_wifi_set_promiscuous(true)) != ESP_OK ||
         (s->error = esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE)) != ESP_OK) goto done;
 
+#if RX_PACKED_CAPTURE
+    if (!r->probe && !r->adc) {
+        s->error = stage_open(r); /* Measure allocation with Wi-Fi already live. */
+        if (s->error != ESP_OK) goto done;
+    }
+#endif
     rf_setup = true;
     REG_WRITE(DUMP_CTRL, 0);
     REG_WRITE(DAC_CTRL, 0);
@@ -627,6 +716,7 @@ done:
             s->cleanup_error = deinitialized;
     }
     if (s->error == ESP_OK) s->error = s->cleanup_error;
+#if !RX_PACKED_CAPTURE
     if (!r->probe && s->retained_pairs) {
         if (!r->pattern && s->retained_pairs >= CONTROL_PAIRS) {
             memcpy(r->snapshot, r->record, 4U * CONTROL_PAIRS);
@@ -639,6 +729,9 @@ done:
         }
         s->compact_cycles = esp_cpu_get_cycle_count() - before;
     }
+#else
+    free(r->stage); /* DMA close/idle and RF cleanup have already completed. */
+#endif
     s->crc32 = esp_rom_crc32_le(0, r->record,
                                r->probe ? s->probe.bytes : 2U * s->retained_pairs);
     if (s->snapshot_pairs)
@@ -684,6 +777,7 @@ void rx_pattern(uint8_t *record, rx_report *report)
 esp_err_t rx_memory(uint8_t *record, rx_memory_report *report, unsigned dma_burst)
 {
     memset(report, 0, sizeof *report);
+    if (RX_CAPTURE_BYTES < 128U * UNIT_PAIRS * 4U + 128U) return ESP_ERR_NOT_SUPPORTED;
     if (dma_burst && dma_burst != 16 && dma_burst != 32 && dma_burst != 64)
         return ESP_ERR_INVALID_ARG;
     wifi_mode_t mode;

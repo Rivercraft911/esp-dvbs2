@@ -69,6 +69,15 @@ static void report(void)
            (unsigned long)last.tuning.rf_khz, (unsigned long)last.tuning.pll_khz,
            last.tuning.divided ? "five-sixths" : "direct", last.lo_saved, last.lo_active,
            last.lo_restored, last.lo_applied ? "true" : "false", last.lo_restore_ok ? "true" : "false");
+    printf(",\"capture_path\":\"%s\",\"stage_bytes\":%lu,\"stage_guards_ok\":%s,"
+           "\"stage_free_internal\":%lu,\"stage_largest_internal\":%lu,"
+           "\"max_pack_cycles\":%lu,\"max_dma_cycles\":%lu,"
+           "\"max_head_tail_cycles\":%lu,\"max_cache_prepare_cycles\":%lu,\"max_cache_finish_cycles\":%lu",
+           RX_PACKED_CAPTURE ? "packed" : "raw", (unsigned long)last.stage_bytes,
+           last.stage_guards_ok ? "true" : "false", (unsigned long)last.stage_free_internal,
+           (unsigned long)last.stage_largest_internal, (unsigned long)last.max_pack_cycles,
+           (unsigned long)last.max_dma_cycles, (unsigned long)last.max_head_tail_cycles,
+           (unsigned long)last.max_cache_prepare_cycles, (unsigned long)last.max_cache_finish_cycles);
     if (diagnostic) {
         printf(",\"probe\":{\"bytes\":%lu,\"before_start\":%lu,\"after_start\":%lu,"
                "\"start_cycles\":%lu,\"before_switch\":%lu,\"after_switch\":%lu,"
@@ -138,12 +147,12 @@ void app_main(void)
             printf("@{\"cmd\":\"info\",\"app\":\"s3_receive\",\"firmware\":\"%s\","
                    "\"psram_bytes\":%u,\"record_allocated\":%s,\"capture_buffer_bytes\":%u,"
                    "\"free_psram_bytes\":%u,\"gain_refresh_cycles\":%lu,\"tx\":false,"
-                   "\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\","
+                   "\"capture_path\":\"%s\",\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\","
                    "\"banks\":[\"0x3fcb0000\",\"0x3fcc0000\",\"0x3fcd0000\"]}\n",
                    esp_app_get_description()->version, (unsigned)esp_psram_get_size(),
                    allocation ? "true" : "false", RX_CAPTURE_BYTES,
                    (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
-                   (unsigned long)RX_GAIN_REFRESH_CYCLES,
+                   (unsigned long)RX_GAIN_REFRESH_CYCLES, RX_PACKED_CAPTURE ? "packed" : "raw",
                    mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
         } else if (capture && !strcmp(cmd, "adcprobe")) {
             valid = false;

@@ -1,4 +1,4 @@
-idf_component_register(SRCS "main.c" "capture.c" "samples.c" "spill.c"
+idf_component_register(SRCS "main.c" "capture.c" "samples.c" "spill.c" "packed.c" "packed.S"
                        INCLUDE_DIRS "." "../../main"
                        LDFRAGMENTS "spill.lf"
                        PRIV_REQUIRES esp_driver_usb_serial_jtag esp_wifi esp_phy esp_psram
@@ -9,4 +9,7 @@ if(DEFINED RX_GAIN_REFRESH_CYCLES)
 endif()
 if(DEFINED RX_RECORD_PAIRS)
   target_compile_definitions(${COMPONENT_LIB} PRIVATE RX_RECORD_PAIRS=${RX_RECORD_PAIRS})
+endif()
+if(DEFINED RX_PACKED_CAPTURE)
+  target_compile_definitions(${COMPONENT_LIB} PRIVATE RX_PACKED_CAPTURE=${RX_PACKED_CAPTURE})
 endif()

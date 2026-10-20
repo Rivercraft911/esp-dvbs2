@@ -42,6 +42,8 @@ def validate(data, report, snapshot=None, *, pairs=PAIRS):
         raise ValueError("board did not complete the capture")
     if not report.get("guards_ok") or report.get("retained_pairs") != pairs:
         raise ValueError("board guards or retained sample count failed")
+    if report.get("capture_path") == "packed" and not report.get("stage_guards_ok"):
+        raise ValueError("packed staging guards failed")
     if len(data) != 2 * pairs or zlib.crc32(data) != report.get("crc32"):
         raise ValueError("download length or CRC differs from the board")
     for field in ("late", "overruns", "boundary_errors", "gap_events", "sentinel_errors"):

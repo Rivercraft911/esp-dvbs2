@@ -3,6 +3,7 @@
  * Source banks stay CPU-owned and unchanged until successful RX EOF. */
 #include <stdio.h>
 #include "spill.h"
+#include "packed.h"
 #include "esp_attr.h"
 #include "esp_cache.h"
 #include "esp_cpu.h"
@@ -96,8 +97,17 @@ esp_err_t IRAM_ATTR rx_spill_begin(rx_spill *s, const uint32_t *bank, uint16_t f
         (e = gdma_link_mount_buffers(s->rx_list, 0, &rx, 1, &s->rx_end)) != ESP_OK) return e;
     for (int n = 0; n <= s->rx_end; ++n)
         if ((e = gdma_link_set_length(s->rx_list, n, 0)) != ESP_OK) return e;
+#if RX_PACKED_CAPTURE
+    uint32_t before = esp_cpu_get_cycle_count();
+    e = esp_cache_msync(s->out, s->bytes, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+    uint32_t elapsed = esp_cpu_get_cycle_count() - before;
+    if (elapsed > s->max_cache_prepare_cycles) s->max_cache_prepare_cycles = elapsed;
+    if (e != ESP_OK || (e = gdma_reset(s->rx)) != ESP_OK ||
+        (e = gdma_reset(s->tx)) != ESP_OK) return e;
+#else
     if ((e = esp_cache_msync(s->out, s->bytes, ESP_CACHE_MSYNC_FLAG_DIR_M2C)) != ESP_OK ||
         (e = gdma_reset(s->rx)) != ESP_OK || (e = gdma_reset(s->tx)) != ESP_OK) return e;
+#endif
     gdma_ll_rx_clear_interrupt_status(&GDMA, s->channel, GDMA_LL_RX_EVENT_MASK);
     gdma_ll_tx_clear_interrupt_status(&GDMA, s->channel, GDMA_LL_TX_EVENT_MASK);
     __asm__ volatile ("memw" ::: "memory");
@@ -134,7 +144,15 @@ esp_err_t IRAM_ATTR rx_spill_finish(rx_spill *s)
         total += length;
     }
     if (total != s->bytes) return ESP_FAIL;
+#if RX_PACKED_CAPTURE
+    before = esp_cpu_get_cycle_count();
+    e = esp_cache_msync(s->out, s->bytes, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+    uint32_t elapsed = esp_cpu_get_cycle_count() - before;
+    if (elapsed > s->max_cache_finish_cycles) s->max_cache_finish_cycles = elapsed;
+    return e;
+#else
     return esp_cache_msync(s->out, s->bytes, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+#endif
 }
 
 esp_err_t rx_spill_close(rx_spill *s)
@@ -152,4 +170,20 @@ esp_err_t rx_spill_close(rx_spill *s)
     if (s->tx_list) failed |= gdma_del_link_list(s->tx_list) != ESP_OK;
     if (s->rx_list) failed |= gdma_del_link_list(s->rx_list) != ESP_OK;
     return failed ? ESP_FAIL : ESP_OK;
+}
+
+esp_err_t IRAM_ATTR rx_spill_packed_begin(rx_spill *s, const uint8_t *stage,
+                                         size_t bytes, uint8_t *out)
+{
+    rx_packed_plan p;
+    if (s->active || !rx_pack_copy_plan((uintptr_t)stage, (uintptr_t)out, bytes, &p))
+        return ESP_ERR_INVALID_ARG;
+    uint32_t before = esp_cpu_get_cycle_count();
+    for (size_t n = 0; n < p.head; ++n) out[n] = stage[n];
+    for (size_t n = p.head + p.bulk; n < bytes; ++n) out[n] = stage[n];
+    uint32_t elapsed = esp_cpu_get_cycle_count() - before;
+    if (elapsed > s->max_head_tail_cycles) s->max_head_tail_cycles = elapsed;
+    if (!p.bulk) { s->bytes = 0; s->rx_flags = s->tx_flags = 0; return ESP_OK; }
+    return rx_spill_begin(s, (const uint32_t *)(stage + p.head), 0,
+                           p.bulk / 4U, (uint32_t *)(out + p.head));
 }
