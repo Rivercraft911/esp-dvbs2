@@ -45,6 +45,8 @@ def validate(data, report, snapshot=None):
     for field in ("late", "overruns", "boundary_errors", "gap_events", "sentinel_errors"):
         if report.get(field) != 0:
             raise ValueError(f"board reported {field}={report.get(field)!r}")
+    if report.get("dma_errors", 0):
+        raise ValueError("board reported a DMA error")
     if report.get("cmd") == "pattern":
         for n in range(PAIRS):
             if data[2 * n] != ((13 * n) & 1023) >> 2 or \

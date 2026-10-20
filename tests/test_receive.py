@@ -38,6 +38,8 @@ class ReceiveTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 module.validate(data, {**report, field: 1})
         with self.assertRaises(ValueError):
+            module.validate(data, {**report, "dma_errors": 1})
+        with self.assertRaises(ValueError):
             module.validate(data[:-2], report)
         damaged = data.copy()
         damaged[1000] ^= 1

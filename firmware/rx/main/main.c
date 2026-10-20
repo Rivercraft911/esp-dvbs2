@@ -20,7 +20,7 @@ static unsigned last_mhz, last_gain;
 static bool guards_ok(void)
 {
     for (unsigned n = 0; n < 16; ++n)
-        if (allocation[n] != 0x6d || record[RX_CAPTURE_BYTES + n] != 0x6d) return false;
+        if ((record - 16U)[n] != 0x6d || record[RX_CAPTURE_BYTES + n] != 0x6d) return false;
     return true;
 }
 
@@ -37,6 +37,8 @@ static void report(void)
            "\"sentinel_errors\":%lu,\"max_poll_cycles\":%lu,\"max_copy_cycles\":%lu,"
            "\"max_raw_copy_cycles\":%lu,\"max_clear_cycles\":%lu,\"max_copy_pairs\":%lu,"
            "\"compact_cycles\":%lu,"
+           "\"dma_errors\":%lu,\"dma_copies\":%lu,\"max_dma_setup_cycles\":%lu,"
+           "\"dma_rx_flags\":%lu,\"dma_tx_flags\":%lu,\"clear_overlapped\":true,"
            "\"max_switch_late_pairs\":%lu,\"engine_cycles\":%lu,\"elapsed_cycles\":%lu,\"gain_refreshes\":%lu,"
            "\"gain_max\":%u,\"guards_ok\":%s,\"sc8_rail_values\":%lu,"
            "\"snapshot_pairs\":%lu,\"snapshot_crc32\":%lu,"
@@ -52,7 +54,10 @@ static void report(void)
            (unsigned long)last.sentinel_errors, (unsigned long)last.max_poll_cycles,
            (unsigned long)last.max_copy_cycles, (unsigned long)last.max_raw_copy_cycles,
            (unsigned long)last.max_clear_cycles, (unsigned long)last.max_copy_pairs,
-           (unsigned long)last.compact_cycles, (unsigned long)last.max_switch_late_pairs,
+           (unsigned long)last.compact_cycles, (unsigned long)last.dma_errors,
+           (unsigned long)last.dma_copies, (unsigned long)last.max_dma_setup_cycles,
+           (unsigned long)last.dma_rx_flags, (unsigned long)last.dma_tx_flags,
+           (unsigned long)last.max_switch_late_pairs,
            (unsigned long)last.engine_cycles, (unsigned long)last.elapsed_cycles, (unsigned long)last.gain_refreshes,
            last.gain_max, last.guards_ok ? "true" : "false", (unsigned long)rails,
            (unsigned long)last.snapshot_pairs, (unsigned long)last.snapshot_crc32);
@@ -99,10 +104,10 @@ void app_main(void)
     static FILE output = FDEV_SETUP_STREAM(console_put, NULL, NULL, _FDEV_SETUP_WRITE);
     stdout = &output;
     setvbuf(stdin, NULL, _IONBF, 0);
-    allocation = heap_caps_malloc(RX_CAPTURE_BYTES + 32U, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    allocation = heap_caps_malloc(RX_CAPTURE_BYTES + 128U, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (allocation) {
-        record = allocation + 16;
-        memset(allocation, 0x6d, 16);
+        record = (uint8_t *)(((uintptr_t)allocation + 79U) & ~(uintptr_t)63U);
+        memset(record - 16U, 0x6d, 16);
         memset(record + RX_CAPTURE_BYTES, 0x6d, 16);
     }
     char line[96];

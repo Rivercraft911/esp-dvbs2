@@ -66,3 +66,15 @@ bool rx_compact(uint32_t *record, size_t pairs)
     }
     return true;
 }
+
+bool IRAM_ATTR rx_plan_copy(uint16_t first, size_t pairs, rx_copy_plan *plan)
+{
+    if (first >= RX_BANK_PAIRS || pairs > RX_BANK_PAIRS) return false;
+    size_t head = (16U - (first & 15U)) & 15U;
+    if (head > pairs) head = pairs;
+    size_t bulk = (pairs - head) & ~(size_t)15U;
+    size_t split = RX_BANK_PAIRS - ((first + head) & RX_BANK_MASK);
+    if (split > bulk) split = bulk;
+    *plan = (rx_copy_plan){head, bulk, pairs - head - bulk, split};
+    return true;
+}

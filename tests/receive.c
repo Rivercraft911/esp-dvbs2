@@ -3,8 +3,8 @@
 #include <string.h>
 #include "samples.h"
 
-static uint32_t bank[RX_BANK_PAIRS];
-static uint32_t raw[RX_BANK_PAIRS + 4U];
+_Alignas(64) static uint32_t bank[RX_BANK_PAIRS];
+_Alignas(64) static uint32_t raw[RX_BANK_PAIRS + 32U];
 static uint8_t *packed = (uint8_t *)raw;
 
 static uint32_t word(int i, int q)
@@ -111,9 +111,45 @@ static void boundaries(void)
     assert(first == 0 && count == 12348);
 }
 
+static void plans(void)
+{
+    const size_t counts[] = {0, 1, 7, 15, 16, 17, 1023, 12288, 14287, 14288, 16384};
+    for (unsigned n = 0; n < RX_BANK_PAIRS; ++n) bank[n] = 0x9e3779b9U * (n + 1U);
+    for (unsigned first = 0; first < RX_BANK_PAIRS; first += 17) {
+        for (unsigned c = 0; c < sizeof counts / sizeof *counts; ++c) {
+            size_t count = counts[c];
+            rx_copy_plan p;
+            assert(rx_plan_copy(first, count, &p));
+            assert(p.head + p.bulk + p.tail == count && p.split <= p.bulk);
+            assert((p.bulk & 15U) == 0 && (p.split & 15U) == 0);
+            if (count <= 14288)
+                assert((p.split * 4U + 4031U) / 4032U +
+                       ((p.bulk - p.split) * 4U + 4031U) / 4032U <= 16U);
+            memset(raw, 0x6d, sizeof raw);
+            uint32_t *out = raw + 16U + (first & 15U);
+            unsigned at = (first + p.head) & RX_BANK_MASK;
+            if (p.bulk) {
+                assert(((uintptr_t)(bank + at) & 63U) == 0);
+                assert(((uintptr_t)(out + p.head) & 63U) == 0);
+            }
+            rx_copy(bank, first, p.head, out);
+            memcpy(out + p.head, bank + at, p.split * sizeof *out);
+            memcpy(out + p.head + p.split, bank, (p.bulk - p.split) * sizeof *out);
+            rx_copy(bank, (at + p.bulk) & RX_BANK_MASK, p.tail, out + p.head + p.bulk);
+            for (unsigned n = 0; n < count; ++n)
+                assert(out[n] == bank[(first + n) & RX_BANK_MASK]);
+            assert(out[-1] == 0x6d6d6d6dU && out[count] == 0x6d6d6d6dU);
+        }
+    }
+    rx_copy_plan p;
+    assert(!rx_plan_copy(RX_BANK_PAIRS, 1, &p));
+    assert(!rx_plan_copy(0, RX_BANK_PAIRS + 1U, &p));
+}
+
 int main(void)
 {
     packing();
     boundaries();
+    plans();
     puts("raw copy, in-place signed10 compaction, wrapping spans and fault rejection pass");
 }

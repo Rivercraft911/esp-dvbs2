@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "capture.h"
+#include "spill.h"
 #include "esp_attr.h"
 #include "esp_async_memcpy.h"
 #include "esp_cpu.h"
@@ -56,6 +57,7 @@ typedef struct {
     unsigned dma_burst;
     rx_memory_report *memory;
     rx_adc_report *adc;
+    rx_spill *spill;
     SemaphoreHandle_t done;
 } run;
 
@@ -72,6 +74,38 @@ static void IRAM_ATTR clear_bank(unsigned n)
         p[i + 4] = p[i + 5] = p[i + 6] = p[i + 7] = RX_SENTINEL;
     }
     __asm__ volatile ("memw" ::: "memory");
+}
+
+static esp_err_t IRAM_ATTR copy_unit(run *r, unsigned current, uint16_t first,
+                                    size_t count, unsigned pending)
+{
+    rx_report *s = r->report;
+    uint32_t before = esp_cpu_get_cycle_count();
+    esp_err_t e = rx_spill_begin(r->spill, bank(current), first, count,
+                                (uint32_t *)r->record + s->retained_pairs);
+    uint32_t prepared = esp_cpu_get_cycle_count();
+    if (e != ESP_OK) { ++s->dma_errors; return e; }
+    uint32_t clear_cycles = 0;
+    /* The previous DMA source is complete and CPU-owned. Clear it while this
+     * DMA reads a different bank; it is ready before the next ownership switch. */
+    if (pending < 3) {
+        clear_bank(pending);
+        clear_cycles = esp_cpu_get_cycle_count() - prepared;
+    }
+    e = rx_spill_finish(r->spill);
+    uint32_t elapsed = esp_cpu_get_cycle_count() - before;
+    s->dma_rx_flags |= r->spill->rx_flags;
+    s->dma_tx_flags |= r->spill->tx_flags;
+    if (prepared - before > s->max_dma_setup_cycles) s->max_dma_setup_cycles = prepared - before;
+    if (clear_cycles > s->max_clear_cycles) s->max_clear_cycles = clear_cycles;
+    if (elapsed > s->max_copy_cycles) s->max_copy_cycles = elapsed;
+    if (elapsed > s->max_raw_copy_cycles) {
+        s->max_raw_copy_cycles = elapsed;
+        s->max_copy_pairs = count;
+    }
+    if (e != ESP_OK) ++s->dma_errors;
+    else ++s->dma_copies;
+    return e;
 }
 
 typedef struct {
@@ -132,7 +166,7 @@ static esp_err_t IRAM_ATTR __attribute__((noinline)) collect(run *r)
     rx_edge begin = {0, 0};
     uint32_t target = UNIT_PAIRS, refresh = epoch;
     uint16_t expected = 0;
-    unsigned current = 0;
+    unsigned current = 0, pending = 3;
     esp_err_t error = ESP_FAIL;
     while (s->retained_pairs < RX_RECORD_PAIRS) {
         if (!advance(&p, s)) break;
@@ -197,20 +231,9 @@ static esp_err_t IRAM_ATTR __attribute__((noinline)) collect(run *r)
             s->engine_cycles = esp_cpu_get_cycle_count() - epoch;
         }
 
-        uint32_t copy_start = esp_cpu_get_cycle_count();
-        rx_copy(src, first, keep, (uint32_t *)r->record + s->retained_pairs);
-        uint32_t copied = esp_cpu_get_cycle_count();
+        if (copy_unit(r, current, first, keep, pending) != ESP_OK) break;
         s->retained_pairs += keep;
-        clear_bank(current);
-        uint32_t finished = esp_cpu_get_cycle_count();
-        uint32_t raw_cycles = copied - copy_start, clear_cycles = finished - copied;
-        if (raw_cycles > s->max_raw_copy_cycles) {
-            s->max_raw_copy_cycles = raw_cycles;
-            s->max_copy_pairs = keep;
-        }
-        if (clear_cycles > s->max_clear_cycles) s->max_clear_cycles = clear_cycles;
-        uint32_t copy_cycles = finished - copy_start;
-        if (copy_cycles > s->max_copy_cycles) s->max_copy_cycles = copy_cycles;
+        pending = current;
         if (s->retained_pairs == RX_RECORD_PAIRS) { error = ESP_OK; break; }
 
         /* Vendor RX gain can drift during an extended capture. Refresh at bank
@@ -227,6 +250,7 @@ static esp_err_t IRAM_ATTR __attribute__((noinline)) collect(run *r)
     REG_WRITE(DUMP_CTRL, 0);
     if (!s->engine_cycles) s->engine_cycles = esp_cpu_get_cycle_count() - epoch;
     REG_WRITE(BANK_USAGE, ownership);
+    if (error == ESP_OK && pending < 3) clear_bank(pending);
     s->elapsed_cycles = esp_cpu_get_cycle_count() - epoch;
     portCLEAR_INTERRUPT_MASK_FROM_ISR(irq);
     return error;
@@ -238,6 +262,8 @@ static void IRAM_ATTR __attribute__((noinline)) pattern_run(run *r)
     REG_WRITE(BANK_USAGE, REG_READ(BANK_USAGE) & ~15U);
     __asm__ volatile ("memw" ::: "memory");
     uint32_t epoch = esp_cpu_get_cycle_count();
+    for (unsigned n = 0; n < 3; ++n) clear_bank(n);
+    unsigned pending = 3;
     for (unsigned unit = 0; s->retained_pairs < RX_RECORD_PAIRS; ++unit) {
         unsigned current = unit % 3U, first = s->retained_pairs & RX_BANK_MASK;
         size_t count = RX_RECORD_PAIRS - s->retained_pairs;
@@ -251,21 +277,13 @@ static void IRAM_ATTR __attribute__((noinline)) pattern_run(run *r)
         /* Same core, PSRAM write order, wrap phases and full sentinel clear as
          * capture. Mask only the measured copy/clear, leaving IRQs between units. */
         uint32_t irq = portSET_INTERRUPT_MASK_FROM_ISR();
-        uint32_t before = esp_cpu_get_cycle_count();
-        rx_copy(bank(current), first, count, (uint32_t *)r->record + s->retained_pairs);
-        uint32_t copied = esp_cpu_get_cycle_count();
-        clear_bank(current);
-        uint32_t finished = esp_cpu_get_cycle_count();
+        esp_err_t error = copy_unit(r, current, first, count, pending);
         portCLEAR_INTERRUPT_MASK_FROM_ISR(irq);
-        uint32_t raw_cycles = copied - before, clear_cycles = finished - copied;
-        if (raw_cycles > s->max_raw_copy_cycles) {
-            s->max_raw_copy_cycles = raw_cycles;
-            s->max_copy_pairs = count;
-        }
-        if (clear_cycles > s->max_clear_cycles) s->max_clear_cycles = clear_cycles;
-        if (finished - before > s->max_copy_cycles) s->max_copy_cycles = finished - before;
+        if (error != ESP_OK) { s->error = error; return; }
+        pending = current;
         s->retained_pairs += count;
     }
+    if (pending < 3) clear_bank(pending);
     s->elapsed_cycles = esp_cpu_get_cycle_count() - epoch;
     s->error = ESP_OK;
 }
@@ -514,10 +532,16 @@ static void worker(void *arg)
     run *r = arg;
     rx_report *s = r->report;
     bool initialized = false, started = false, rf_setup = false;
+    rx_spill spill = {0};
     if (r->memory) {
         if (r->dma_burst) dma_run(r);
         else memory_run(r);
         goto done;
+    }
+    if (!r->adc && !r->probe) {
+        r->spill = &spill;
+        s->error = rx_spill_open(&spill);
+        if (s->error != ESP_OK) goto done;
     }
     if (r->pattern) { pattern_run(r); goto done; }
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
@@ -554,6 +578,7 @@ static void worker(void *arg)
     else s->error = collect(r);
 
 done:
+    if (r->spill) { s->cleanup_error = rx_spill_close(r->spill); r->spill = NULL; }
     if (rf_setup) {
         REG_WRITE(DUMP_CTRL, 0);
         REG_WRITE(DAC_CTRL, 0);
@@ -563,7 +588,10 @@ done:
         rom_pbus_xpd_rx_on(0);
         rom_set_rxclk_en(0);
     }
-    if (started) s->cleanup_error = esp_wifi_set_promiscuous(false);
+    if (started) {
+        esp_err_t stopped = esp_wifi_set_promiscuous(false);
+        if (s->cleanup_error == ESP_OK) s->cleanup_error = stopped;
+    }
     if (initialized) {
         esp_err_t stopped = esp_wifi_stop();
         if (stopped != ESP_OK && stopped != ESP_ERR_WIFI_NOT_STARTED &&

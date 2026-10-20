@@ -7,6 +7,7 @@ typedef struct {
     uint32_t late, overruns, boundary_errors, gaps, sentinel_errors;
     uint32_t max_poll_cycles, max_copy_cycles, max_switch_late_pairs, gain_refreshes;
     uint32_t max_raw_copy_cycles, max_clear_cycles, max_copy_pairs, compact_cycles;
+    uint32_t dma_errors, dma_copies, max_dma_setup_cycles, dma_rx_flags, dma_tx_flags;
     uint32_t engine_cycles, elapsed_cycles, crc32;
     uint32_t snapshot_pairs, snapshot_crc32;
     struct {

@@ -23,3 +23,6 @@ bool rx_span(const uint32_t *bank, rx_edge begin, rx_edge end,
  * bank; validate sentinels and compact only after stopping the engine. */
 void rx_copy(const uint32_t *bank, uint16_t first, size_t pairs, uint32_t *out);
 bool rx_compact(uint32_t *record, size_t pairs);
+
+typedef struct { size_t head, bulk, tail, split; } rx_copy_plan;
+bool rx_plan_copy(uint16_t first, size_t pairs, rx_copy_plan *plan);
