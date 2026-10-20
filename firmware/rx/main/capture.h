@@ -32,7 +32,23 @@ typedef struct {
     bool guards_ok;
 } rx_memory_report;
 
+#define RX_ADC_STEPS 6U
+#define RX_ADC_WORDS 4096U
+typedef struct {
+    uint32_t first_index, last_index, pairs, cycles, max_poll_cycles;
+    uint32_t written_words, holes, other_bank_words, crc32;
+    uint8_t code, register_value;
+    esp_err_t error;
+} rx_adc_step;
+typedef struct {
+    rx_adc_step steps[RX_ADC_STEPS];
+    uint32_t completed, bytes, crc32;
+    uint8_t saved_register, restored_register;
+    esp_err_t cleanup_error;
+} rx_adc_report;
+
 esp_err_t rx_capture(uint16_t mhz, uint8_t gain, uint8_t *record, uint32_t *snapshot,
                      rx_report *report, bool probe);
 void rx_pattern(uint8_t *record, rx_report *report);
 esp_err_t rx_memory(uint8_t *record, rx_memory_report *report, unsigned dma_burst);
+esp_err_t rx_adc(uint16_t mhz, uint8_t gain, uint8_t *record, rx_adc_report *report);

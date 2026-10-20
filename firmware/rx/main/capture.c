@@ -20,6 +20,7 @@
 #include "freertos/task.h"
 #include "heap_memory_layout.h"
 #include "soc/soc.h"
+#include "soc/regi2c_bbpll.h"
 
 #define DUMP_CTRL 0x60033d5cU
 #define DUMP_INDEX 0x60033d60U
@@ -54,6 +55,7 @@ typedef struct {
     bool probe, pattern;
     unsigned dma_burst;
     rx_memory_report *memory;
+    rx_adc_report *adc;
     SemaphoreHandle_t done;
 } run;
 
@@ -441,6 +443,72 @@ static void dma_run(run *r)
     free(allocation);
 }
 
+static void IRAM_ATTR __attribute__((noinline)) adc_run(run *r)
+{
+    rx_adc_report *s = r->adc;
+    const uint32_t ownership = REG_READ(BANK_USAGE) & ~15U;
+    s->saved_register = regi2c_ctrl_read_reg(I2C_BBPLL, I2C_BBPLL_HOSTID, I2C_BBPLL_DIV_ADC);
+    unsigned saved = (s->saved_register >> I2C_BBPLL_DIV_ADC_LSB) & 3U;
+    for (unsigned step = 0; step < RX_ADC_STEPS; ++step) {
+        rx_adc_step *p = &s->steps[step];
+        p->code = step == 0 || step == RX_ADC_STEPS - 1 ? saved : step - 1U;
+        REG_WRITE(DUMP_CTRL, 0);
+        REG_WRITE(DAC_CTRL, 0);
+        REG_WRITE(BANK_USAGE, ownership);
+        __asm__ volatile ("memw" ::: "memory");
+        regi2c_ctrl_write_reg_mask(I2C_BBPLL, I2C_BBPLL_HOSTID, I2C_BBPLL_DIV_ADC,
+                                  I2C_BBPLL_DIV_ADC_MSB, I2C_BBPLL_DIV_ADC_LSB, p->code);
+        esp_rom_delay_us(20);
+        p->register_value = regi2c_ctrl_read_reg(I2C_BBPLL, I2C_BBPLL_HOSTID, I2C_BBPLL_DIV_ADC);
+        if (p->register_value != ((s->saved_register & ~12U) | (p->code << 2)))
+            p->error = ESP_FAIL;
+        for (unsigned b = 0; b < 3; ++b) clear_bank(b);
+        REG_WRITE(DUMP_LANES, 0x000c2040U);
+        REG_WRITE(BANK_USAGE, ownership | 1U);
+        uint32_t irq = portSET_INTERRUPT_MASK_FROM_ISR();
+        REG_WRITE(DUMP_CTRL, (1U << 31) | (1U << 17) | (1U << 16) | RX_BANK_PAIRS);
+        uint16_t previous = REG_READ(DUMP_INDEX) & RX_BANK_MASK;
+        p->first_index = previous;
+        uint32_t first = esp_cpu_get_cycle_count(), last = first;
+        while (p->pairs < RX_ADC_WORDS) {
+            uint16_t index = REG_READ(DUMP_INDEX) & RX_BANK_MASK;
+            uint32_t now = esp_cpu_get_cycle_count();
+            uint32_t poll = now - last;
+            if (poll > p->max_poll_cycles) p->max_poll_cycles = poll;
+            p->pairs += (index - previous) & RX_BANK_MASK;
+            previous = index;
+            last = now;
+            if (now - first >= 24000000U) { p->error = ESP_ERR_TIMEOUT; break; }
+        }
+        p->last_index = previous;
+        p->cycles = last - first;
+        REG_WRITE(DUMP_CTRL, 0);
+        REG_WRITE(BANK_USAGE, ownership);
+        __asm__ volatile ("memw" ::: "memory");
+        portCLEAR_INTERRUPT_MASK_FROM_ISR(irq);
+        /* Freeze first, then inspect all banks. A full or disjoint bank rejects
+         * ambiguous wraps; raw snapshots retain untouched sentinel words. */
+        for (unsigned n = 0; n < RX_BANK_PAIRS; ++n)
+            if (bank(0)[n] != RX_SENTINEL) p->written_words = n + 1U;
+        for (unsigned n = 0; n < p->written_words; ++n) p->holes += bank(0)[n] == RX_SENTINEL;
+        for (unsigned b = 1; b < 3; ++b)
+            for (unsigned n = 0; n < RX_BANK_PAIRS; ++n)
+                p->other_bank_words += bank(b)[n] != RX_SENTINEL;
+        if ((p->written_words < RX_ADC_WORDS || p->written_words == RX_BANK_PAIRS ||
+             p->holes || p->other_bank_words) && p->error == ESP_OK) p->error = ESP_FAIL;
+        uint8_t *out = r->record + step * RX_ADC_WORDS * 4U;
+        memcpy(out, bank(0), RX_ADC_WORDS * 4U);
+        p->crc32 = esp_rom_crc32_le(0, out, RX_ADC_WORDS * 4U);
+        ++s->completed;
+        if (p->error != ESP_OK) r->report->error = p->error;
+    }
+    regi2c_ctrl_write_reg(I2C_BBPLL, I2C_BBPLL_HOSTID, I2C_BBPLL_DIV_ADC, s->saved_register);
+    s->restored_register = regi2c_ctrl_read_reg(I2C_BBPLL, I2C_BBPLL_HOSTID, I2C_BBPLL_DIV_ADC);
+    if (s->restored_register != s->saved_register) r->report->error = ESP_FAIL;
+    s->bytes = s->completed * RX_ADC_WORDS * 4U;
+    s->crc32 = esp_rom_crc32_le(0, r->record, s->bytes);
+}
+
 static void worker(void *arg)
 {
     run *r = arg;
@@ -482,7 +550,8 @@ static void worker(void *arg)
     if (r->gain > s->gain_max) { s->error = ESP_ERR_INVALID_ARG; goto done; }
     force_rx_gain(1, r->gain, 0);
     vTaskDelay(pdMS_TO_TICKS(3));
-    s->error = collect(r);
+    if (r->adc) adc_run(r);
+    else s->error = collect(r);
 
 done:
     if (rf_setup) {
@@ -568,4 +637,15 @@ esp_err_t rx_memory(uint8_t *record, rx_memory_report *report, unsigned dma_burs
     rx_report capture = {0};
     run r = {.record = record, .report = &capture, .memory = report, .dma_burst = dma_burst};
     return execute(&r);
+}
+
+esp_err_t rx_adc(uint16_t mhz, uint8_t gain, uint8_t *record, rx_adc_report *report)
+{
+    memset(report, 0, sizeof *report);
+    if (mhz < 2390 || mhz > 2450) return ESP_ERR_INVALID_ARG;
+    rx_report capture = {0};
+    run r = {.record = record, .report = &capture, .mhz = mhz, .gain = gain, .adc = report};
+    esp_err_t error = execute(&r);
+    report->cleanup_error = capture.cleanup_error;
+    return error;
 }

@@ -118,7 +118,7 @@ void app_main(void)
         char cmd[16], extra;
         unsigned mhz, gain;
         bool capture = sscanf(line, "%15s %u %u %c", cmd, &mhz, &gain, &extra) == 3 &&
-                       (!strcmp(cmd, "capture") || !strcmp(cmd, "probe"));
+                       (!strcmp(cmd, "capture") || !strcmp(cmd, "probe") || !strcmp(cmd, "adcprobe"));
         if (!strcmp(line, "info")) {
             uint8_t mac[6];
             ESP_ERROR_CHECK(esp_read_mac(mac, ESP_MAC_WIFI_STA));
@@ -131,6 +131,33 @@ void app_main(void)
                    allocation ? "true" : "false", RX_CAPTURE_BYTES,
                    (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
                    mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        } else if (capture && !strcmp(cmd, "adcprobe")) {
+            valid = false;
+            memset(&last, 0, sizeof last);
+            rx_adc_report adc = {0};
+            esp_err_t status = !allocation ? ESP_ERR_NO_MEM : gain > 127 ? ESP_ERR_INVALID_ARG :
+                               rx_adc(mhz, gain, record, &adc);
+            for (unsigned n = 0; n < adc.completed; ++n) {
+                rx_adc_step *s = &adc.steps[n];
+                printf("@{\"cmd\":\"adcprobe\",\"step\":%u,\"code\":%u,\"register\":%u,"
+                       "\"status\":\"%s\",\"first_index\":%lu,\"last_index\":%lu,\"pairs\":%lu,"
+                       "\"cycles\":%lu,\"max_poll_cycles\":%lu,\"written_words\":%lu,"
+                       "\"holes\":%lu,\"other_bank_words\":%lu,\"crc32\":%lu}\n",
+                       n, s->code, s->register_value, esp_err_to_name(s->error),
+                       (unsigned long)s->first_index, (unsigned long)s->last_index,
+                       (unsigned long)s->pairs, (unsigned long)s->cycles,
+                       (unsigned long)s->max_poll_cycles, (unsigned long)s->written_words,
+                       (unsigned long)s->holes, (unsigned long)s->other_bank_words,
+                       (unsigned long)s->crc32);
+            }
+            printf("@{\"cmd\":\"adcprobe\",\"status\":\"%s\",\"cleanup_status\":\"%s\","
+                   "\"freq_mhz\":%u,\"gain_index\":%u,\"cpu_hz\":240000000,"
+                   "\"saved_register\":%u,\"restored_register\":%u,\"windows\":%lu,"
+                   "\"window_words\":4096,\"guards_ok\":%s,\"rate_qualified\":false}\n",
+                   esp_err_to_name(status), esp_err_to_name(adc.cleanup_error), mhz, gain,
+                   adc.saved_register, adc.restored_register, (unsigned long)adc.completed,
+                   allocation && guards_ok() ? "true" : "false");
+            if (adc.bytes) download(record, adc.bytes, adc.crc32, "adc_windows");
         } else if (!strcmp(line, "membench") || !strcmp(line, "dmabench") ||
                    !strcmp(line, "dmabench16") || !strcmp(line, "dmabench32") ||
                    !strcmp(line, "dmabench64")) {
@@ -196,7 +223,7 @@ void app_main(void)
         } else if (!strcmp(line, "snapshot") && !pattern && last.snapshot_pairs) {
             download(control, 4U * last.snapshot_pairs, last.snapshot_crc32, "snapshot");
         } else {
-            printf("@{\"error\":\"use info, membench, dmabench[16|32|64], pattern, capture MHz gain, probe MHz gain, download, snapshot\"}\n");
+            printf("@{\"error\":\"use info, membench, dmabench[16|32|64], pattern, capture/probe/adcprobe MHz gain, download, snapshot\"}\n");
         }
         printf("@{\"done\":true}\n");
     }
