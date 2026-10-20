@@ -35,6 +35,7 @@ static void report(void)
            "\"acquired_pairs\":%lu,\"bytes\":%lu,\"crc32\":%lu,\"units\":%lu,"
            "\"late\":%lu,\"overruns\":%lu,\"boundary_errors\":%lu,\"gap_events\":%lu,"
            "\"sentinel_errors\":%lu,\"max_poll_cycles\":%lu,\"max_copy_cycles\":%lu,"
+           "\"max_pack_cycles\":%lu,\"max_clear_cycles\":%lu,\"max_pack_pairs\":%lu,"
            "\"max_switch_late_pairs\":%lu,\"engine_cycles\":%lu,\"elapsed_cycles\":%lu,\"gain_refreshes\":%lu,"
            "\"gain_max\":%u,\"guards_ok\":%s,\"sc8_rail_values\":%lu,"
            "\"snapshot_pairs\":%lu,\"snapshot_crc32\":%lu,"
@@ -48,7 +49,9 @@ static void report(void)
            (unsigned long)last.units, (unsigned long)last.late, (unsigned long)last.overruns,
            (unsigned long)last.boundary_errors, (unsigned long)last.gaps,
            (unsigned long)last.sentinel_errors, (unsigned long)last.max_poll_cycles,
-           (unsigned long)last.max_copy_cycles, (unsigned long)last.max_switch_late_pairs,
+           (unsigned long)last.max_copy_cycles, (unsigned long)last.max_pack_cycles,
+           (unsigned long)last.max_clear_cycles, (unsigned long)last.max_pack_pairs,
+           (unsigned long)last.max_switch_late_pairs,
            (unsigned long)last.engine_cycles, (unsigned long)last.elapsed_cycles, (unsigned long)last.gain_refreshes,
            last.gain_max, last.guards_ok ? "true" : "false", (unsigned long)rails,
            (unsigned long)last.snapshot_pairs, (unsigned long)last.snapshot_crc32);

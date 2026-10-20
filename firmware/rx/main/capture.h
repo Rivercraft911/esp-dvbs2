@@ -6,6 +6,7 @@ typedef struct {
     uint32_t retained_pairs, acquired_pairs, units;
     uint32_t late, overruns, boundary_errors, gaps, sentinel_errors;
     uint32_t max_poll_cycles, max_copy_cycles, max_switch_late_pairs, gain_refreshes;
+    uint32_t max_pack_cycles, max_clear_cycles, max_pack_pairs;
     uint32_t engine_cycles, elapsed_cycles, crc32;
     uint32_t snapshot_pairs, snapshot_crc32;
     struct {

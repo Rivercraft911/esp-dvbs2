@@ -47,7 +47,7 @@ typedef struct {
     rx_report *report;
     uint16_t mhz;
     uint8_t gain;
-    bool probe;
+    bool probe, pattern;
     SemaphoreHandle_t done;
 } run;
 
@@ -91,7 +91,7 @@ static bool IRAM_ATTR advance(position *p, rx_report *s)
     return true;
 }
 
-static esp_err_t IRAM_ATTR collect(run *r)
+static esp_err_t IRAM_ATTR __attribute__((noinline)) collect(run *r)
 {
     rx_report *s = r->report;
     const uint32_t ownership = REG_READ(BANK_USAGE) & ~15U;
@@ -192,13 +192,22 @@ static esp_err_t IRAM_ATTR collect(run *r)
                 r->snapshot[n] = src[(first + n) & RX_BANK_MASK];
             s->snapshot_pairs = CONTROL_PAIRS;
         }
+        uint32_t pack_start = esp_cpu_get_cycle_count();
         if (!rx_pack(src, first, keep, r->record + 2U * s->retained_pairs)) {
             ++s->sentinel_errors;
             break;
         }
+        uint32_t pack_end = esp_cpu_get_cycle_count();
         s->retained_pairs += keep;
         clear_bank(current);
-        uint32_t copy_cycles = esp_cpu_get_cycle_count() - copy_start;
+        uint32_t finished = esp_cpu_get_cycle_count();
+        uint32_t pack_cycles = pack_end - pack_start, clear_cycles = finished - pack_end;
+        if (pack_cycles > s->max_pack_cycles) {
+            s->max_pack_cycles = pack_cycles;
+            s->max_pack_pairs = keep;
+        }
+        if (clear_cycles > s->max_clear_cycles) s->max_clear_cycles = clear_cycles;
+        uint32_t copy_cycles = finished - copy_start;
         if (copy_cycles > s->max_copy_cycles) s->max_copy_cycles = copy_cycles;
         if (s->retained_pairs == RX_RECORD_PAIRS) { error = ESP_OK; break; }
 
@@ -221,11 +230,51 @@ static esp_err_t IRAM_ATTR collect(run *r)
     return error;
 }
 
+static void IRAM_ATTR __attribute__((noinline)) pattern_run(run *r)
+{
+    rx_report *s = r->report;
+    REG_WRITE(BANK_USAGE, REG_READ(BANK_USAGE) & ~15U);
+    __asm__ volatile ("memw" ::: "memory");
+    uint32_t epoch = esp_cpu_get_cycle_count();
+    for (unsigned unit = 0; s->retained_pairs < RX_RECORD_PAIRS; ++unit) {
+        unsigned current = unit % 3U, first = s->retained_pairs & RX_BANK_MASK;
+        size_t count = RX_RECORD_PAIRS - s->retained_pairs;
+        /* Odd units exercise every input/output cache-line alignment. */
+        if (count > UNIT_PAIRS + 1U) count = UNIT_PAIRS + 1U;
+        for (size_t n = 0; n < count; ++n) {
+            uint32_t at = s->retained_pairs + n;
+            bank(current)[(first + n) & RX_BANK_MASK] = ((at * 13U) & 1023U) << 10 |
+                                                       ((at * 29U + 7U) & 1023U);
+        }
+        /* Same core, PSRAM write order, wrap phases and full sentinel clear as
+         * capture. Mask only the measured copy/clear, leaving IRQs between units. */
+        uint32_t irq = portSET_INTERRUPT_MASK_FROM_ISR();
+        uint32_t before = esp_cpu_get_cycle_count();
+        bool ok = rx_pack(bank(current), first, count, r->record + 2U * s->retained_pairs);
+        uint32_t packed = esp_cpu_get_cycle_count();
+        clear_bank(current);
+        uint32_t finished = esp_cpu_get_cycle_count();
+        portCLEAR_INTERRUPT_MASK_FROM_ISR(irq);
+        if (!ok) { s->error = ESP_FAIL; return; }
+        uint32_t pack_cycles = packed - before, clear_cycles = finished - packed;
+        if (pack_cycles > s->max_pack_cycles) {
+            s->max_pack_cycles = pack_cycles;
+            s->max_pack_pairs = count;
+        }
+        if (clear_cycles > s->max_clear_cycles) s->max_clear_cycles = clear_cycles;
+        if (finished - before > s->max_copy_cycles) s->max_copy_cycles = finished - before;
+        s->retained_pairs += count;
+    }
+    s->elapsed_cycles = esp_cpu_get_cycle_count() - epoch;
+    s->error = ESP_OK;
+}
+
 static void worker(void *arg)
 {
     run *r = arg;
     rx_report *s = r->report;
     bool initialized = false, started = false, rf_setup = false;
+    if (r->pattern) { pattern_run(r); goto done; }
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     cfg.nvs_enable = 0;
     s->error = esp_wifi_init(&cfg);
@@ -280,9 +329,21 @@ done:
     if (s->error == ESP_OK) s->error = s->cleanup_error;
     s->crc32 = esp_rom_crc32_le(0, r->record,
                                r->probe ? s->probe.bytes : 2U * s->retained_pairs);
-    s->snapshot_crc32 = esp_rom_crc32_le(0, (uint8_t *)r->snapshot, 4U * s->snapshot_pairs);
+    if (s->snapshot_pairs)
+        s->snapshot_crc32 = esp_rom_crc32_le(0, (uint8_t *)r->snapshot, 4U * s->snapshot_pairs);
     xSemaphoreGive(r->done);
     vTaskDelete(NULL);
+}
+
+static esp_err_t execute(run *r)
+{
+    StaticSemaphore_t storage;
+    r->done = xSemaphoreCreateBinaryStatic(&storage);
+    if (xTaskCreatePinnedToCore(worker, "capture", 8192, r, configMAX_PRIORITIES - 1,
+                                NULL, 1) != pdPASS)
+        return r->report->error = ESP_ERR_NO_MEM;
+    xSemaphoreTake(r->done, portMAX_DELAY);
+    return r->report->error;
 }
 
 esp_err_t rx_capture(uint16_t mhz, uint8_t gain, uint8_t *record, uint32_t *snapshot,
@@ -290,15 +351,9 @@ esp_err_t rx_capture(uint16_t mhz, uint8_t gain, uint8_t *record, uint32_t *snap
 {
     memset(report, 0, sizeof *report);
     if (mhz < 2390 || mhz > 2450) return report->error = ESP_ERR_INVALID_ARG;
-    StaticSemaphore_t storage;
     run r = {.record = record, .snapshot = snapshot, .report = report,
-             .mhz = mhz, .gain = gain, .probe = probe,
-             .done = xSemaphoreCreateBinaryStatic(&storage)};
-    if (xTaskCreatePinnedToCore(worker, "capture", 8192, &r, configMAX_PRIORITIES - 1,
-                                NULL, 1) != pdPASS)
-        return report->error = ESP_ERR_NO_MEM;
-    xSemaphoreTake(r.done, portMAX_DELAY);
-    return report->error;
+             .mhz = mhz, .gain = gain, .probe = probe};
+    return execute(&r);
 }
 
 void rx_pattern(uint8_t *record, rx_report *report)
@@ -310,31 +365,6 @@ void rx_pattern(uint8_t *record, rx_report *report)
         report->error = ESP_ERR_INVALID_STATE;
         return;
     }
-    uint32_t epoch = esp_cpu_get_cycle_count();
-    REG_WRITE(BANK_USAGE, REG_READ(BANK_USAGE) & ~15U);
-    __asm__ volatile ("memw" ::: "memory");
-    size_t total = 0;
-    for (unsigned unit = 0; total < RX_RECORD_PAIRS; ++unit) {
-        unsigned first = (unit * UNIT_PAIRS) & RX_BANK_MASK;
-        size_t count = RX_RECORD_PAIRS - total;
-        if (count > UNIT_PAIRS) count = UNIT_PAIRS;
-        for (size_t n = 0; n < count; ++n) {
-            uint32_t at = total + n;
-            bank(0)[(first + n) & RX_BANK_MASK] = ((at * 13U) & 1023U) << 10 |
-                                                 ((at * 29U + 7U) & 1023U);
-        }
-        uint32_t before = esp_cpu_get_cycle_count();
-        if (!rx_pack(bank(0), first, count, record + 2U * total)) {
-            report->error = ESP_FAIL;
-            return;
-        }
-        clear_bank(0);
-        uint32_t elapsed = esp_cpu_get_cycle_count() - before;
-        if (elapsed > report->max_copy_cycles) report->max_copy_cycles = elapsed;
-        total += count;
-    }
-    report->elapsed_cycles = esp_cpu_get_cycle_count() - epoch;
-    report->retained_pairs = total;
-    report->crc32 = esp_rom_crc32_le(0, record, RX_RECORD_BYTES);
-    report->error = ESP_OK;
+    run r = {.record = record, .report = report, .pattern = true};
+    (void)execute(&r);
 }
