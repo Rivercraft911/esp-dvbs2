@@ -1,6 +1,5 @@
-// Independent ESP32-S3 DAC-bank experiment. This file contains no prior-art code.
-//
-// Register facts, not an RF qualification. Pinned source: cyber-murmel/esp-sdr-zephyr
+// ESP32-S3 transmit streaming through two alternating DAC SRAM banks.
+// Register reference: cyber-murmel/esp-sdr-zephyr
 // 3214c16a7c9f136414cc5ae9d245ea290c98a6ce, doc/undocumented-registers-esp32s3.md:
 // https://github.com/cyber-murmel/esp-sdr-zephyr/blob/3214c16a7c9f136414cc5ae9d245ea290c98a6ce/doc/undocumented-registers-esp32s3.md
 //   257-306: DAC 0x60033d64, RUN31, held trigger19, count13:0 written directly;
@@ -13,15 +12,13 @@
 //   1089-1121: analog 0x65:0[4] selects LO=PLL*5/6; clear for 2390..2450 MHz.
 //   1355-1365: TX I[9:0], Q[19:10], signed10; RX has the opposite order.
 //   1377-1386: vendor tuning/gain/chain entry points; Wi-Fi NULL/promiscuous setup.
-// Tone override 0x60006040[18]: jochenhammes/esp32-sdr-trx e1aebbf2ef508c7199a9b6c6c277b57fe0b51aa9,
-// docs/research/TX-RESEARCH.md:419-456 (independent reported RF reproduction).
-// Overlap geometry: esp-dvbs2-research/A-rf-path.md:70-90, citing pinned ZDAC
-// lines287-330: N16380, lead64, tail2048, step14268. This implementation derives
-// sample placement and deadlines directly from those numbers. Count convention,
-// I/Q sign and continuity still require an external capture on this board.
-// Gain codes independently checked in installed IDF v6.1 libphy.a(phy_tx_gain.o)
-// .rodata: gain bytes0x04..0x15 and baseband uint16s0x16..0x39. They are hardware
-// settings, not copied software or a calibrated dBm table. Source doc:1383.
+// Tone override 0x60006040[18]: jochenhammes/esp32-sdr-trx
+// e1aebbf2ef508c7199a9b6c6c277b57fe0b51aa9, docs/research/TX-RESEARCH.md:419-456.
+// At 40 MS/s, each bank has 64 lead and 2048 tail samples of overlap, leaving
+// 14268 new samples. radio_s3.h defines the geometry and timing for both rates.
+// Gain codes come from IDF v6.1 libphy.a(phy_tx_gain.o) .rodata:
+// gain bytes0x04..0x15 and baseband uint16s0x16..0x39. Output power is uncalibrated.
+// See docs/prior-art.md for source links and docs/measurements.md for RF results.
 
 #include <stdbool.h>
 #include <string.h>

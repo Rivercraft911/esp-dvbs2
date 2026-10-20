@@ -1,4 +1,4 @@
-// Independent Morse and sample-index multiplexer. No radio or RTOS access.
+// Insert Morse ID into the sample stream. No radio or RTOS access.
 #include "station_id.h"
 
 #include <math.h>

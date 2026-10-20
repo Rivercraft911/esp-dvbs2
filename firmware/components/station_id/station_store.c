@@ -65,8 +65,7 @@ esp_err_t station_store_set(const char *call)
         err = nvs_commit(handle);
     }
     nvs_close(handle);
-    // A failed write can have an uncertain durable outcome. Require a fresh
-    // successful boot/load before allowing RF again.
+    // After an NVS write failure, reload the stored callsign before transmitting again.
     if (err != ESP_OK) {
         callsign[0] = 0;
         ready = false;

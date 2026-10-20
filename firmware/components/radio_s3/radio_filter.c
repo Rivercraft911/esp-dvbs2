@@ -1,5 +1,5 @@
-// Independent implementation from the installed S3 ROM instruction trace.
-// Archived docs/wide-filter.md gives ROM addresses and masks; see docs/prior-art.md.
+// Radio filter selection, derived from the installed S3 ROM instruction trace.
+// Register references and RF measurements are linked in docs/prior-art.md.
 #include "radio_filter.h"
 
 #include <inttypes.h>

@@ -50,7 +50,7 @@ void ring_init(ring_t *r, uint8_t *slots, uint32_t nslots, const uint8_t *filler
 // Set up to RING_MAX_SLOTS pointers before either core starts. Each owns frame_symbols bytes.
 void ring_init_slots(ring_t *r, uint8_t *const *slots, uint32_t nslots,
                      const uint8_t *filler, uint32_t frame_symbols);
-// Set before the first read; defaults to frame_symbols for legacy callers.
+// Set before the first read. Defaults to frame_symbols.
 void ring_filler_length(ring_t *r, uint32_t symbols);
 // Retain history + ceil(maximum bank overlap / sps) bytes in internal storage.
 // This lets slots be freed as soon as every later read of them is covered by cache.
@@ -70,24 +70,25 @@ void ring_unpack_codes(uint8_t *dst, const uint8_t *packed, size_t at, size_t n)
 uint8_t *ring_slot(ring_t *r, uint32_t e);
 // Encoder: frame e is complete. Frames are published in order.
 void ring_publish(ring_t *r, uint32_t e);
-// VCM lengths live in a caller-owned RING_MAX_SLOTS sidecar, initially zero.
-// Pass that same sidecar to ring_window_vcm; metadata shares the frame release.
+// VCM lengths live in a caller-owned RING_MAX_SLOTS array, initially zero.
+// Pass the same array to ring_window_vcm. Lengths are released with their frames.
 void ring_publish_frame(ring_t *r, uint32_t e, uint32_t symbols, uint32_t *lengths);
 
 // Fill: the symbols a shaper needs for samples [first, first + count) at sps samples per symbol,
 // starting `history` symbols before the first one, into dst (room bytes). Symbols before 0 read
 // as 0. With a packed ring, pass dst with the parity of first / sps - history (an even history:
-// of first / sps) so that every symbol lands at an address of its own parity. Returns the number of symbols after the history, or -1 if they do not fit or the read
-// reaches a released position (a bug: stop the run). Then releases what no later fill can need:
+// of first / sps) so every symbol lands at an address of its own parity. Returns the number
+// of symbols after the history, or -1 if they do not fit or the read reaches a released
+// position (a bug: stop the run). Then releases what no later fill can need:
 // the fills follow the bank schedule (radio_s3.h), so no later fill starts before the start of
 // the bank being filled, and that is at least first + count - bank_words.
 int ring_window(ring_t *r, uint8_t *dst, size_t room, uint64_t first, size_t count,
                 unsigned sps, unsigned history, unsigned bank_words);
 
-// VCM variant; fixed callers retain the original constant-length hot path.
+// Variable-length frames. Use ring_window for fixed-length frames.
 int ring_window_vcm(ring_t *, uint8_t *, size_t, uint64_t, size_t, unsigned, unsigned, unsigned, const uint32_t *);
 
-// Compact two-bit QPSK codes for the 4/8-sps shaper, with the same source/guard contract.
+// Compact two-bit QPSK codes for the 4/8-sps shaper, with the same source padding requirements.
 void ring_packed_qpsk(ring_t *r);
 void ring_unpack_qpsk(uint8_t *dst, const uint8_t *packed, size_t at, size_t n);
 
