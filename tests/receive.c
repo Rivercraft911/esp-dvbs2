@@ -4,7 +4,8 @@
 #include "samples.h"
 
 static uint32_t bank[RX_BANK_PAIRS];
-static uint8_t packed[2U * RX_BANK_PAIRS + 2U];
+static uint32_t raw[RX_BANK_PAIRS + 4U];
+static uint8_t *packed = (uint8_t *)raw;
 
 static uint32_t word(int i, int q)
 {
@@ -22,14 +23,19 @@ static void packing(void)
     for (int i = -512; i < 512; ++i) {
         for (int q = -512; q < 512; ++q) bank[q + 512] = word(i, q);
         for (unsigned offset = 0; offset < 4; ++offset) {
-            memset(packed, 0x6d, sizeof packed);
-            assert(rx_pack(bank, 0, 1024, packed + offset));
+            memset(raw, 0x6d, sizeof raw);
+            rx_copy(bank, 0, 1024, raw + offset);
+            assert(!memcmp(raw + offset, bank, 1024U * sizeof *raw));
+            uint8_t *bytes = (uint8_t *)(raw + offset);
+            uint8_t tail = bytes[2048];
+            assert(rx_compact(raw + offset, 1024));
             for (int q = -512; q < 512; ++q) {
-                assert(packed[offset + 2 * (q + 512)] == (uint8_t)divide4(i));
-                assert(packed[offset + 1 + 2 * (q + 512)] == (uint8_t)divide4(q));
+                assert(bytes[2 * (q + 512)] == (uint8_t)divide4(i));
+                assert(bytes[1 + 2 * (q + 512)] == (uint8_t)divide4(q));
             }
-            if (offset) assert(packed[offset - 1] == 0x6d);
-            assert(packed[offset + 2048] == 0x6d);
+            if (offset) assert(raw[offset - 1] == 0x6d6d6d6dU);
+            assert(bytes[2048] == tail);
+            assert(raw[offset + 1024] == 0x6d6d6d6dU);
         }
     }
     const uint8_t positive_tone[] = {100, 0, 0, 100, 156, 0, 0, 156};
@@ -37,13 +43,19 @@ static void packing(void)
     bank[16383] = word(0, 400);
     bank[0] = word(-400, 0);
     bank[1] = word(0, -400);
-    assert(rx_pack(bank, 16382, 4, packed));
+    rx_copy(bank, 16382, 4, raw);
+    assert(rx_compact(raw, 4));
     assert(!memcmp(packed, positive_tone, sizeof positive_tone));
     bank[0] = RX_SENTINEL;
-    assert(!rx_pack(bank, 16382, 4, packed));
+    rx_copy(bank, 16382, 4, raw);
+    assert(!rx_compact(raw, 4));
     bank[0] = word(-400, 0);
     bank[1] = RX_SENTINEL;
-    assert(!rx_pack(bank, 16382, 4, packed));
+    rx_copy(bank, 16382, 4, raw);
+    assert(!rx_compact(raw, 4));
+    for (unsigned n = 0; n < RX_BANK_PAIRS; ++n) raw[n] = word(n, -n);
+    raw[RX_BANK_PAIRS - 1] = RX_SENTINEL;
+    assert(!rx_compact(raw, RX_BANK_PAIRS));
 }
 
 static void boundaries(void)
@@ -62,7 +74,10 @@ static void boundaries(void)
             rx_edge end = {(stop - 2) & RX_BANK_MASK, (stop + 3) & RX_BANK_MASK};
             assert(rx_span(bank, begin, end, &first, &got));
             assert(first == start && got == count);
-            assert(rx_pack(bank, first, got, packed));
+            rx_copy(bank, first, got, raw);
+            for (unsigned n = 0; n < count; ++n)
+                assert(raw[n] == bank[(start + n) & RX_BANK_MASK]);
+            assert(rx_compact(raw, got));
             for (unsigned n = 0; n < count; ++n) {
                 assert(packed[2U * n] == (uint8_t)(((n * 13U) & 1023U) >> 2));
                 assert(packed[2U * n + 1U] == (uint8_t)(((n * 29U + 7U) & 1023U) >> 2));
@@ -94,5 +109,5 @@ int main(void)
 {
     packing();
     boundaries();
-    puts("signed10 packing, I/Q orientation, wrapping spans and fault rejection pass");
+    puts("raw copy, in-place signed10 compaction, wrapping spans and fault rejection pass");
 }

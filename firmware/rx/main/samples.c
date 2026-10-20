@@ -10,9 +10,6 @@
 #define IRAM_ATTR
 #endif
 
-typedef uint16_t __attribute__((may_alias)) packed16;
-typedef uint32_t __attribute__((may_alias)) packed32;
-
 bool IRAM_ATTR rx_find_edge(const uint32_t *bank, rx_edge bracket, bool entering,
                             uint16_t *index)
 {
@@ -44,48 +41,28 @@ bool IRAM_ATTR rx_span(const uint32_t *bank, rx_edge begin, rx_edge end,
     return *pairs > 0 && *pairs < RX_BANK_PAIRS - 2U * RX_EDGE_GUARD;
 }
 
-bool IRAM_ATTR rx_pack(const uint32_t *bank, uint16_t first, size_t pairs, uint8_t *out)
+void IRAM_ATTR rx_copy(const uint32_t *bank, uint16_t first, size_t pairs, uint32_t *out)
 {
     while (pairs) {
         size_t count = RX_BANK_PAIRS - first;
         if (count > pairs) count = pairs;
         const uint32_t *src = bank + first, *end = src + count;
-        if ((uintptr_t)out & 1U) {
-            while (src != end) {
-                uint32_t word = *src++;
-                if (word == RX_SENTINEL) return false;
-                *out++ = (uint8_t)(word >> 12);
-                *out++ = (uint8_t)(word >> 2);
-            }
-        } else {
-            if (((uintptr_t)out & 3U) && src != end) {
-                uint32_t word = *src++;
-                if (word == RX_SENTINEL) return false;
-                uint16_t pair = ((word >> 12) & 255U) | (((word >> 2) & 255U) << 8);
-                *(packed16 *)out = pair;
-                out += 2;
-            }
-            while (end - src >= 2) {
-                uint32_t a = src[0], b = src[1];
-                if (__builtin_expect(a == RX_SENTINEL, 0)) return false;
-                if (__builtin_expect(b == RX_SENTINEL, 0)) return false;
-                /* S3 is little-endian. Two exact I,Q pairs per PSRAM word. */
-                uint32_t iq = ((a >> 12) & 255U) | (((a >> 2) & 255U) << 8) |
-                              (((b >> 12) & 255U) << 16) | (((b >> 2) & 255U) << 24);
-                *(packed32 *)out = iq;
-                src += 2;
-                out += 4;
-            }
-            if (src != end) {
-                uint32_t word = *src;
-                if (word == RX_SENTINEL) return false;
-                uint16_t pair = ((word >> 12) & 255U) | (((word >> 2) & 255U) << 8);
-                *(packed16 *)out = pair;
-                out += 2;
-            }
-        }
+        while (src != end) *out++ = *src++;
         pairs -= count;
         first = 0;
+    }
+}
+
+bool rx_compact(uint32_t *record, size_t pairs)
+{
+    uint8_t *out = (uint8_t *)record;
+    for (size_t n = 0; n < pairs; ++n) {
+        /* Read before writing: output is half the raw size and never reaches
+         * a later input word. Keep every sentinel detectable until this check. */
+        uint32_t word = record[n];
+        if (word == RX_SENTINEL) return false;
+        *out++ = (uint8_t)(word >> 12);
+        *out++ = (uint8_t)(word >> 2);
     }
     return true;
 }

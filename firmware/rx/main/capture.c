@@ -190,24 +190,15 @@ static esp_err_t IRAM_ATTR __attribute__((noinline)) collect(run *r)
         }
 
         uint32_t copy_start = esp_cpu_get_cycle_count();
-        if (!s->retained_pairs) {
-            for (unsigned n = 0; n < CONTROL_PAIRS; ++n)
-                r->snapshot[n] = src[(first + n) & RX_BANK_MASK];
-            s->snapshot_pairs = CONTROL_PAIRS;
-        }
-        uint32_t pack_start = esp_cpu_get_cycle_count();
-        if (!rx_pack(src, first, keep, r->record + 2U * s->retained_pairs)) {
-            ++s->sentinel_errors;
-            break;
-        }
-        uint32_t pack_end = esp_cpu_get_cycle_count();
+        rx_copy(src, first, keep, (uint32_t *)r->record + s->retained_pairs);
+        uint32_t copied = esp_cpu_get_cycle_count();
         s->retained_pairs += keep;
         clear_bank(current);
         uint32_t finished = esp_cpu_get_cycle_count();
-        uint32_t pack_cycles = pack_end - pack_start, clear_cycles = finished - pack_end;
-        if (pack_cycles > s->max_pack_cycles) {
-            s->max_pack_cycles = pack_cycles;
-            s->max_pack_pairs = keep;
+        uint32_t raw_cycles = copied - copy_start, clear_cycles = finished - copied;
+        if (raw_cycles > s->max_raw_copy_cycles) {
+            s->max_raw_copy_cycles = raw_cycles;
+            s->max_copy_pairs = keep;
         }
         if (clear_cycles > s->max_clear_cycles) s->max_clear_cycles = clear_cycles;
         uint32_t copy_cycles = finished - copy_start;
@@ -253,16 +244,15 @@ static void IRAM_ATTR __attribute__((noinline)) pattern_run(run *r)
          * capture. Mask only the measured copy/clear, leaving IRQs between units. */
         uint32_t irq = portSET_INTERRUPT_MASK_FROM_ISR();
         uint32_t before = esp_cpu_get_cycle_count();
-        bool ok = rx_pack(bank(current), first, count, r->record + 2U * s->retained_pairs);
-        uint32_t packed = esp_cpu_get_cycle_count();
+        rx_copy(bank(current), first, count, (uint32_t *)r->record + s->retained_pairs);
+        uint32_t copied = esp_cpu_get_cycle_count();
         clear_bank(current);
         uint32_t finished = esp_cpu_get_cycle_count();
         portCLEAR_INTERRUPT_MASK_FROM_ISR(irq);
-        if (!ok) { s->error = ESP_FAIL; return; }
-        uint32_t pack_cycles = packed - before, clear_cycles = finished - packed;
-        if (pack_cycles > s->max_pack_cycles) {
-            s->max_pack_cycles = pack_cycles;
-            s->max_pack_pairs = count;
+        uint32_t raw_cycles = copied - before, clear_cycles = finished - copied;
+        if (raw_cycles > s->max_raw_copy_cycles) {
+            s->max_raw_copy_cycles = raw_cycles;
+            s->max_copy_pairs = count;
         }
         if (clear_cycles > s->max_clear_cycles) s->max_clear_cycles = clear_cycles;
         if (finished - before > s->max_copy_cycles) s->max_copy_cycles = finished - before;
@@ -330,6 +320,18 @@ done:
             s->cleanup_error = deinitialized;
     }
     if (s->error == ESP_OK) s->error = s->cleanup_error;
+    if (!r->probe && s->retained_pairs) {
+        if (!r->pattern && s->retained_pairs >= CONTROL_PAIRS) {
+            memcpy(r->snapshot, r->record, 4U * CONTROL_PAIRS);
+            s->snapshot_pairs = CONTROL_PAIRS;
+        }
+        uint32_t before = esp_cpu_get_cycle_count();
+        if (!rx_compact((uint32_t *)r->record, s->retained_pairs)) {
+            ++s->sentinel_errors;
+            s->error = ESP_FAIL;
+        }
+        s->compact_cycles = esp_cpu_get_cycle_count() - before;
+    }
     s->crc32 = esp_rom_crc32_le(0, r->record,
                                r->probe ? s->probe.bytes : 2U * s->retained_pairs);
     if (s->snapshot_pairs)
@@ -361,7 +363,7 @@ esp_err_t rx_capture(uint16_t mhz, uint8_t gain, uint8_t *record, uint32_t *snap
 
 void rx_pattern(uint8_t *record, rx_report *report)
 {
-    /* Radio-off memory/packing path, deliberately different every complex pair. */
+    /* Radio-off raw-copy/compact path, different every complex pair. */
     memset(report, 0, sizeof *report);
     wifi_mode_t mode;
     if (esp_wifi_get_mode(&mode) != ESP_ERR_WIFI_NOT_INIT) {

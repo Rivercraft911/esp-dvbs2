@@ -9,6 +9,7 @@
 #define RX_EDGE_GUARD 64U
 #define RX_RECORD_PAIRS 1600000U
 #define RX_RECORD_BYTES (2U * RX_RECORD_PAIRS)
+#define RX_CAPTURE_BYTES (4U * RX_RECORD_PAIRS)
 
 typedef struct { uint16_t before, after; } rx_edge;
 
@@ -18,5 +19,7 @@ bool rx_find_edge(const uint32_t *bank, rx_edge bracket, bool entering,
                   uint16_t *index);
 bool rx_span(const uint32_t *bank, rx_edge begin, rx_edge end,
              uint16_t *first, size_t *pairs);
-/* Caller owns this bank. The dump engine must already be writing another bank. */
-bool rx_pack(const uint32_t *bank, uint16_t first, size_t pairs, uint8_t *out);
+/* Caller owns this bank. Preserve raw words while the engine writes another
+ * bank; validate sentinels and compact only after stopping the engine. */
+void rx_copy(const uint32_t *bank, uint16_t first, size_t pairs, uint32_t *out);
+bool rx_compact(uint32_t *record, size_t pairs);

@@ -20,7 +20,7 @@ static unsigned last_mhz, last_gain;
 static bool guards_ok(void)
 {
     for (unsigned n = 0; n < 16; ++n)
-        if (allocation[n] != 0x6d || record[RX_RECORD_BYTES + n] != 0x6d) return false;
+        if (allocation[n] != 0x6d || record[RX_CAPTURE_BYTES + n] != 0x6d) return false;
     return true;
 }
 
@@ -35,7 +35,8 @@ static void report(void)
            "\"acquired_pairs\":%lu,\"bytes\":%lu,\"crc32\":%lu,\"units\":%lu,"
            "\"late\":%lu,\"overruns\":%lu,\"boundary_errors\":%lu,\"gap_events\":%lu,"
            "\"sentinel_errors\":%lu,\"max_poll_cycles\":%lu,\"max_copy_cycles\":%lu,"
-           "\"max_pack_cycles\":%lu,\"max_clear_cycles\":%lu,\"max_pack_pairs\":%lu,"
+           "\"max_raw_copy_cycles\":%lu,\"max_clear_cycles\":%lu,\"max_copy_pairs\":%lu,"
+           "\"compact_cycles\":%lu,"
            "\"max_switch_late_pairs\":%lu,\"engine_cycles\":%lu,\"elapsed_cycles\":%lu,\"gain_refreshes\":%lu,"
            "\"gain_max\":%u,\"guards_ok\":%s,\"sc8_rail_values\":%lu,"
            "\"snapshot_pairs\":%lu,\"snapshot_crc32\":%lu,"
@@ -49,9 +50,9 @@ static void report(void)
            (unsigned long)last.units, (unsigned long)last.late, (unsigned long)last.overruns,
            (unsigned long)last.boundary_errors, (unsigned long)last.gaps,
            (unsigned long)last.sentinel_errors, (unsigned long)last.max_poll_cycles,
-           (unsigned long)last.max_copy_cycles, (unsigned long)last.max_pack_cycles,
-           (unsigned long)last.max_clear_cycles, (unsigned long)last.max_pack_pairs,
-           (unsigned long)last.max_switch_late_pairs,
+           (unsigned long)last.max_copy_cycles, (unsigned long)last.max_raw_copy_cycles,
+           (unsigned long)last.max_clear_cycles, (unsigned long)last.max_copy_pairs,
+           (unsigned long)last.compact_cycles, (unsigned long)last.max_switch_late_pairs,
            (unsigned long)last.engine_cycles, (unsigned long)last.elapsed_cycles, (unsigned long)last.gain_refreshes,
            last.gain_max, last.guards_ok ? "true" : "false", (unsigned long)rails,
            (unsigned long)last.snapshot_pairs, (unsigned long)last.snapshot_crc32);
@@ -98,11 +99,11 @@ void app_main(void)
     static FILE output = FDEV_SETUP_STREAM(console_put, NULL, NULL, _FDEV_SETUP_WRITE);
     stdout = &output;
     setvbuf(stdin, NULL, _IONBF, 0);
-    allocation = heap_caps_malloc(RX_RECORD_BYTES + 32U, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    allocation = heap_caps_malloc(RX_CAPTURE_BYTES + 32U, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (allocation) {
         record = allocation + 16;
         memset(allocation, 0x6d, 16);
-        memset(record + RX_RECORD_BYTES, 0x6d, 16);
+        memset(record + RX_CAPTURE_BYTES, 0x6d, 16);
     }
     char line[96];
     while (true) {
@@ -122,11 +123,14 @@ void app_main(void)
             uint8_t mac[6];
             ESP_ERROR_CHECK(esp_read_mac(mac, ESP_MAC_WIFI_STA));
             printf("@{\"cmd\":\"info\",\"app\":\"s3_receive\",\"firmware\":\"%s\","
-                   "\"psram_bytes\":%u,\"record_allocated\":%s,\"tx\":false,"
+                   "\"psram_bytes\":%u,\"record_allocated\":%s,\"capture_buffer_bytes\":%u,"
+                   "\"free_psram_bytes\":%u,\"tx\":false,"
                    "\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\","
                    "\"banks\":[\"0x3fcb0000\",\"0x3fcc0000\",\"0x3fcd0000\"]}\n",
                    esp_app_get_description()->version, (unsigned)esp_psram_get_size(),
-                   allocation ? "true" : "false", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+                   allocation ? "true" : "false", RX_CAPTURE_BYTES,
+                   (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+                   mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
         } else if (capture || !strcmp(line, "pattern")) {
             valid = false;
             pattern = !capture;
@@ -134,7 +138,7 @@ void app_main(void)
             last_mhz = pattern ? 0 : mhz;
             last_gain = pattern ? 0 : gain;
             if (!allocation) {
-                printf("@{\"error\":\"3.2 MB PSRAM allocation unavailable\"}\n");
+                printf("@{\"error\":\"6.4 MB PSRAM allocation unavailable\"}\n");
             } else {
                 if (pattern) rx_pattern(record, &last);
                 else if (mhz < 2390 || mhz > 2450 || gain > 127) {
