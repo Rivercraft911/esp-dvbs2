@@ -58,7 +58,9 @@ pv_status pv_check(const uint8_t *msg, size_t len);
 /* One word longer than a message, so a 1332-byte transaction never fills a slot exactly and its
  * end-of-frame always lands in the same descriptor. */
 #define INGRESS_SLOT_BYTES 1336
-#define INGRESS_SLOTS 4
+/* Seven queued messages cover a full 5370-byte BB payload while FEC runs.
+ * Keep this a power of two so uint32_t head rollover preserves ring order. */
+#define INGRESS_SLOTS 8
 #define INGRESS_READY_MARGIN 2
 
 /* ESP32-S3 GDMA descriptor, TRM v1.8 section 3.4.1: size [11:0], length [23:12],
@@ -119,7 +121,7 @@ typedef struct {
  * NULL buffers leaves per-slot pointers for the caller to supply. Links slot k to
  * k+1 with every slot armed; start the DMA at desc[0], then call ingress_update_ready. */
 void ingress_init(ingress_ring *r, uint8_t *buffers, const ingress_hw *hw);
-/* Diagnostic only: repeat four presealed messages, no sender CPU, SPI DMA or ISR. */
+/* Diagnostic only: repeat presealed slots, no sender CPU, SPI DMA or ISR. */
 void ingress_replay_fill(ingress_ring *r);
 void ingress_replay_release(ingress_ring *r, ingress_desc *slot);
 /* Copy up to n payload bytes of accepted messages, in order; returns the count (0 if none).

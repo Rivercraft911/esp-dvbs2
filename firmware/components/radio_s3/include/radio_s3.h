@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include "esp_err.h"
 #include "radio_filter.h"
+#include "radio_calibration.h"
 
 #define RADIO_S3_DAC_RATE 40000000U      /* DAC_CTRL bit 15 clear; keyed on air */
 #define RADIO_S3_DAC_RATE_80M 80000000U  /* bit 15 set; keyed at 20 and 80/3 Msym/s */
@@ -33,6 +34,8 @@
     ((rate) == RADIO_S3_DAC_RATE_80M ? RADIO_S3_LEAD_WORDS_80M : RADIO_S3_LEAD_WORDS)
 #define RADIO_S3_GAIN_DEFAULT 0U
 #define RADIO_S3_GAIN_MAX 17U
+#define RADIO_S3_MAX_SECONDS 540U /* RF wall-time bound, including station IDs */
+#define RADIO_S3_PHY_SOLO_MAX_SECONDS 60U
 
 /* Fill consecutive timeline samples, packed signed I[9:0], Q[19:10]. dst needs
  * aligned 32-bit stores. Calls split at a bank wrap, so sample n always lives
@@ -113,15 +116,16 @@ typedef struct {
     radio_s3_wifi_heap_t wifi; /* run and paced_wifi */
     int64_t wifi_stop_at_us, wifi_deinit_at_us;
     radio_s3_session_stats_t session, after; /* opt-in handoff / cleanup */
+    radio_calibration_stats_t calibration; /* per attempt, including admission failures */
 } radio_s3_stats_t;
 
 /* Synchronous, exclusive run on core 1, 240 MHz. Valid requests are integer MHz
- * 2390..2450, seconds 1..60, gain 0..17 (vendor ladder, weakest first). Gain is
+ * 2390..2450, seconds 1..540 (PHY-solo: 1..60), gain 0..17 (vendor ladder, weakest first). Gain is
  * uncalibrated, not dBm. The component owns Wi-Fi for the session; it must not
  * coexist with another Wi-Fi/BT user. Every return after startup stops the DAC,
  * returns both banks to the CPU, unkeys TX, and stops/deinitializes Wi-Fi.
  * No RF operation happens until this function is called. A persisted callsign is
- * required before any radio access. Start/end and nine-minute CW segments are
+ * required before any radio access. Start/end CW segments are
  * inserted by a sample-index wrapper INSIDE the requested seconds. Too-short
  * runs fail before worker creation. On a fatal fill/deadline fault, abort immediately: a final ID
  * cannot be guaranteed. No flash write is permitted during a run.

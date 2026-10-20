@@ -11,6 +11,7 @@ NATIVE = r'''
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+#include "ingress.h"
 #define IRAM_ATTR
 #define ESP_OK 0
 #define SPI2_HOST 2
@@ -35,7 +36,7 @@ typedef struct {
     void (*post_setup_cb)(spi_slave_transaction_t *),(*post_trans_cb)(spi_slave_transaction_t *);
 } spi_slave_interface_config_t;
 static spi_slave_interface_config_t callbacks;
-static spi_slave_transaction_t *queue[4], *active;
+static spi_slave_transaction_t *queue[INGRESS_SLOTS], *active;
 static unsigned head,tail,yields,freed;
 static int fail_init,fail_queue;
 static uint32_t esp_cpu_get_cycle_count(void) { static uint32_t t; return ++t; }
@@ -43,25 +44,25 @@ static int spi_slave_initialize(int host,const spi_bus_config_t *b,
                                const spi_slave_interface_config_t *s,int dma) {
     assert(host==2 && dma==1 && b->max_transfer_sz==1336 && b->miso_io_num==-1);
     assert(b->mosi_io_num==-1 && b->sclk_io_num==-1 && s->spics_io_num==-1);
-    assert(s->mode==0 && s->queue_size==4 && s->flags==4);
+    assert(s->mode==0 && s->queue_size==INGRESS_SLOTS && s->flags==4);
     head=tail=0; active=NULL; callbacks=*s; return fail_init;
 }
 static int spi_slave_queue_trans(int host,spi_slave_transaction_t *t,unsigned wait) {
-    assert(host==2 && wait==0 && tail-head<4 && t->length==1336*8);
+    assert(host==2 && wait==0 && tail-head<INGRESS_SLOTS && t->length==1336*8);
     if (fail_queue) return 1;
-    queue[tail++%4]=t; return 0;
+    queue[tail++%INGRESS_SLOTS]=t; return 0;
 }
 static int spi_slave_queue_reset(int host) { assert(host==2); head=tail; active=NULL; return 0; }
 static int spi_slave_free(int host) { assert(host==2 && !active && head==tail); ++freed; return 0; }
 static void arm(void) {
     assert(!active);
-    if (head!=tail) { active=queue[head++%4]; callbacks.post_setup_cb(active); }
+    if (head!=tail) { active=queue[head++%INGRESS_SLOTS]; callbacks.post_setup_cb(active); }
 }
 '''
 APP = r'''
 #include "ingress_spi_pv.c"
 static ingress_ring ring;
-static uint32_t buffers[4*1336/4];
+static uint32_t buffers[INGRESS_SLOTS*INGRESS_SLOT_BYTES/4];
 static int pin;
 static void ready(void *ctx,int level) {
     (void)ctx; pin=level && ingress_spi_pv_armed();
@@ -107,13 +108,16 @@ int main(void) {
     msg[200]^=1; pv_seal(msg,PV_NOP,70,0); transfer(msg,1332*8);
     assert(ingress_read(&ring,out,sizeof out)==0 && ring.st.nops==1);
     assert(ring.st.crc_chain==chain); // NOP must not enter the TS_DATA chain
-    // Fill three slots: the two-slot READY margin withholds the last credit.
-    for(unsigned seq=71;seq<74;++seq) {
+    // Seven messages may queue; the eighth slot protects a late READY sample.
+    const unsigned credit=INGRESS_SLOTS-INGRESS_READY_MARGIN+1;
+    assert(credit==7 && credit*PV_PAYLOAD_MAX>=5370);
+    const unsigned irqs=stats.eof_irqs;
+    for(unsigned seq=71;seq<71+credit;++seq) {
         msg[12]=0x47; pv_seal(msg,PV_TS,seq,188); transfer(msg,1332*8);
     }
     assert(!pin && active);
-    assert(ingress_read(&ring,out,sizeof out)==3*188 && pin);
-    assert(stats.eof_irqs==79 && stats.isr_max && yields==79);
+    assert(ingress_read(&ring,out,sizeof out)==credit*188 && pin);
+    assert(stats.eof_irqs==irqs+credit && stats.isr_max && yields==stats.eof_irqs);
     ingress_spi_pv_stop(); assert(!ingress_spi_pv_armed() && freed==1);
     ingress_spi_pv_stop(); assert(freed==1);
     // The same raw driver and PV parser also carry arbitrary GCS bytes.
@@ -131,9 +135,11 @@ int main(void) {
     assert(ring.st.msgs==2 && ring.st.bytes==1317 && ring.st.ts_packets==0);
     assert(ring.st.crc_chain==0 && ring.seq_next==2 && !ring.wrong_type);
     // An independent master fills the available slots while the encoder works.
-    // A 5370-byte field exceeds all four 1316-byte payload slots combined: the
-    // consumer must copy/release partial fields and retain a message's tail.
+    // Read complete BB payloads through queued messages, preserving partial
+    // message tails and the byte stream across repeated descriptor wraps.
     uint8_t frame[5370];
+    // Preserve the current slot index and cross the uint32_t counter wrap.
+    ring.head+=UINT32_MAX-INGRESS_SLOTS+1;
     unsigned seq=2, offered=0, consumed=0;
     for (unsigned f=0;f<128;++f) {
         size_t used=0;
@@ -144,12 +150,13 @@ int main(void) {
                 offered+=1316;
             }
             const size_t n=ingress_read(&ring,frame+used,sizeof frame-used);
+            if (!f && !used) assert(n==sizeof frame);
             assert(n>0); used+=n;
         }
         for (unsigned i=0;i<sizeof frame;++i) assert(frame[i]==(uint8_t)(consumed+i));
         consumed+=sizeof frame;
     }
-    assert(ring.left && ring.held && ring.st.ready_falls>128);
+    assert(ring.left && ring.held && ring.st.ready_falls>0);
     assert(!ring.st.overruns && !ring.st.err_crc && !ring.st.lost && !ring.wrong_type);
     ingress_spi_pv_stop(); assert(freed==2);
     fail_init=1; assert(ingress_spi_pv_start(&ring,&cfg,&stats)!=0);

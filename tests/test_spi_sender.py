@@ -148,6 +148,18 @@ esp_err_t ingress_spi_start(const ingress_spi_config *cfg,ingress_ring **ring) {
 void ingress_spi_stop(void) {}
 void ingress_spi_get_stats(ingress_spi_stats *out) { memset(out,0,sizeof *out); }
 int main(void) {
+    // A partially fitting borrowed pool must fall back to heap allocation;
+    // two disjoint regions may supply the complete eight-slot pool.
+    uint32_t pool[INGRESS_SLOTS*INGRESS_SLOT_BYTES/4];
+    uint8_t *base=(uint8_t *)pool;
+    spi_input_buffers(base,4*INGRESS_SLOT_BYTES,NULL,0);
+    assert(!borrowed_count);
+    spi_input_buffers(base,(INGRESS_SLOTS-1)*INGRESS_SLOT_BYTES,NULL,0);
+    assert(!borrowed_count);
+    spi_input_buffers(base,4*INGRESS_SLOT_BYTES,base+4*INGRESS_SLOT_BYTES,4*INGRESS_SLOT_BYTES);
+    assert(borrowed_count==INGRESS_SLOTS);
+    for (unsigned i=0;i<INGRESS_SLOTS;++i) assert(borrowed[i]==base+i*INGRESS_SLOT_BYTES);
+    spi_input_buffers(NULL,0,NULL,0);
     for (unsigned test=0;test<12;++test) {
         pv_mode=test>=6;
         now_us=alarms=delays=transfers=sequence=0; ready_at=test?2000:0;

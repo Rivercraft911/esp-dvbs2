@@ -12,8 +12,9 @@ static struct {
     ingress_ring *ring;
     ingress_spi_config cfg;
     volatile ingress_spi_stats *stats;
-    spi_slave_transaction_t trans[INGRESS_SLOTS];
+    // Keep ISR flags within the byte-load offset range as the pool grows.
     bool started, armed;
+    spi_slave_transaction_t trans[INGRESS_SLOTS];
 } pv;
 static portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
 

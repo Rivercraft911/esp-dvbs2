@@ -347,6 +347,7 @@ esp_err_t radio_s3_paced_wifi_options(uint32_t sec, uint32_t rate, radio_s3_fill
     return radio_s3_paced_wifi_rate(sec,rate,fn,ctx,stats);
 }
 void radio_filter_print(const radio_filter_stats_t *stats) { (void)stats; }
+void radio_calibration_print(const radio_calibration_stats_t *stats) { (void)stats; }
 static unsigned wifi_probes;
 static esp_err_t discard(const uint32_t *bank, uint64_t first, size_t count, void *ctx)
 { (void)bank; (void)first; (void)count; (void)ctx; return ESP_OK; }
@@ -468,7 +469,10 @@ int main(int argc, char **argv)
             sps == 40 ? fast+420 : quads && !moon && sps == 4 ? fast+25056 :
             fast+(quads && sps == 3 ? 0 : 12420)+(mc >= 12 && !short_pulse ? 11120 : 0);
         assert(internal == expected+(sps == 40 ? 0 : CACHED_FOR(rate)*sizeof(uint32_t)));
-        assert((native_buffers[0] != NULL) == !((quads && sps == 3) || (mc >= 12 && (sps == 8 || (mc == 13 && !short_pulse)))));
+        // Eight slots fit the slow QPSK tails and short-pulse 8PSK 8/9 or
+        // 9/10 tails. All other layouts fall back to the DMA heap block.
+        const bool borrowed = mc < 12 ? sps == 8 || sps == 40 : short_pulse && mc >= 16;
+        assert((native_buffers[0] != NULL) == borrowed);
     }
     if (enc.packed && !resident) {
         assert(enc.filler == (uint8_t *)enc.ws+DVBS2_FAST_WORKSPACE_USED);
