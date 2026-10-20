@@ -14,7 +14,9 @@ import zlib
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 NATIVE = r'''
 #pragma once
+#ifndef _POSIX_C_SOURCE
 #define _POSIX_C_SOURCE 200809L
+#endif
 #include <assert.h>
 #include <pthread.h>
 #include <stdint.h>
