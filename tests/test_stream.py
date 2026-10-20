@@ -179,7 +179,7 @@ static inline void xSemaphoreTake(SemaphoreHandle_t s, unsigned timeout) {
 #define EXTMEM_IBUS_TO_FLASH_END_VADDR_REG 1
 #define EXTMEM_DBUS_TO_FLASH_START_VADDR_REG 2
 #define EXTMEM_DBUS_TO_FLASH_END_VADDR_REG 3
-static uint32_t native_ranges[4];
+extern uint32_t native_ranges[4];
 #define REG_READ(r) native_ranges[r]
 #define REG_WRITE(r,v) (native_ranges[r] = (v))
 static inline uint32_t esp_rom_crc32_le(uint32_t c, const uint8_t *b, size_t n) {

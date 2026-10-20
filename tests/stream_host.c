@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include "ring.h"
 #include "machine.h"
+uint32_t native_ranges[4];
 static int checked_window(ring_t *, uint8_t *, size_t, uint64_t, size_t, unsigned, unsigned, unsigned);
 static int checked_task(void (*)(void *), const char *, unsigned, void *, unsigned, TaskHandle_t *, int);
 static uint32_t checked_load(const volatile uint32_t *, int);
@@ -316,7 +317,7 @@ esp_err_t radio_s3_run_bandwidth(uint32_t freq, uint8_t gain, uint32_t sec, uint
     assert(bandwidth == (dvb.lofty ? 36000000u : 40000000u));
     assert(enc.input && !spi_input_type());
     uint32_t x = SEED;
-    for (size_t i = 0; i < (enc.mode->kbch-80)/8; ++i) assert(enc.input[i] == next_byte(&x));
+    for (size_t i = 0; i < (enc.mode->kbch-80U)/8; ++i) assert(enc.input[i] == next_byte(&x));
     if (dvb.lofty) assert(radio_s3_stream_ready() == ESP_OK);
     const uint64_t samples = ((uint64_t)native_keyed_frames*dvb.ring.frame_symbols*dvb.table.n+dvb.den-1)/dvb.den;
     radio_s3_dry_stats_t dry;
