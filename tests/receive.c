@@ -71,6 +71,17 @@ static void boundaries(void)
     for (unsigned n = 100; n < 1000; ++n) bank[n] = 0;
     bank[120] = RX_SENTINEL;
     assert(!rx_find_edge(bank, (rx_edge){100, 100}, true, &edge));
+    /* Measured frozen first bank: the true edge lies inside the old77-pair
+     * software interval, but that interval must still fail the64-pair bound. */
+    for (unsigned n = 0; n < RX_BANK_PAIRS; ++n)
+        bank[n] = n < 12348 ? 0x218007fcU : RX_SENTINEL;
+    assert(!rx_find_edge(bank, (rx_edge){12290, 12367}, false, &edge));
+    assert(rx_find_edge(bank, (rx_edge){12340, 12356}, false, &edge));
+    assert(edge == 12348);
+    uint16_t first;
+    size_t count;
+    assert(rx_span(bank, (rx_edge){0, 0}, (rx_edge){12340, 12356}, &first, &count));
+    assert(first == 0 && count == 12348);
 }
 
 int main(void)

@@ -130,16 +130,22 @@ static esp_err_t IRAM_ATTR collect(run *r)
         if (late > s->max_switch_late_pairs) s->max_switch_late_pairs = late;
         if (late >= LATE_PAIRS) { ++s->late; break; }
         unsigned next = (current + 1U) % 3U;
-        rx_edge end = {.before = p.index};
+        /* Unrelated accounting can exceed the edge limit. Read immediately
+         * around the ownership write instead; keep the same64-pair bound. */
+        rx_edge end = {.before = REG_READ(DUMP_INDEX) & RX_BANK_MASK};
         REG_WRITE(BANK_USAGE, ownership | (1U << next));
         __asm__ volatile ("memw" ::: "memory");
+        end.after = REG_READ(DUMP_INDEX) & RX_BANK_MASK;
+        uint32_t switch_cycles = esp_cpu_get_cycle_count() - epoch;
+        late += (end.after - p.index) & RX_BANK_MASK;
+        if (late > s->max_switch_late_pairs) s->max_switch_late_pairs = late;
+        if (late >= LATE_PAIRS) { ++s->late; break; }
         if (!advance(&p, s)) break;
-        end.after = p.index;
 
         if (r->probe) {
             s->probe.before_switch = end.before;
             s->probe.after_switch = end.after;
-            s->probe.switch_cycles = p.cycle - epoch;
+            s->probe.switch_cycles = switch_cycles;
             s->probe.bank_switch = REG_READ(BANK_USAGE);
             uint16_t first = 0, last = 0;
             if (rx_find_edge(bank(current), begin, true, &first)) s->probe.edges |= 1U;
