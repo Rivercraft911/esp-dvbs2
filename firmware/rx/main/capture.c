@@ -3,13 +3,16 @@
  * "Vendor library functions as used". The capture engine, bank handoff bounds,
  * 16 MS/s rate and PSRAM deadline are NOT qualified until measured on a board.
  */
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "capture.h"
 #include "esp_attr.h"
+#include "esp_async_memcpy.h"
 #include "esp_cpu.h"
 #include "esp_rom_crc.h"
 #include "esp_rom_sys.h"
+#include "esp_system.h"
 #include "esp_private/regi2c_ctrl.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
@@ -48,7 +51,7 @@ typedef struct {
     rx_report *report;
     uint16_t mhz;
     uint8_t gain;
-    bool probe, pattern;
+    bool probe, pattern, dma;
     rx_memory_report *memory;
     SemaphoreHandle_t done;
 } run;
@@ -326,6 +329,7 @@ static void IRAM_ATTR __attribute__((noinline)) memory_run(run *r)
             if (unit_cycles < s->min_cycles) s->min_cycles = unit_cycles;
             if (unit_cycles > s->max_cycles) s->max_cycles = unit_cycles;
             s->total_cycles += unit_cycles;
+            ++s->units;
         }
         if (s->errors || s->crc32 != s->expected_crc32) r->report->error = ESP_FAIL;
     }
@@ -337,12 +341,114 @@ static void IRAM_ATTR __attribute__((noinline)) memory_run(run *r)
     free(allocation);
 }
 
+typedef struct {
+    SemaphoreHandle_t done;
+    volatile uint32_t finished;
+    volatile uint32_t calls;
+} dma_completion;
+
+static bool IRAM_ATTR dma_done(async_memcpy_handle_t handle, async_memcpy_event_t *event,
+                               void *arg)
+{
+    dma_completion *completion = arg;
+    completion->finished = esp_cpu_get_cycle_count();
+    ++completion->calls;
+    BaseType_t woken = pdFALSE;
+    xSemaphoreGiveFromISR(completion->done, &woken);
+    return woken == pdTRUE;
+}
+
+static void dma_run(run *r)
+{
+    static const char *names[] = {"internal_psram_dma4k", "bank0_psram_dma",
+                                  "bank1_psram_dma", "bank2_psram_dma"};
+    uint8_t *allocation = heap_caps_malloc(4096U + 32U,
+                                           MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
+    if (!allocation) { r->report->error = ESP_ERR_NO_MEM; return; }
+    memset(allocation, 0x6d, 4096U + 32U);
+    uint32_t *internal = (uint32_t *)(allocation + 16U);
+    for (unsigned n = 0; n < 1024; ++n) internal[n] = memory_word(n, 3);
+    REG_WRITE(DUMP_CTRL, 0);
+    REG_WRITE(DAC_CTRL, 0);
+    REG_WRITE(BANK_USAGE, REG_READ(BANK_USAGE) & ~15U);
+    __asm__ volatile ("memw" ::: "memory");
+    for (unsigned b = 0; b < 3; ++b)
+        for (unsigned n = 0; n < RX_BANK_PAIRS; ++n) bank(b)[n] = memory_word(n, b);
+    async_memcpy_handle_t handle;
+    async_memcpy_config_t config = ASYNC_MEMCPY_DEFAULT_CONFIG();
+    config.backlog = 1;
+    r->report->error = esp_async_memcpy_install_gdma_ahb(&config, &handle);
+    if (r->report->error != ESP_OK) { free(allocation); return; }
+    StaticSemaphore_t storage;
+    dma_completion completion = {.done = xSemaphoreCreateBinaryStatic(&storage)};
+    uint8_t *start = (uint8_t *)(((uintptr_t)r->record + 127U) & ~(uintptr_t)63U);
+    r->memory->guards_ok = true;
+    for (unsigned c = 0; c < 4 && r->report->error == ESP_OK; ++c) {
+        rx_memory_result *s = &r->memory->cases[c];
+        s->name = names[c];
+        s->min_cycles = UINT32_MAX;
+        size_t bytes = c ? UNIT_PAIRS * 4U : 4096U;
+        uint32_t *src = c ? bank(c - 1U) : internal;
+        uint32_t wanted = esp_rom_crc32_le(0, (uint8_t *)src, bytes);
+        completion.calls = 0;
+        memset(start - 64U, 0x6d, 128U * bytes + 128U);
+        for (unsigned unit = 0; unit < 128; ++unit) {
+            uint8_t *out = start + unit * bytes;
+            uint32_t before = esp_cpu_get_cycle_count();
+            r->report->error = esp_async_memcpy(handle, out, src, bytes, dma_done, &completion);
+            uint32_t submitted = esp_cpu_get_cycle_count() - before;
+            if (r->report->error != ESP_OK) break;
+            /* The driver invalidates before DMA and completes its PSRAM barrier
+             * before callback. Do not touch out or mask its completion IRQ. */
+            if (xSemaphoreTake(completion.done, pdMS_TO_TICKS(2000)) != pdTRUE) {
+                printf("@{\"cmd\":\"dmabench\",\"error\":\"DMA timeout; rebooting spare\"}\n");
+                fflush(stdout);
+                esp_restart();
+            }
+            uint32_t elapsed = esp_cpu_get_cycle_count() - before;
+            uint32_t callback = completion.finished - before;
+            if (elapsed < s->min_cycles) s->min_cycles = elapsed;
+            if (elapsed > s->max_cycles) s->max_cycles = elapsed;
+            if (submitted > s->max_submit_cycles) s->max_submit_cycles = submitted;
+            if (callback > s->max_callback_cycles) s->max_callback_cycles = callback;
+            s->max_chunk_cycles = s->max_cycles;
+            s->total_cycles += elapsed;
+            ++s->units;
+            s->errors += esp_rom_crc32_le(0, out, bytes) != wanted;
+            s->crc32 = esp_rom_crc32_le(s->crc32, out, bytes);
+            s->expected_crc32 = esp_rom_crc32_le(s->expected_crc32, (uint8_t *)src, bytes);
+        }
+        for (unsigned n = 0; n < 64; ++n)
+            if ((start - 64U)[n] != 0x6d || start[128U * bytes + n] != 0x6d)
+                r->memory->guards_ok = false;
+        s->callbacks = completion.calls;
+        if (s->errors || s->crc32 != s->expected_crc32 || s->callbacks != s->units ||
+            !r->memory->guards_ok)
+            r->report->error = ESP_FAIL;
+    }
+    esp_err_t cleanup = esp_async_memcpy_uninstall(handle);
+    if (cleanup != ESP_OK) {
+        printf("@{\"cmd\":\"dmabench\",\"error\":\"DMA cleanup failed; rebooting spare\"}\n");
+        fflush(stdout);
+        esp_restart();
+    }
+    for (unsigned n = 0; n < 16; ++n)
+        if (allocation[n] != 0x6d || allocation[16U + 4096U + n] != 0x6d)
+            r->memory->guards_ok = false;
+    if (!r->memory->guards_ok) r->report->error = ESP_FAIL;
+    free(allocation);
+}
+
 static void worker(void *arg)
 {
     run *r = arg;
     rx_report *s = r->report;
     bool initialized = false, started = false, rf_setup = false;
-    if (r->memory) { memory_run(r); goto done; }
+    if (r->memory) {
+        if (r->dma) dma_run(r);
+        else memory_run(r);
+        goto done;
+    }
     if (r->pattern) { pattern_run(r); goto done; }
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     cfg.nvs_enable = 0;
@@ -450,12 +556,12 @@ void rx_pattern(uint8_t *record, rx_report *report)
     (void)execute(&r);
 }
 
-esp_err_t rx_memory(uint8_t *record, rx_memory_report *report)
+esp_err_t rx_memory(uint8_t *record, rx_memory_report *report, bool dma)
 {
     memset(report, 0, sizeof *report);
     wifi_mode_t mode;
     if (esp_wifi_get_mode(&mode) != ESP_ERR_WIFI_NOT_INIT) return ESP_ERR_INVALID_STATE;
     rx_report capture = {0};
-    run r = {.record = record, .report = &capture, .memory = report};
+    run r = {.record = record, .report = &capture, .memory = report, .dma = dma};
     return execute(&r);
 }

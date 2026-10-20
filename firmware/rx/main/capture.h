@@ -25,6 +25,7 @@ typedef struct {
     const char *name;
     uint32_t min_cycles, max_cycles, total_cycles, max_chunk_cycles;
     uint32_t crc32, expected_crc32, errors;
+    uint32_t max_submit_cycles, max_callback_cycles, units, callbacks;
 } rx_memory_result;
 typedef struct {
     rx_memory_result cases[RX_MEMORY_CASES];
@@ -34,4 +35,4 @@ typedef struct {
 esp_err_t rx_capture(uint16_t mhz, uint8_t gain, uint8_t *record, uint32_t *snapshot,
                      rx_report *report, bool probe);
 void rx_pattern(uint8_t *record, rx_report *report);
-esp_err_t rx_memory(uint8_t *record, rx_memory_report *report);
+esp_err_t rx_memory(uint8_t *record, rx_memory_report *report, bool dma);

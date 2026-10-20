@@ -131,28 +131,39 @@ void app_main(void)
                    allocation ? "true" : "false", RX_CAPTURE_BYTES,
                    (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
                    mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-        } else if (!strcmp(line, "membench")) {
+        } else if (!strcmp(line, "membench") || !strcmp(line, "dmabench")) {
+            bool dma = !strcmp(line, "dmabench");
             valid = false;
             memset(&last, 0, sizeof last);
             rx_memory_report memory;
-            esp_err_t status = allocation ? rx_memory(record, &memory) : ESP_ERR_NO_MEM;
+            esp_err_t status = allocation ? rx_memory(record, &memory, dma) : ESP_ERR_NO_MEM;
             if (allocation) {
                 for (unsigned n = 0; n < RX_MEMORY_CASES; ++n) {
                     rx_memory_result *s = &memory.cases[n];
                     if (!s->name) continue;
-                    printf("@{\"cmd\":\"membench\",\"case\":\"%s\",\"units\":128,"
-                           "\"unit_bytes\":49152,\"chunk_bytes\":4096,\"cpu_hz\":240000000,"
+                    unsigned bytes = dma && !n ? 4096U : 49152U;
+                    printf("@{\"cmd\":\"%s\",\"case\":\"%s\",\"requested_units\":128,\"units\":%lu,"
+                           "\"unit_bytes\":%u,\"chunk_bytes\":%u,\"cpu_hz\":240000000,"
                            "\"min_cycles\":%lu,\"max_cycles\":%lu,\"total_cycles\":%lu,"
                            "\"max_chunk_cycles\":%lu,\"crc32\":%lu,\"expected_crc32\":%lu,"
-                           "\"errors\":%lu}\n", s->name, (unsigned long)s->min_cycles,
+                           "\"errors\":%lu", dma ? "dmabench" : "membench", s->name,
+                           (unsigned long)s->units, bytes, dma ? bytes : 4096U,
+                           (unsigned long)s->min_cycles,
                            (unsigned long)s->max_cycles, (unsigned long)s->total_cycles,
                            (unsigned long)s->max_chunk_cycles, (unsigned long)s->crc32,
                            (unsigned long)s->expected_crc32, (unsigned long)s->errors);
+                    if (dma) printf(",\"max_submit_cycles\":%lu,\"max_callback_cycles\":%lu,\"callbacks\":%lu",
+                                    (unsigned long)s->max_submit_cycles,
+                                    (unsigned long)s->max_callback_cycles,
+                                    (unsigned long)s->callbacks);
+                    printf("}\n");
                 }
             }
-            printf("@{\"cmd\":\"membench\",\"status\":\"%s\",\"guards_ok\":%s,"
-                   "\"timing\":\"sum of twelve IRQ-masked 4 KiB copies; CRC outside\",\"tx\":false}\n",
-                   esp_err_to_name(status), allocation && memory.guards_ok && guards_ok() ? "true" : "false");
+            printf("@{\"cmd\":\"%s\",\"status\":\"%s\",\"guards_ok\":%s,"
+                   "\"timing\":\"%s\",\"tx\":false}\n", dma ? "dmabench" : "membench",
+                   esp_err_to_name(status), allocation && memory.guards_ok && guards_ok() ? "true" : "false",
+                   dma ? "submit through task completion; IRQs enabled; CRC outside" :
+                         "sum of twelve IRQ-masked 4 KiB copies; CRC outside");
         } else if (capture || !strcmp(line, "pattern")) {
             valid = false;
             pattern = !capture;
@@ -179,7 +190,7 @@ void app_main(void)
         } else if (!strcmp(line, "snapshot") && !pattern && last.snapshot_pairs) {
             download(control, 4U * last.snapshot_pairs, last.snapshot_crc32, "snapshot");
         } else {
-            printf("@{\"error\":\"use info, membench, pattern, capture MHz gain, probe MHz gain, download, snapshot\"}\n");
+            printf("@{\"error\":\"use info, membench, dmabench, pattern, capture MHz gain, probe MHz gain, download, snapshot\"}\n");
         }
         printf("@{\"done\":true}\n");
     }
