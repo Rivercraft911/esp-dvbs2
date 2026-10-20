@@ -211,7 +211,7 @@ int dvbs2_fast_prepare(dvbs2_fast *f, const dvbs2_mode *mode, int pilots, unsign
     f->cols = fast_cols;
     f->crc8 = fast_crc8;
     /* QPSK and 8PSK share their code-rate program. */
-    f->prog = fast_prog[mode->bits_per_symbol == 2 ? mode->modcod - 4 :
+    f->prog = fast_prog[mode->bits_per_symbol == 2 ? mode->modcod - 4U :
                         (unsigned[]){1, 2, 3, 5, 6, 7}[mode->modcod - 12]];
     f->p = f->scratch + f->groups * U2;
     memset(f->scratch, 0, dvbs2_fast_mode_size(mode) - sizeof *f);
@@ -261,7 +261,7 @@ static size_t cache_prog_bytes(const dvbs2_fast *f)
 {
     const size_t bytes[] = {sizeof fast_prog_0, sizeof fast_prog_1, sizeof fast_prog_2,
         sizeof fast_prog_3, sizeof fast_prog_4, sizeof fast_prog_5, sizeof fast_prog_6, sizeof fast_prog_7};
-    const unsigned rate = f->mode->bits_per_symbol == 2 ? f->mode->modcod-4 :
+    const unsigned rate = f->mode->bits_per_symbol == 2 ? f->mode->modcod-4U :
         (unsigned[]){1,2,3,5,6,7}[f->mode->modcod-12];
     return (bytes[rate]+15) & ~(size_t)15;
 }
