@@ -3,6 +3,7 @@
  * "Vendor library functions as used". The capture engine, bank handoff bounds,
  * 16 MS/s rate and PSRAM deadline are NOT qualified until measured on a board.
  */
+#include <stdlib.h>
 #include <string.h>
 #include "capture.h"
 #include "esp_attr.h"
@@ -48,6 +49,7 @@ typedef struct {
     uint16_t mhz;
     uint8_t gain;
     bool probe, pattern;
+    rx_memory_report *memory;
     SemaphoreHandle_t done;
 } run;
 
@@ -262,11 +264,85 @@ static void IRAM_ATTR __attribute__((noinline)) pattern_run(run *r)
     s->error = ESP_OK;
 }
 
+static uint32_t memory_word(unsigned n, unsigned source)
+{
+    return 0x9e3779b9U * (n + 1U) ^ (0x6d2b79f5U * (source + 1U));
+}
+
+static void IRAM_ATTR __attribute__((noinline)) memory_run(run *r)
+{
+    static const struct { const char *name; int bank; unsigned destination; } cases[] = {
+        {"internal_internal", -1, 0},
+        {"bank0_internal", 0, 0}, {"bank1_internal", 1, 0}, {"bank2_internal", 2, 0},
+        {"internal_psram_hot", -1, 1}, {"internal_psram_stream", -1, 2},
+        {"bank0_psram_stream", 0, 2},
+    };
+    enum { chunk = 1024, units = 128, chunks = UNIT_PAIRS / chunk };
+    uint8_t *allocation = heap_caps_malloc(2U * chunk * 4U + 32U,
+                                           MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!allocation) { r->report->error = ESP_ERR_NO_MEM; return; }
+    memset(allocation, 0x6d, 2U * chunk * 4U + 32U);
+    uint32_t *expected = (uint32_t *)(allocation + 16U), *scratch = expected + chunk;
+    REG_WRITE(DUMP_CTRL, 0);
+    REG_WRITE(DAC_CTRL, 0);
+    REG_WRITE(BANK_USAGE, REG_READ(BANK_USAGE) & ~15U);
+    __asm__ volatile ("memw" ::: "memory");
+    for (unsigned b = 0; b < 3; ++b)
+        for (unsigned n = 0; n < RX_BANK_PAIRS; ++n) bank(b)[n] = memory_word(n, b);
+
+    for (unsigned c = 0; c < RX_MEMORY_CASES; ++c) {
+        rx_memory_result *s = &r->memory->cases[c];
+        s->name = cases[c].name;
+        s->min_cycles = UINT32_MAX;
+        if (cases[c].destination == 2)
+            memset(r->record, 0x6d, units * UNIT_PAIRS * 4U);
+        for (unsigned unit = 0; unit < units; ++unit) {
+            uint32_t unit_cycles = 0;
+            for (unsigned part = 0; part < chunks; ++part) {
+                unsigned first = cases[c].bank < 0 ? 0 : part * chunk;
+                unsigned source = cases[c].bank < 0 ? 3U : (unsigned)cases[c].bank;
+                for (unsigned n = 0; n < chunk; ++n)
+                    expected[n] = memory_word(first + n, source);
+                const uint32_t *src = cases[c].bank < 0 ? expected : bank(cases[c].bank);
+                uint32_t *out = cases[c].destination ? (uint32_t *)r->record : scratch;
+                if (cases[c].destination == 2) out += unit * UNIT_PAIRS + part * chunk;
+                else memset(out, 0x6d, chunk * 4U);
+
+                uint32_t irq = portSET_INTERRUPT_MASK_FROM_ISR();
+                uint32_t before = esp_cpu_get_cycle_count();
+                rx_copy(src, first, chunk, out);
+                __asm__ volatile ("memw" ::: "memory");
+                uint32_t elapsed = esp_cpu_get_cycle_count() - before;
+                portCLEAR_INTERRUPT_MASK_FROM_ISR(irq);
+                unit_cycles += elapsed;
+                if (elapsed > s->max_chunk_cycles) s->max_chunk_cycles = elapsed;
+                uint32_t got = esp_rom_crc32_le(0, (uint8_t *)out, chunk * 4U);
+                uint32_t wanted = esp_rom_crc32_le(0, (uint8_t *)expected, chunk * 4U);
+                s->errors += got != wanted;
+                s->crc32 = esp_rom_crc32_le(s->crc32, (uint8_t *)out, chunk * 4U);
+                s->expected_crc32 = esp_rom_crc32_le(s->expected_crc32,
+                                                    (uint8_t *)expected, chunk * 4U);
+            }
+            if (unit_cycles < s->min_cycles) s->min_cycles = unit_cycles;
+            if (unit_cycles > s->max_cycles) s->max_cycles = unit_cycles;
+            s->total_cycles += unit_cycles;
+        }
+        if (s->errors || s->crc32 != s->expected_crc32) r->report->error = ESP_FAIL;
+    }
+    r->memory->guards_ok = true;
+    for (unsigned n = 0; n < 16; ++n)
+        if (allocation[n] != 0x6d || allocation[16U + 2U * chunk * 4U + n] != 0x6d)
+            r->memory->guards_ok = false;
+    if (!r->memory->guards_ok) r->report->error = ESP_FAIL;
+    free(allocation);
+}
+
 static void worker(void *arg)
 {
     run *r = arg;
     rx_report *s = r->report;
     bool initialized = false, started = false, rf_setup = false;
+    if (r->memory) { memory_run(r); goto done; }
     if (r->pattern) { pattern_run(r); goto done; }
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     cfg.nvs_enable = 0;
@@ -372,4 +448,14 @@ void rx_pattern(uint8_t *record, rx_report *report)
     }
     run r = {.record = record, .report = report, .pattern = true};
     (void)execute(&r);
+}
+
+esp_err_t rx_memory(uint8_t *record, rx_memory_report *report)
+{
+    memset(report, 0, sizeof *report);
+    wifi_mode_t mode;
+    if (esp_wifi_get_mode(&mode) != ESP_ERR_WIFI_NOT_INIT) return ESP_ERR_INVALID_STATE;
+    rx_report capture = {0};
+    run r = {.record = record, .report = &capture, .memory = report};
+    return execute(&r);
 }

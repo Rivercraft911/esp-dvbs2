@@ -20,6 +20,18 @@ typedef struct {
     esp_err_t error, cleanup_error;
 } rx_report;
 
+#define RX_MEMORY_CASES 7U
+typedef struct {
+    const char *name;
+    uint32_t min_cycles, max_cycles, total_cycles, max_chunk_cycles;
+    uint32_t crc32, expected_crc32, errors;
+} rx_memory_result;
+typedef struct {
+    rx_memory_result cases[RX_MEMORY_CASES];
+    bool guards_ok;
+} rx_memory_report;
+
 esp_err_t rx_capture(uint16_t mhz, uint8_t gain, uint8_t *record, uint32_t *snapshot,
                      rx_report *report, bool probe);
 void rx_pattern(uint8_t *record, rx_report *report);
+esp_err_t rx_memory(uint8_t *record, rx_memory_report *report);

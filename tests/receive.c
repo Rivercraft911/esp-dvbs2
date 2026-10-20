@@ -56,6 +56,12 @@ static void packing(void)
     for (unsigned n = 0; n < RX_BANK_PAIRS; ++n) raw[n] = word(n, -n);
     raw[RX_BANK_PAIRS - 1] = RX_SENTINEL;
     assert(!rx_compact(raw, RX_BANK_PAIRS));
+    for (unsigned n = 0; n < RX_BANK_PAIRS; ++n) bank[n] = 0x9e3779b9U * (n + 1U);
+    raw[12288] = 0x6d6d6d6dU;
+    rx_copy(bank, 16377, 12288, raw);
+    for (unsigned n = 0; n < 12288; ++n)
+        assert(raw[n] == bank[(16377 + n) & RX_BANK_MASK]);
+    assert(raw[12288] == 0x6d6d6d6dU);
 }
 
 static void boundaries(void)

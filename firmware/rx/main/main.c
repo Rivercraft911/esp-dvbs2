@@ -131,6 +131,28 @@ void app_main(void)
                    allocation ? "true" : "false", RX_CAPTURE_BYTES,
                    (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
                    mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        } else if (!strcmp(line, "membench")) {
+            valid = false;
+            memset(&last, 0, sizeof last);
+            rx_memory_report memory;
+            esp_err_t status = allocation ? rx_memory(record, &memory) : ESP_ERR_NO_MEM;
+            if (allocation) {
+                for (unsigned n = 0; n < RX_MEMORY_CASES; ++n) {
+                    rx_memory_result *s = &memory.cases[n];
+                    if (!s->name) continue;
+                    printf("@{\"cmd\":\"membench\",\"case\":\"%s\",\"units\":128,"
+                           "\"unit_bytes\":49152,\"chunk_bytes\":4096,\"cpu_hz\":240000000,"
+                           "\"min_cycles\":%lu,\"max_cycles\":%lu,\"total_cycles\":%lu,"
+                           "\"max_chunk_cycles\":%lu,\"crc32\":%lu,\"expected_crc32\":%lu,"
+                           "\"errors\":%lu}\n", s->name, (unsigned long)s->min_cycles,
+                           (unsigned long)s->max_cycles, (unsigned long)s->total_cycles,
+                           (unsigned long)s->max_chunk_cycles, (unsigned long)s->crc32,
+                           (unsigned long)s->expected_crc32, (unsigned long)s->errors);
+                }
+            }
+            printf("@{\"cmd\":\"membench\",\"status\":\"%s\",\"guards_ok\":%s,"
+                   "\"timing\":\"sum of twelve IRQ-masked 4 KiB copies; CRC outside\",\"tx\":false}\n",
+                   esp_err_to_name(status), allocation && memory.guards_ok && guards_ok() ? "true" : "false");
         } else if (capture || !strcmp(line, "pattern")) {
             valid = false;
             pattern = !capture;
@@ -157,7 +179,7 @@ void app_main(void)
         } else if (!strcmp(line, "snapshot") && !pattern && last.snapshot_pairs) {
             download(control, 4U * last.snapshot_pairs, last.snapshot_crc32, "snapshot");
         } else {
-            printf("@{\"error\":\"use info, pattern, capture MHz gain, probe MHz gain, download, snapshot\"}\n");
+            printf("@{\"error\":\"use info, membench, pattern, capture MHz gain, probe MHz gain, download, snapshot\"}\n");
         }
         printf("@{\"done\":true}\n");
     }
