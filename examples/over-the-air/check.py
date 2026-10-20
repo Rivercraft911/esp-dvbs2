@@ -23,7 +23,7 @@ import decode
 from receive import stop
 
 RADIOCONDA = str(Path.home() / "radioconda/bin/python")
-DEFAULT_RX = "/Users/river/Documents/stanford/SSI/esp-dvbs2/notes/leansdr/src/apps/leandvb"
+DEFAULT_RX = str(ROOT / "notes/leansdr/src/apps/leandvb")
 MODES = {7: "QPSK 3/4", 13: "8PSK 2/3", 11: "QPSK 9/10", 15: "8PSK 5/6", 17: "8PSK 9/10"}
 MODES.update({4: "QPSK 1/2", 6: "QPSK 2/3"})
 RATES = {"1m": 1e6, "5m": 5e6, "10m": 10e6, "20m": 20e6,

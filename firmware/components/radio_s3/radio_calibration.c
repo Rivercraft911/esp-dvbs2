@@ -1,5 +1,5 @@
-// Cold setup only. Profile from conducted measurements in exp/iq-dc-calibration
-// cbc683c: IQ 3/-12, absolute PBUS pair-0 DC 246/264. No live tracking writes.
+// Board-specific correction applied at startup and restored after each run.
+// Measured in cbc683c: IQ 3/-12, absolute PBUS pair-0 DC 246/264.
 #include "radio_calibration.h"
 #include "esp_mac.h"
 #include "soc/soc.h"
@@ -65,7 +65,7 @@ bool radio_calibration_filter(radio_filter_stats_t *stats)
     for (unsigned i = 0; i < 2; ++i) {
         state.dc_saved[i] = REG_READ(dc_reg[i]);
         const int delta = (int)dc_target[i] - (int)((state.dc_saved[i] >> dc_shift[i]) & 511U);
-        // Keep the same bounded neighborhood used in the measured experiment.
+        // Reject DC changes more than 16 steps from startup calibration.
         if (delta < -16 || delta > 16) return false;
     }
     // Manufacturer manual TX fields: enable bit11, clear source bit12,

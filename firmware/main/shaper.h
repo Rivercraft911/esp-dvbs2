@@ -56,7 +56,7 @@ void shaper_fill_c(uint32_t *dst, const uint8_t *sym, int nsym, const shaper_tab
 // words. For other lengths use C for the last 0..5 symbols. Each 64-byte window block holds
 // three 16-byte part rows followed by 16 bytes of padding; every PIE load is aligned.
 void shaper_fill4_pie(uint32_t *dst, const uint8_t *sym, int groups, const uint32_t *blocks);
-// Any nsym >= 0, same history/alignment contract. PIE also handles the 0..5-symbol tail.
+// Any nsym >= 0, same history and alignment requirements. PIE also handles the 0..5-symbol tail.
 // Intended for a fill reading immutable, prestaged internal symbols, not a PSRAM callback.
 void shaper_fill4_all_pie(uint32_t *dst, const uint8_t *sym, int nsym, const uint32_t *blocks);
 // 8 samples/symbol, 3-bit codes: 6 * groups + 1 symbols -> (6 * groups + 1) * 8 words.
@@ -65,7 +65,7 @@ void shaper_fill8_pie(uint32_t *dst, const uint8_t *sym, int groups, const uint3
 void shaper_fill40_pie(uint32_t *dst, const uint8_t *sym, int nsym, const uint32_t *blocks);
 
 // Encoder phases k = 0..7, with eight raw history bytes. The raw PIE variants have the
-// n40 count contract above. Fast modes use scaled codes from the packed ring.
+// nsym >= 1 limit above. Fast modes use scaled codes from the packed ring.
 void shaper_fill40_raw_pie(uint32_t *, const uint8_t *, int, const uint32_t *);
 // Any number of whole symbols, including zero. Fast-rate raw phases use the C oracle.
 void shaper_fill_raw(uint32_t *dst, const uint8_t *sym, int nsym, const shaper_table_t *t);
@@ -89,7 +89,7 @@ void shaper_copy_words(uint32_t *dst, const uint32_t *src, size_t words);
 void shaper_short_build(shaper_table_t *t, uint32_t *blocks, unsigned peak);
 void shaper_short4_pie(uint32_t *dst, const uint8_t *sym, int nsym, const uint32_t *blocks);
 
-// Radix-four specializations of the existing kernels. Same group/output contract.
+// Radix-four versions of the kernels above, with the same group and output sizes.
 // Entries consume 16*(phase>>1).
 void shaper_fill4_qpsk_pie(uint32_t *, const uint8_t *, int, const uint32_t *);
 void shaper_fill8_qpsk_pie(uint32_t *, const uint8_t *, int, const uint32_t *);

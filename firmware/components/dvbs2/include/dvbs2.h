@@ -12,7 +12,7 @@
 #define DVBS2_MAX_SYMBOLS 33282
 #define DVBS2_DUMMY_SYMBOLS 3330
 /* 5.5.1, 5.5.4: MODCOD 0, no pilots, 36 slots of pi/4 carrier, PL scrambled.
- * Output is canonical phases 0..7, as for data frames. */
+ * Output is phases 0..7, as for data frames. */
 void dvbs2_dummy(uint8_t *output);
 
 typedef struct {
@@ -149,9 +149,7 @@ void dvbs2_fast_pl(const dvbs2_fast *f, uint8_t *output);
  * input_bits must equal kbch-80; consumes input_bits/8 bytes and advances ts.
  * Output has dvbs2_frame_symbols(mode, pilots) bytes, phases 0..7. Same buffer
  * and non-overlap rules as the stages. Invalid input leaves ws, ts and output
- * unchanged. A context and workspace belong to one encoder at a time; there
- * is no global selection or hidden allocation. Existing stage callers keep
- * their original behavior and canonical intermediate formats. */
+ * unchanged. A context and workspace belong to one encoder at a time. */
 int dvbs2_encode_frame(dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_state *ts,
                        const uint8_t *payload, size_t input_bits, uint8_t *output);
 
@@ -162,8 +160,8 @@ int dvbs2_encode_frame(dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_state *ts,
  * scratch and any output alignment. PIE maps directly to packed bytes unless
  * MAP_SPARSE is selected for 8PSK.
  * QPSK always uses its direct packed mapper. The fixed header and pilots are
- * packed once by prepare. dvbs2_pack packs
- * an even count of canonical phases, for example a dummy PLFRAME. */
+ * packed once by prepare. dvbs2_pack packs an even count of phases 0..7,
+ * for example a dummy PLFRAME. */
 int dvbs2_fast_map_packed(dvbs2_fast *f, const dvbs2_workspace *ws, uint8_t *packed);
 void dvbs2_fast_pl_packed(const dvbs2_fast *f, uint8_t *packed);
 int dvbs2_encode_frame_packed(dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_state *ts,

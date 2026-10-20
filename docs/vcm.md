@@ -67,7 +67,7 @@ before the on-chip loopback check. See the [self-check](../examples/self-check/R
 
 ```sh
 export PORT=/dev/cu.usbmodem1101
-export RX=/Users/river/Documents/stanford/SSI/esp-dvbs2/notes/leansdr/src/apps/leandvb
+export RX="$PWD/notes/leansdr/src/apps/leandvb"
 python3 examples/self-check/check.py notes/vcm-layout-self --port "$PORT" --receiver "$RX"
 PORT="$PORT" RX="$RX" bash host/spi-board.sh notes/vcm-layout-spi
 PORT="$PORT" RX="$RX" python3 examples/usb-send/check.py notes/vcm-layout-usb

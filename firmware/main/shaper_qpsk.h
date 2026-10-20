@@ -11,15 +11,15 @@
 #define QPSK_HISTORY_BYTES 2
 
 // 16-byte aligned store; level 16..508 DAC LSB. Returns -1 on invalid arguments.
-// Adds no allocation or persistent storage. Two LSB reserved for table rounding.
+// Two LSB reserved for table rounding.
 int shaper_qpsk_build(uint32_t *table, unsigned n, unsigned level);
 void shaper_qpsk_c(uint32_t *dst, const uint8_t *src, unsigned groups,
                    const uint32_t *table, unsigned n);
-// Same contract, dst/table 16-byte aligned; zero groups does not read any buffer.
+// dst/table must be 16-byte aligned. Zero groups does not read any buffer.
 void shaper_qpsk3_pie(uint32_t *, const uint8_t *, unsigned, const uint32_t *);
 void shaper_qpsk4_pie(uint32_t *, const uint8_t *, unsigned, const uint32_t *);
 // Samples starting at skip (0..4*n-1) in src[0]'s block. Only required blocks are read.
 // dst + (4*n-skip) must be vector aligned for PIE bulk; otherwise uses C scratch.
-// Exactly count words written, including empty and partial calls; no global state.
+// Writes exactly count words, including empty and partial calls.
 void shaper_qpsk_samples(uint32_t *dst, const uint8_t *src, unsigned skip, size_t count,
                          const uint32_t *table, unsigned n);

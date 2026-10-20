@@ -25,7 +25,7 @@ The [live-video example](examples/live-video/README.md) uses **8PSK 2/3 at 5 Msy
 9.68 Mb/s TS capacity in 6.75 MHz. A CM5 camera source sent a 9 Mb/s mux over
 16 MHz SPI; a B200 recovered both video streams through 40 dB of coax attenuation,
 with no TS continuity gaps in a 111 s interval. The [run records](results/2026-10-19-live-rf/README.md)
-separate that short link check from display smoothness and range testing.
+cover link recovery; display smoothness and range still need testing.
 Finite 2.4 Mb/s H.264 files also passed USB → S3 → E200 → LeanDVB and played
 on the laptop. Use the [Linux SPI sender](examples/pi-sender/README.md) for a live 9 Mb/s mux.
 
@@ -128,9 +128,9 @@ per block deliberately dropped at the receiver ([run](docs/measurements.md#over-
 
 SPI carries higher rates. The sender clocks fixed 1,332-byte messages: a 12-byte
 header (`PV`, version, type, sequence, length), up to seven 188-byte MPEG-TS packets and a
-CRC-32. A READY pin tells the sender when the S3 has room. Single-line SPI has a 19.4 Mb/s
-ideal ceiling at 20 MHz; quad SPI demonstrated 46.6 Mb/s with on-chip loopback.
-External-sender and live-video throughput remain unmeasured. Payload is MPEG-TS for video or any
+CRC-32. A READY pin tells the sender when the S3 has room. Single-line SPI delivered the
+9 Mb/s camera mux at 16 MHz; its ideal ceiling is 19.4 Mb/s at 20 MHz. Quad SPI reached
+46.6 Mb/s with on-chip loopback. Payload is MPEG-TS for video or any
 bytes as a generic stream. The S3 does the rest: framing, coding, filler frames when the
 input runs dry, and transmission. Select it with `spiinput on` before a run; the
 [reference sender](examples/pi-sender/README.md) streams a file from a Linux board.
@@ -163,6 +163,7 @@ shielded setup or into a dummy load, or through at least 30 dB attenuation into 
 Set your assigned callsign first. The firmware sends 20 WPM Morse before and after a run;
 synthetic test payloads also carry the callsign. External SPI/USB payload bytes are preserved
 without an added callsign header; Morse ID remains separate. [Setup and limitations](docs/transmitting.md).
+My callsign is **KJ5SCH**; use your own station's call when setting up a board.
 The [contained E200 RF check](examples/over-the-air/README.md) coordinates capture,
 explicit operator keying and exact payload verification; it also supports offline USB replay.
 

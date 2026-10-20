@@ -73,7 +73,7 @@ From the repository root, the **coordinator** runs:
 
 ```sh
 PORT=/dev/cu.usbmodem101 \
-RX=/Users/river/Documents/stanford/SSI/esp-dvbs2/notes/leansdr/src/apps/leandvb \
+RX="$PWD/notes/leansdr/src/apps/leandvb" \
 python3 examples/usb-send/check.py
 ```
 

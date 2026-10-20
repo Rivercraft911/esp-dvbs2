@@ -41,16 +41,17 @@ stage digests, numerical symbol comparisons and file-loopback evidence are docum
   Its reported response within about 3 dB through +/-18 MHz in bandwidth mode 2 is an
   end-to-end measurement between two S3s, including both filters
   ([hardware quirks, lines 56–65](https://github.com/cyber-murmel/esp-sdr-zephyr/blob/3214c16a7c9f136414cc5ae9d245ea290c98a6ce/doc/hardware-quirks.md#L56-L65)).
-  Our transmitter's cabled response remains unmeasured. The
-  [archived filter experiment](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/docs/wide-filter.md) applies the bandwidth selector after CW setup,
-  logs TX/RX capacitor readbacks, and gives the E200 qualification gates.
+  Our [filter measurements and wideband experiments](measurements.md#over-the-air)
+  show main's ~20 MHz passband and the separate 36/40 MHz RF decode tests. Those
+  experiments restore PBUS(4,2)=32 after CW setup; the wider setting is not adopted on main.
 - **Self capture:** ESPARGOS demonstrates raw RX I/Q. On the S3 the capture and playback
   engines share the SRAM bank selector, so that alone does not establish capture of
   our live DAC stream. The vendor calibration loopback tap and its RF coverage remain
   unqualified; [the archived feasibility assessment](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/docs/wide-filter.md#can-the-s3-measure-itself)
   separates the controls found in ROM from a working spectrum self-test.
-- **Quality:** their reported 31.5 dB MER is evidence for their link. It does not establish
-  this transmitter's RF quality; our wideband RF decode remains unmeasured.
+- **Quality:** their reported 31.5 dB MER describes their link. Our own
+  [RF measurements](measurements.md#over-the-air) record the modes, fixtures and losses
+  measured on this transmitter.
 
 ## Our own earlier work
 

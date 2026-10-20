@@ -112,6 +112,12 @@ uppercase. `callsign` reads the setting; `callsign clear` removes it. Use the ca
 assigned to your station and any required indicators. A syntax check cannot verify a licence.
 Missing or invalid storage disables transmission.
 
+My station uses **KJ5SCH**. Substitute your assigned callsign when setting up your board:
+
+```sh
+python3 host/board.py "callsign KJ5SCH"
+```
+
 Successful keyed runs include 20 WPM Morse at the start and end; the implementation also
 schedules ID every nine minutes. Console transmissions are limited to 60 s, including both
 IDs. Too-short requests fail before startup. A fatal fault stops immediately, so a closing
