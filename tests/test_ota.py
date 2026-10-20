@@ -228,8 +228,18 @@ def test_offline_boundary():
             return "N0CALL", 16, dict(backend="libiio", complete=True, overflows=None)
         with patch.object(sys, "argv", ["check.py", str(folder / "rf"), "--backend", "libiio",
                 "--uri", "ip:fake", "--key", "--receiver", str(receiver), "--iio-python", sys.executable]), \
-                patch.object(ota, "hardware", side_effect=hardware), contextlib.redirect_stdout(None):
-            assert ota.main() == 0
+                patch.object(ota, "hardware", side_effect=hardware) as run_hardware, \
+                patch.object(ota.shutil, "disk_usage", return_value=types.SimpleNamespace(free=10**12)), \
+                contextlib.redirect_stdout(None):
+            assert ota.main() == 0, (folder / "rf/report.json").read_text()
+            run_hardware.reset_mock()
+            with patch.object(sys, "argv", ["check.py", str(folder / "low-disk"), "--backend", "libiio",
+                    "--uri", "ip:fake", "--key", "--receiver", str(receiver), "--iio-python", sys.executable]), \
+                    patch.object(ota.shutil, "disk_usage", return_value=types.SimpleNamespace(free=0)):
+                assert ota.main() == 1, (folder / "low-disk/report.json").read_text()
+            run_hardware.assert_not_called()
+            low_disk = json.loads((folder / "low-disk/report.json").read_text())
+            assert not low_disk["passed"] and "insufficient free disk" in low_disk["error"], low_disk
         rf = json.loads((folder / "rf/report.json").read_text())
         assert rf["passed"] and rf["evidence"] == "rf-capture" and rf["capture"]["backend"] == "libiio"
         assert (folder / "rf/spectrum.png").stat().st_size > 1000

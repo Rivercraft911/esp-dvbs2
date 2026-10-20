@@ -224,20 +224,28 @@ def test_coordinator():
             kw['bb_output'].write_bytes(records(fields))
             return rx, b''.join(fields)
         with patch.object(c, 'hardware', side_effect=hardware), patch.object(c.decode, 'decode', side_effect=decode), \
-                patch.object(c.shutil, 'which', return_value='fake'), contextlib.redirect_stdout(io.StringIO()) as stdout:
-            assert c.main([str(original), str(out), '--key', '--closed-box', '--port', 'fake']) == 0
+                patch.object(c.shutil, 'which', return_value='fake'), \
+                patch.object(c.shutil, 'disk_usage', return_value=types.SimpleNamespace(free=10**12)), \
+                contextlib.redirect_stdout(io.StringIO()) as stdout:
+            assert c.main([str(original), str(out), '--key', '--closed-box', '--port', 'fake']) == 0, (out / 'report.json').read_text()
             assert 'PASS:' in stdout.getvalue() and 'margin=3 frames' in stdout.getvalue()
             assert json.loads((out / 'report.json').read_text())['passed']
             assert c.main([str(original), str(folder / 'recheck'), '--recheck', str(out)]) == 0, stdout.getvalue()
             assert c.hardware.call_count == 1  # offline recheck must never access devices
             # A decoder without lock cannot be passed by successful file unpack.
             rx['frame_lock'] = False
-            assert c.main([str(original), str(folder / 'unlocked'), '--key', '--closed-box', '--port', 'fake']) == 1
+            assert c.main([str(original), str(folder / 'unlocked'), '--key', '--closed-box', '--port', 'fake']) == 1, (folder / 'unlocked/report.json').read_text()
             failed = json.loads((folder / 'unlocked/report.json').read_text())
             assert not failed['passed'] and failed['cases']['received']['passed']
             with patch.object(c, 'hardware', side_effect=RuntimeError('capture failed')):
-                assert c.main([str(original), str(folder / 'failed'), '--key', '--closed-box', '--port', 'fake']) == 1
+                assert c.main([str(original), str(folder / 'failed'), '--key', '--closed-box', '--port', 'fake']) == 1, (folder / 'failed/report.json').read_text()
             assert 'capture failed' in (folder / 'failed/report.json').read_text()
+            c.hardware.reset_mock()
+            with patch.object(c.shutil, 'disk_usage', return_value=types.SimpleNamespace(free=0)):
+                assert c.main([str(original), str(folder / 'low-disk'), '--key', '--closed-box', '--port', 'fake']) == 1, (folder / 'low-disk/report.json').read_text()
+            c.hardware.assert_not_called()
+            low_disk = json.loads((folder / 'low-disk/report.json').read_text())
+            assert not low_disk['passed'] and 'insufficient disk' in low_disk['error'], low_disk
     print('full coordinator with fake RF/decoder, real unpack/hash, saved offline recheck, failure evidence and exit codes: ok')
 
 
