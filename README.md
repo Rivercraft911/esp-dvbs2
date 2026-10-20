@@ -17,17 +17,17 @@ ever built for. Read [How it got here](docs/story.md) to learn about the tumultu
 
 ## Live video
 
-> **[Demo clip to add: S3 transmission and live laptop reception]**
-
 ```
-TS file --USB--> ESP32-S3 --DVB-S2 RF--> SDR --IQ--> LeanDVB --TS--> player
+CM5 + cameras --SPI--> ESP32-S3 --DVB-S2 RF--> SDR --IQ--> LeanDVB --TS--> player
 ```
 
 The [live-video example](examples/live-video/README.md) uses **8PSK 2/3 at 5 Msym/s**:
-9.68 Mb/s TS capacity in 6.75 MHz. In closed-box tests on October 18, a finite
-2.4 Mb/s H.264 file passed the USB → S3 → E200 → LeanDVB path and played on the laptop.
-External camera input at 9 Mb/s over SPI still needs an end-to-end test; USB cannot carry
-that live mux. SPI has on-chip loopback tests and a [Linux sender](examples/pi-sender/README.md).
+9.68 Mb/s TS capacity in 6.75 MHz. A CM5 camera source sent a 9 Mb/s mux over
+16 MHz SPI; a B200 recovered both video streams through 40 dB of coax attenuation,
+with no TS continuity gaps in a 111 s interval. The [run records](results/2026-10-19-live-rf/README.md)
+separate that short link check from display smoothness and range testing.
+Finite 2.4 Mb/s H.264 files also passed USB → S3 → E200 → LeanDVB and played
+on the laptop. Use the [Linux SPI sender](examples/pi-sender/README.md) for a live 9 Mb/s mux.
 
 ## What it can do
 

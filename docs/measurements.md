@@ -50,6 +50,14 @@ file frames). The receiver now uses `--sr-tol 0.0005`; the same capture decodes 
 At 80 MS/s, peak 128 overdrives the radio: the 20 Msym/s signal is non-linear and
 undecodable. Reducing peak to 32–64 restores decoding; **48 was best**, at 14.2 dB MER.
 
+On October 19, a CM5 sent a 9 Mb/s camera mux over 16 MHz SPI to a XIAO S3;
+a B200 received 5 Msymbol/s 8PSK 2/3 through 40 dB of coax attenuation.
+The [live RF records](../results/2026-10-19-live-rf/README.md) contain a 111 s interval
+with no TS continuity gaps, nonzero FEC reports or host queue drops. A completed
+140 s run accepted 106,227 SPI messages with no protocol errors or late bank events.
+These conducted checks used an optional correction measured on that board at
+2420 MHz and gain 0; they do not establish range or visible playback cadence.
+
 A ±30 MHz chirp at 80 MS/s, received with the E200 tuned to **2405, 2420 and 2435 MHz**,
 stitched together only the central ±9 MHz of each capture. The S3's transmit filter
 is about **−3 dB at ±10 MHz and −20 dB by ±14 MHz** from center.

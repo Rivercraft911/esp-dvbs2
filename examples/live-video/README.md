@@ -9,9 +9,11 @@ Measured in a closed box on 2026-10-18: S3 → E200 with Pluto firmware → Lean
 recovered 47,672 packets as an exact contiguous source slice, 99.6% of the file,
 with zero continuity or PSI CRC errors. That test used USB input at about 2.8 Mb/s
 and a mostly null-padded MPEG-2 fixture. A 2.4 Mb/s H.264 USB fixture also passed
-live reception and playback. **Native 9 Mb/s camera input over SPI still needs
-an end-to-end test.** USB intake tops out near
-3.2 Mb/s; it preserves a finite file but cannot carry the live 9 Mb/s mux.
+live reception and playback. A later CM5 → 16 MHz SPI → XIAO S3 → B200
+camera test recovered a 9 Mb/s mux through 40 dB of coax attenuation with no TS
+continuity gaps in 111 s ([records](../../results/2026-10-19-live-rf/README.md)).
+USB intake tops out near 3.2 Mb/s; it preserves a finite file but cannot carry
+the live 9 Mb/s mux.
 
 ## Prepare
 
