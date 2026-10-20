@@ -148,7 +148,7 @@ static esp_err_t IRAM_ATTR __attribute__((noinline)) collect(run *r)
     REG_WRITE(DUMP_LANES, 0x000c2040U);
     REG_WRITE(BANK_USAGE, ownership | 1U);
 
-    /* Capture is only ~101 ms. Keep the Wi-Fi MAC ISR and scheduler out of the
+    /* Capture is at most ~126 ms. Keep the Wi-Fi MAC ISR and scheduler out of the
      * bank handoffs; core 0 remains available for the kernel and USB. The default
      * configured interrupt-watchdog limit is unchanged. No prints/USB/allocations here. */
     uint32_t irq = portSET_INTERRUPT_MASK_FROM_ISR();

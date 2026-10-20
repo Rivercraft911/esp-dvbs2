@@ -59,6 +59,16 @@ class ReceiveTests(unittest.TestCase):
             module.validate(data, capture, b"\0" * 2048)
         with self.assertRaises(ValueError):
             module.validate(data, {**capture, "engine_cycles": 1609728 * 3}, snapshot)
+        # A build-sized record needs an explicit matching expectation.
+        short = data[:1024]
+        resized = {**capture, "retained_pairs": 512, "acquired_pairs": 512,
+                   "engine_cycles": 512 * 15, "crc32": zlib.crc32(short)}
+        with self.assertRaises(ValueError):
+            module.validate(short, resized, snapshot)
+        self.assertEqual(module.validate(short, resized, snapshot, pairs=512)["pairs"], 512)
+        for pairs in (0, 2000001):
+            with self.assertRaises(ValueError):
+                module.validate(short, resized, snapshot, pairs=pairs)
 
     def test_frozen_probe(self):
         spec = importlib.util.spec_from_file_location("receive", ROOT / "host/receive.py")

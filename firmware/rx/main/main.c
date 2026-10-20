@@ -212,7 +212,7 @@ void app_main(void)
             last_mhz = pattern ? 0 : mhz;
             last_gain = pattern ? 0 : gain;
             if (!allocation) {
-                printf("@{\"error\":\"6.4 MB PSRAM allocation unavailable\"}\n");
+                printf("@{\"error\":\"%u-byte PSRAM allocation unavailable\"}\n", RX_CAPTURE_BYTES);
             } else {
                 if (pattern) rx_pattern(record, &last);
                 else if (mhz < 2390 || mhz > 2450 || gain > 127) {

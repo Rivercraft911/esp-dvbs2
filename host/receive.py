@@ -35,12 +35,14 @@ def inspect_banks(data, report):
             "crc32": zlib.crc32(data), "banks": banks}
 
 
-def validate(data, report, snapshot=None):
+def validate(data, report, snapshot=None, *, pairs=PAIRS):
+    if not 512 <= pairs <= 2000000:
+        raise ValueError("expected pairs must be 512..2000000")
     if report.get("status") != "ESP_OK" or not report.get("complete"):
         raise ValueError("board did not complete the capture")
-    if not report.get("guards_ok") or report.get("retained_pairs") != PAIRS:
+    if not report.get("guards_ok") or report.get("retained_pairs") != pairs:
         raise ValueError("board guards or retained sample count failed")
-    if len(data) != 2 * PAIRS or zlib.crc32(data) != report.get("crc32"):
+    if len(data) != 2 * pairs or zlib.crc32(data) != report.get("crc32"):
         raise ValueError("download length or CRC differs from the board")
     for field in ("late", "overruns", "boundary_errors", "gap_events", "sentinel_errors"):
         if report.get(field) != 0:
@@ -48,13 +50,13 @@ def validate(data, report, snapshot=None):
     if report.get("dma_errors", 0):
         raise ValueError("board reported a DMA error")
     if report.get("cmd") == "pattern":
-        for n in range(PAIRS):
+        for n in range(pairs):
             if data[2 * n] != ((13 * n) & 1023) >> 2 or \
                data[2 * n + 1] != ((29 * n + 7) & 1023) >> 2:
                 raise ValueError(f"memory pattern differs at complex pair {n}")
     else:
         acquired, cycles = report.get("acquired_pairs", 0), report.get("engine_cycles", 0)
-        if not PAIRS <= acquired < PAIRS + 12288 + 2000 or cycles <= 0:
+        if not pairs <= acquired < pairs + 12288 + 2000 or cycles <= 0:
             raise ValueError("acquisition count or engine timing is invalid")
         measured_rate = acquired * 240000000 / cycles
         if not 15840000 <= measured_rate <= 16160000:
@@ -66,7 +68,7 @@ def validate(data, report, snapshot=None):
         for n, (word,) in enumerate(struct.iter_unpack("<I", snapshot)):
             if data[2 * n] != (word >> 12) & 255 or data[2 * n + 1] != (word >> 2) & 255:
                 raise ValueError(f"raw10/sc8 conversion differs at complex pair {n}")
-    result = {"pairs": PAIRS, "bytes": len(data), "crc32": zlib.crc32(data),
+    result = {"pairs": pairs, "bytes": len(data), "crc32": zlib.crc32(data),
               "source": report["cmd"], "raw10_control_pairs": len(snapshot or b"") // 4}
     if report["cmd"] != "pattern": result["index_cycle_rate_sps"] = measured_rate
     return result
@@ -77,6 +79,7 @@ def main():
     parser.add_argument("iq", type=pathlib.Path)
     parser.add_argument("--report", type=pathlib.Path, required=True)
     parser.add_argument("--snapshot", type=pathlib.Path)
+    parser.add_argument("--pairs", type=int, default=PAIRS, help="expected complex samples in this capture build")
     parser.add_argument("--probe", action="store_true", help="inspect raw frozen banks")
     args = parser.parse_args()
     records = [json.loads(line) for line in args.report.read_text().splitlines() if line.strip()]
@@ -84,7 +87,7 @@ def main():
     report = next(r for r in reversed(records) if r.get("cmd") in kinds)
     snapshot = args.snapshot.read_bytes() if args.snapshot else None
     result = inspect_banks(args.iq.read_bytes(), report) if args.probe else \
-        validate(args.iq.read_bytes(), report, snapshot)
+        validate(args.iq.read_bytes(), report, snapshot, pairs=args.pairs)
     print(json.dumps(result))
 
 
