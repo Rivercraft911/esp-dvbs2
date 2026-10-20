@@ -3,7 +3,8 @@
 The chip's dumped samples and the recovered [over-the-air payloads](#over-the-air) decode
 byte-exact against the host model in LeanDVB. Keyed runs in a closed lab Faraday box met
 the bank deadlines. Capability-table bandwidths are nominal shaped bandwidths;
-the measured transmit-filter passband is about 20 MHz.
+the earlier narrow-filter passband below is about 20 MHz. Restoring the wide setting
+now allows [36/40 MHz burst decoding](../results/2026-10-20-wide-filter/README.md).
 
 All board records below used an ESP32-S3 at 240 MHz. The copied JSON lines are unchanged
 subsets of the development archive or of later board runs, including their original firmware
@@ -58,14 +59,16 @@ with no TS continuity gaps or host queue drops. A completed
 These conducted checks used an optional correction measured on that board at
 2420 MHz and gain 0; they do not establish range or visible playback cadence.
 
-A ±30 MHz chirp at 80 MS/s, received with the E200 tuned to **2405, 2420 and 2435 MHz**,
-stitched together only the central ±9 MHz of each capture. The S3's transmit filter
-is about **−3 dB at ±10 MHz and −20 dB by ±14 MHz** from center.
+An earlier ±30 MHz chirp at 80 MS/s, received with the E200 tuned to **2405, 2420 and 2435 MHz**,
+stitched together only the central ±9 MHz of each capture. That narrow-filter response
+was about **−3 dB at ±10 MHz and −20 dB by ±14 MHz** from center.
 
 ![S3 transmit-filter response stitched from three E200 receiver tunings](measurements/stitch.png)
 
-Main's 26.67 Msym/s (36 MHz) and 33.33 Msym/s (40 MHz) modes generate correct on-chip
-samples and meet their deadlines keyed, but still radiate through this ~20 MHz filter.
+Main now restores PBUS(4,2)=32 after CW setup for wide signals. Conducted B200 checks
+recover exact 36/40 MHz payloads from individual 41.943 ms captures, without stitching.
+The [eight-mode records](../results/2026-10-20-wide-filter/README.md) distinguish prepared payloads,
+changing payloads, receiver failures and TX underruns.
 The earlier [HT40 comparison](measurements/ht40-compare.png) did not show a wider passband.
 The README's [5 Msym/s spectrum](measurements/qpsk34-5m-spectrum.png) is a real RF capture;
 it includes station ID and silence and is not a calibrated power or emission-mask measurement.
@@ -83,8 +86,9 @@ receiver recovered **81 consecutive, byte-exact QPSK 3/4 frames in 40 MHz**,
 489,321 payload bytes; one acquisition attempt failed before that interval.
 Separate captures recovered 81/82 QPSK frames and 95/96 8PSK 2/3 frames in 36 MHz,
 each with one interior loss. The receiver processed these bursts slower than real time.
-Neither the wide firmware nor the receiver is adopted on main; sustained wideband
-video remains unqualified. The [run summary](measurements/2026-10-19-wide-rf.json)
+These experiments predate the [main filter fix](../results/2026-10-20-wide-filter/README.md);
+their soft receiver remains a separate offline prototype. Sustained wideband video
+remains unqualified. The [run summary](measurements/2026-10-19-wide-rf.json)
 pins the retained captures and reports; it does not include raw RF or the receiver prototype.
 
 ## What it can do

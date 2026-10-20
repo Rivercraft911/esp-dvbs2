@@ -10,6 +10,8 @@
 #include "soc/soc.h"
 
 extern void rom_bb_bss_cbw40(unsigned int mode);
+extern void rom_pbus_force_test(uint8_t group, uint8_t index, uint16_t value);
+extern uint16_t rom_pbus_rd(uint8_t group, uint8_t index);
 static const char *const names[] = {"auto", "narrow", "wide"};
 
 radio_filter_mode_t radio_filter_get(void)
@@ -24,6 +26,7 @@ static void snapshot(radio_filter_regs_t *r)
     r->channel = REG_READ(0x60033400U);
     r->cbw = REG_READ(0x6001d000U);
     r->mac = REG_READ(0x6001cc0cU);
+    r->pbus_4_2 = rom_pbus_rd(4, 2);
     static const uint8_t regs[] = {4, 5, 6, 7, 12, 13, 14, 15};
     for (unsigned i = 0; i < sizeof regs; ++i) {
         r->caps[i] = regi2c_ctrl_read_reg(0x67, 0, regs[i]);
@@ -36,6 +39,7 @@ static bool matches(const radio_filter_stats_t *s, const radio_filter_regs_t *r)
     return (r->analog & 0x003f0000U) == (wide ? 0x00120000U : 0) &&
            (r->digital & 0xcU) == (wide ? 4U : 0) &&
            (r->channel & 3U) == (wide ? 3U : 0) &&
+           r->pbus_4_2 == (wide ? 32U : 0U) &&
            (!wide || (!(r->cbw & 0x40U) && !(r->mac & 1U)));
 }
 
@@ -45,6 +49,8 @@ bool radio_filter_apply(radio_filter_stats_t *s)
     snapshot(&s->before);
     // CW has already reset the PHY to mode 0. Apply AFTER stop_tx_tone and PLL retune.
     rom_bb_bss_cbw40(s->selected == RADIO_FILTER_WIDE ? 2 : 0);
+    // CW resets this separate TX filter setting too.
+    rom_pbus_force_test(4, 2, s->selected == RADIO_FILTER_WIDE ? 32 : 0);
     snapshot(&s->active);
     s->applied = true;
     s->matches = matches(s, &s->active);
@@ -62,8 +68,8 @@ bool radio_filter_finish(radio_filter_stats_t *s)
 static void print_regs(const radio_filter_regs_t *r)
 {
     printf("{\"analog\":%" PRIu32 ",\"digital\":%" PRIu32 ",\"channel\":%" PRIu32
-           ",\"cbw\":%" PRIu32 ",\"mac\":%" PRIu32 ",\"caps\":[",
-           r->analog, r->digital, r->channel, r->cbw, r->mac);
+           ",\"cbw\":%" PRIu32 ",\"mac\":%" PRIu32 ",\"pbus_4_2\":%" PRIu32 ",\"caps\":[",
+           r->analog, r->digital, r->channel, r->cbw, r->mac, r->pbus_4_2);
     for (unsigned i = 0; i < sizeof r->caps; ++i) {
         printf(i ? ",%u" : "%u", r->caps[i]);
     }

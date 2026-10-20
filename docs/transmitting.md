@@ -170,10 +170,10 @@ Frequencies double at 80 MS/s. `tone128` is the previously measured linear-drive
 
 For **80 MS/s modes** (`20m`, `26m667`, `33m333`), use **peak 48** as the starting point.
 At QPSK 9/10, 20 Msym/s, peak 128 overdrives the radio and does not decode; peaks 32–64
-decode, with 48 best at 14.2 dB MER. The measured transmit filter passes about 20 MHz
-(−3 dB at ±10 MHz, about −20 dB by ±14 MHz). The 36/40 MHz modes generate correct
-samples and meet their deadlines keyed, but do not decode over the air yet; a wider
-HT40 setting is under investigation. [RF runs and stitched filter plot](measurements.md#over-the-air).
+decode, with 48 best at 14.2 dB MER. The earlier narrow-filter measurement was about
+−3 dB at ±10 MHz and −20 dB by ±14 MHz. Main restores the wide setting after CW setup
+for signals above 20 MHz occupied bandwidth; B200 captures now decode 36/40 MHz modes.
+The [RF records](../results/2026-10-20-wide-filter/README.md) identify prepared payloads and receiver limits.
 
 At QPSK 33m333 or 8PSK 26m667, `--fixture` repeats the prepared synthetic frame
 used by `dvbpace`, with the same payload copy. Payload ingress must be off.
@@ -202,8 +202,9 @@ R&D timing is motivation; this port still needs coordinator timing and RF checks
 The automatic transmit-filter selector is retained. Register readbacks do not establish
 filter flatness, radiated power or emission-mask compliance. Historical keyed records in
 [measurements.md](measurements.md) establish timing; the new RF section records decoded
-QPSK and VCM payloads, a spectrum and the measured filter limit. Decoding the 36/40 MHz
-modes, sample continuity and measured station ID remain open.
+QPSK and VCM payloads, a spectrum and the earlier narrow-filter limit. The
+[wide-filter checks](../results/2026-10-20-wide-filter/README.md) decode 36/40 MHz bursts;
+sustained wideband video remains unqualified.
 The [contained RF coordinator](../examples/over-the-air/README.md) captures the E200
 before keying and checks LeanDVB's recovered synthetic payload bytes. Its `--plan` and
 `--dry-run` paths are device-free; only an explicit `--key` permits hardware access.

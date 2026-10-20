@@ -7,10 +7,10 @@ typedef enum {
     RADIO_FILTER_AUTO, RADIO_FILTER_NARROW, RADIO_FILTER_WIDE
 } radio_filter_mode_t;
 
-/* Raw MMIO words, then BBTOP 0x67 bytes [4,5,6,7,12,13,14,15]. Low six bits
+/* Raw MMIO/PBUS readbacks, then BBTOP 0x67 bytes [4,5,6,7,12,13,14,15]. Low six bits
  * are capacitor codes. Readbacks describe configuration, never measured RF bandwidth. */
 typedef struct {
-    uint32_t analog, digital, channel, cbw, mac;
+    uint32_t analog, digital, channel, cbw, mac, pbus_4_2;
     uint8_t caps[8];
 } radio_filter_regs_t;
 

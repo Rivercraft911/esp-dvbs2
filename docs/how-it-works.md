@@ -107,8 +107,9 @@ still need an external capture.
 
 The radio starts through the vendor PHY's continuous-wave setup, stops that test tone,
 retunes the PLL, restores the intended gain and then plays bank samples. Automatic filter
-selection chooses the wide mode for wide signals and records readbacks. A register
-readback is evidence of configuration, not measured analog bandwidth.
+selection restores PBUS(4,2)=32 for wide signals and 0 for narrow signals after CW,
+then records fresh readbacks. A register readback is evidence of configuration,
+not measured analog bandwidth.
 
 ## Sign windows and 40 MHz
 
