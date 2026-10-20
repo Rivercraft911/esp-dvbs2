@@ -468,7 +468,10 @@ int main(int argc, char **argv)
             sps == 40 ? fast+420 : quads && !moon && sps == 4 ? fast+25056 :
             fast+(quads && sps == 3 ? 0 : 12420)+(mc >= 12 && !short_pulse ? 11120 : 0);
         assert(internal == expected+(sps == 40 ? 0 : CACHED_FOR(rate)*sizeof(uint32_t)));
-        assert((native_buffers[0] != NULL) == !((quads && sps == 3) || (mc >= 12 && (sps == 8 || (mc == 13 && !short_pulse)))));
+        // Eight slots fit the slow QPSK tails and short-pulse 8PSK 8/9 or
+        // 9/10 tails. All other layouts fall back to the DMA heap block.
+        const bool borrowed = mc < 12 ? sps == 8 || sps == 40 : short_pulse && mc >= 16;
+        assert((native_buffers[0] != NULL) == borrowed);
     }
     if (enc.packed && !resident) {
         assert(enc.filler == (uint8_t *)enc.ws+DVBS2_FAST_WORKSPACE_USED);
