@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import statistics
 import subprocess
 import tempfile
@@ -24,6 +25,14 @@ DEFAULT_RECEIVER = "leandvb"
 FEC_STATUS = re.compile(
     r"S2FEC modcod=(\d+) short=(\d+) pilots=(\d+) ldpc_flips=(\d+) "
     r"ldpc_checks_before=(\d+) ldpc_checks_after=(\d+) bch_errors=(-?\d+)")
+SOFT_STATUS = re.compile(
+    r"^S2SOFT modcod=(\d+) short=([01]) pilots=([01]) bch_errors=(-?\d+) "
+    r"ldpc_parity=unavailable$", re.MULTILINE)
+HELPER_STATUS = re.compile(
+    r"^S2HELPER sent=(\d+) received=(\d+) pending=(\d+) exit=(\d+)$", re.MULTILINE)
+HELPER_REQUIREMENT = (
+    "Use a compatible external receiver/helper pair for one known normal-frame MODCOD. "
+    "The stock receiver builder does not provide this mode.")
 MODCODS = {4: "QPSK 1/2", 6: "QPSK 2/3", 7: "QPSK 3/4", 11: "QPSK 9/10",
            13: "8PSK 2/3", 15: "8PSK 5/6", 17: "8PSK 9/10",
            18: "16APSK 2/3", 19: "16APSK 3/4", 20: "16APSK 4/5", 21: "16APSK 5/6",
@@ -106,8 +115,12 @@ def capture_info(path, sample_rate=None, symbol_rate=None, alpha=None):
     return path, float(sample_rate), float(symbol_rate), alpha
 
 
-def summarize(status, frames, payload, expected=None):
-    attempts = [tuple(map(int, m)) for m in FEC_STATUS.findall(status)]
+def summarize(status, frames, payload, expected=None, *, ldpc_helper=None):
+    hard = [tuple(map(int, m)) for m in FEC_STATUS.findall(status)]
+    soft = [tuple(map(int, m)) for m in SOFT_STATUS.findall(status)]
+    external = bool(ldpc_helper) or bool(soft)
+    attempts = ([(mc, short, pilots, None, None, None, bch)
+                 for mc, short, pilots, bch in soft] if external else hard)
     lock_events = [int(x) for x in re.findall(r"\bFRAMELOCK (\d+)\b", status)]
     modcods = sorted({a[0] for a in attempts if a[6] >= 0})
     report = {
@@ -122,10 +135,10 @@ def summarize(status, frames, payload, expected=None):
         "bb_frames": len(frames),
         "empty_bb_frames": sum(f["dfl_bits"] == 0 for f in frames),
         "payload_frames": sum(f["dfl_bits"] > 0 for f in frames),
-        "ldpc_bit_flips": sum(a[3] for a in attempts) if attempts else None,
-        "ldpc_checks_before": sum(a[4] for a in attempts) if attempts else None,
-        "ldpc_checks_after": sum(a[5] for a in attempts) if attempts else None,
-        "ldpc_residual_frames": sum(a[5] > 0 for a in attempts) if attempts else None,
+        "ldpc_bit_flips": sum(a[3] for a in attempts) if attempts and not external else None,
+        "ldpc_checks_before": sum(a[4] for a in attempts) if attempts and not external else None,
+        "ldpc_checks_after": sum(a[5] for a in attempts) if attempts and not external else None,
+        "ldpc_residual_frames": sum(a[5] > 0 for a in attempts) if attempts and not external else None,
         "bch_corrected_bits": sum(max(a[6], 0) for a in attempts) if attempts else None,
         "bch_failed_frames": sum(a[6] < 0 for a in attempts) if attempts else None,
         "stream": ("gcs" if frames[0]["stream_type"] == 1 else "ts") if frames else None,
@@ -145,18 +158,31 @@ def summarize(status, frames, payload, expected=None):
             "attempted_frames": len(interval),
             "bch_failed_frames": sum(a[6] < 0 for a in interval),
             "bch_corrected_bits": sum(max(a[6], 0) for a in interval),
-            "ldpc_bit_flips": sum(a[3] for a in interval),
+            "ldpc_bit_flips": sum(a[3] for a in interval) if not external else None,
             "failed_before": sum(a[6] < 0 for a in attempts[:first]),
             "failed_after": sum(a[6] < 0 for a in attempts[last + 1:]),
         }
     if not attempts:
         ldpc = [int(n) for n in re.findall(r"LDPCCORR = (-?\d+)", status)]
         bch = [int(n) for n in re.findall(r"BCHCORR = (-?\d+)", status)]
-        report.update(ldpc_bit_flips=sum(ldpc) if ldpc else None,
+        report.update(ldpc_bit_flips=sum(ldpc) if ldpc and not external else None,
                       bch_corrected_bits=sum(max(n, 0) for n in bch) if bch else None,
                       bch_failed_frames=sum(n < 0 for n in bch) if bch else None,
                       fec_frames=len(bch) if bch else None,
-                      status_complete=bool(bch) and len(ldpc) == len(bch))
+                      status_complete=not external and bool(bch) and len(ldpc) == len(bch))
+    if external:
+        drains = [tuple(map(int, m)) for m in HELPER_STATUS.findall(status)]
+        balanced = (bool(soft) and not hard and len(drains) == 1 and
+                    status.count("S2SOFT") == len(soft) and
+                    status.count("S2HELPER") == 1 and
+                    drains[0] == (len(soft), len(soft), 0, 0))
+        report.update(fec_backend="external-soft", status_complete=balanced,
+                      helper={"records": len(drains), "drained": balanced,
+                              "sent": drains[-1][0] if drains else None,
+                              "received": drains[-1][1] if drains else None,
+                              "pending": drains[-1][2] if drains else None,
+                              "exit": drains[-1][3] if drains else None},
+                      helper_requirement=HELPER_REQUIREMENT)
     # fd-bbf contains valid headers only. Count receiver-side rejection messages too.
     report["bbheader_rejected_frames"] = status.count("Bad bbframe")
     # fd-info FREQ is in Hz (LeanDVB scales its normalized estimate by Fs).
@@ -190,7 +216,45 @@ def summarize(status, frames, payload, expected=None):
     return report
 
 
-def receiver_command(executable, fs, rs, alpha, bb_fd, *, tune=0.0, rrc_rej=20):
+def ldpc_options(helper=None, modcod=None):
+    """Pure argv for plans. Only the measured one-helper mode is exposed."""
+    if helper is not None and (type(modcod) is not int or not 1 <= modcod <= 28):
+        raise ValueError("external helper requires one known normal-frame MODCOD in 1..28")
+    return (["--ldpc-helper", str(helper), "--nhelpers", "1"] if helper is not None
+            else ["--ldpc-bf", "100"])
+
+
+def resolve_ldpc_helper(helper):
+    """LeanDVB execve does not search PATH; validate before opening a source."""
+    if helper is None:
+        return None
+    found = shutil.which(str(helper))
+    if not found:
+        raise FileNotFoundError(f"LDPC helper not executable: {helper}. {HELPER_REQUIREMENT}")
+    return str(Path(found).resolve())
+
+
+def stop_decoder(process, timeout=3):
+    """Reap a decoder started in its own session and stop its helper children."""
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        pass
+    finally:
+        # The parent may have exited while a helper still owns the group.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
+
+
+def receiver_command(executable, fs, rs, alpha, bb_fd, *, tune=0.0, rrc_rej=20,
+                     ldpc_helper=None, modcod=None):
     """Shared executable argv, with a placeholder BB descriptor allowed for plans.
 
     LeanDVB searches for the next PLHEADER within +-round(sr_tol * slots), so the default
@@ -199,8 +263,11 @@ def receiver_command(executable, fs, rs, alpha, bb_fd, *, tune=0.0, rrc_rej=20):
     """
     command = [str(executable), "--standard", "DVB-S2", "--f32", "-f", str(fs),
                "--sr", str(rs), "--sampler", "rrc", "--rrc-rej", str(rrc_rej), "--fastdrift",
-               "--sr-tol", "0.0005", "--roll-off", str(alpha), "--ldpc-bf", "100",
-               "--fd-bbf", str(bb_fd), "--fd-info", "2", "-d", "-d"]
+               "--sr-tol", "0.0005", "--roll-off", str(alpha)]
+    command += ldpc_options(ldpc_helper, modcod)
+    if ldpc_helper is not None:
+        command += ["--modcods", str(1 << modcod), "--framesizes", "1"]
+    command += ["--fd-bbf", str(bb_fd), "--fd-info", "2", "-d", "-d"]
     if tune:
         command += ["--tune", str(tune)]
     return command
@@ -208,12 +275,13 @@ def receiver_command(executable, fs, rs, alpha, bb_fd, *, tune=0.0, rrc_rej=20):
 
 def decode(capture, *, sample_rate=None, symbol_rate=None, alpha=None,
            receiver=None, expected=None, output=None, log=None, tune=0.0, timeout=120,
-           rrc_rej=20, bb_output=None):
+           rrc_rej=20, bb_output=None, ldpc_helper=None, modcod=None):
     """Decode one file, returning a JSON-serializable report and recovered bytes.
 
     LDPC counts are bit flips and unsatisfied parity checks, not a measured BER.
     BCH failures drop frames. FRAMELOCK is PL synchronization, also valid for GCS;
     LeanDVB's TS-only LOCK signal is deliberately not used for GCS.
+    External helpers require one known normal-frame MODCOD; hard defaults stay unrestricted.
     """
     path, fs, rs, alpha = capture_info(capture, sample_rate, symbol_rate, alpha)
     executable = str(receiver or os.environ.get("LEANDVB", DEFAULT_RECEIVER))
@@ -221,17 +289,31 @@ def decode(capture, *, sample_rate=None, symbol_rate=None, alpha=None,
         raise FileNotFoundError(f"LeanDVB not found: {executable}; see examples/self-check/README.md")
     if not math.isfinite(tune) or timeout <= 0 or not math.isfinite(rrc_rej) or rrc_rej <= 0:
         raise ValueError("tune must be finite; timeout and RRC rejection must be positive")
+    ldpc_options(ldpc_helper, modcod)
+    helper = resolve_ldpc_helper(ldpc_helper)
     with tempfile.TemporaryFile() as bb, tempfile.TemporaryFile() as ts, \
             tempfile.TemporaryFile() as diagnostics, path.open("rb") as source:
-        command = receiver_command(executable, fs, rs, alpha, bb.fileno(), tune=tune, rrc_rej=rrc_rej)
-        result = subprocess.run(command, stdin=source, stdout=ts, stderr=diagnostics,
-                                pass_fds=(bb.fileno(),), timeout=timeout, check=False)
+        command = receiver_command(executable, fs, rs, alpha, bb.fileno(), tune=tune,
+                                   rrc_rej=rrc_rej, ldpc_helper=helper, modcod=modcod)
+        if helper is None:
+            returncode = subprocess.run(command, stdin=source, stdout=ts, stderr=diagnostics,
+                                        pass_fds=(bb.fileno(),), timeout=timeout, check=False).returncode
+        else:
+            process = subprocess.Popen(command, stdin=source, stdout=ts, stderr=diagnostics,
+                                       pass_fds=(bb.fileno(),), start_new_session=True)
+            try:
+                returncode = process.wait(timeout=timeout)
+            finally:
+                stop_decoder(process)
+                if log:
+                    diagnostics.seek(0)
+                    Path(log).write_text(diagnostics.read().decode("utf-8", errors="replace"))
         diagnostics.seek(0)
         status = diagnostics.read().decode("utf-8", errors="replace")
         if log:
             Path(log).write_text(status)
-        if result.returncode:
-            raise RuntimeError(f"LeanDVB exited {result.returncode}: {status[-2000:]}")
+        if returncode:
+            raise RuntimeError(f"LeanDVB exited {returncode}: {status[-2000:]}")
         bb.seek(0)
         raw_bb = bb.read()
         frames = parse_bbframes(raw_bb)
@@ -246,9 +328,13 @@ def decode(capture, *, sample_rate=None, symbol_rate=None, alpha=None,
                 raise ValueError("receiver emitted an invalid TS packet stream")
         else:
             payload = b"".join(f["payload"] for f in frames)
-    report = summarize(status, frames, payload, expected)
+    report = summarize(status, frames, payload, expected, ldpc_helper=helper)
     report.update({"sample_rate": fs, "symbol_rate": rs, "rolloff": alpha,
                    "rrc_rej_db": rrc_rej, "command": command})
+    if helper is not None:
+        report.update(ldpc_helper=helper, nhelpers=1,
+                      ldpc_helper_sha256=hashlib.sha256(Path(helper).read_bytes()).hexdigest(),
+                      receiver_sha256=hashlib.sha256(Path(shutil.which(executable)).read_bytes()).hexdigest())
     if output:
         Path(output).write_bytes(payload)
     return report, payload
@@ -469,7 +555,8 @@ def main():
     p.add_argument("--rolloff", type=float, choices=(.20, .35), default=.35)
     p.add_argument("--scale", type=float, default=512, help="int16 full scale, board=512")
     p.add_argument("--format", choices=("i16", "s16", "cf32", "f32"), default="i16")
-    p.add_argument("--modcod", type=int, default=4)
+    p.add_argument("--modcod", type=int, default=4,
+                   help="known normal-frame MODCOD for external helper (default 4)")
     p.add_argument("--stream", type=int, required=True, help="dump duration in nominal data-frame lengths")
     p.add_argument("--pattern", type=lambda value: tuple(map(int, value.split(","))), help="VCM MODCOD pattern")
     p.add_argument("--hold", type=int, default=1, help="VCM frames per pattern entry")
@@ -477,11 +564,14 @@ def main():
                    help="known dummy schedule: comma-separated data-frame indices, repeated for pairs")
     p.add_argument("--callsign", default="N0CALL", help="callsign in the dumped payload")
     p.add_argument("--receiver", type=Path, help="leandvb executable, or set LEANDVB")
+    p.add_argument("--ldpc-helper", type=Path, help=HELPER_REQUIREMENT)
     p.add_argument("--log", type=Path)
     p.add_argument("--output", type=Path, help="save recovered bytes")
     a = p.parse_args()
     a.format = {"s16": "i16", "f32": "cf32"}.get(a.format, a.format)
     try:
+        if a.ldpc_helper is not None and a.pattern:
+            raise ValueError("external helper mode requires --modcod, without --pattern")
         import numpy as np
         if a.pattern and (not 1 <= len(a.pattern) <= 16 or any(mc not in range(4, 18) for mc in a.pattern)
                           or not 1 <= a.hold <= 65535 or a.stream < 1 or a.dummy_before):
@@ -499,6 +589,7 @@ def main():
                 np.r_[raw[:, 0] + 1j*raw[:, 1], np.zeros(4096)].astype("<c8").tofile(source)
             report, got = decode(source, sample_rate=a.rate, symbol_rate=a.symbol_rate,
                                  alpha=a.rolloff, receiver=a.receiver, output=a.output, log=a.log,
+                                 ldpc_helper=a.ldpc_helper, modcod=a.modcod,
                                  **({"bb_output": Path(tmp) / "frames.bbf"} if a.pattern else {}))
             if a.pattern:
                 frames = parse_bbframes((Path(tmp) / "frames.bbf").read_bytes())

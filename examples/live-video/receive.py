@@ -5,6 +5,7 @@ No device discovery is performed for --iq, --help or --plan.
 """
 import argparse
 import contextlib
+import hashlib
 import json
 import math
 import os
@@ -15,6 +16,11 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "host"))
+from decode import (HELPER_REQUIREMENT, ldpc_options, resolve_ldpc_helper,
+                    stop_decoder, summarize)
 
 
 def commands(a, fifo="IQ_FIFO"):
@@ -25,7 +31,8 @@ def commands(a, fifo="IQ_FIFO"):
           "--roll-off", str(a.rolloff), "--sampler", "rrc", "--rrc-rej", "20",
           "--modcods", str(1 << a.modcod), "--framesizes", "1",
           # Wider header search keeps lock through dummy-frame runs (see host/decode.py).
-          "--ldpc-bf", "100", "--fastdrift", "--sr-tol", "0.0005", "--fd-info", "2", "-v"]
+          *ldpc_options(getattr(a, "ldpc_helper", None), a.modcod),
+          "--fastdrift", "--sr-tol", "0.0005", "--fd-info", "2", "-v"]
     source = None
     if live_iio:
         source = [a.iio_python, str(Path(__file__).with_name("iio_stream.py")),
@@ -60,12 +67,23 @@ def run(a):
     # A FIFO keeps source startup/status stdout separate from binary IQ.
     # In particular, piping uhd_rx_cfile /dev/stdout would corrupt the samples.
     source = decoder = player = None
+    helper = resolve_ldpc_helper(getattr(a, "ldpc_helper", None))
+    helper_info = None
+    reader = None
+    reader_errors = []
     with tempfile.TemporaryDirectory(prefix="live-video-") as tmp, contextlib.ExitStack() as stack:
         fifo = str(Path(tmp) / "samples.s16")
         source_cmd, rx_cmd = commands(a, fifo)
+        if helper is not None:
+            rx_cmd[rx_cmd.index("--ldpc-helper") + 1] = helper
+            diagnostics = stack.enter_context(tempfile.TemporaryFile())
         for cmd in (source_cmd, rx_cmd, shlex.split(a.player) if a.player else None):
             if cmd and not shutil.which(cmd[0]):
                 raise ValueError(f"executable not found: {cmd[0]}")
+        if helper:
+            helper_info = dict(ldpc_helper=helper, nhelpers=1,
+                ldpc_helper_sha256=hashlib.sha256(Path(helper).read_bytes()).hexdigest(),
+                receiver_sha256=hashlib.sha256(Path(shutil.which(rx_cmd[0])).read_bytes()).hexdigest())
         output = (sys.stdout.buffer if a.output == "-" else
                   stack.enter_context(open(a.output, "xb")))
         try:
@@ -90,7 +108,20 @@ def run(a):
             else:
                 iq = (sys.stdin.buffer if a.iq == "-" else
                       stack.enter_context(open(a.iq, "rb")))
-            decoder = subprocess.Popen(rx_cmd, stdin=iq, stdout=subprocess.PIPE, stderr=sys.stderr)
+            decoder = subprocess.Popen(rx_cmd, stdin=iq, stdout=subprocess.PIPE,
+                                       stderr=subprocess.PIPE if helper else sys.stderr,
+                                       start_new_session=bool(helper))
+            if helper:
+                def relay_status():
+                    try:
+                        while data := os.read(decoder.stderr.fileno(), 4096):
+                            diagnostics.write(data)
+                            sys.stderr.write(data.decode("utf-8", errors="replace"))
+                            sys.stderr.flush()
+                    except Exception as exc:
+                        reader_errors.append(exc)
+                reader = threading.Thread(target=relay_status, daemon=True)
+                reader.start()
             count = 0
             while data := decoder.stdout.read(188 * 256):
                 output.write(data)
@@ -102,14 +133,41 @@ def run(a):
             if player:
                 player.stdin.close()
             codes = {"LeanDVB": decoder.wait()}
+            fec = None
+            if helper:
+                # EOF must stop every helper, including one left by an exited parent.
+                stop_decoder(decoder)
+                reader.join(timeout=5)
+                if reader.is_alive() or reader_errors:
+                    raise RuntimeError(f"decoder diagnostics did not finish: {reader_errors}")
+                diagnostics.seek(0)
+                report = summarize(diagnostics.read().decode("utf-8", errors="replace"),
+                                   [], b"", ldpc_helper=helper)
+                fec = {key: report[key] for key in (
+                    "fec_backend", "status_complete", "helper", "fec_frames",
+                    "ldpc_bit_flips", "ldpc_checks_before", "ldpc_checks_after",
+                    "ldpc_residual_frames", "bch_corrected_bits", "bch_failed_frames",
+                    "payload_fec")}
+                if not report["status_complete"]:
+                    raise RuntimeError(f"incomplete external helper diagnostics: {fec}. {HELPER_REQUIREMENT}")
             if source:
                 codes["libiio" if a.backend == "libiio" else "UHD"] = source.wait(timeout=15)
             if player:
                 codes["player"] = player.wait(timeout=10)
             if any(codes.values()) or count == 0 or count % 188:
                 raise RuntimeError(f"receive failed: exits={codes}, TS bytes={count}")
-            print(json.dumps({"ts_bytes": count, "exits": codes}), file=sys.stderr)
+            result = {"ts_bytes": count, "exits": codes}
+            if fec is not None:
+                result["fec"] = fec
+                result.update(helper_info)
+            print(json.dumps(result), file=sys.stderr)
         finally:
+            if helper and decoder:
+                stop_decoder(decoder)
+                if reader:
+                    reader.join(timeout=5)
+                if decoder.stderr:
+                    decoder.stderr.close()
             for process in (source, decoder, player):
                 # IIO timeout + cancellation/join + final inhibit readbacks.
                 stop(process, timeout=15 if process is source and a.backend == "libiio" else 5)
@@ -130,6 +188,7 @@ def parser():
     p.add_argument("--ready", type=Path, help="libiio readiness JSON, after one second of IQ reaches the decoder")
     p.add_argument("--stop-file", type=Path, help="libiio orderly stop when this path appears")
     p.add_argument("--receiver", default=os.environ.get("RX", "leandvb"))
+    p.add_argument("--ldpc-helper", type=Path, help=HELPER_REQUIREMENT)
     p.add_argument("--uhd-rx-cfile", default="uhd_rx_cfile")
     p.add_argument("--freq", type=float, help="receive center frequency in Hz; required for hardware")
     p.add_argument("--gain", type=float, default=0, help="manual receive gain in dB (default 0)")
