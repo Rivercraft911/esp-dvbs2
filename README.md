@@ -19,6 +19,14 @@ One ESP32-S3, one B200 capture at 2420 MHz through 40 dB of coax attenuation.
 The receiver recovered 40 exact frames from this 41.94 ms recording, using a prepared,
 repeated payload. [Capture and plotting details](results/2026-10-21-rf-figures/README.md).
 
+## Receiver work
+
+An S3 can now receive QPSK 1/2 at 1 Msym/s from another S3: about **0.97 Mb/s** of payload.
+The prototype captures first, then decodes on the chip. It recovered two exact packets at
+each of 2110, 2245 and 2420 MHz through coax and 30 dB attenuation.
+Continuous on-chip decoding near 1 Mb/s is the next goal.
+[Receiver chain](docs/how-it-works.md#receiver-work), [measurements](docs/measurements.md#receiver-experiments).
+
 ## Live video
 
 ```

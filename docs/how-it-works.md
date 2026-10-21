@@ -147,7 +147,9 @@ valid through 32-bit counter wrap.
 
 Firmware e96795b met the 15% reserve on both cores in one 30 s keyed run: encoder mean
 198,879 of 239,630 cycles/frame, maximum fill 39,548 of 47,220 cycles/bank.
-Live input and RF decode at this rate remain unmeasured. [Evidence](measurements.md#40-mhz).
+With the later wide-filter fix, a single B200 capture recovered 40 exact frames at this rate
+from a prepared, repeated payload. Sustained external input at this rate remains unqualified.
+[Timing](measurements.md#40-mhz), [RF capture](../results/2026-10-20-wide-filter/README.md).
 
 ## 8PSK at 36 MHz
 
@@ -212,7 +214,38 @@ is skipped. Startup and steady dummies are counted separately.
 The [self-check](../examples/self-check/README.md) checks a golden dump and all
 three paced code rates. Profiling adds bounded work and can insert steady dummies;
 those paces do not establish the full-rate keyed result. Digital dumps decode
-bit-exact; live input throughput and RF reception at this rate remain unmeasured.
+bit-exact. Single B200 captures now recover exact prepared payloads at all three code rates;
+live input throughput at this rate remains unqualified.
+[RF records](../results/2026-10-20-wide-filter/README.md).
+
+## Receiver work
+
+The experimental receiver uses the S3's own radio to collect I/Q samples at 16 MS/s.
+Two fixed-point halfband filters reduce that to 4 MS/s. It then searches for a QPSK 1/2
+header, filters the selected symbol phase, estimates carrier rotation from the header and
+pilots, and produces soft bits for LDPC correction. BCH and baseband-header checks validate
+the recovered payload.
+
+```
+radio -> I/Q banks -> pack + 16-to-4 MS/s filter -> header search -> matched filter
+      -> carrier/phase estimate -> soft bits -> LDPC -> BCH/header checks -> payload
+```
+
+The current decoder expects MODCOD 4, normal frames and pilots. It finds the first header
+position without being given its location, then searches a small predicted window for the
+next frame. Carrier estimation uses later pilots in the frame; continuous timing and carrier
+tracking still need work. The full decoder remains a prototype outside main; the research
+branch contains the [capture firmware](https://github.com/Rivercraft911/esp-dvbs2/tree/exp/s3-receive/firmware/rx).
+
+A frame carries 4,016 payload bytes in 33,282 symbols. At 1 Msym/s that is a 33.282 ms
+interval and about 965 kb/s of payload. Native tests recovered two exact packets after each
+400 ms capture at 2110, 2245 and 2420 MHz. A separate quiet collector and selected-phase
+matched filter ran together for 31.46 seconds without overruns.
+
+The latest PIE matched filter cut its two-frame stage from 189.503 to 66.582 ms on the
+same saved record. The whole decode still took 1.924 seconds, so continuous payload recovery
+needs substantial improvements to acquisition, carrier processing, FEC and scheduling.
+[Native records and limits](measurements.md#receiver-experiments).
 
 ## Rates
 

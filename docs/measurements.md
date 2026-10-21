@@ -91,6 +91,39 @@ their soft receiver remains a separate offline prototype. Sustained wideband vid
 remains unqualified. The [run summary](measurements/2026-10-19-wide-rf.json)
 pins the retained captures and reports; it does not include raw RF or the receiver prototype.
 
+## Receiver experiments
+
+These use an experimental on-chip decoder outside main. One S3 transmitted QPSK 1/2,
+normal frames with pilots, at 1 Msym/s through 30 dB attenuation into another S3.
+The receiving S3 collected 400 ms, stopped collection, then decoded its first two packets.
+All 8,032 payload bytes per case matched an independent source model.
+
+| Carrier | RX gain setting | Exact packets | Source frame numbers |
+|---|---:|---:|---|
+| 2110 MHz | 48 | 2 | 90, 91 |
+| 2245 MHz | 36 | 2 | 90, 91 |
+| 2420 MHz | 24 | 2 | 91, 92 |
+
+The [compact native records](measurements/2026-10-21-receiver.json) include those results,
+the following controls and hashes of the original reports. These are sampled frequency
+checks; they do not establish continuous reception across a band.
+
+A separate receive-only quiet run passed **31.46 seconds** of collection plus selected-phase
+matched filtering: 503,316,487 native pairs became 31,457,263 matched pairs, with no gaps or
+overruns in a bounded 471,040-byte ring. Independent integer checks match retained prefixes.
+That pipeline does not yet include header acquisition, carrier recovery or FEC.
+
+For a saved-record comparison, the PIE matched filter reduced its two-frame stage from
+**189.503 to 66.582 ms**, a 2.85 times speedup. All 266,256 filtered Q6 bytes, 129,600 soft-bit
+bytes and 8,032 payload bytes match. Whole-worker elapsed time fell from 2.072 to **1.924 s**,
+a 7.15% reduction. This decodes two packets, not the whole 400 ms recording.
+
+The second frame's search, filter, carrier and FEC stages still take 160.853 ms against a
+33.282 ms frame interval. These are elapsed measurements including preemption and diagnostic
+copies/scans, with no concurrent ADC collection. They are neither isolated CPU service times
+nor evidence of a continuous receiver. QPSK 1/2 at this symbol rate carries about 965 kb/s;
+strictly exceeding 1 Mb/s will also require qualifying a higher rate or MODCOD.
+
 ## What it can do
 
 These are the README's capability modes and timing records. Values are rounded;
