@@ -13,7 +13,11 @@ It started with the goal of live video, 8PSK 2/3 at 5 Msym/s, 9.68 Mb/s. Then it
 the same $5 chip now pushes **58.2 Mb/s in 40 MHz**, the widest channel its Wi-Fi radio was
 ever built for. Read [How it got here](docs/story.md) to learn about the tumultuous journey.
 
-![QPSK 3/4 at 5 Msym/s, captured over RF at 2420 MHz by an ANTSDR E200](docs/measurements/qpsk34-5m-spectrum.png)
+![40 MHz QPSK spectrum and waterfall captured by a B200](docs/img/rf-40mhz.png)
+
+One ESP32-S3, one B200 capture at 2420 MHz through 40 dB of coax attenuation.
+The receiver recovered 40 exact frames from this 41.94 ms recording, using a prepared,
+repeated payload. [Capture and plotting details](results/2026-10-21-rf-figures/README.md).
 
 ## Live video
 
@@ -22,10 +26,10 @@ CM5 + cameras --SPI--> ESP32-S3 --DVB-S2 RF--> SDR --IQ--> LeanDVB --TS--> playe
 ```
 
 The [live-video example](examples/live-video/README.md) uses **8PSK 2/3 at 5 Msym/s**:
-9.68 Mb/s TS capacity in 6.75 MHz. A CM5 camera source sent a 9 Mb/s mux over
-16 MHz SPI; a B200 recovered both video streams through 40 dB of coax attenuation,
-with no TS continuity gaps in a 111 s interval. The [run records](results/2026-10-19-live-rf/README.md)
-cover link recovery; display smoothness and range still need testing.
+9.68 Mb/s TS capacity in 6.75 MHz. A CM5 sends two camera streams in a 9 Mb/s mux
+over 16 MHz SPI. A B200 recovered both through 40 dB of coax attenuation, with no
+TS continuity gaps in a 111 s interval. The [run records](results/2026-10-19-live-rf/README.md)
+include the recovery tests. The player can still pause when the source or station ID restarts.
 Finite 2.4 Mb/s H.264 files also passed USB → S3 → E200 → LeanDVB and played
 on the laptop. Use the [Linux SPI sender](examples/pi-sender/README.md) for a live 9 Mb/s mux.
 
@@ -52,24 +56,26 @@ real time with the DAC output going nowhere.
 | 8PSK 2/3 | 5 Msym/s | 6.75 MHz | 9.68 Mb/s | keyed | [decoded (mixed VCM)](docs/vcm.md) |
 | QPSK 1/2 | 1 Msym/s | 1.35 MHz | 0.97 Mb/s | keyed | decoded |
 
-Roll-off is 0.35 unless noted. Data rates follow from the DVB-S2 normal frame with pilots and
-exclude station-ID time. Every mode's samples decode bit-exact in LeanDVB, an independent
-receiver. QPSK at 1, 5, 10 and 20 Msym/s and mixed QPSK/8PSK VCM at 5 Msym/s now decode
-byte-exact against the host model over the air into a receive-only ANTSDR E200, running
-Pluto firmware, inside a closed Faraday box at 2420 MHz ([runs](docs/measurements.md#over-the-air)).
-Main now restores the wide filter after test-tone setup. Single-capture B200 checks
-through 40 dB attenuation decoded the remaining eight table modes, including 36/40 MHz.
-The four fastest modes used prepared, repeated payloads; the other four used changing
-payloads. Each capture covers 41.94 ms. QPSK at 26.67 Msym/s now uses a third frame
-buffer: three 20 s runs had zero underruns, with 32/31/32 exact packets in the sampled RF.
-[RF records](results/2026-10-20-wide-filter/README.md), [startup fix](results/2026-10-20-qpsk-startup/README.md).
+Roll-off is 0.35 unless noted. Rates use normal frames with pilots and exclude station-ID time.
+Every row has exact RF payload recovery in LeanDVB, an independent receiver. The four fastest
+modes used prepared, repeated payloads; the remaining modes include changing-payload tests.
+The E200 checks used a closed Faraday box; the wider B200 checks used coax and 40 dB attenuation.
+[RF records](docs/measurements.md#over-the-air).
+
+The wide modes needed a fix to restore the radio's filter after test-tone setup.
+QPSK at 26.67 Msym/s also needed a third frame buffer: three 20 s runs then had zero underruns,
+with 32/31/32 exact packets in the sampled RF. [Wide filter](results/2026-10-20-wide-filter/README.md),
+[startup fix](results/2026-10-20-qpsk-startup/README.md).
 \*The 30 s keyed timing used an earlier, longer pulse; the current pulse decoded in these 20 s RF tests.
 Margins, raw records and limits: [measurements](docs/measurements.md). With a prepared payload,
 30 s keyed tests of the 40 MHz mode left **37% mean encoder headroom and 16% bank-fill headroom**.
 At 36 MHz, keyed 8PSK 9/10 meets the 15% reserve on both cores; 2/3 and 5/6
 run at full rate with 14% and 12% mean encoder spare.
 
-![Calculated payload rates from selected historical keyed records](docs/img/payload.png)
+![36 MHz 8PSK spectrum and waterfall captured by a B200](docs/img/rf-36mhz.png)
+
+8PSK 9/10 at 26.67 Msym/s: 69.8 Mb/s during data, with 47 exact frames recovered
+from this capture. This also used a prepared, repeated payload.
 
 ## Quick start
 

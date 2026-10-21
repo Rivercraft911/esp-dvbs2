@@ -10,6 +10,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install numpy scipy matplotlib
+      - run: python host/plots.py --rf-only --check
       - run: python tests/test_dvbs2.py
       - run: python tests/test_dvbs2_8psk.py
       - run: python tests/test_dvbs2_c.py
