@@ -10,6 +10,13 @@
 #define RADIO_S3_DAC_RATE 40000000U      /* DAC_CTRL bit 15 clear; keyed on air */
 #define RADIO_S3_DAC_RATE_80M 80000000U  /* bit 15 set; keyed at 20 and 80/3 Msym/s */
 #define RADIO_S3_BANK_WORDS 16380U
+/* Conducted research range. Command admission is not evidence of RF lock. */
+#define RADIO_S3_FREQ_MIN_MHZ 2000U
+#define RADIO_S3_FREQ_MAX_MHZ 2450U
+
+/* Research selector, default direct/zero offset. Omitting the optional signed
+ * kHz offset resets it to zero. Changes only between synchronous runs. */
+void radio_s3_lo_command(const char *args);
 
 /* Bank geometry (docs/how-it-works.md). Bank k plays samples [k*STEP, (k+1)*STEP) and also
  * holds LEAD samples before and TAIL after them, so a switch up to LEAD samples early or TAIL
@@ -117,10 +124,17 @@ typedef struct {
     int64_t wifi_stop_at_us, wifi_deinit_at_us;
     radio_s3_session_stats_t session, after; /* opt-in handoff / cleanup */
     radio_calibration_stats_t calibration; /* per attempt, including admission failures */
+    uint32_t requested_rf_khz, requested_pll_khz; /* requests, not RF readbacks */
+    int32_t lo_offset_khz;
+    bool lo_divided;
 } radio_s3_stats_t;
 
+/* Append requested tuning to an open keyed-run JSON record. No PHY access. */
+void radio_s3_tuning_print(const radio_s3_stats_t *stats);
+
 /* Synchronous, exclusive run on core 1, 240 MHz. Valid requests are integer MHz
- * 2390..2450, seconds 1..540 (PHY-solo: 1..60), gain 0..17 (vendor ladder, weakest first). Gain is
+ * 2000..2450; actual RF including the optional offset must remain in that range.
+ * Seconds 1..540 (PHY-solo: 1..60), gain 0..17 (vendor ladder, weakest first). Gain is
  * uncalibrated, not dBm. The component owns Wi-Fi for the session; it must not
  * coexist with another Wi-Fi/BT user. Every return after startup stops the DAC,
  * returns both banks to the CPU, unkeys TX, and stops/deinitializes Wi-Fi.

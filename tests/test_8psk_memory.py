@@ -24,6 +24,8 @@ def check(out):
 #include "dvbtx.h"
 #define RADIO_S3_DAC_RATE 40000000u
 #define RADIO_S3_DAC_RATE_80M 80000000u
+#define RADIO_S3_FREQ_MIN_MHZ 2000u
+#define RADIO_S3_FREQ_MAX_MHZ 2450u
 #define RADIO_S3_GAIN_DEFAULT 0
 #define RADIO_S3_GAIN_MAX 17
 #define RADIO_S3_MAX_SECONDS 540u

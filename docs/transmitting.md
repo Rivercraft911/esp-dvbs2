@@ -7,8 +7,9 @@ with both devices inside, or coax through at least 30 dB attenuation into the re
 Antennas are allowed only inside the closed box. A shielded box is not proof of zero
 leakage. Never run this check with an exposed antenna or an unattenuated receiver path.
 
-The console accepts integer center frequencies 2390..2450 MHz. That range is a hardware
-limit, not authorization. Check your jurisdiction's band allocation, licence privileges
+The console accepts integer center frequencies 2000..2450 MHz for conducted research.
+Reception has been checked at selected frequencies in that range; lock, power and signal
+quality across the full range remain uncharacterized. Check your jurisdiction's band allocation, licence privileges
 and permitted emissions. The full occupied bandwidth, plus the station-ID tone, must fit
 inside your authorized band. Gain 0..17 is an uncalibrated vendor index, not dBm.
 In the US, consult [47 CFR §97.301](https://www.ecfr.gov/current/title-47/chapter-I/subchapter-D/part-97/subpart-D/section-97.301)
@@ -61,6 +62,15 @@ omit `flash`.
 ## Console
 
 `host/board.py` sends one command and prints the JSON results. `--save` writes sample dumps.
+
+`rflo direct` is the default tuning path. Conducted tests at lower frequencies can also
+select `rflo five-sixths`, which asks the PLL for six-fifths of the requested RF frequency
+and enables the radio's five-sixths divider. Either command accepts an optional signed
+offset in kHz, from −999 to 999; omitting it resets the offset to zero. The resulting
+RF request must stay within 2000..2450 MHz. Use `rfprofile off` with the divider or a
+nonzero offset: the stored calibration profile only supports direct tuning without an offset.
+Run records report `requested_rf_khz` and `requested_pll_khz`; measure the actual signal
+with a receiver. Tuning selections last until changed or the board restarts.
 
 | Command | Purpose |
 |---|---|
