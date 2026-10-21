@@ -21,8 +21,7 @@ def main():
     actual = subprocess.check_output(["git", "-C", str(path), "rev-parse", "HEAD"], text=True).strip()
     if actual != REVISION:
         p.error(f"receiver must be at {REVISION}; use a new directory to preserve existing work")
-    # Independent portability edits to the external receiver only. No receiver
-    # source is linked, imported, or distributed as part of esp-dvbs2.
+    # Apply portability fixes in the local receiver checkout.
     changes = {
         "src/leansdr/sdr.h": [("exp10f(-mer/20)", "powf(10.0f, -mer/20)")],
         "src/leansdr/bch.h": [("TGF C[NN]={1,}, B[NN]={1,};",

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regenerate the five documentation figures from recorded runs; no board access."""
+"""Regenerate documentation figures from recorded runs; no board access."""
 import argparse
 from fractions import Fraction
 import hashlib
@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 import statistics
 import subprocess
+
+import numpy as np
 
 from plotstyle import BLUE, DARK, GREEN, INK, MID, RED, WIDTH, lollipop, plt, save_figure
 
@@ -194,11 +196,95 @@ def fill_history(table, out):
                 'First stream, failed attempt and overlap/cache row: radio off; all others: keyed. Firmware differs.')
 
 
+def rf_figures(out, *, iq_dir=None, check=False):
+    """Plot compact power summaries of the original, single-capture B200 records."""
+    folder = ROOT / 'results/2026-10-21-rf-figures'
+    records = [json.loads(s) for s in (folder/'runs.jsonl').read_text().splitlines()]
+    for row in records:
+        source = [json.loads(s) for s in (ROOT/row['source_runs']).read_text().splitlines()]
+        original = next(r for r in source if r.get('id') == row['source_record'])
+        assert original['capture']['sha256'] == row['source_iq_sha256']
+        assert source[0]['native_rate_hz'] == row['sample_rate_hz']
+        assert source[0]['native_samples'] == row['samples']
+        assert row['seconds'] == row['samples']/row['sample_rate_hz']
+        assert (row['fft'], row['time_average'], row['frequency_average']) == (4096, 2, 4)
+        assert original['modcod'] == row['modcod']
+        assert original['firmware'] == row['firmware']
+        assert original['source'] == 'prepared_repeated' and row['payload'] == 'prepared, repeated'
+        assert original['nominal_bandwidth_hz'] == row['bandwidth_mhz']*1e6
+        receiver = next(r for r in original['receivers'] if r['name'] == 'stock')
+        assert receiver['strict_receiver_pass'] and receiver['decoded_frames'] == row['exact_frames']
+        path = folder/row['file']
+        if iq_dir is not None:
+            raw = (iq_dir/row['id']/'capture.cf32').read_bytes()
+            assert hashlib.sha256(raw).hexdigest() == row['source_iq_sha256']
+            samples = np.frombuffer(raw, dtype='<c8').reshape(-1, row['fft'])
+            window = np.hanning(row['fft'])
+            power = np.abs(np.fft.fftshift(np.fft.fft(samples*window, axis=1), axes=1))**2
+            power /= row['sample_rate_hz'] * np.sum(window**2)
+            power = power.reshape(256, 2, 1024, 4).mean(axis=(1, 3))
+            freq = np.fft.fftshift(np.fft.fftfreq(row['fft'], 1/row['sample_rate_hz']))
+            freq = freq.reshape(1024, 4).mean(axis=1)
+            np.savez_compressed(path, frequency_hz=freq.astype('<f4'),
+                                psd=power.mean(axis=0).astype('<f4'),
+                                waterfall=power.astype('<f4'))
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == row['sha256'], path
+        with np.load(path) as data:
+            frequency = data['frequency_hz']/1e6 + row['center_mhz']
+            psd = 10*np.log10(data['psd'])
+            waterfall = 10*np.log10(data['waterfall'])
+        assert waterfall.shape == (256, 1024) and np.isfinite(waterfall).all()
+        if check:
+            continue
+        style = {'font.family': 'DejaVu Sans', 'text.color': '#dce5ee',
+                 'axes.labelcolor': '#a1b0c2', 'axes.edgecolor': '#40516a',
+                 'xtick.color': '#a1b0c2', 'ytick.color': '#a1b0c2',
+                 'figure.facecolor': '#080e19', 'axes.facecolor': '#080e19',
+                 'xtick.top': False, 'ytick.right': False, 'xtick.direction': 'out',
+                 'ytick.direction': 'out', 'savefig.facecolor': '#080e19'}
+        with plt.rc_context(style):
+            fig, (ax, bx) = plt.subplots(2, 1, figsize=(11, 6.6), sharex=True,
+                                        gridspec_kw={'height_ratios': [1.25, 1]})
+            mode = 'QPSK 9/10' if row['modcod'] == 11 else '8PSK 9/10'
+            fig.text(.085, .94, f"{row['bandwidth_mhz']:g} MHz", fontsize=25)
+            fig.text(.085, .893, f"{mode}  /  {row['symbol_rate_hz']/1e6:.2f} Msym/s  /  "
+                     f"{row['payload_mbps']:g} Mb/s", fontsize=11, color='#a1b0c2')
+            fig.text(.965, .94, 'esp-dvbs2', ha='right', fontsize=12, color='#a1b0c2')
+            ax.plot(frequency, psd, color='#50deef', linewidth=1)
+            ax.fill_between(frequency, -135, psd, color='#50deef', alpha=.08)
+            ax.set(ylim=(-135, -80), ylabel='PSD (dBFS/Hz)')
+            ax.set_yticks([-130, -110, -90])
+            ax.grid(alpha=.18)
+            span = row['sample_rate_hz']/2e6
+            bx.imshow(waterfall, origin='lower', aspect='auto',
+                              extent=(row['center_mhz']-span, row['center_mhz']+span,
+                                      0, row['seconds']*1000),
+                              cmap='magma', vmin=-130, vmax=-85, interpolation='nearest')
+            bx.set(xlabel='Frequency (MHz)', ylabel='Time (ms)',
+                   xlim=(row['center_mhz']-span, row['center_mhz']+span))
+            bx.set_yticks([0, 10, 20, 30, 40])
+            for axis in (ax, bx):
+                axis.spines[['top', 'right']].set_visible(False)
+                axis.ticklabel_format(axis='x', style='plain', useOffset=False)
+            fig.subplots_adjust(left=.085, right=.965, top=.85, bottom=.095, hspace=.1)
+            out.mkdir(parents=True, exist_ok=True)
+            target = out/('rf-40mhz.png' if row['modcod'] == 11 else 'rf-36mhz.png')
+            fig.savefig(target, dpi=170, bbox_inches=None,
+                        metadata={'Software': 'esp-dvbs2 / Matplotlib'})
+            plt.close(fig)
+            print(target)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--out', type=Path, default=ROOT/'docs/img')
     parser.add_argument('--check', action='store_true', help='validate all point provenance without drawing')
+    parser.add_argument('--rf-only', action='store_true', help='only the 36/40 MHz RF figures')
+    parser.add_argument('--rf-iq-dir', type=Path, help='rebuild RF summaries from original capture folders')
     args = parser.parse_args()
+    rf_figures(args.out, iq_dir=args.rf_iq_dir, check=args.check)
+    if args.rf_only:
+        return
     table = load_points()
     if args.check:
         print(f"Verified {len(table['points'])} points against exact source lines and file hashes.")

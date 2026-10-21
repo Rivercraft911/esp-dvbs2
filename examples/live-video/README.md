@@ -130,3 +130,16 @@ For saved S3 IQ, pass `--format i16` and the dump's actual sample rate, symbol
 rate and MODCOD. Synthetic GCS dumps contain no TS. `--help` and `--plan` open
 no devices. Host checks: `python3 tests/test_live_video.py` and
 `python3 tests/test_live_iio.py` (add `--receiver "$RX"` for model decode tests).
+
+For optional external soft LDPC, supply a compatible, separately installed receiver/helper
+pair and the known `--modcod`. Only normal frames and one helper are used; the stock
+builder does not provide this pair. For example, this saved-IQ plan opens no devices:
+
+```sh
+python3 examples/live-video/receive.py --iq dump.cf32 --rate 50e6 --symbol-rate 20e6 \
+  --modcod 13 --receiver "$SOFT_RX" --ldpc-helper "$LDPC_HELPER" --plan
+```
+
+Remove `--plan` to receive. The final report includes BCH results and balanced helper
+EOF status; unavailable LDPC correction/parity counts stay `null`. TS continuity still
+needs the packet checks above. Default reception keeps `--ldpc-bf 100`.

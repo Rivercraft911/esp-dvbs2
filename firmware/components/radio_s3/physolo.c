@@ -1,5 +1,5 @@
-// Independent PHY lifetime handoff, checked against installed ESP-IDF v6.1
-// phy_init.c / phy_common.c. No BT controller.
+// Keep the PHY active after Wi-Fi stops, without starting a Bluetooth controller.
+// Based on ESP-IDF v6.1 phy_init.c and phy_common.c.
 #include "physolo.h"
 
 #include "esp_cpu.h"

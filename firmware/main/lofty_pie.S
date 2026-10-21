@@ -70,9 +70,9 @@
     .type lofty_render_pages_pie,@function
     .align 4
 #if !LOFTY_FUSED
-    // Preserve 7391f86's fetch position without raising .iram0.text alignment.
+    // Preserve the qualified fetch position without raising IRAM alignment.
     // The linker assertion below the stream mappings guards this placement.
-    .space 4
+    .space 8
 #endif
 lofty_render_pages_pie:
     entry a1,32

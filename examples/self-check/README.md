@@ -43,6 +43,21 @@ receiver's extra syndrome counts when present. Missing syndrome counts stay `nul
 never zero; the normal gate requires zero decoder flips, zero BCH corrections/failures
 and an exact payload. [LeanDVB manual](https://www.pabr.org/radio/leandvb/leandvb.en.html).
 
+`host/decode.py` and the [live receiver](../live-video/README.md#uhd-or-saved-iq)
+also accept `--ldpc-helper PATH` with a compatible, separately installed receiver/helper
+pair. This mode requires one known `--modcod` and normal frames, uses one helper,
+and refuses `--pattern`. The stock builder above does not provide that pair.
+Soft reports retain BCH results and leave unavailable LDPC flip/parity counts `null`.
+They require balanced `S2HELPER` EOF diagnostics and per-attempt `S2SOFT` records.
+The clean self-check above keeps its original hard-decoder requirements.
+
+For a synthetic 16-frame dump, with rates matching the dump:
+
+```sh
+python3 host/decode.py dump.iq --rate 80e6 --symbol-rate 20e6 \
+  --modcod 13 --stream 16 --receiver "$SOFT_RX" --ldpc-helper "$LDPC_HELPER"
+```
+
 ## Run
 
 After you flash the committed revision, close other serial clients and run:

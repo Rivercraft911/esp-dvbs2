@@ -132,7 +132,7 @@ already stored, runs from the repository root (new evidence directory each time)
 ```sh
 python3 examples/over-the-air/live.py notes/live-vcm \
   --backend libiio --uri ip:192.168.1.10 --port /dev/cu.usbmodem1101 \
-  --receiver /Users/river/Documents/stanford/SSI/esp-dvbs2/notes/leansdr/src/apps/leandvb \
+  --receiver notes/leansdr/src/apps/leandvb \
   --mhz 2420 --rate 5m --sample-rate 10000000 --rx-gain 30 --gain 4 \
   --seconds 30 --schedule 0:4,3:7,6:11,9:4 --key
 ```
@@ -199,7 +199,9 @@ sample burst saves 128 MB. `capture.json`, `iio.log` / `uhd.log`, `board.jsonl`,
 `settings.json`, `plan.json`, `revision.json`, `leandvb.log` and `payload.bin`
 retain settings, readbacks and evidence. Failures exit nonzero and preserve files.
 
-For PHY-solo A/B, use fresh directories and alternate the same mode with / without
+## PHY-solo A/B
+
+Use fresh directories and alternate the same mode with / without
 `--phy-solo`, then reverse order, keeping containment, path, gain and callsign
 fixed. Require exact payload recovery in every arm and compare FEC, MER, carrier
 offset and spectrum. Solo records must show Wi-Fi absent, PHY users 2 and both

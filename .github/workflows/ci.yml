@@ -10,6 +10,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install numpy scipy matplotlib
+      - run: python host/plots.py --rf-only --check
       - run: python tests/test_dvbs2.py
       - run: python tests/test_dvbs2_8psk.py
       - run: python tests/test_dvbs2_c.py
@@ -24,10 +25,12 @@ jobs:
       - run: python tests/test_fused.py
       - run: python tests/test_physolo.py
       - run: python tests/test_radio_duration.py
+      - run: python tests/test_radio_filter.py
       - run: python tests/test_radio_calibration.py
       - run: python tests/test_qpsk_axes.py
       - run: python tests/test_self_check.py
       - run: python tests/test_live_video.py
+      - run: python tests/test_soft_helper.py
       - run: python tests/test_live_iio.py
       - run: python tests/test_ota.py
       - run: python tests/test_file_ota.py

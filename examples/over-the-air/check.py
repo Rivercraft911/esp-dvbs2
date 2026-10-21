@@ -23,7 +23,7 @@ import decode
 from receive import stop
 
 RADIOCONDA = str(Path.home() / "radioconda/bin/python")
-DEFAULT_RX = "/Users/river/Documents/stanford/SSI/esp-dvbs2/notes/leansdr/src/apps/leandvb"
+DEFAULT_RX = str(ROOT / "notes/leansdr/src/apps/leandvb")
 MODES = {7: "QPSK 3/4", 13: "8PSK 2/3", 11: "QPSK 9/10", 15: "8PSK 5/6", 17: "8PSK 9/10"}
 MODES.update({4: "QPSK 1/2", 6: "QPSK 2/3"})
 RATES = {"1m": 1e6, "5m": 5e6, "10m": 10e6, "20m": 20e6,
@@ -48,8 +48,8 @@ def settings(a):
         a.modcod = a.pattern[0]
     rs = RATES[a.rate]
     fs = 2 * rs
-    if not 2390 <= a.mhz <= 2450 or not 1 <= a.seconds <= 60:
-        raise ValueError("need 2390..2450 MHz and 1..60 seconds")
+    if not 2000 <= a.mhz <= 2450 or not 1 <= a.seconds <= 60:
+        raise ValueError("need 2000..2450 MHz and 1..60 seconds")
     if not 0 <= a.gain <= 17 or not 16 <= a.peak <= 508:
         raise ValueError("need TX gain 0..17 and peak 16..508")
     if not math.isfinite(a.rx_gain) or not 0 <= a.rx_gain <= 76:

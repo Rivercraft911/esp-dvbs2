@@ -36,6 +36,11 @@ def rejects(fn, *args):
 
 
 def test_guards():
+    for mhz in (2000,2025,2110,2200,2290,2400,2450):
+        args = ota.parser().parse_args(["--mhz",str(mhz)])
+        assert ota.settings(args)["frequency"] == mhz * 1e6
+    for mhz in (1999,2451):
+        rejects(ota.settings,ota.parser().parse_args(["--mhz",str(mhz)]))
     for rate, fs, occupied in (("5m", 10e6, 6.75e6), ("10m", 20e6, 13.5e6)):
         for mc in (7, 13, 11):
             output = subprocess.check_output([sys.executable, "-S", str(EXAMPLE / "check.py"),

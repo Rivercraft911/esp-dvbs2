@@ -16,9 +16,10 @@ an FPGA.
 | Sender needs | plain SPI writes | one command byte + one address byte + 8 dummy clocks |
 | Select with | `spiinput on` | `spiinput quad` |
 
-Tested rates are the S3 receiving from its own second SPI peripheral (on-chip loopback);
-an external sender at those rates has not been measured on the S3 yet. Ideal rates follow
-from the message size and the gap between messages (below).
+The table's tested rates use on-chip loopback between the S3's two SPI peripherals.
+An external CM5 sender also delivered a 9 Mb/s camera mux at 16 MHz through the
+[live RF link](../results/2026-10-19-live-rf/README.md). Ideal rates follow from the
+message size and the gap between messages (below).
 
 ## What it carries
 
@@ -48,9 +49,8 @@ the mode, the S3 sends DVB-S2 dummy frames and resumes the data in order.
 
 Every CS assertion carries exactly one **1,332-byte message**. Multibyte fields are little
 endian; bits go out MSB first. The [reference sender](../examples/pi-sender/README.md)
-implements this format (PV-SPI v1). The `PV` magic also supports optional PigeonVision
-camera integration; no camera software or configuration is required for the file/ffmpeg
-route in the [video example](../examples/live-video/README.md).
+implements this format (PV-SPI v1). The [video example](../examples/live-video/README.md)
+can supply TS from a file or ffmpeg.
 
 | Bytes | Field | Value |
 |---|---|---|

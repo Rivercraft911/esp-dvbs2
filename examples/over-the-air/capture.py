@@ -29,7 +29,7 @@ def check_readback(actual, settings):
 
 
 def capture(settings, out):
-    # Only the explicitly authorized worker imports UHD or constructs a device.
+    # Load UHD only when starting a capture.
     report = {"complete": False, "samples": 0, "overflows": 0}
     streamer = None
     try:

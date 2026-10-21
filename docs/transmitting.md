@@ -7,8 +7,9 @@ with both devices inside, or coax through at least 30 dB attenuation into the re
 Antennas are allowed only inside the closed box. A shielded box is not proof of zero
 leakage. Never run this check with an exposed antenna or an unattenuated receiver path.
 
-The console accepts integer center frequencies 2390..2450 MHz. That range is a hardware
-limit, not authorization. Check your jurisdiction's band allocation, licence privileges
+The console accepts integer center frequencies 2000..2450 MHz for conducted research.
+Reception has been checked at selected frequencies in that range; lock, power and signal
+quality across the full range remain uncharacterized. Check your jurisdiction's band allocation, licence privileges
 and permitted emissions. The full occupied bandwidth, plus the station-ID tone, must fit
 inside your authorized band. Gain 0..17 is an uncalibrated vendor index, not dBm.
 In the US, consult [47 CFR §97.301](https://www.ecfr.gov/current/title-47/chapter-I/subchapter-D/part-97/subpart-D/section-97.301)
@@ -62,6 +63,15 @@ omit `flash`.
 
 `host/board.py` sends one command and prints the JSON results. `--save` writes sample dumps.
 
+`rflo direct` is the default tuning path. Conducted tests at lower frequencies can also
+select `rflo five-sixths`, which asks the PLL for six-fifths of the requested RF frequency
+and enables the radio's five-sixths divider. Either command accepts an optional signed
+offset in kHz, from −999 to 999; omitting it resets the offset to zero. The resulting
+RF request must stay within 2000..2450 MHz. Use `rfprofile off` with the divider or a
+nonzero offset: the stored calibration profile only supports direct tuning without an offset.
+Run records report `requested_rf_khz` and `requested_pll_khz`; measure the actual signal
+with a receiver. Tuning selections last until changed or the board restarts.
+
 | Command | Purpose |
 |---|---|
 | `info` | Firmware revision, clocks, memory and stored callsign |
@@ -111,6 +121,12 @@ in the result before treating a dump or pace as a VCM check.
 uppercase. `callsign` reads the setting; `callsign clear` removes it. Use the callsign
 assigned to your station and any required indicators. A syntax check cannot verify a licence.
 Missing or invalid storage disables transmission.
+
+My station uses **KJ5SCH**. Substitute your assigned callsign when setting up your board:
+
+```sh
+python3 host/board.py "callsign KJ5SCH"
+```
 
 Successful keyed runs include 20 WPM Morse at the start and end; the implementation also
 schedules ID every nine minutes. Console transmissions are limited to 60 s, including both
@@ -164,10 +180,10 @@ Frequencies double at 80 MS/s. `tone128` is the previously measured linear-drive
 
 For **80 MS/s modes** (`20m`, `26m667`, `33m333`), use **peak 48** as the starting point.
 At QPSK 9/10, 20 Msym/s, peak 128 overdrives the radio and does not decode; peaks 32–64
-decode, with 48 best at 14.2 dB MER. The measured transmit filter passes about 20 MHz
-(−3 dB at ±10 MHz, about −20 dB by ±14 MHz). The 36/40 MHz modes generate correct
-samples and meet their deadlines keyed, but do not decode over the air yet; a wider
-HT40 setting is under investigation. [RF runs and stitched filter plot](measurements.md#over-the-air).
+decode, with 48 best at 14.2 dB MER. The earlier narrow-filter measurement was about
+−3 dB at ±10 MHz and −20 dB by ±14 MHz. Main restores the wide setting after CW setup
+for signals above 20 MHz occupied bandwidth; B200 captures now decode 36/40 MHz modes.
+The [RF records](../results/2026-10-20-wide-filter/README.md) identify prepared payloads and receiver limits.
 
 At QPSK 33m333 or 8PSK 26m667, `--fixture` repeats the prepared synthetic frame
 used by `dvbpace`, with the same payload copy. Payload ingress must be off.
@@ -196,8 +212,9 @@ R&D timing is motivation; this port still needs coordinator timing and RF checks
 The automatic transmit-filter selector is retained. Register readbacks do not establish
 filter flatness, radiated power or emission-mask compliance. Historical keyed records in
 [measurements.md](measurements.md) establish timing; the new RF section records decoded
-QPSK and VCM payloads, a spectrum and the measured filter limit. Decoding the 36/40 MHz
-modes, sample continuity and measured station ID remain open.
+QPSK and VCM payloads, a spectrum and the earlier narrow-filter limit. The
+[wide-filter checks](../results/2026-10-20-wide-filter/README.md) decode 36/40 MHz bursts;
+sustained wideband video remains unqualified.
 The [contained RF coordinator](../examples/over-the-air/README.md) captures the E200
 before keying and checks LeanDVB's recovered synthetic payload bytes. Its `--plan` and
 `--dry-run` paths are device-free; only an explicit `--key` permits hardware access.

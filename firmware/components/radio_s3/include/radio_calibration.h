@@ -12,7 +12,7 @@ typedef struct {
     uint32_t dc_saved[2], dc_active[2], dc_restored[2];
 } radio_calibration_stats_t;
 void radio_calibration_command(const char *args);
-/* Initialize the caller's result before admission. This never alters a live run. */
+/* Clear per-run statistics before checking the profile. */
 void radio_calibration_attempt(radio_calibration_stats_t *stats, bool keyed);
 esp_err_t radio_calibration_begin(uint32_t mhz, unsigned gain, uint32_t dac_rate,
                                   radio_calibration_stats_t *stats);
