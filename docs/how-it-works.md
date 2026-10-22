@@ -241,15 +241,20 @@ RF recovery with this shorter response still needs testing.
 
 The decoder stores two magnitudes, an index and signs in four bytes per check.
 Beliefs and check state occupy 216,000 bytes, with no expanded edge-message buffer.
-Each call processes a bounded number of conflict-free check tiles. The output must
-pass LDPC parity, BCH parity and BBHEADER checks before payload extraction. BCH
-error correction is not implemented here.
+Each call processes a bounded number of conflict-free check tiles. Clean frames
+can instead be checked directly from packed soft signs, without initializing
+that workspace. One owned finish operation checks LDPC parity, BCH parity and the
+BBHEADER before extracting payload. The byte BCH table combines eight polynomial
+steps per lookup; the original nibble checker remains available. BCH error
+correction is not implemented here.
 
 `tests/test_rx_filter.py` and `tests/test_rx_mc6.py` check the portable implementations
 against independent arithmetic, graph and streaming oracles. `tests/rx_bench` builds
-a separate radio-off S3 app; its `filter` and `fec` commands check native PIE results,
-guards and reference CRCs and report measured work separately from deliberate task
-delays. These components are not yet a continuous receiver or part of the capture app.
+a separate radio-off S3 app. `fecfast` checks the packed clean path; `fecblocked`
+compares grouped belief access and vector message reconstruction. `filter` and
+`fec` retain reference measurements. Commands check native PIE results, guards
+and reference CRCs and report work separately from deliberate task delays.
+These components are not yet a continuous receiver or part of the capture app.
 The [radio-off measurements](measurements.md#receiver-components) show both the first
 implementation and the gains from processing filter spans and parity-check words.
 

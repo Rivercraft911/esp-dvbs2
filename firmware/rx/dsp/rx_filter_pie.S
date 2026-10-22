@@ -117,3 +117,99 @@ rx_filter_unpack_s8:
     rsync
     retw.n
 .size rx_filter_unpack_s8,.-rx_filter_unpack_s8
+
+/* a2/a3 planes, a4 bank, a5 requests, a6 count, a7 internal sums.
+ * Each four-byte request is {uint16 offset, uint16 phase}. No calls,
+ * literals or external-memory accesses occur inside this <=8-output mask. */
+.balign 4
+.global rx_filter_batch_s8
+.type rx_filter_batch_s8,@function
+rx_filter_batch_s8:
+    entry a1,96
+    beqz a6,.Lbatch_refuse
+    movi a8,8
+    bltu a8,a6,.Lbatch_refuse
+    s32i a2,a1,24
+    s32i a3,a1,28
+    s32i a4,a1,32
+    s32i a5,a1,36
+    s32i a6,a1,40
+    s32i a7,a1,44
+    rsil a8,5
+    s32i a8,a1,0
+    rsr a9,cpenable
+    s32i a9,a1,4
+    movi a8,8
+    or a8,a8,a9
+    wsr a8,cpenable
+    rsync
+    rsr a9,cpenable
+    bne a9,a8,.Lbatch_enable_failed
+    rur.sar_byte a10
+    s32i a10,a1,8
+    addi a14,a1,16
+    ee.st.accx.ip a14,0
+.Lbatch_next:
+    l32i a8,a1,36
+    l16ui a5,a8,0
+    l16ui a4,a8,2
+    slli a4,a4,5
+    l32i a9,a1,32
+    add a4,a9,a4
+    l32i a2,a1,24
+    add a2,a2,a5
+    l32i a3,a1,28
+    add a3,a3,a5
+    extui a11,a2,0,4
+    wur.sar_byte a11
+    ee.vld.128.ip q4,a4,16
+    ee.vld.128.ip q5,a4,0
+    component a2,a12
+    component a3,a13
+    l32i a7,a1,44
+    s32i a12,a7,0
+    s32i a13,a7,4
+    addi a7,a7,8
+    s32i a7,a1,44
+    l32i a8,a1,36
+    addi a8,a8,4
+    s32i a8,a1,36
+    l32i a6,a1,40
+    addi a6,a6,-1
+    s32i a6,a1,40
+    bnez a6,.Lbatch_next
+    ee.ld.accx.ip a14,0
+    l32i a10,a1,8
+    wur.sar_byte a10
+    movi a2,1
+    rur.sar_byte a9
+    bne a9,a10,.Lbatch_bad
+    rur.accx_0 a9
+    l32i a11,a1,16
+    bne a9,a11,.Lbatch_bad
+    rur.accx_1 a9
+    l32i a11,a1,20
+    extui a9,a9,0,8
+    extui a11,a11,0,8
+    beq a9,a11,.Lbatch_restore
+.Lbatch_bad:
+    movi a2,0
+    j .Lbatch_restore
+.Lbatch_enable_failed:
+    movi a2,0
+.Lbatch_restore:
+    l32i a7,a1,4
+    wsr a7,cpenable
+    rsync
+    rsr a9,cpenable
+    beq a9,a7,.Lbatch_unmask
+    movi a2,0
+.Lbatch_unmask:
+    l32i a6,a1,0
+    wsr a6,ps
+    rsync
+    retw.n
+.Lbatch_refuse:
+    movi a2,0
+    retw.n
+.size rx_filter_batch_s8,.-rx_filter_batch_s8

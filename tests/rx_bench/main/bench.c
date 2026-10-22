@@ -102,7 +102,48 @@ static bool fec_controls(void)
     return !errors;
 }
 
-static bool filter_frame(int8_t *in, int16_t (*pout)[2], int16_t (*dout)[2], bool external)
+static bool fec_block_controls(void)
+{
+    uint32_t seed = 0x622026U;
+    unsigned errors = 0;
+    for (unsigned c = 0; c < 512; ++c) {
+        _Alignas(16) rx_mc6_tile got, want;
+        memset(&got, 0x6d, sizeof got);
+        unsigned flags = c % 4;
+        for (unsigned lane = 0; lane < 8; ++lane) {
+            unsigned lo = random_word(&seed) % 128, hi = random_word(&seed) % 128;
+            if (hi < lo) { unsigned swap = hi; hi = lo; lo = swap; }
+            unsigned degree = (flags & 2) && !lane ? 9 : 10;
+            got.magnitudes[lane] = (uint16_t)(lo | hi << 8);
+            got.metadata[lane] = (uint16_t)((random_word(&seed) & ((1U << degree) - 1U)) |
+                                           (random_word(&seed) % degree) << 10);
+            for (unsigned e = 0; e < 10; ++e)
+                got.q[e][lane] = c < 8 ? (int16_t[]){0, -32768, 32767, 1, -1, 127, -127, 128}[c] :
+                                        (int16_t)random_word(&seed);
+        }
+        want = got;
+        for (unsigned lane = 0; lane < 8; ++lane)
+            for (unsigned e = 0; e < 10; ++e) {
+                unsigned meta = want.metadata[lane], mags = want.magnitudes[lane];
+                int old = flags & 1 ? 0 : (int)(((meta >> 10) == e ? mags >> 8 : mags) & 255U);
+                if (meta & (1U << e)) old = -old;
+                int q = want.q[e][lane] - old;
+                want.q[e][lane] = (int16_t)(q < -32768 ? -32768 : q > 32767 ? 32767 : q);
+            }
+        if (flags & 2) want.q[9][0] = 32767;
+        rx_mc6_leaf(&want);
+        uint32_t ps, cp, sar, after_ps, after_cp, after_sar;
+        __asm__ volatile("rsr.ps %0; rsr.cpenable %1; rsr.sar %2" : "=a"(ps), "=a"(cp), "=a"(sar));
+        rx_mc6_block_leaf(&got, flags);
+        __asm__ volatile("rsr.ps %0; rsr.cpenable %1; rsr.sar %2" : "=a"(after_ps), "=a"(after_cp), "=a"(after_sar));
+        if (memcmp(&got, &want, sizeof got) || ps != after_ps || cp != after_cp || sar != after_sar) ++errors;
+    }
+    printf("@{\"cmd\":\"mc6_block_controls\",\"cases\":512,\"errors\":%u}\n", errors);
+    return !errors;
+}
+
+static bool filter_frame(int8_t *in, int16_t (*pout)[2], int16_t (*dout)[2],
+                         bool external, bool batch)
 {
     if (!rx_filter_init(&filter, 0, 0, UINT64_C(4) << 32)) return false;
     unsigned outputs = 0, remaining = 4 * (33282 - 1) + 32;
@@ -122,8 +163,11 @@ static bool filter_frame(int8_t *in, int16_t (*pout)[2], int16_t (*dout)[2], boo
             }
             rx_filter_progress p;
             uint32_t before = esp_cpu_get_cycle_count();
-            bool ok = rx_filter_push(&filter, in + 2 * used, pairs - used,
-                                    pout, dout, RX_FILTER_OUTPUT, mask, &p);
+            bool ok = batch ?
+                rx_filter_push(&filter, in + 2 * used, pairs - used,
+                               pout, dout, RX_FILTER_OUTPUT, mask, &p) :
+                rx_filter_push_single(&filter, in + 2 * used, pairs - used,
+                                      pout, dout, RX_FILTER_OUTPUT, mask, &p);
             cycles += (uint32_t)(esp_cpu_get_cycle_count() - before);
             if (!ok || p.consumed > pairs - used || p.written > RX_FILTER_OUTPUT) return false;
             used += p.consumed; outputs += p.written;
@@ -138,9 +182,10 @@ static bool filter_frame(int8_t *in, int16_t (*pout)[2], int16_t (*dout)[2], boo
         wait += esp_timer_get_time() - before;
         if (!pairs) break;
     } while (true);
-    printf("@{\"cmd\":\"filter_frame\",\"psram_io\":%s,\"outputs\":%u,\"push_elapsed_cycles\":%llu,"
+    printf("@{\"cmd\":\"filter_frame\",\"psram_io\":%s,\"batch\":%s,\"outputs\":%u,\"push_elapsed_cycles\":%llu,"
            "\"elapsed_us\":%lld,\"wait_us\":%lld,\"pulse_crc32\":%lu,\"derivative_crc32\":%lu}\n",
-           external ? "true" : "false", outputs, (unsigned long long)cycles, (long long)(esp_timer_get_time() - start),
+           external ? "true" : "false", batch ? "true" : "false", outputs,
+           (unsigned long long)cycles, (long long)(esp_timer_get_time() - start),
            (long long)wait, (unsigned long)crc, (unsigned long)dcrc);
     /* Independent Python integer-dot oracle over this exact PRNG stream. */
     return outputs == 33282 && crc == UINT32_C(1678845495) && dcrc == UINT32_C(3371518343);
@@ -152,11 +197,21 @@ static bool filter_bench(void)
     rx_filter_preflight(&check);
     printf("@{\"cmd\":\"filter_controls\",\"cases\":%lu,\"errors\":%lu,\"native\":%s}\n",
            (unsigned long)check.cases, (unsigned long)check.errors, check.native ? "true" : "false");
-    if (check.errors || !check.native || !filter_frame(input, pulse, derivative, false)) return false;
+    if (check.errors || !check.native) return false;
+    rx_filter_batch_preflight(&check);
+    printf("@{\"cmd\":\"filter_batch_controls\",\"cases\":%lu,\"errors\":%lu,\"native\":%s}\n",
+           (unsigned long)check.cases, (unsigned long)check.errors, check.native ? "true" : "false");
+    if (check.errors || !check.native) return false;
     buffer a = allocate(sizeof input), b = allocate(sizeof pulse), c = allocate(sizeof derivative);
-    bool ok = a.raw && b.raw && c.raw &&
-              filter_frame((int8_t *)(a.raw + 16), (int16_t (*)[2])(b.raw + 16),
-                           (int16_t (*)[2])(c.raw + 16), true) && intact(a) && intact(b) && intact(c);
+    bool ok = a.raw && b.raw && c.raw;
+    for (unsigned trial = 0; ok && trial < 2; ++trial)
+        for (unsigned arm = 0; ok && arm < 2; ++arm) {
+            bool batch = (arm ^ trial) != 0;
+            ok = filter_frame(input, pulse, derivative, false, batch) &&
+                 filter_frame((int8_t *)(a.raw + 16), (int16_t (*)[2])(b.raw + 16),
+                              (int16_t (*)[2])(c.raw + 16), true, batch) &&
+                 intact(a) && intact(b) && intact(c);
+        }
     free(a.raw); free(b.raw); free(c.raw);
     return ok;
 }
@@ -243,6 +298,120 @@ static bool fec_bench(void)
     return ok;
 }
 
+static bool fec_profile(const int8_t *llr, uint8_t *bits, uint8_t *data)
+{
+    uint32_t t = esp_cpu_get_cycle_count();
+    bool ok = rx_mc6_pack_llr(llr, bits);
+    uint32_t pack = esp_cpu_get_cycle_count() - t, h;
+    t = esp_cpu_get_cycle_count();
+    ok = rx_mc6_check_h(bits, &h) && ok;
+    uint32_t parity = esp_cpu_get_cycle_count() - t;
+    t = esp_cpu_get_cycle_count();
+    ok = rx_mc6_check_bch(bits, RX_MC6_BCH_NIBBLE) && ok;
+    uint32_t nibble = esp_cpu_get_cycle_count() - t;
+    t = esp_cpu_get_cycle_count();
+    ok = rx_mc6_check_bch(bits, RX_MC6_BCH_BYTE) && ok;
+    uint32_t byte = esp_cpu_get_cycle_count() - t;
+    uint16_t bytes = 0;
+    t = esp_cpu_get_cycle_count();
+    ok = rx_mc6_check_header(bits, &bytes) && ok;
+    uint32_t header = esp_cpu_get_cycle_count() - t;
+    t = esp_cpu_get_cycle_count();
+    ok = rx_mc6_descramble_data(bits, data, bytes) && ok;
+    uint32_t descramble = esp_cpu_get_cycle_count() - t;
+    printf("@{\"cmd\":\"mc6_profile\",\"pack_cycles\":%lu,\"H_cycles\":%lu,"
+           "\"bch_nibble_cycles\":%lu,\"bch_byte_cycles\":%lu,\"header_cycles\":%lu,"
+           "\"descramble_cycles\":%lu,\"PSRAM_IO\":true,\"passed\":%s}\n",
+           (unsigned long)pack, (unsigned long)parity, (unsigned long)nibble,
+           (unsigned long)byte, (unsigned long)header, (unsigned long)descramble,
+           ok && bytes == sizeof payload && !memcmp(data, payload, bytes) ? "true" : "false");
+    return ok && bytes == sizeof payload && !memcmp(data, payload, bytes);
+}
+
+static bool fec_fast_bench(bool blocked)
+{
+    if (!fec_controls() || !fec_block_controls()) return false;
+    buffer beliefs = allocate(2 * RX_MC6_N), checks = allocate(4 * RX_MC6_CHECKS);
+    buffer channel = allocate(RX_MC6_N), packed = allocate(RX_MC6_WORD_BYTES);
+    buffer output = allocate(RX_MC6_PAYLOAD_BYTES);
+    bool ok = beliefs.raw && checks.raw && channel.raw && packed.raw && output.raw;
+    const unsigned errors[] = {0, 9, 80};
+    const uint32_t expected[] = {4240430337U, 2144775371U, 1400211940U};
+    for (unsigned c = 0; ok && c < 3; ++c) {
+        int8_t *llr = (int8_t *)(channel.raw + 16);
+        uint8_t *bits = packed.raw + 16, *data = output.raw + 16;
+        for (unsigned n = 0; n < sizeof payload; ++n) payload[n] = (uint8_t)(17 * n + 31 * c + 3);
+        const dvbs2_mode *mode = dvbs2_find_mode(6);
+        ok = dvbs2_bb_gcs(&encoder, mode, payload, 8 * sizeof payload) == 0;
+        if (!ok) break;
+        dvbs2_bb_scramble(&encoder, mode); dvbs2_bch(&encoder, mode); dvbs2_ldpc(&encoder, mode);
+        for (unsigned n = 0; n < RX_MC6_N; ++n)
+            llr[n] = encoder.bits[n / 8] & (0x80U >> (n % 8U)) ? -24 : 24;
+        for (unsigned n = 0; n < errors[c]; ++n) {
+            unsigned at = (7919 * n + 137 * c) % RX_MC6_N;
+            llr[at] = llr[at] < 0 ? 8 : -8;
+        }
+        if (!c && !fec_profile(llr, bits, data)) { ok = false; break; }
+        for (unsigned trial = 0; ok && trial < 2; ++trial)
+            for (unsigned arm = 0; ok && arm < 2; ++arm) {
+                rx_mc6_bch kind = arm ^ trial ? RX_MC6_BCH_BYTE : RX_MC6_BCH_NIBBLE;
+                uint32_t t = esp_cpu_get_cycle_count();
+                ok = rx_mc6_pack_llr(llr, bits);
+                uint32_t pack = esp_cpu_get_cycle_count() - t;
+                uint64_t cycles = pack, steps = 0, finish = 0, init = 0;
+                int64_t wait = 0;
+                rx_mc6 d = {0};
+                rx_mc6_result result = {0};
+                size_t bytes = 0;
+                unsigned tiles = 0;
+                bool decoded = false;
+                while (ok) {
+                    t = esp_cpu_get_cycle_count();
+                    decoded = rx_mc6_finish(bits, data, output.bytes, &bytes, &result, kind);
+                    uint32_t used = esp_cpu_get_cycle_count() - t;
+                    finish += used; cycles += used;
+                    if (decoded || d.iteration == 1) break;
+                    if (!d.initialized) {
+                        t = esp_cpu_get_cycle_count();
+                        ok = rx_mc6_init(&d, (int16_t *)(beliefs.raw + 16),
+                                         (rx_mc6_check *)(checks.raw + 16), llr);
+                        init = esp_cpu_get_cycle_count() - t; cycles += init;
+                    }
+                    while (ok && !d.iteration) {
+                        unsigned left = RX_MC6_TILES - tiles;
+                        unsigned budget = left < 64 ? left : 64;
+                        t = esp_cpu_get_cycle_count();
+                        unsigned got = blocked ? rx_mc6_step_blocked(&d, budget) : rx_mc6_step(&d, budget);
+                        tiles += got;
+                        used = esp_cpu_get_cycle_count() - t;
+                        steps += used; cycles += used;
+                        ok = got == budget && !d.failed;
+                        int64_t before = esp_timer_get_time();
+                        vTaskDelay(1); wait += esp_timer_get_time() - before;
+                    }
+                    t = esp_cpu_get_cycle_count();
+                    ok = rx_mc6_pack(&d, bits) && ok;
+                    cycles += (uint32_t)(esp_cpu_get_cycle_count() - t);
+                }
+                bool exact = decoded && bytes == sizeof payload && !memcmp(data, payload, bytes) &&
+                             !memcmp(bits, encoder.bits, RX_MC6_WORD_BYTES) &&
+                             esp_rom_crc32_le(0, bits, RX_MC6_WORD_BYTES) == expected[c];
+                bool guards = intact(beliefs) && intact(checks) && intact(channel) && intact(packed) && intact(output);
+                printf("@{\"cmd\":\"mc6_fast\",\"case\":%u,\"trial\":%u,\"byte_bch\":%s,\"blocked\":%s,"
+                       "\"flipped_bits\":%u,\"iterations\":%lu,\"init_cycles\":%llu,"
+                       "\"pack_cycles\":%lu,\"step_cycles\":%llu,\"finish_cycles\":%llu,"
+                       "\"work_elapsed_cycles\":%llu,\"wait_us\":%lld,\"exact\":%s,\"guards\":%s}\n",
+                       c, trial, kind == RX_MC6_BCH_BYTE ? "true" : "false", blocked ? "true" : "false", errors[c],
+                       (unsigned long)d.iteration, (unsigned long long)init, (unsigned long)pack,
+                       (unsigned long long)steps, (unsigned long long)finish, (unsigned long long)cycles,
+                       (long long)wait, exact ? "true" : "false", guards ? "true" : "false");
+                ok = ok && exact && guards;
+            }
+    }
+    free(beliefs.raw); free(checks.raw); free(channel.raw); free(packed.raw); free(output.raw);
+    return ok;
+}
+
 void app_main(void)
 {
     usb_serial_jtag_driver_config_t usb = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
@@ -264,13 +433,15 @@ void app_main(void)
                    "\"radio\":false,\"tx\":false,\"cpu_hz\":%u}\n",
                    esp_app_get_description()->version, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
                    (unsigned)esp_psram_get_size(), (unsigned)esp_clk_cpu_freq());
-        } else if (!strcmp(line, "filter") || !strcmp(line, "fec")) {
-            bool ok = !strcmp(line, "filter") ? filter_bench() : fec_bench();
+        } else if (!strcmp(line, "filter") || !strcmp(line, "fec") ||
+                   !strcmp(line, "fecfast") || !strcmp(line, "fecblocked")) {
+            bool ok = !strcmp(line, "filter") ? filter_bench() :
+                      !strcmp(line, "fec") ? fec_bench() : fec_fast_bench(!strcmp(line, "fecblocked"));
             unsigned reserve = (unsigned)uxTaskGetStackHighWaterMark(NULL);
             ok = ok && reserve >= 512;
             printf("@{\"cmd\":\"summary\",\"passed\":%s,\"radio\":false,\"tx\":false,"
                    "\"stack_free\":%u}\n", ok ? "true" : "false", reserve);
-        } else printf("@{\"error\":\"use info, filter or fec\"}\n");
+        } else printf("@{\"error\":\"use info, filter, fec, fecfast or fecblocked\"}\n");
         printf("@{\"done\":true}\n");
     }
 }

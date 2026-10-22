@@ -1,6 +1,9 @@
 #include "rx_filter.h"
 #include <limits.h>
 #include <string.h>
+#ifndef RX_FILTER_BATCH
+#define RX_FILTER_BATCH 0
+#endif
 #ifdef ESP_PLATFORM
 #include "esp_attr.h"
 #include "esp_memory_utils.h"
@@ -12,6 +15,7 @@
 
 _Static_assert(RX_FILTER_PLANE >= 512 + 31 + 15 + 15, "physical vector padding");
 _Static_assert(_Alignof(rx_filter) == 16, "state alignment");
+_Static_assert(sizeof(rx_filter_request) == 4 && offsetof(rx_filter_request, phase) == 2, "batch ABI");
 
 static bool disjoint(const void *a, size_t na, const void *b, size_t nb)
 {
@@ -85,6 +89,18 @@ bool rx_filter_dot_s8(const int8_t *i, const int8_t *q, const int8_t *c, int32_t
 /* Source aligned32, destinations aligned16; complete groups of16 IQ pairs.
  * Leaf restores CPENABLE/PS; QR0/1 private. No look-behind or overread. */
 extern bool rx_filter_unpack_s8(const int8_t *, int8_t *, int8_t *, unsigned);
+#endif
+
+#if !defined(__XTENSA__) || defined(RX_FILTER_MOCK_PIE)
+bool rx_filter_batch_s8(const int8_t *i, const int8_t *q, const int8_t *bank,
+                       const rx_filter_request *request, unsigned count, int32_t (*sums)[2])
+{
+    if (!count || count > RX_FILTER_BATCH_OUTPUT) return false;
+    for (unsigned k = 0; k < count; ++k)
+        if (!rx_filter_dot_s8(i+request[k].offset, q+request[k].offset,
+                             bank+32*request[k].phase, sums[k])) return false;
+    return true;
+}
 #endif
 
 static bool append(rx_filter *s, const int8_t *iq, size_t pairs, uint64_t next)
@@ -173,7 +189,7 @@ static __attribute__((noinline)) void derivative_at(const rx_filter *s, unsigned
  * outputs move a local origin by320 samples. A rounded history origin can
  * make relative == -1 initially; the rounded window itself is nonnegative.
  * Commit only completed outputs, including on a leaf-context refusal. */
-static __attribute__((noinline)) bool emit_span(rx_filter *s, int16_t (*pulse)[2],
+static __attribute__((noinline)) bool emit_single(rx_filter *s, int16_t (*pulse)[2],
                     int16_t (*derivative)[2], size_t capacity,
                     uint32_t *mask_low, uint32_t *mask_high, rx_filter_progress *progress)
 {
@@ -213,10 +229,52 @@ static __attribute__((noinline)) bool emit_span(rx_filter *s, int16_t (*pulse)[2
     return ok;
 }
 
-bool rx_filter_push(rx_filter *s, const int8_t *iq, size_t pairs,
+/* One bounded ownership interval, with arbitrary bank/origin per output.
+ * Results stay internal until the leaf admits its final context restore. */
+static __attribute__((noinline)) bool emit_batch(rx_filter *s, int16_t (*pulse)[2],
+                    int16_t (*derivative)[2], size_t capacity,
+                    uint32_t *mask_low, uint32_t *mask_high, rx_filter_progress *progress)
+{
+    rx_filter_request request[RX_FILTER_BATCH_OUTPUT];
+    int32_t sums[RX_FILTER_BATCH_OUTPUT][2];
+    int relative = s->origin < s->base ? -1 : (int)(s->origin-s->base);
+    uint32_t fraction = s->fraction, step = (uint32_t)s->step;
+    unsigned whole = (unsigned)(s->step >> 32), n = 0;
+    size_t first = progress->written;
+    while (n < RX_FILTER_BATCH_OUTPUT && first+n < capacity) {
+        uint32_t rounded = fraction + (UINT32_C(1)<<25);
+        unsigned at = (unsigned)(relative + (rounded < fraction));
+        if (at+32 > s->count) break;
+        request[n++] = (rx_filter_request){(uint16_t)(s->bias+at), (uint16_t)(rounded >> 26)};
+        uint32_t previous = fraction;
+        fraction += step;
+        relative += (int)(whole + (fraction < previous));
+    }
+    if (!rx_filter_batch_s8(s->plane[0], s->plane[1], &rx_filter_pulse[0][0],
+                           request, n, sums)) { s->failed = true; return false; }
+    uint32_t low = *mask_low, high = *mask_high;
+    for (unsigned k = 0; k < n; ++k) {
+        size_t j = first+k;
+        pulse[j][0] = narrow(sums[k][0], 1);
+        pulse[j][1] = narrow(sums[k][1], 1);
+        if (derivative) {
+            if (low & 1) derivative_at(s, request[k].offset, request[k].phase, derivative[j]);
+            else derivative[j][0] = derivative[j][1] = 0;
+        }
+        low = (low >> 1) | (high << 31);
+        high >>= 1;
+    }
+    s->origin = s->base + (unsigned)relative;
+    s->fraction = fraction;
+    *mask_low = low; *mask_high = high;
+    progress->written += n;
+    return true;
+}
+
+static bool push(rx_filter *s, const int8_t *iq, size_t pairs,
                     int16_t (*pulse)[2], int16_t (*derivative)[2],
                     size_t capacity, uint64_t derivative_mask,
-                    rx_filter_progress *progress)
+                    rx_filter_progress *progress, bool batch)
 {
     if (!state_valid(s) || s->failed || !pulse || !progress ||
         ((uintptr_t)pulse & 1) || ((uintptr_t)derivative & 1) ||
@@ -240,7 +298,8 @@ bool rx_filter_push(rx_filter *s, const int8_t *iq, size_t pairs,
         uint64_t at = selection(s, &phase);
         if (at <= s->received && s->received-at >= 32) {
             if (s->origin <= UINT64_MAX-321 && at >= s->base && at-s->base+32 <= s->count) {
-                if (!emit_span(s, pulse, derivative, capacity, &mask_low, &mask_high, progress))
+                if (!(batch ? emit_batch(s, pulse, derivative, capacity, &mask_low, &mask_high, progress)
+                            : emit_single(s, pulse, derivative, capacity, &mask_low, &mask_high, progress)))
                     return false;
             } else {
                 size_t j = progress->written;
@@ -259,6 +318,22 @@ bool rx_filter_push(rx_filter *s, const int8_t *iq, size_t pairs,
     }
     return true;
 }
+
+bool rx_filter_push(rx_filter *s, const int8_t *iq, size_t pairs,
+                    int16_t (*pulse)[2], int16_t (*derivative)[2],
+                    size_t capacity, uint64_t derivative_mask, rx_filter_progress *progress)
+{
+    return push(s, iq, pairs, pulse, derivative, capacity, derivative_mask, progress, RX_FILTER_BATCH != 0);
+}
+
+#ifdef RX_FILTER_BENCH
+bool rx_filter_push_single(rx_filter *s, const int8_t *iq, size_t pairs,
+                    int16_t (*pulse)[2], int16_t (*derivative)[2],
+                    size_t capacity, uint64_t derivative_mask, rx_filter_progress *progress)
+{
+    return push(s, iq, pairs, pulse, derivative, capacity, derivative_mask, progress, false);
+}
+#endif
 
 void rx_filter_preflight(rx_filter_check *result)
 {
@@ -285,5 +360,43 @@ void rx_filter_preflight(rx_filter_check *result)
             ++result->cases;
             if (!ok || got[0] != want[0] || got[1] != want[1]) ++result->errors;
         }
+    }
+}
+
+void rx_filter_batch_preflight(rx_filter_check *result)
+{
+    if (!result) return;
+    *result = (rx_filter_check){0};
+#ifdef __XTENSA__
+    result->native = true;
+#endif
+    _Alignas(16) int8_t i[64], q[64];
+    for (unsigned c = 0; c < 136; ++c) {
+        rx_filter_request request[8];
+        int32_t got[10][2];
+        memset(got, 0x57, sizeof got);
+        unsigned count = c < 128 ? 8 : c-127;
+        for (unsigned k = 0; k < 64; ++k) {
+            i[k] = c % 4 == 0 ? -128 : c % 4 == 1 ? 127 : (int8_t)(73*k+c);
+            q[k] = c % 4 == 2 ? -128 : (int8_t)(17*k+c);
+        }
+        for (unsigned k = 0; k < count; ++k)
+            request[k] = (rx_filter_request){(uint16_t)(c < 128 ? c%16 : (7*k+c)%16),
+                                            (uint16_t)(c < 128 ? 8*(c/16)+k : (13*k+c)%64)};
+        bool ok = rx_filter_batch_s8(i, q, &rx_filter_pulse[0][0], request, count, got+1);
+        for (unsigned k = 0; k < count; ++k) {
+            int32_t want[2] = {0};
+            for (unsigned tap = 0; tap < 32; ++tap) {
+                int coefficient = rx_filter_pulse[request[k].phase][tap];
+                want[0] += (int)i[request[k].offset+tap]*coefficient;
+                want[1] += (int)q[request[k].offset+tap]*coefficient;
+            }
+            ok = ok && got[k+1][0] == want[0] && got[k+1][1] == want[1];
+        }
+        for (unsigned k = 0; k < 10; ++k)
+            if (k == 0 || k > count)
+                ok = ok && got[k][0] == INT32_C(0x57575757) && got[k][1] == INT32_C(0x57575757);
+        ++result->cases;
+        if (!ok) ++result->errors;
     }
 }

@@ -4,6 +4,9 @@
 #include <limits.h>
 #include <stdio.h>
 #include <string.h>
+#ifndef RX_FILTER_BATCH
+#define RX_FILTER_BATCH 0
+#endif
 
 static unsigned controls;
 static uint32_t rng = 20261022;
@@ -215,6 +218,7 @@ static void span_boundaries(void)
         fail_after = (int)done;
         assert(!rx_filter_push(&s, input, 512, pulse, derivative, 64, UINT64_MAX, &p));
         fail_after = -1;
+        if (RX_FILTER_BATCH) done -= done % RX_FILTER_BATCH_OUTPUT;
         assert(s.failed && p.consumed == 512 && p.written == done);
         uint64_t expected = UINT32_MAX + done*RX_FILTER_STEP_MIN;
         assert(s.origin == expected>>32 && s.fraction == (uint32_t)expected);
@@ -232,6 +236,9 @@ int main(void)
     rx_filter_check check;
     rx_filter_preflight(&check);
     assert(check.cases == 64 && check.errors == 0);
+    rx_filter_check batch;
+    rx_filter_batch_preflight(&batch);
+    assert(batch.cases == 136 && batch.errors == 0);
     for (int64_t x = -100001; x < 100001; x += 7)
         for (unsigned shift = 1; shift <= 9; shift += 8)
             assert(rx_filter_round(x, shift) == rounded(x, shift));
@@ -243,7 +250,7 @@ int main(void)
             stream((phase+k)%32, phase, steps[k], (phase+k)%4);
     refusals();
     span_boundaries();
-    printf("RX filter: %u streams/refusals, %u dot controls, state %zu B, host%s\n",
-           controls, check.cases, sizeof(rx_filter), check.native ? "-mock-PIE-path" : "-scalar");
+    printf("RX filter: %u streams/refusals, %u dot controls, state %zu B, batch %d, 136 batch controls, host%s\n",
+           controls, check.cases, sizeof(rx_filter), RX_FILTER_BATCH, check.native ? "-mock-PIE-path" : "-scalar");
     return 0;
 }

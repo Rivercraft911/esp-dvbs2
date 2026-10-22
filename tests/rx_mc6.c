@@ -80,6 +80,42 @@ static void leaf_controls(void)
     }
 }
 
+static void block_leaf_controls(void)
+{
+    uint32_t seed = 0xb10c6201U;
+    for (unsigned trial = 0; trial < 512; ++trial) {
+        _Alignas(16) rx_mc6_tile actual = {0}, expected;
+        unsigned flags = trial % 4U;
+        for (unsigned lane = 0; lane < 8; ++lane) {
+            unsigned first = random32(&seed) % 128U, second = random32(&seed) % 128U;
+            if (first > second) { unsigned swap = first; first = second; second = swap; }
+            actual.magnitudes[lane] = (uint16_t)(first | second << 8);
+            actual.metadata[lane] = (uint16_t)((random32(&seed) & 1023U) |
+                                             ((random32(&seed) % 10U) << 10));
+            for (unsigned e = 0; e < 10; ++e) {
+                int q = (int)(random32(&seed) & 65535U) - 32768;
+                if (trial < 8) q = (int[]){0, 1, -1, 127, -127, 32767, -32768, 32766}[trial];
+                actual.q[e][lane] = (int16_t)q;
+            }
+        }
+        expected = actual;
+        if (!(flags & 1U)) {
+            for (unsigned lane = 0; lane < 8; ++lane)
+                for (unsigned e = 0; e < 10; ++e) {
+                    unsigned meta = actual.metadata[lane], mags = actual.magnitudes[lane];
+                    int r = (int)(e == (meta >> 10) ? mags >> 8 : mags & 255U);
+                    if (meta & (1U << e)) r = -r;
+                    expected.q[e][lane] = (int16_t)clamp(actual.q[e][lane] - r);
+                }
+        }
+        if (flags & 2U) expected.q[9][0] = 32767;
+        rx_mc6_leaf(&expected);
+        rx_mc6_block_leaf(&actual, flags);
+        assert(!memcmp(&actual, &expected, sizeof actual));
+    }
+    puts("MC6: 512 block reconstruction/first-sweep/degree9 leaf controls PASS");
+}
+
 typedef struct {
     uint16_t variable[RX_MC6_CHECKS][10];
     uint8_t degree[RX_MC6_CHECKS], visited[RX_MC6_CHECKS];
@@ -167,7 +203,7 @@ static void compare(const reference *r, const rx_mc6 *d, unsigned last_layer, un
         }
 }
 
-static void state_controls(unsigned iterations)
+static void state_controls(unsigned iterations, unsigned (*advance)(rx_mc6 *, unsigned))
 {
     reference *r = calloc(1, sizeof *r);
     int8_t *llr = malloc(RX_MC6_N);
@@ -187,7 +223,7 @@ static void state_controls(unsigned iterations)
     for (unsigned tile = 0; tile < iterations * RX_MC6_TILES; ++tile) {
         unsigned last_layer = d.layer, last_column = d.column;
         reference_tile(r, d.layer, d.column);
-        assert(rx_mc6_step(&d, 1) == 1 && !d.failed);
+        assert(advance(&d, 1) == 1 && !d.failed);
         compare(r, &d, last_layer, last_column);
     }
     const unsigned budgets[] = {0, 1, 89, 134, 2744, 7, 90, 2745};
@@ -196,7 +232,7 @@ static void state_controls(unsigned iterations)
         unsigned take = budgets[n % (sizeof budgets / sizeof budgets[0])];
         if (take > left) take = left;
         rx_mc6 saved = resumed;
-        assert(rx_mc6_step(&resumed, take) == take);
+        assert(advance(&resumed, take) == take);
         if (!take) assert(!memcmp(&saved, &resumed, sizeof saved));
         left -= take;
     }
@@ -212,7 +248,7 @@ static void state_controls(unsigned iterations)
     free(r); free(llr); free(belief); free(other); free(checks); free(alternate);
 }
 
-static void ownership_controls(void)
+static void ownership_controls(unsigned (*advance)(rx_mc6 *, unsigned))
 {
     int16_t *belief = calloc(RX_MC6_N, 2);
     rx_mc6_check *checks = malloc(4U * RX_MC6_CHECKS);
@@ -227,20 +263,20 @@ static void ownership_controls(void)
     assert(!rx_mc6_init(&d, belief, (rx_mc6_check *)(unaligned + 2), llr));
     assert(rx_mc6_init(&d, belief, checks, llr));
     assert(!rx_mc6_pack(&d, (uint8_t *)belief));
-    assert(rx_mc6_step(&d, 1) == 1);
+    assert(advance(&d, 1) == 1);
     d.iteration = 1;
     checks[d.column].metadata = 0xc000;
     int16_t snapshot[16];
     memcpy(snapshot, belief, sizeof snapshot);
-    assert(rx_mc6_step(&d, 1) == 0 && d.failed);
+    assert(advance(&d, 1) == 0 && d.failed);
     assert(!memcmp(snapshot, belief, sizeof snapshot));
     /* Defensive full-S16 check0: dummy edge must never become real argmin9. */
     assert(rx_mc6_init(&d, belief, checks, llr));
     for (unsigned n = 0; n < RX_MC6_N; ++n) belief[n] = 32767;
-    assert(rx_mc6_step(&d, 1) == 1 && !d.failed);
+    assert(advance(&d, 1) == 1 && !d.failed);
     assert(checks[0].magnitudes == 0x7f7fU && checks[0].metadata == (8U << 10));
-    assert(rx_mc6_step(&d, RX_MC6_TILES - 1) == RX_MC6_TILES - 1 && !d.failed);
-    assert(d.iteration == 1 && rx_mc6_step(&d, 1) == 1 && !d.failed);
+    assert(advance(&d, RX_MC6_TILES - 1) == RX_MC6_TILES - 1 && !d.failed);
+    assert(d.iteration == 1 && advance(&d, 1) == 1 && !d.failed);
     assert((checks[0].metadata >> 10) < 9 && !(checks[0].metadata & 512U));
     uint8_t bits[RX_MC6_WORD_BYTES] = {0}, payload[32];
     memset(payload, 0x6d, sizeof payload);
@@ -249,6 +285,97 @@ static void ownership_controls(void)
     assert(bytes == 123 && payload[0] == 0x6d);
     assert(!rx_mc6_check_word(bits, (rx_mc6_result *)bits));
     free(belief); free(checks); free(unaligned); free(llr);
+}
+
+static void packed_controls(void)
+{
+    int8_t llr[RX_MC6_N];
+    uint8_t bits[RX_MC6_WORD_BYTES];
+    for (unsigned n = 0; n < RX_MC6_N; ++n) llr[n] = (int8_t)((int)(n % 256U) - 128);
+    assert(rx_mc6_pack_llr(llr, bits));
+    for (unsigned n = 0; n < RX_MC6_N; ++n)
+        assert(((bits[n / 8U] >> (7U - n % 8U)) & 1U) == (unsigned)(llr[n] < 0));
+    assert(!rx_mc6_pack_llr(llr, (uint8_t *)llr));
+    memset(bits, 0, sizeof bits);
+    uint8_t payload[RX_MC6_PAYLOAD_BYTES];
+    memset(payload, 0x6d, sizeof payload);
+    size_t bytes = 123;
+    rx_mc6_result result = {.unsatisfied = 123};
+    assert(!rx_mc6_finish(bits, payload, sizeof payload, &bytes, &result, (rx_mc6_bch)2));
+    assert(bytes == 123 && result.unsatisfied == 123 && payload[0] == 0x6d);
+    assert(!rx_mc6_finish(bits, payload, sizeof payload, &bytes,
+                          (rx_mc6_result *)bits, RX_MC6_BCH_NIBBLE));
+    assert(bytes == 123 && bits[0] == 0);
+    assert(!rx_mc6_finish(bits, payload, sizeof payload, (size_t *)payload,
+                          &result, RX_MC6_BCH_BYTE));
+    assert(payload[0] == 0x6d && bytes == 123);
+    assert(!rx_mc6_check_h(bits, (uint32_t *)bits));
+    assert(!rx_mc6_check_header(bits, (uint16_t *)bits));
+    for (unsigned kind = 0; kind < 2; ++kind) {
+        bytes = 123;
+        assert(!rx_mc6_finish(bits, payload, sizeof payload, &bytes, &result, (rx_mc6_bch)kind));
+        assert(bytes == 0 && result.unsatisfied == 0 && result.bch_ok && !result.header_ok);
+        for (unsigned n = 0; n < sizeof payload; ++n) assert(payload[n] == 0x6d);
+    }
+    puts("MC6: packed zero/sign, split/finish ownership and atomic refusal controls PASS");
+}
+
+static void packed_decode(unsigned iterations, rx_mc6_bch kind)
+{
+    int8_t *llr = malloc(RX_MC6_N);
+    int16_t *belief = malloc(2U * RX_MC6_N);
+    rx_mc6_check *checks = malloc(4U * RX_MC6_CHECKS);
+    uint8_t bits[RX_MC6_WORD_BYTES], payload[RX_MC6_PAYLOAD_BYTES];
+    assert(llr && belief && checks);
+    read_exact(llr, RX_MC6_N);
+    assert(getchar() == EOF);
+    memset(checks, 0xa5, 4U * RX_MC6_CHECKS);
+    rx_mc6 d = {0};
+    rx_mc6_result result;
+    size_t count = 123;
+    assert(rx_mc6_pack_llr(llr, bits));
+    bool valid = rx_mc6_finish(bits, payload, sizeof payload, &count, &result, kind);
+    bool initialized = !valid && iterations != 0;
+    if (initialized) assert(rx_mc6_init(&d, belief, checks, llr));
+    for (unsigned i = 0; !valid && i < iterations; ++i) {
+        assert(rx_mc6_step_blocked(&d, RX_MC6_TILES) == RX_MC6_TILES && !d.failed);
+        assert(rx_mc6_pack(&d, bits));
+        valid = rx_mc6_finish(bits, payload, sizeof payload, &count, &result, kind);
+    }
+    if (!initialized) assert(!d.initialized && checks[0].metadata == 0xa5a5);
+    assert(valid || count == 0);
+    uint32_t h = UINT32_MAX;
+    assert(rx_mc6_check_h(bits, &h) == (result.unsatisfied == 0));
+    assert(h == result.unsatisfied);
+    assert(rx_mc6_check_bch(bits, RX_MC6_BCH_NIBBLE) == result.bch_ok);
+    assert(rx_mc6_check_bch(bits, RX_MC6_BCH_BYTE) == result.bch_ok);
+    uint16_t size = 123;
+    assert(rx_mc6_check_header(bits, &size) == result.header_ok);
+    if (result.header_ok) assert(size == result.payload_bytes);
+    else assert(size == 123);
+    if (valid) {
+        uint8_t checked[RX_MC6_PAYLOAD_BYTES];
+        size_t checked_count = 123;
+        assert(rx_mc6_extract(bits, checked, sizeof checked, &checked_count));
+        assert(checked_count == count && !memcmp(payload, checked, count));
+        memset(checked, 0x6d, sizeof checked);
+        checked_count = 123;
+        assert(!rx_mc6_finish(bits, checked, count - 1U, &checked_count, &result, kind));
+        assert(checked_count == 0 && result.unsatisfied == 0 && result.bch_ok && result.header_ok);
+        for (unsigned n = 0; n < sizeof checked; ++n) assert(checked[n] == 0x6d);
+#ifdef RX_MC6_TEST_HOOKS
+        assert(rx_mc6_descramble_data(bits, checked, count));
+        assert(!memcmp(payload, checked, count));
+        assert(!rx_mc6_descramble_data(bits, bits, count));
+        assert(!rx_mc6_descramble_data(bits, checked, RX_MC6_PAYLOAD_BYTES + 1U));
+#endif
+    }
+    assert(fwrite(bits, 1, sizeof bits, stdout) == sizeof bits);
+    assert(fwrite(payload, 1, count, stdout) == count);
+    fprintf(stderr, "{\"valid\":%s,\"iterations\":%" PRIu32 ",\"H\":%" PRIu32 ",\"bch\":%s,\"header\":%s,\"bytes\":%zu}\n",
+            valid ? "true" : "false", d.iteration, result.unsatisfied,
+            result.bch_ok ? "true" : "false", result.header_ok ? "true" : "false", count);
+    free(llr); free(belief); free(checks);
 }
 
 static void decode(unsigned iterations)
@@ -265,6 +392,7 @@ static void decode(unsigned iterations)
     assert(rx_mc6_pack(&d, bits));
     rx_mc6_result result;
     bool valid = rx_mc6_check_word(bits, &result);
+    assert(rx_mc6_check_bch(bits, RX_MC6_BCH_BYTE) == result.bch_ok);
     for (unsigned i = 0; !valid && i < iterations; ++i) {
         assert(rx_mc6_step(&d, RX_MC6_TILES) == RX_MC6_TILES && !d.failed);
         assert(rx_mc6_pack(&d, bits));
@@ -293,6 +421,7 @@ static void check_packed(void)
     assert(getchar() == EOF);
     rx_mc6_result result;
     bool valid = rx_mc6_check_word(bits, &result);
+    assert(rx_mc6_check_bch(bits, RX_MC6_BCH_BYTE) == result.bch_ok);
     printf("{\"valid\":%s,\"H\":%" PRIu32 ",\"bch\":%s,\"header\":%s}\n",
            valid ? "true" : "false", result.unsatisfied,
            result.bch_ok ? "true" : "false", result.header_ok ? "true" : "false");
@@ -318,12 +447,18 @@ int main(int argc, char **argv)
 {
     if (argc == 1) {
         leaf_controls();
-        ownership_controls();
+        block_leaf_controls();
+        ownership_controls(rx_mc6_step);
+        ownership_controls(rx_mc6_step_blocked);
+        packed_controls();
         puts("MC6: 512 independent full-range leaf vectors; ownership/refusal controls PASS");
     } else if (argc == 2 && !strcmp(argv[1], "check")) check_packed();
     else if (argc == 3 && !strcmp(argv[1], "basis")) basis_checks((unsigned)strtoul(argv[2], NULL, 10));
-    else if (argc == 3 && !strcmp(argv[1], "state")) state_controls((unsigned)strtoul(argv[2], NULL, 10));
+    else if (argc == 3 && !strcmp(argv[1], "state")) state_controls((unsigned)strtoul(argv[2], NULL, 10), rx_mc6_step);
+    else if (argc == 3 && !strcmp(argv[1], "blocked_state")) state_controls((unsigned)strtoul(argv[2], NULL, 10), rx_mc6_step_blocked);
     else if (argc == 3 && !strcmp(argv[1], "decode")) decode((unsigned)strtoul(argv[2], NULL, 10));
+    else if (argc == 3 && !strcmp(argv[1], "packed0")) packed_decode((unsigned)strtoul(argv[2], NULL, 10), RX_MC6_BCH_NIBBLE);
+    else if (argc == 3 && !strcmp(argv[1], "packed1")) packed_decode((unsigned)strtoul(argv[2], NULL, 10), RX_MC6_BCH_BYTE);
     else return 2;
     return 0;
 }

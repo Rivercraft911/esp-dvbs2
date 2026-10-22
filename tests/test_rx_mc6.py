@@ -7,6 +7,7 @@ words/payloads are used only after the real decoder has finished.
 import json
 import os
 import pathlib
+import re
 import struct
 import subprocess
 import sys
@@ -18,6 +19,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "host"))
 import dvbs2 as d
 import rx_mc6_vectors as oracle
+from dvbs2_tables import BCH_POLYS
 
 
 def graph_input():
@@ -43,6 +45,9 @@ def fixture(seed, length=d.code("2/3").kbch - 80):
 
 def check_result(exe, word, expected_payload, llr, iterations=8):
     data, result = run(exe, "decode", iterations, llr)
+    for mode in ("packed0", "packed1"):
+        packed_data, packed_result = run(exe, mode, iterations, llr)
+        assert packed_data == data and packed_result == result, (mode, result, packed_result)
     got = np.unpackbits(np.frombuffer(data[:8100], np.uint8))
     assert oracle.syndrome(got).sum() == result["H"]
     if result["valid"]:
@@ -57,9 +62,31 @@ def check_result(exe, word, expected_payload, llr, iterations=8):
 
 def test():
     oracle.self_check()
+    # Construct g from the standard factors, then long-divide every table entry.
+    # This uses neither production nibble entries nor the host byte-table helper.
+    generator = 1
+    for terms in BCH_POLYS["normal"][:10]:
+        factor = sum(1 << n for n in terms)
+        product = 0
+        while factor:
+            if factor & 1:
+                product ^= generator
+            generator <<= 1
+            factor >>= 1
+        generator = product
+    assert generator.bit_length() == 161
+    table = (ROOT / "firmware/rx/fec/mc6_bch8.h").read_text()
+    stored = [int(n, 16) for n in re.findall(r"UINT32_C\(0x([0-9a-f]+)\)", table)]
+    expected_table = []
+    for value in range(256):
+        remainder = value << 160
+        while remainder.bit_length() > 160:
+            remainder ^= generator << (remainder.bit_length() - 161)
+        expected_table.extend((remainder >> (32 * n)) & 0xffffffff for n in range(5))
+    assert stored == expected_table
     with tempfile.TemporaryDirectory(prefix="rx-mc6-") as tmp:
         exe = pathlib.Path(tmp) / "mc6"
-        command = ["cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
+        command = ["cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-DRX_MC6_TEST_HOOKS",
                    "-fsanitize=address,undefined", "-fno-sanitize-recover=all",
                    "-I" + str(ROOT / "firmware/rx/fec"),
                    str(ROOT / "tests/rx_mc6.c"), str(ROOT / "firmware/rx/fec/rx_mc6.c"),
@@ -82,6 +109,10 @@ def test():
             result = json.loads(checked.stdout)
             expected = int(oracle.syndrome(np.unpackbits(np.frombuffer(packed, np.uint8))).sum())
             assert result["H"] == expected, (result, expected)
+            polynomial = int.from_bytes(packed[:5400], "big")
+            while polynomial.bit_length() > 160:
+                polynomial ^= generator << (polynomial.bit_length() - 161)
+            assert result["bch"] == (polynomial == 0)
         # All 64800 natural variable positions: every byte, 32-bit chunk,
         # circular 360-bit row, QC/parity transition and final-bit boundary.
         basis = subprocess.run([str(exe), "basis", "64800"], capture_output=True,
@@ -102,9 +133,10 @@ def test():
         # touched message is reconstructed against independent signed R edges.
         # Full-range channel input also exercises the int16 belief invariant.
         for llr in (rng.integers(-128, 128, 64800, dtype=np.int16), signs * 24):
-            _, state = run(exe, "state", 2, llr, graph=True)
-            assert state == {"tiles": 5490, "iterations": 2,
-                             "all_beliefs_messages_per_tile": True}
+            for mode in ("state", "blocked_state"):
+                _, state = run(exe, mode, 2, llr, graph=True)
+                assert state == {"tiles": 5490, "iterations": 2,
+                                 "all_beliefs_messages_per_tile": True}
 
         clean = check_result(exe, word, payload, signs * 24)
         assert clean["valid"] and not clean["iterations"]
@@ -163,6 +195,8 @@ def test():
         assert repaired["valid"] and repaired["iterations"] > 0
         print("MC6: external3 + changing GCS/partial payloads, 10980 per-tile state checks, "
               "poison/stop/resume and sparse repairs PASS")
+        print("MC6 blocked candidate: 10980 additional exact per-tile state checks PASS")
+        print("MC6: packed lazy-init + owned finish nibble/byte match every original decode and refusal PASS")
         print("MC6 fixed held-outs (seed,sigma,valid,iterations,H):", outcomes)
 
 

@@ -70,7 +70,7 @@ static const uint16_t mc6_graph[60][8] = {
 
 /* Remainder of v*x^160 divided by g(x), for each four-bit v.
  * Little polynomial-word order; the high feedback bit is bit 159. */
-static const uint32_t mc6_bch4[16][5] = {
+static const MC6_BCH_ATTR uint32_t mc6_bch4[16][5] = {
     {UINT32_C(0x00000000), UINT32_C(0x00000000), UINT32_C(0x00000000), UINT32_C(0x00000000), UINT32_C(0x00000000)},
     {UINT32_C(0xb8bb6591), UINT32_C(0xefd12301), UINT32_C(0x6a785703), UINT32_C(0xfc2a331f), UINT32_C(0x60150ced)},
     {UINT32_C(0x7176cb22), UINT32_C(0xdfa24603), UINT32_C(0xd4f0ae07), UINT32_C(0xf854663e), UINT32_C(0xc02a19db)},

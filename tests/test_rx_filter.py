@@ -39,10 +39,10 @@ def main():
                         "-I"+str(ROOT/"firmware/rx/dsp"),
                         str(ROOT/"firmware/rx/dsp/rx_filter.c"),
                         str(ROOT/"tests/rx_filter.c"), "-o", str(exe)]
-        subprocess.run(command, check=True)
-        subprocess.run([str(exe)], check=True)
-        subprocess.run(command + ["-D__XTENSA__", "-DRX_FILTER_MOCK_PIE"], check=True)
-        subprocess.run([str(exe)], check=True)
+        for batch in (0, 1):
+            for mock in ([], ["-D__XTENSA__", "-DRX_FILTER_MOCK_PIE"]):
+                subprocess.run(command + [f"-DRX_FILTER_BATCH={batch}"] + mock, check=True)
+                subprocess.run([str(exe)], check=True)
 
 
 if __name__ == "__main__":

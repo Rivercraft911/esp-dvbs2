@@ -46,6 +46,7 @@ bool rx_filter_push(rx_filter *s, const int8_t *iq, size_t pairs,
 
 int16_t rx_filter_round(int64_t sum, unsigned shift);
 void rx_filter_preflight(rx_filter_check *result);
+void rx_filter_batch_preflight(rx_filter_check *result);
 
 extern const int8_t rx_filter_pulse[RX_FILTER_PHASES][RX_FILTER_TAPS];
 extern const int16_t rx_filter_derivative[RX_FILTER_PHASES][RX_FILTER_TAPS];
@@ -59,3 +60,20 @@ extern const int16_t rx_filter_derivative[RX_FILTER_PHASES][RX_FILTER_TAPS];
  * Caller must not depend on QR across the call. False means no admission. */
 bool rx_filter_dot_s8(const int8_t *i, const int8_t *q,
                       const int8_t *coefficient, int32_t sums[2]);
+
+/* Private batch ABI: internal planes, requests and sums; bank aligned16.
+ * Each request selects one 32-sample logical dot and its 32/48-byte aligned
+ * enclosing window as above. phase <64; count is1..8. No overlap. A false
+ * return invalidates ALL sums in this batch; callers publish none of them.
+ * Context/clobber contract is identical to rx_filter_dot_s8, held for<=8dots. */
+enum { RX_FILTER_BATCH_OUTPUT = 8 };
+typedef struct { uint16_t offset, phase; } rx_filter_request;
+bool rx_filter_batch_s8(const int8_t *i, const int8_t *q, const int8_t *bank,
+                       const rx_filter_request *request, unsigned count, int32_t (*sums)[2]);
+
+#ifdef RX_FILTER_BENCH
+/* Test-only original single-dot arm, with the same staging and public rules. */
+bool rx_filter_push_single(rx_filter *s, const int8_t *iq, size_t pairs,
+                    int16_t (*pulse)[2], int16_t (*derivative)[2],
+                    size_t capacity, uint64_t derivative_mask, rx_filter_progress *progress);
+#endif

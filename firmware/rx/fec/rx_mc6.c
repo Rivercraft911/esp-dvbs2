@@ -3,7 +3,6 @@
  * L=q+Rnew. Only completed, conflict-free tiles become resumable state. */
 #include "rx_mc6.h"
 #include "mc6_internal.h"
-#include "mc6_tables.h"
 
 #include <string.h>
 
@@ -14,11 +13,31 @@
 #define IRAM_ATTR
 #endif
 
+#if defined(ESP_PLATFORM) && defined(RX_MC6_BCH_TABLE_INTERNAL)
+#define MC6_BCH_ATTR DRAM_ATTR
+#else
+#define MC6_BCH_ATTR
+#endif
+#include "mc6_tables.h"
+#include "mc6_bch8.h"
+
 static bool separate(const void *a, size_t na, const void *b, size_t nb)
 {
     uintptr_t x = (uintptr_t)a, y = (uintptr_t)b;
     if (!a || !b || x > UINTPTR_MAX - na || y > UINTPTR_MAX - nb) return false;
     return x + na <= y || y + nb <= x;
+}
+
+bool rx_mc6_pack_llr(const int8_t llr[RX_MC6_N], uint8_t bits[RX_MC6_WORD_BYTES])
+{
+    if (!separate(llr, RX_MC6_N, bits, RX_MC6_WORD_BYTES)) return false;
+    for (unsigned n = 0; n < RX_MC6_WORD_BYTES; ++n) {
+        unsigned value = 0;
+        for (unsigned j = 0; j < 8; ++j)
+            value = (value << 1) | (llr[8U * n + j] < 0);
+        bits[n] = (uint8_t)value;
+    }
+    return true;
 }
 
 bool rx_mc6_init(rx_mc6 *d, int16_t belief[RX_MC6_N],
@@ -78,6 +97,24 @@ void rx_mc6_leaf(rx_mc6_tile *w)
         w->metadata[lane] = (uint16_t)(signs | (index << 10));
     }
 }
+
+void rx_mc6_block_leaf(rx_mc6_tile *w, unsigned flags)
+{
+    if (!(flags & 1U)) {
+        for (unsigned e = 0; e < 10; ++e)
+            for (unsigned lane = 0; lane < 8; ++lane) {
+                unsigned meta = w->metadata[lane], mags = w->magnitudes[lane];
+                int r = (int)(((meta >> 10) == e ? mags >> 8 : mags) & 255U);
+                if (meta & (1U << e)) r = -r;
+                int q = w->q[e][lane] - r;
+                if (q > 32767) q = 32767;
+                if (q < -32768) q = -32768;
+                w->q[e][lane] = (int16_t)q;
+            }
+    }
+    if (flags & 2U) w->q[9][0] = 32767;
+    rx_mc6_leaf(w);
+}
 #endif
 
 static unsigned position(unsigned first, unsigned column)
@@ -86,7 +123,26 @@ static unsigned position(unsigned first, unsigned column)
     return p < 360 ? p : p - 360;
 }
 
-unsigned rx_mc6_step(rx_mc6 *d, unsigned budget)
+/* Each raw edge is one contiguous span, or two at the 360-value wrap. All
+ * PSRAM accesses remain outside the leaf's interrupt-masked ownership window. */
+static void gather(int16_t out[8], const int16_t *row, unsigned p, unsigned lanes)
+{
+    unsigned head = 360U - p;
+    if (head > lanes) head = lanes;
+    for (unsigned n = 0; n < head; ++n) out[n] = row[p + n];
+    for (unsigned n = head; n < lanes; ++n) out[n] = row[n - head];
+    for (unsigned n = lanes; n < 8; ++n) out[n] = 32767;
+}
+
+static void scatter(int16_t *row, const int16_t *in, unsigned p, unsigned lanes)
+{
+    unsigned head = 360U - p;
+    if (head > lanes) head = lanes;
+    for (unsigned n = 0; n < head; ++n) row[p + n] = in[n];
+    for (unsigned n = head; n < lanes; ++n) row[n - head] = in[n];
+}
+
+static unsigned step(rx_mc6 *d, unsigned budget, bool blocked)
 {
     if (!d || !budget) return 0;
     if (!d->initialized || d->failed) return 0;
@@ -104,18 +160,22 @@ unsigned rx_mc6_step(rx_mc6 *d, unsigned budget)
 #endif
     for (unsigned n = 0; n < 4; ++n) w.before[n] = w.after[n] = UINT32_C(0x6d6d6d6d);
     unsigned done = 0;
+    unsigned geometry_layer = 60;
+    uint16_t base[10], start[10];
     while (done < budget && !d->failed) {
         unsigned layer = d->layer, column = d->column, lanes = layer ? 8U : 4U;
-        uint16_t base[10], start[10];
-        for (unsigned e = 0; e < 8; ++e) {
-            unsigned token = mc6_graph[layer][e], shift = token & 511U;
-            base[e] = (uint16_t)(360U * (token >> 9));
-            start[e] = (uint16_t)(shift ? 360U - shift : 0);
+        if (!blocked || geometry_layer != layer) {
+            for (unsigned e = 0; e < 8; ++e) {
+                unsigned token = mc6_graph[layer][e], shift = token & 511U;
+                base[e] = (uint16_t)(360U * (token >> 9));
+                start[e] = (uint16_t)(shift ? 360U - shift : 0);
+            }
+            base[8] = (uint16_t)(RX_MC6_K + 360U * layer);
+            start[8] = 0;
+            base[9] = (uint16_t)(RX_MC6_K + 360U * (layer ? layer - 1U : 59U));
+            start[9] = layer ? 0 : 359;
+            geometry_layer = layer;
         }
-        base[8] = (uint16_t)(RX_MC6_K + 360U * layer);
-        start[8] = 0;
-        base[9] = (uint16_t)(RX_MC6_K + 360U * (layer ? layer - 1U : 59U));
-        start[9] = layer ? 0 : 359;
         /* Metadata is read once per tile, never read during the first sweep. */
         for (unsigned lane = 0; lane < lanes; ++lane) {
             rx_mc6_check s = {0, 0};
@@ -128,21 +188,29 @@ unsigned rx_mc6_step(rx_mc6 *d, unsigned budget)
             w.metadata[lane] = s.metadata;
         }
         if (d->failed) break;
-        for (unsigned e = 0; e < 10; ++e) {
-            for (unsigned lane = 0; lane < lanes; ++lane) {
-                unsigned p = position(start[e], column + lane);
-                unsigned meta = w.metadata[lane], mags = w.magnitudes[lane];
-                int r = (int)(((meta >> 10) == e ? mags >> 8 : mags) & 255U);
-                if (meta & (1U << e)) r = -r;
-                int q = d->belief[base[e] + p] - r;
-                if (q > 32767) q = 32767;
-                if (q < -32768) q = -32768;
-                w.q[e][lane] = (int16_t)q;
+        if (blocked) {
+            for (unsigned lane = lanes; lane < 8; ++lane) w.magnitudes[lane] = w.metadata[lane] = 0;
+            for (unsigned e = 0; e < 10; ++e)
+                gather(w.q[e], d->belief + base[e], position(start[e], column), lanes);
+            unsigned flags = (!d->iteration ? 1U : 0U) | (!layer && !column ? 2U : 0U);
+            rx_mc6_block_leaf(&w, flags);
+        } else {
+            for (unsigned e = 0; e < 10; ++e) {
+                for (unsigned lane = 0; lane < lanes; ++lane) {
+                    unsigned p = position(start[e], column + lane);
+                    unsigned meta = w.metadata[lane], mags = w.magnitudes[lane];
+                    int r = (int)(((meta >> 10) == e ? mags >> 8 : mags) & 255U);
+                    if (meta & (1U << e)) r = -r;
+                    int q = d->belief[base[e] + p] - r;
+                    if (q > 32767) q = 32767;
+                    if (q < -32768) q = -32768;
+                    w.q[e][lane] = (int16_t)q;
+                }
+                for (unsigned lane = lanes; lane < 8; ++lane) w.q[e][lane] = 32767;
             }
-            for (unsigned lane = lanes; lane < 8; ++lane) w.q[e][lane] = 32767;
+            if (!layer && !column) w.q[9][0] = 32767;
+            rx_mc6_leaf(&w);
         }
-        if (!layer && !column) w.q[9][0] = 32767;
-        rx_mc6_leaf(&w);
         for (unsigned n = 0; n < 4; ++n)
             if (w.before[n] != UINT32_C(0x6d6d6d6d) || w.after[n] != UINT32_C(0x6d6d6d6d))
                 d->failed = true;
@@ -159,12 +227,21 @@ unsigned rx_mc6_step(rx_mc6 *d, unsigned budget)
             if (!valid_check((rx_mc6_check){w.magnitudes[lane], w.metadata[lane]},
                              !layer && !column && !lane ? 9U : 10U)) d->failed = true;
         if (d->failed) break;
-        for (unsigned e = 0; e < 10; ++e)
+        for (unsigned e = 0; e < 10; ++e) {
+            if (blocked) {
+                unsigned p = position(start[e], column), skip = !layer && !column && e == 9 ? 1U : 0U;
+                if (skip) {
+                    if (++p == 360) p = 0;
+                }
+                scatter(d->belief + base[e], w.q[e] + skip, p, lanes - skip);
+                continue;
+            }
             for (unsigned lane = 0; lane < lanes; ++lane) {
                 if (!layer && !column && !lane && e == 9) continue;
                 unsigned p = position(start[e], column + lane);
                 d->belief[base[e] + p] = w.q[e][lane];
             }
+        }
         for (unsigned lane = 0; lane < lanes; ++lane)
             d->checks[360U * layer + column + lane] = (rx_mc6_check){w.magnitudes[lane], w.metadata[lane]};
         ++done;
@@ -178,6 +255,16 @@ unsigned rx_mc6_step(rx_mc6 *d, unsigned budget)
         }
     }
     return done;
+}
+
+unsigned rx_mc6_step(rx_mc6 *d, unsigned budget)
+{
+    return step(d, budget, false);
+}
+
+unsigned rx_mc6_step_blocked(rx_mc6 *d, unsigned budget)
+{
+    return step(d, budget, true);
 }
 
 bool rx_mc6_pack(const rx_mc6 *d, uint8_t bits[RX_MC6_WORD_BYTES])
@@ -277,24 +364,93 @@ static bool header(const uint8_t *bits, uint16_t *bytes)
     return true;
 }
 
-bool rx_mc6_check_word(const uint8_t bits[RX_MC6_WORD_BYTES], rx_mc6_result *r)
+bool rx_mc6_check_h(const uint8_t bits[RX_MC6_WORD_BYTES], uint32_t *unsatisfied)
 {
-    if (!r || !separate(bits, RX_MC6_WORD_BYTES, r, sizeof *r)) return false;
-    *r = (rx_mc6_result){0};
-    r->unsatisfied = syndrome(bits);
+    if (!separate(bits, RX_MC6_WORD_BYTES, unsatisfied, sizeof *unsatisfied)) return false;
+    *unsatisfied = syndrome(bits);
+    return *unsatisfied == 0;
+}
+
+bool rx_mc6_check_bch(const uint8_t bits[RX_MC6_WORD_BYTES], rx_mc6_bch kind)
+{
+    if (!bits || (kind != RX_MC6_BCH_NIBBLE && kind != RX_MC6_BCH_BYTE)) return false;
     uint32_t bch[5] = {0};
-    for (unsigned n = 0; n < RX_MC6_K / 8; ++n)
-        for (unsigned half = 0; half < 2; ++half) {
-            unsigned nibble = (bits[n] >> (half ? 0 : 4)) & 15U;
-            unsigned feedback = (bch[4] >> 28) ^ nibble;
-            for (unsigned k = 5; k-- > 0;) {
-                bch[k] = (bch[k] << 4) | (k ? bch[k - 1] >> 28 : 0);
-                bch[k] ^= mc6_bch4[feedback][k];
+    if (kind == RX_MC6_BCH_BYTE) {
+        for (unsigned n = 0; n < RX_MC6_K / 8; ++n) {
+            unsigned feedback = (bch[4] >> 24) ^ bits[n];
+            for (unsigned k = 5; k-- > 0;)
+                bch[k] = ((bch[k] << 8) | (k ? bch[k - 1] >> 24 : 0)) ^ mc6_bch8[feedback][k];
+        }
+    } else {
+        for (unsigned n = 0; n < RX_MC6_K / 8; ++n) {
+            for (unsigned half = 0; half < 2; ++half) {
+                unsigned nibble = (bits[n] >> (half ? 0 : 4)) & 15U;
+                unsigned feedback = (bch[4] >> 28) ^ nibble;
+                for (unsigned k = 5; k-- > 0;) {
+                    bch[k] = (bch[k] << 4) | (k ? bch[k - 1] >> 28 : 0);
+                    bch[k] ^= mc6_bch4[feedback][k];
+                }
             }
         }
-    r->bch_ok = !(bch[0] | bch[1] | bch[2] | bch[3] | bch[4]);
+    }
+    return !(bch[0] | bch[1] | bch[2] | bch[3] | bch[4]);
+}
+
+bool rx_mc6_check_header(const uint8_t bits[RX_MC6_WORD_BYTES], uint16_t *bytes)
+{
+    if (!separate(bits, RX_MC6_WORD_BYTES, bytes, sizeof *bytes)) return false;
+    return header(bits, bytes);
+}
+
+static bool check_word(const uint8_t *bits, rx_mc6_result *r, rx_mc6_bch kind)
+{
+    *r = (rx_mc6_result){0};
+    r->unsatisfied = syndrome(bits);
+    r->bch_ok = rx_mc6_check_bch(bits, kind);
     r->header_ok = header(bits, &r->payload_bytes);
     return !r->unsatisfied && r->bch_ok && r->header_ok;
+}
+
+bool rx_mc6_check_word(const uint8_t bits[RX_MC6_WORD_BYTES], rx_mc6_result *r)
+{
+    if (!separate(bits, RX_MC6_WORD_BYTES, r, sizeof *r)) return false;
+    return check_word(bits, r, RX_MC6_BCH_NIBBLE);
+}
+
+static void descramble_data(const uint8_t *bits, uint8_t *payload, size_t bytes)
+{
+    unsigned prbs = 0xa9U;
+    for (unsigned n = 0; n < 10; ++n) (void)descramble(bits[n], &prbs);
+    for (size_t n = 0; n < bytes; ++n) payload[n] = descramble(bits[10U + n], &prbs);
+}
+
+#ifdef RX_MC6_TEST_HOOKS
+bool rx_mc6_descramble_data(const uint8_t bits[RX_MC6_WORD_BYTES], uint8_t *payload, size_t bytes)
+{
+    if (bytes > RX_MC6_PAYLOAD_BYTES || !separate(bits, RX_MC6_WORD_BYTES, payload, bytes)) return false;
+    descramble_data(bits, payload, bytes);
+    return true;
+}
+#endif
+
+bool rx_mc6_finish(const uint8_t bits[RX_MC6_WORD_BYTES], uint8_t *payload,
+                   size_t capacity, size_t *bytes, rx_mc6_result *r, rx_mc6_bch kind)
+{
+    if ((kind != RX_MC6_BCH_NIBBLE && kind != RX_MC6_BCH_BYTE) ||
+        !separate(bits, RX_MC6_WORD_BYTES, payload, capacity) ||
+        !separate(bits, RX_MC6_WORD_BYTES, bytes, sizeof *bytes) ||
+        !separate(bits, RX_MC6_WORD_BYTES, r, sizeof *r) ||
+        !separate(payload, capacity, bytes, sizeof *bytes) ||
+        !separate(payload, capacity, r, sizeof *r) ||
+        !separate(bytes, sizeof *bytes, r, sizeof *r)) return false;
+    *bytes = 0;
+    rx_mc6_result result;
+    bool valid = check_word(bits, &result, kind);
+    *r = result;
+    if (!valid || capacity < result.payload_bytes) return false;
+    descramble_data(bits, payload, result.payload_bytes);
+    *bytes = result.payload_bytes;
+    return true;
 }
 
 bool rx_mc6_extract(const uint8_t bits[RX_MC6_WORD_BYTES], uint8_t *payload,
@@ -305,9 +461,7 @@ bool rx_mc6_extract(const uint8_t bits[RX_MC6_WORD_BYTES], uint8_t *payload,
         !separate(bytes, sizeof *bytes, payload, capacity)) return false;
     rx_mc6_result r;
     if (!rx_mc6_check_word(bits, &r) || capacity < r.payload_bytes) return false;
-    unsigned prbs = 0xa9U;
-    for (unsigned n = 0; n < 10; ++n) (void)descramble(bits[n], &prbs);
-    for (unsigned n = 0; n < r.payload_bytes; ++n) payload[n] = descramble(bits[10U + n], &prbs);
+    descramble_data(bits, payload, r.payload_bytes);
     *bytes = r.payload_bytes;
     return true;
 }

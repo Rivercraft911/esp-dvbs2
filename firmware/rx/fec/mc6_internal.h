@@ -20,3 +20,8 @@ _Static_assert(offsetof(rx_mc6_tile, metadata) == 192, "leaf metadata offset");
 _Static_assert(offsetof(rx_mc6_tile, high) == 208, "leaf high offset");
 
 void rx_mc6_leaf(rx_mc6_tile *tile);
+
+/* q initially contains raw beliefs. flags: bit0 = first sweep (Rold=0),
+ * bit1 = degree-nine check in lane0; all other bits are zero.
+ * Same internal-storage, PS/CPE/SAR ownership and result contract as leaf. */
+void rx_mc6_block_leaf(rx_mc6_tile *tile, unsigned flags);

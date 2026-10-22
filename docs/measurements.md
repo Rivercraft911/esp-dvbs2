@@ -339,11 +339,29 @@ and payloads; all native leaf controls and buffer guards pass.
 [Cycle counters and original results](measurements/2026-10-22-rx-components.json)
 include the extraction API's repeated parity check and exclude explicit task delays.
 
-These are radio-off component tests with reused small buffers and synthetic inputs.
-Filter plus clean FEC still takes 61.593 ms before acquisition, carrier processing
-or concurrent capture. A 1 Msym/s QPSK frame arrives every 33.282 ms. The shorter
-filter response also needs RF qualification; these measurements do not establish
-continuous reception. The saved receiver firmware was restored after each run.
+A later paired test validates packed signs before initializing the iterative
+decoder, checks the word once and uses a byte-at-a-time BCH table. Clean FEC fell
+from 31.257 to at most 9.940 ms, including standalone sign packing. Validation
+and extraction of an already packed word took at most 6.537 ms. Packed input and
+payload output were in PSRAM. The byte table adds 4,800 bytes in flash; its BCH
+check took 2.034 ms versus 4.132 ms for the nibble table. All twelve candidate
+trials recovered the exact words and payloads, including the two damaged cases.
+
+Grouping contiguous belief spans and reconstructing old messages with PIE then
+reduced a correction sweep from 69.216 to 38.230 ms in the paired image. The
+complete damaged-word path, including sign packing and validation, fell from
+99.660 to 68.675 ms. All 512 native reconstruction controls and all 24 complete
+reference/candidate trials passed. The 240-byte tile and 216,000-byte decoder
+workspace stayed fixed. Deliberate task delays are excluded from these times.
+
+Eight-output PIE filter batching also passed its arithmetic and stream checks,
+but was about 0.44% slower with PSRAM I/O. It failed the 20% improvement gate and
+is not the default.
+
+These are radio-off tests with reused small buffers and synthetic inputs. The
+filter still takes about 30 ms before carrier processing or concurrent capture;
+a frame arrives every 33.282 ms. Component gains do not establish continuous
+reception. The saved receiver firmware was restored after each run.
 
 ## Recreate the figures
 
