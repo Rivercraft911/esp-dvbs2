@@ -74,6 +74,7 @@ static void decoder(void *arg)
         if (length > 0) usb_serial_jtag_write_bytes(payload, length, portMAX_DELAY);
         xQueueSend(r->empty, &i, portMAX_DELAY);
     }
+    s->decoder_stack_free = uxTaskGetStackHighWaterMark(NULL);
     xSemaphoreGive(r->done);
     vTaskDelete(NULL);
 }

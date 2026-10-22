@@ -38,12 +38,14 @@ static void print_capture(const capture_stats_t *s)
     printf(",\"samples\":%llu,\"units\":%lu,\"max_late\":%lu,\"max_service\":%lu,\"max_clear\":%lu,"
            "\"max_spin\":%lu,\"max_lag\":%lu,"
            "\"free_before\":%lu,\"free_wifi\":%lu,\"free_ready\":%lu,\"largest_ready\":%lu,"
+           "\"min_free\":%lu,\"capture_stack_free\":%lu,"
            "\"gain_max\":%u,\"status\":\"%s\",\"cleanup\":\"%s\"",
            (unsigned long long)s->samples, (unsigned long)s->units, (unsigned long)s->max_late,
            (unsigned long)s->max_service, (unsigned long)s->max_clear,
            (unsigned long)s->max_spin, (unsigned long)s->max_lag,
            (unsigned long)s->free_before, (unsigned long)s->free_wifi,
-           (unsigned long)s->free_ready, (unsigned long)s->largest_ready, s->gain_max,
+           (unsigned long)s->free_ready, (unsigned long)s->largest_ready,
+           (unsigned long)s->min_free, (unsigned long)s->stack_free, s->gain_max,
            esp_err_to_name(s->error), esp_err_to_name(s->cleanup));
     if (s->fault) printf(",\"fault\":\"%s\"", s->fault);
 }
@@ -184,14 +186,14 @@ void app_main(void)
             quiet = false;
             printf("@{\"cmd\":\"rx\",\"result\":\"%s\",\"modcod\":%u,\"frames\":%lu,\"good\":%lu,"
                    "\"failed\":%lu,\"dropped\":%lu,\"max_iterations\":%lu,\"max_push_cycles\":%lu,"
-                   "\"push_cycles\":%llu,\"max_fec_cycles\":%lu,\"fec_cycles\":%llu,"
+                   "\"push_cycles\":%llu,\"max_fec_cycles\":%lu,\"fec_cycles\":%llu,\"decoder_stack_free\":%lu,"
                    "\"demod\":{\"words\":%llu,\"frames\":%lu,\"lost\":%lu,\"relocks\":%lu,"
                    "\"acquire_cycles\":%lu,\"dc\":[%d,%d]}",
                    esp_err_to_name(e), modcod, (unsigned long)r.frames, (unsigned long)r.good,
                    (unsigned long)r.failed, (unsigned long)r.dropped, (unsigned long)r.max_iterations,
                    (unsigned long)r.max_push_cycles, (unsigned long long)r.push_cycles,
                    (unsigned long)r.max_fec_cycles, (unsigned long long)r.fec_cycles,
-                   (unsigned long long)r.demod.words, (unsigned long)r.demod.frames,
+                   (unsigned long)r.decoder_stack_free, (unsigned long long)r.demod.words, (unsigned long)r.demod.frames,
                    (unsigned long)r.demod.lost, (unsigned long)r.demod.relocks,
                    (unsigned long)r.demod.acquire_cycles, r.demod.dc_i, r.demod.dc_q);
             print_capture(&s);

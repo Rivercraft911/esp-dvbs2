@@ -342,6 +342,8 @@ static void worker(void *arg)
         s->largest_ready = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
         s->fault = job->bench ? bench(job) : stream(job);
         if (s->fault) s->error = ESP_FAIL;
+        s->min_free = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+        s->stack_free = uxTaskGetStackHighWaterMark(NULL);
     }
     REG_WRITE(DUMP_CTRL, 0);
     REG_WRITE(DAC_CTRL, 0);

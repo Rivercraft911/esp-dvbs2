@@ -26,7 +26,7 @@ typedef struct {
 typedef struct {
     uint64_t samples;
     uint32_t units, max_late, max_service, max_clear, max_spin, max_lag;
-    uint32_t free_before, free_wifi, free_ready, largest_ready;
+    uint32_t free_before, free_wifi, free_ready, largest_ready, min_free, stack_free;
     uint8_t gain_max;
     const char *fault;  /* first fault, or NULL */
     esp_err_t error, cleanup;
