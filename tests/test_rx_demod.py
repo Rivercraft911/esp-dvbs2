@@ -86,6 +86,16 @@ def main():
         s = d3.stats()
         assert s["relocks"] == 1 and s["lost"] == 2 and len(d3.frames) == 5, (s, len(d3.frames))
 
+        # A deferred lock whose header never comes (the keyed tone starts right after the
+        # frame the search found) is rejected, and the search starts again at the newest
+        # samples, not at the stale detection: it locks on the second frame after the tone.
+        link = T.Link(frames=6, gap=(1, 0.05), seed=3)
+        d, _, truth = run_twin(so, link)
+        pairs = matched(d, truth)
+        assert [truth.index(t) for _, t in pairs] == [2, 3, 4, 5], [truth.index(t) for _, t in pairs]
+        assert all(np.array_equal(f["hard"], t["codeword"]) for f, t in pairs)
+        assert d.stats()["rejects"] == 1, d.stats()
+
         # Normal frames, as in the recorded corpus (QPSK 1/2, 2245 MHz offsets).
         link = T.Link(modcod=4, short=False, frames=3, cfo_hz=-11800, carrier_hz=2245e6, seed=5)
         d, _, truth = run_twin(so, link)

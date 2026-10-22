@@ -20,11 +20,13 @@
 
 #if DVBS2RX_PIE
 #define demod_halves demod_halves_pie
+#define demod_signs demod_signs_pie
 #define demod_mf demod_mf_pie
 #define demod_turn demod_turn_pie
 #define demod_llr demod_llr_pie
 #else
 #define demod_halves demod_halves_c
+#define demod_signs demod_signs_c
 #define demod_mf demod_mf_c
 #define demod_turn demod_turn_c
 #define demod_llr demod_llr_c
@@ -41,6 +43,7 @@
 #define HOLD 2560u                /* data symbols kept until their run is released, 8k */
 #define DRAIN 896u                /* data symbols released per push call (8,100 per frame in 11) */
 #define SPS 16u
+#define SEARCH 64u                /* acquisition candidates per block: two phases of 32 */
 #define HDR 90u                   /* PLHEADER symbols */
 #define PIL 36u                   /* pilot block symbols */
 #define SPAN 1440u                /* data symbols between pilot blocks (16 slots) */
@@ -83,8 +86,16 @@ struct rx_demod {
     int16_t yi[HOLD] __attribute__((aligned(16)));   /* data symbols' raw outputs, at data */
     int16_t yq[HOLD] __attribute__((aligned(16)));   /* count % HOLD; runs start 8-aligned */
     run_t runs[2];
-    int16_t blk[2 * HDR];         /* one known block: I, then Q at HDR */
-    int32_t ref[2 * HDR];         /* that block derotated */
+    union {
+        struct {
+            int16_t blk[2 * HDR]; /* one known block: I, then Q at HDR */
+            int32_t ref[2 * HDR]; /* that block derotated */
+        };
+        struct {                  /* the search's scratch, while no block is tracked */
+            int16_t sh[2][SEARCH + 8] __attribute__((aligned(16)));  /* half sums */
+            int16_t sx[4 * SEARCH] __attribute__((aligned(16)));    /* demod_signs' */
+        };
+    };
     uint8_t scr[MAX_DATA / 4 + 2] __attribute__((aligned(4)));  /* PL scrambling R of data */
     uint8_t scr_pil[MAX_PIL / 4]; /* ... and of pilots, four per byte, first in the low bits */
     rx_config_t cfg;
@@ -97,8 +108,10 @@ struct rx_demod {
 
     /* acquisition: candidate c integrates samples [8c - 16, 8c) */
     uint64_t c, t0, first, pick;  /* next candidate; detection: first hit, chosen candidate */
-    int32_t half[2], prev[2][2], acq_dc[2], dc_acc[2];
-    uint32_t reg[2][3], fill[2], dc_n;
+    int16_t sa[16] __attribute__((aligned(16)));  /* demod_signs' a, carried between blocks */
+    int16_t half[2];              /* the last block's last half sums */
+    int32_t acq_dc[2], dc_acc[2];
+    uint32_t reg[2][3], fill[2], dc_n;   /* per timing phase: signs, newest in reg[.][0] bit 0 */
     unsigned pending, pick_miss;
 
     /* tracking */
@@ -282,7 +295,7 @@ static inline unsigned scr_at(const uint8_t *scr, unsigned i)
 /* ---------------------------------------------------------------- estimates */
 
 /* Samples per symbol, Q24. Both radios derive LO and sample clock from 40 MHz crystals, so
- * the clock offset is -CFO / f_c: step = 16 (1 - cfo / f_c), cfo = omega Rs / 2^32. */
+ * the clock offset is CFO / f_c: step = 16 (1 - cfo / f_c), cfo = omega Rs / 2^32. */
 static uint32_t base_step(const rx_demod_t *d)
 {
     /* omega 62.5 / f_kHz as a high multiply: kstep = 2^32 62.5 / f_kHz, set at init */
@@ -733,7 +746,7 @@ static void start_frame(rx_demod_t *d, const block_t *b, uint64_t t)
 
 /* Frequency: a quarter of the measured residual. Timing: half the error now (tau Q16 symbols
  * times 16 samples, Q24), and 1/256 of it per symbol of block spacing into the integrator,
- * which only has to absorb what -CFO / f_c misses. DC: a quarter of the mean residual since
+ * which only has to absorb what CFO / f_c misses. DC: a quarter of the mean residual since
  * the last block. Leak: an eighth of the block's residual. */
 static void update_loops(rx_demod_t *d, const block_t *b, uint32_t centre2, int32_t inc)
 {
@@ -1043,6 +1056,29 @@ void demod_halves_c(const int8_t *xi, const int8_t *xq, unsigned n, int16_t *hi,
     }
 }
 
+uint64_t demod_signs_c(const int16_t *hi, const int16_t *hq, int16_t *a, int32_t *sums,
+                       int16_t *scratch)
+{
+    (void)scratch;                               /* the PIE's staging */
+    int32_t i2 = a[6], q2 = a[14], i1 = a[7], q1 = a[15];        /* a_{k-2}, a_{k-1} */
+    uint64_t bits = 0;
+    for (unsigned k = 0; k < SEARCH; ++k) {
+        int32_t ai = hi[k] + hi[k + 1], aq = hq[k] + hq[k + 1];
+        bits = bits << 1 | (uint32_t)(aq * i2 - ai * q2) >> 31;
+        i2 = i1;
+        q2 = q1;
+        i1 = ai;
+        q1 = aq;
+        sums[0] += hi[k + 1];
+        sums[1] += hq[k + 1];
+        if (k >= SEARCH - 8) {
+            a[k - (SEARCH - 8)] = (int16_t)ai;
+            a[k - (SEARCH - 16)] = (int16_t)aq;
+        }
+    }
+    return bits;
+}
+
 /* Lock at t0, or unless config.quick_lock on the next header: one frame later at the clock
  * the CFO hint implies (short frames: +-2 samples for +-30 kHz), so a search and a refine
  * never share a call. */
@@ -1056,31 +1092,74 @@ static void defer_lock(rx_demod_t *d)
     d->state = REFINE;
 }
 
+/* (hi:lo) >> s for s < 32 */
+static inline uint32_t funnel(uint32_t hi, uint32_t lo, unsigned s)
+{
+    return s ? hi << (32 - s) | lo >> s : lo;
+}
+
+/* Bits 63, 61, .., 1 of x as bits 31 .. 0. */
+static uint32_t odd_bits(uint64_t x)
+{
+    x = x >> 1 & 0x5555555555555555ull;
+    x = (x | x >> 1) & 0x3333333333333333ull;
+    x = (x | x >> 2) & 0x0f0f0f0f0f0f0f0full;
+    x = (x | x >> 4) & 0x00ff00ff00ff00ffull;
+    x = (x | x >> 8) & 0x0000ffff0000ffffull;
+    return (uint32_t)(x | x >> 16);
+}
+
+/* One timing phase's 32 new signs w (its first candidate in bit 31) against the header:
+ * candidate j's register is (r2:r1:r0:w) >> (31 - j). Every candidate whose 3 newest signs
+ * match is found at once from the shifted words; only those count misses, on the SOF's 25 and
+ * then all 89. Hits append to (k, m) in candidate order. */
+static unsigned match(rx_demod_t *d, unsigned ph, uint32_t w, uint32_t *hit_k, unsigned *hit_m,
+                      unsigned hits)
+{
+    uint32_t r0 = d->reg[ph][0], r1 = d->reg[ph][1], r2 = d->reg[ph][2], fill = d->fill[ph];
+    uint32_t p = d->pat[0];
+    d->reg[ph][2] = r1;
+    d->reg[ph][1] = r0;
+    d->reg[ph][0] = w;
+    d->fill[ph] = fill + 32 < HDR ? fill + 32 : HDR;
+    if (fill + 31 < HDR) {
+        return hits;                             /* no register is complete yet */
+    }
+    uint32_t m = ~(w ^ (0u - (p & 1))) & ~((w >> 1 | r0 << 31) ^ (0u - (p >> 1 & 1))) &
+                 ~((w >> 2 | r0 << 30) ^ (0u - (p >> 2 & 1)));
+    m &= ~0u >> (fill >= HDR ? 0 : HDR - fill);  /* candidates from HDR - fill */
+    while (m) {
+        unsigned s = 31 - (unsigned)__builtin_clz(m);
+        m ^= 1u << s;
+        unsigned miss = popcount((funnel(r2, r1, s) ^ d->pat[2]) & 0x1ffffffu);
+        if (__builtin_expect(miss <= SOF_MISS, 0)) {
+            miss += popcount(funnel(r0, w, s) ^ p) + popcount(funnel(r1, r0, s) ^ d->pat[1]);
+            if (miss <= ALL_MISS && hits < 8) {
+                hit_k[hits] = ph + 2 * (31 - s);
+                hit_m[hits++] = miss;
+            }
+        }
+    }
+    return hits;
+}
+
 /* The search over the block of SEARCH candidates from c. Candidate c sums the even samples
- * of [8c - 16, 8c), centred at 8c - 9; acquire_from starts c after the stream start and the
- * consumers run every CHUNK words, so every window is in the ring. Fixed blocks keep the
- * result independent of how the dump arrives. Pass 1 forms the half sums; pass 2 runs each
- * timing phase's sign register in locals. A candidate is examined only if its 3 newest signs
- * match, then on the SOF's 25 and all 89. Returns 1 when a detection is chosen (state REFINE):
- * the fewest misses within 3 candidates of the first. */
-#define SEARCH 64u
+ * of [8c - 16, 8c), centred at 8c - 9; acquire keeps c's window in the ring. Fixed blocks
+ * keep the result independent of how the dump arrives. demod_halves forms the half sums,
+ * demod_signs the sign of the turn between symbols, Im(a_c conj(a_{c-2})), per candidate;
+ * then each timing phase's 32 signs are matched. Returns 1 when a detection is chosen (state
+ * REFINE): the fewest misses within 3 candidates of the first. */
 static int search(rx_demod_t *d)
 {
     const uint32_t n = SEARCH;
-    int16_t hi[SEARCH + 1] __attribute__((aligned(16))), hq[SEARCH + 1] __attribute__((aligned(16)));
+    int16_t *hi = d->sh[0], *hq = d->sh[1];
     unsigned at = (unsigned)(8 * d->c - 8) & (RING - 1), part = (RING - at) / 8;  /* c odd */
     part = part < n ? part : n;
-    hi[0] = (int16_t)d->half[0];
-    hq[0] = (int16_t)d->half[1];
+    hi[0] = d->half[0];
+    hq[0] = d->half[1];
     demod_halves(d->ri + at, d->rq + at, part, hi + 1, hq + 1, evens);
     demod_halves(d->ri, d->rq, n - part, hi + 1 + part, hq + 1 + part, evens);
-    int32_t ci = 0, cq = 0;
-    for (uint32_t k = 1; k <= n; ++k) {
-        ci += hi[k];
-        cq += hq[k];
-    }
-    d->dc_acc[0] += ci;
-    d->dc_acc[1] += cq;
+    uint64_t signs = demod_signs(hi, hq, d->sa, d->dc_acc, d->sx);
     if (!((d->dc_n += n) & 255)) {      /* every 256 candidates, 1/8 of the mean, as a 16-sample sum */
         d->acq_dc[0] += (d->dc_acc[0] * 4 - d->acq_dc[0]) >> 3;
         d->acq_dc[1] += (d->dc_acc[1] * 4 - d->acq_dc[1]) >> 3;
@@ -1089,40 +1168,9 @@ static int search(rx_demod_t *d)
     d->half[0] = hi[n];
     d->half[1] = hq[n];
     uint32_t hit_k[8];
-    unsigned hit_m[8], hits = 0;
-    for (unsigned ph = 0; ph < 2; ++ph) {
-        unsigned x = ((unsigned)d->c ^ ph) & 1;        /* register of candidate c + ph */
-        int32_t p0 = d->prev[x][0], p1 = d->prev[x][1];
-        uint32_t r0 = d->reg[x][0], r1 = d->reg[x][1], r2 = d->reg[x][2], fill = d->fill[x];
-        for (uint32_t k = ph; k < n; k += 2) {
-            /* One sign bit per candidate: Im(a_c conj(a_{c-2})), the turn between symbols. */
-            int32_t ai = hi[k + 1] + hi[k], aq = hq[k + 1] + hq[k];
-            uint32_t neg = (uint32_t)(aq * p0 - ai * p1) >> 31;
-            p0 = ai;
-            p1 = aq;
-            r2 = r2 << 1 | r1 >> 31;
-            r1 = r1 << 1 | r0 >> 31;
-            r0 = r0 << 1 | neg;
-            if (fill < HDR) {
-                ++fill;
-            } else if (!((r0 ^ d->pat[0]) & 7)) {
-                unsigned miss = popcount((r2 ^ d->pat[2]) & 0x1ffffffu);
-                if (miss <= SOF_MISS) {
-                    miss += popcount(r0 ^ d->pat[0]) + popcount(r1 ^ d->pat[1]);
-                    if (miss <= ALL_MISS && hits < 8) {
-                        hit_k[hits] = k;
-                        hit_m[hits++] = miss;
-                    }
-                }
-            }
-        }
-        d->prev[x][0] = p0;
-        d->prev[x][1] = p1;
-        d->reg[x][0] = r0;
-        d->reg[x][1] = r1;
-        d->reg[x][2] = r2;
-        d->fill[x] = fill;
-    }
+    unsigned hit_m[8];
+    unsigned hits = match(d, 0, odd_bits(signs), hit_k, hit_m, 0);
+    hits = match(d, 1, odd_bits(signs << 1), hit_k, hit_m, hits);
     for (unsigned h = 0; h < hits; ++h) {
         uint64_t k = d->c + hit_k[h];
         if (!d->pending) {
@@ -1168,6 +1216,12 @@ static int acquire(rx_demod_t *d)
         }
         if (8 * (d->c + SEARCH - 1) > d->written) {
             break;                                   /* the block's last window is not here */
+        }
+        if (8 * d->c + RING < d->written + 16) {
+            acquire_from(d, d->written);             /* a failed deferred refine left c a frame
+                                                      * back: search the new samples, not the
+                                                      * ring's overwritten past */
+            continue;
         }
         search(d);
     }

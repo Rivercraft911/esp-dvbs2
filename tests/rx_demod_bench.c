@@ -86,6 +86,51 @@ static void bench_halves(void)
     heap_caps_free(h);
 }
 
+/* The search's signs over random half sums, including the extremes, then the a_{k-2} carry. */
+static void bench_signs(void)
+{
+    int16_t *h = heap_caps_aligned_alloc(16, 4 * 72, INTERNAL);
+    int16_t *a = heap_caps_aligned_alloc(16, 4 * 16, INTERNAL);
+    int16_t *scratch = heap_caps_aligned_alloc(16, 512, INTERNAL);
+    if (!h || !a || !scratch) {
+        printf("@{\"error\":\"allocation failed\"}\n");
+        return;
+    }
+    for (unsigned rep = 0; rep < 4; ++rep) {
+        for (unsigned i = 0; i < 2 * 72; ++i) {
+            int32_t v = (int32_t)(rnd() % 1021) - 512;          /* sums of 4 int8: -512 .. 508 */
+            h[i] = (int16_t)(rep == 3 ? ((rnd() & 1) ? 508 : -512) : rep == 2 ? v / 64 : v);
+        }
+        for (unsigned i = 0; i < 16; ++i) a[i] = (int16_t)((int32_t)(rnd() % 2041) - 1024);
+        memcpy(a + 16, a, 32);
+        int32_t sums[4] = {5, -7, 5, -7};
+        uint64_t bits[2] = {0, 0};
+        uint32_t best[2] = {UINT32_MAX, UINT32_MAX};
+        for (int pie = 0; pie < 2; ++pie) {
+            for (unsigned r = 0; r < RUNS; ++r) {
+                int16_t carry[16] __attribute__((aligned(16)));
+                memcpy(carry, a + 16 * pie, 32);
+                int32_t s[2] = {5, -7};
+                uint32_t c = now();
+                bits[pie] = (pie ? demod_signs_pie : demod_signs_c)(h, h + 72, carry, s, scratch);
+                c = now() - c;
+                best[pie] = c < best[pie] ? c : best[pie];
+                if (r == RUNS - 1) {
+                    memcpy(a + 16 * pie, carry, 32);
+                    sums[2 * pie] = s[0];
+                    sums[2 * pie + 1] = s[1];
+                }
+            }
+        }
+        unsigned diff = (bits[0] != bits[1]) + (memcmp(a, a + 16, 32) != 0) +
+                        (sums[0] != sums[2]) + (sums[1] != sums[3]);
+        report("demod_signs", 64, best[0], best[1], diff);
+    }
+    heap_caps_free(h);
+    heap_caps_free(a);
+    heap_caps_free(scratch);
+}
+
 static void bench(void)
 {
     int16_t *yi = heap_caps_aligned_alloc(16, 2 * N + 32, INTERNAL), *yq = heap_caps_aligned_alloc(16, 2 * N + 32, INTERNAL);
@@ -158,6 +203,7 @@ void app_main(void)
         vTaskDelay(pdMS_TO_TICKS(1500));
         bench_mf();
         bench_halves();
+        bench_signs();
         bench();
         vTaskDelay(pdMS_TO_TICKS(3000));
     }

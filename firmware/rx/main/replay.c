@@ -38,7 +38,7 @@ void replay_upload(size_t bytes)
            (unsigned long)esp_rom_crc32_le(0, (const uint8_t *)capture, bytes));
 }
 
-esp_err_t replay_run(unsigned modcod, replay_stats_t *s)
+esp_err_t replay_run(unsigned modcod, unsigned skip, replay_stats_t *s)
 {
     memset(s, 0, sizeof *s);
     if (!pairs) return ESP_ERR_INVALID_STATE;
@@ -58,8 +58,9 @@ esp_err_t replay_run(unsigned modcod, replay_stats_t *s)
     printf("@{\"cmd\":\"replay\",\"stream\":\"binary\",\"record_bytes\":%u}\n",
            (unsigned)sizeof(receive_record_t));
     fflush(stdout);
-    for (size_t first = 0; first < pairs; first += CHUNK) {
+    for (size_t first = 0, unit = 1; first < pairs; first += CHUNK, ++unit) {
         size_t n = pairs - first < CHUNK ? pairs - first : CHUNK;
+        if (skip && unit % skip == 0) continue;
         /* The dump word's I bits 19:12 and Q bits 9:2 are exactly what was recorded. */
         for (size_t k = 0; k < n; ++k)
             words[k] = (uint32_t)(uint8_t)capture[2 * (first + k)] << 12 |

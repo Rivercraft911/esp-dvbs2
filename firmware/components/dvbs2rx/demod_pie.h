@@ -45,6 +45,16 @@ void demod_halves_c(const int8_t *xi, const int8_t *xq, unsigned n, int16_t *hi,
 void demod_halves_pie(const int8_t *xi, const int8_t *xq, unsigned n, int16_t *hi, int16_t *hq,
                       const int8_t *w);
 
+/* The search's signs for 64 candidates: a_k = h[k] + h[k + 1] per axis (h: 72 entries,
+ * 16-byte aligned, h[0] the previous block's last half sum), and bit 63 - k of the result is
+ * set when Im(a_k conj(a_{k-2})) = aq_k ai_{k-2} - ai_k aq_{k-2} < 0. a (16-byte aligned) holds
+ * a_{-2}, a_{-1} in lanes 6, 7 of I (a[0..7]) and Q (a[8..15]) and returns a_56 .. a_63;
+ * sums gain h[1..64]. scratch: 512 bytes, 16-byte aligned. */
+uint64_t demod_signs_c(const int16_t *hi, const int16_t *hq, int16_t *a, int32_t *sums,
+                       int16_t *scratch);
+uint64_t demod_signs_pie(const int16_t *hi, const int16_t *hq, int16_t *a, int32_t *sums,
+                         int16_t *scratch);
+
 /* The constants for a run with carrier step inc per symbol, leak (lr, li) and LLR gain. */
 void demod_run_init(demod_run_t *k, uint32_t inc, int16_t lr, int16_t li, int16_t dr, int16_t di,
                     int16_t gain);

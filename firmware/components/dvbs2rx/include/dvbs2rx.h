@@ -45,7 +45,7 @@ typedef struct {
     int32_t cfo_hint_hz;    /* centre of the acquisition search */
     uint32_t cfo_span_hz;   /* half-width of the search (0: 50 kHz) */
     uint32_t carrier_khz;   /* RF carrier: both radios run from 40 MHz crystals, so the symbol
-                             * clock offset is -CFO / carrier (0: track it from timing alone) */
+                             * clock offset is CFO / carrier (0: track it from timing alone) */
     uint8_t normal;         /* 64,800-bit frames (host tests on the normal-frame corpus): llr
                              * then holds 64,800 and hard 8,100 bytes */
     uint8_t quick_lock;     /* lock on the PLHEADER found rather than the next one: one more

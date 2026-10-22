@@ -15,5 +15,7 @@ typedef struct {
 
 /* Read the next `bytes` from USB into PSRAM: int8 I, Q pairs at 16 MS/s (.sc8). */
 void replay_upload(size_t bytes);
-/* Run the stored capture through the demodulator and FEC, 6,144 words per push. */
-esp_err_t replay_run(unsigned modcod, replay_stats_t *stats);
+/* Run the stored capture through the demodulator and FEC, 6,144 words per push. With skip,
+ * every skip-th push is left out, as capture drops a unit under overload: the next push
+ * jumps in first. */
+esp_err_t replay_run(unsigned modcod, unsigned skip, replay_stats_t *stats);

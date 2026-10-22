@@ -157,6 +157,7 @@ def main() -> int:
     p.add_argument("--gain", type=int, default=32)
     p.add_argument("--seconds", type=int, default=30)
     p.add_argument("--replay", type=pathlib.Path, help="recorded .sc8 capture to run with the radio off")
+    p.add_argument("--skip", type=int, default=0, help="replay: leave out every SKIP-th push")
     p.add_argument("--port", default=board.DEFAULT_PORT)
     p.add_argument("--callsign", default="N0CALL")
     p.add_argument("--tx-frames", type=int, default=8000, help="model frames to search")
@@ -165,7 +166,7 @@ def main() -> int:
     port = board.resolve_port(a.port)
     if a.replay:
         data = a.replay.read_bytes()
-        command, timeout = f"replay {a.modcod}", 60 + len(data) / 1e6
+        command, timeout = f"replay {a.modcod}" + (f" {a.skip}" if a.skip else ""), 60 + len(data) / 1e6
     else:
         command, timeout = f"rx {a.mhz} {a.gain} {a.seconds} {a.modcod}", a.seconds + 60
     with board.reserve_port(port):
