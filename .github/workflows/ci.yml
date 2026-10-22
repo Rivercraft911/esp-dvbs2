@@ -36,6 +36,7 @@ jobs:
           python tests/test_receive.py
           python tests/test_rx_filter.py
           python tests/test_rx_carrier.py
+          python tests/test_rx_stream.py
           python tests/test_rx_mc6.py
       - run: python tests/test_live_iio.py
       - run: python tests/test_ota.py
@@ -69,10 +70,13 @@ jobs:
 
   receiver:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        path: [tests/rx_bench, tests/rx_stream]
     steps:
       - uses: actions/checkout@v4
       - uses: espressif/esp-idf-ci-action@v1
         with:
           esp_idf_version: v6.1
           target: esp32s3
-          path: tests/rx_bench
+          path: ${{ matrix.path }}

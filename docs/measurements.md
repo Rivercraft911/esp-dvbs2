@@ -373,6 +373,20 @@ filter still takes about 30 ms before carrier processing or concurrent capture;
 a frame arrives every 33.282 ms. Component gains do not establish continuous
 reception. The saved receiver firmware was restored after each run.
 
+The cleaned collector app separately passed quiet 6.291456 s and 31.45728 s
+controls. The longer run processed 503,316,494 raw pairs through both halfbands
+and the fixed RRC worker, including a native cycle-counter wrap. It reported zero
+sample gaps, overruns or deadline failures, with a maximum queue of 27/64 slots.
+Worst bank service including admission was 148,639 cycles against 154,335; the
+longest masked section was 5,519 cycles (23.0 µs). Normal 800 ms interrupt and
+5 s task watchdog settings, ticks and idle service remained active. Independent
+raw-to-filtered prefix checks passed; a whole-input CRC is unmeasured.
+
+With Wi-Fi, collector buffers and workers allocated, free internal RAM was
+33,007 bytes and its largest block 17,408 bytes. The 129,600-byte belief array
+therefore cannot be assumed to fit internally in this layout. These runs do not
+include acquisition, carrier processing, FEC or continuous validated payload.
+
 ## Recreate the figures
 
 ```sh

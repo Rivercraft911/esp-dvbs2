@@ -271,6 +271,13 @@ These components are not yet a continuous receiver or part of the capture app.
 The [radio-off measurements](measurements.md#receiver-components) show both the first
 implementation and the gains from processing filter spans and parity-check words.
 
+`tests/rx_stream` is a separate finite collector app. Three raw banks feed two
+11-tap halfband filters, a 64-slot PSRAM queue and the existing fixed-phase
+4 MS/s to 1 Msym/s RRC worker. DMA completion wakes a normal task; bounded PIE
+sections preserve shared processor state while ordinary interrupts, ticks and
+idle service remain active. It reports continuity, ownership, guard and deadline
+checks plus free memory before ADC start. It does not acquire frames or decode payload.
+
 ## Table provenance
 
 Current waveform coverage is `tests/test_stream.py`; `tests/test_rational.py` also checks
