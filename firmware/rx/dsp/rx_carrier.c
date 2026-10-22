@@ -122,6 +122,15 @@ static complex known(const int16_t sample[2], uint32_t phase)
     return (complex){(i*p[0]-q*p[1])/2097152.0f, (i*p[1]+q*p[0])/2097152.0f};
 }
 
+/* Strict 90-degree wedge: diagonal ties are inside. Signed zero and
+ * nonfinite inputs retain the old diagnostic convention. */
+static bool pilot_error(float r, float i)
+{
+    if (!isfinite(r) || !isfinite(i)) return fabsf(atan2f(i, r)) > PI/4;
+    if (r == 0 && i == 0) return signbit(r) != 0;
+    return r < 0 || fabsf(i) > r;
+}
+
 bool rx_carrier_estimate(rx_carrier *state, const int16_t frame[RX_CARRIER_SYMBOLS][2],
                         const int16_t derivative[RX_CARRIER_KNOWN][2],
                         const uint8_t gold[RX_CARRIER_GOLD_BYTES],
@@ -185,7 +194,7 @@ bool rx_carrier_estimate(rx_carrier *state, const int16_t frame[RX_CARRIER_SYMBO
         if (block)
             for (unsigned k = 0; k < count; ++k) {
                 complex v = product(pilots[k], (complex){mean.r, -mean.i});
-                next.pilot_errors += fabsf(atan2f(v.i, v.r)) > PI/4;
+                next.pilot_errors += pilot_error(v.r, v.i);
             }
         if (derivative && energy > 0) {
             float norm = sum.r*sum.r+sum.i*sum.i;
@@ -222,7 +231,7 @@ static int8_t classify(const rx_carrier *state, int v)
     return v >= state->high ? 24 : v <= state->negative_high ? -24 : v < state->low ? -8 : 8;
 }
 
-bool rx_carrier_project(rx_carrier *state, const int16_t frame[RX_CARRIER_SYMBOLS][2],
+static bool project_checked(rx_carrier *state, const int16_t frame[RX_CARRIER_SYMBOLS][2],
                        const uint8_t gold[RX_CARRIER_GOLD_BYTES], unsigned symbols,
                        int8_t llr[RX_CARRIER_BITS], uint8_t word[RX_CARRIER_WORD_BYTES])
 {
@@ -263,5 +272,89 @@ bool rx_carrier_project(rx_carrier *state, const int16_t frame[RX_CARRIER_SYMBOL
         }
         state->cursor = n+1;
     }
+    return true;
+}
+
+static inline int floor_q5(int32_t value)
+{
+    /* Exact floor(value/65536), without negative shifts or negating INT_MIN. */
+    return (int)(((uint32_t)value ^ UINT32_C(0x80000000)) >> 16)-32768;
+}
+
+static inline int level(int value, int high, int negative_high, int low)
+{
+    return value >= high ? 24 : value <= negative_high ? -24 : value < low ? -8 : 8;
+}
+
+static unsigned emitted_before(unsigned n)
+{
+    unsigned body = n-90, remainder = body%1476;
+    unsigned pilots = 36*(body/1476)+(remainder > 1440 ? remainder-1440 : 0);
+    return 2*(body-pilots);
+}
+
+bool rx_carrier_project(rx_carrier *state,
+    const int16_t frame[RX_CARRIER_SYMBOLS][2],
+    const uint8_t gold[RX_CARRIER_GOLD_BYTES], unsigned symbols,
+    int8_t llr[RX_CARRIER_BITS], uint8_t word[RX_CARRIER_WORD_BYTES])
+{
+    /* Preserve reference behavior, including malformed-state partial failure,
+     * header errors and every refusal, outside the normal data-only domain. */
+    if (!state || ((uintptr_t)state % _Alignof(rx_carrier)) || !state->prepared || state->failed ||
+        !frame || !gold || !llr || !word || !symbols || symbols > 64 ||
+        state->cursor < 90 || state->cursor > RX_CARRIER_SYMBOLS ||
+        state->emitted != emitted_before(state->cursor) || ((uintptr_t)frame & 1U))
+        return project_checked(state, frame, gold, symbols, llr, word);
+    const void *p[] = {state, frame, gold, llr, word};
+    const size_t size[] = {sizeof *state, RX_CARRIER_SYMBOLS*4U, RX_CARRIER_GOLD_BYTES,
+                          RX_CARRIER_BITS, RX_CARRIER_WORD_BYTES};
+    for (unsigned i = 0; i < 5; ++i)
+        for (unsigned j = 0; j < i; ++j)
+            if (!disjoint(p[i], size[i], p[j], size[j]))
+                return project_checked(state, frame, gold, symbols, llr, word);
+    unsigned n = state->cursor, emitted = state->emitted, end = n+symbols;
+    if (end > RX_CARRIER_SYMBOLS) end = RX_CARRIER_SYMBOLS;
+    unsigned segment = 0;
+    const int high = state->high, negative_high = state->negative_high, low = state->low;
+    while (n < end) {
+        unsigned body = n-90, offset = body%1476;
+        if (offset >= 1440) {
+            unsigned stop = n+1476-offset;
+            n = stop < end ? stop : end;
+            continue;
+        }
+        while (segment < 21 && 2*n > 3095+2952*segment) ++segment;
+        unsigned stop = n+1440-offset;
+        if (stop > end) stop = end;
+        if (segment < 21) {
+            unsigned boundary = (3095+2952*segment)/2+1;
+            if (stop > boundary) stop = boundary;
+        }
+        uint32_t step = state->step[segment], phase = state->base[segment]+n*step;
+        unsigned left = 4-(body&3U), packed = gold[body/4] >> (2*(body&3U));
+        for (; n < stop; ++n) {
+            uint32_t local = phase-((packed&3U)<<30);
+            unsigned index = ((local+(UINT32_C(1)<<19)) >> 20)&4095U;
+            int c = sine((index+1024)&4095U), s = sine(index);
+            int32_t i = frame[n][0], q = frame[n][1];
+            int a = level(floor_q5(i*c-q*s), high, negative_high, low);
+            int b = level(floor_q5(i*s+q*c), high, negative_high, low);
+            llr[emitted] = (int8_t)a;
+            llr[emitted+1] = (int8_t)b;
+            unsigned shift = 6-(emitted&7U), byte = emitted/8;
+            unsigned signs = ((unsigned)(a < 0)<<1) | (b < 0);
+            if (!(emitted&7U)) word[byte] = 0;
+            word[byte] |= (uint8_t)(signs<<shift);
+            emitted += 2;
+            phase += step;
+            packed >>= 2;
+            if (!--left && n+1 < stop) {
+                left = 4;
+                packed = gold[(n+1-90)/4];
+            }
+        }
+    }
+    state->cursor = n;
+    state->emitted = emitted;
     return true;
 }

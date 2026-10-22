@@ -1,5 +1,6 @@
 idf_component_register(
-    SRCS "bench.c"
+    SRCS "bench.c" "carrier.c"
+         "../../../firmware/rx/dsp/rx_carrier.c"
          "../../../firmware/rx/dsp/rx_filter.c"
          "../../../firmware/rx/dsp/rx_filter_pie.S"
          "../../../firmware/rx/fec/rx_mc6.c"

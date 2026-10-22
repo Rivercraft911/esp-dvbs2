@@ -237,7 +237,8 @@ The RX branch has a streaming 32-tap S8 pulse filter and a normal-frame QPSK 2/3
 (MODCOD 6) LDPC decoder in `firmware/rx/dsp` and `firmware/rx/fec`. The filter uses
 64 fractional phases and computes a Q15 derivative only where requested. Its
 coefficient model includes the existing TX pulse, DAC hold and halfband filters;
-RF recovery with this shorter response still needs testing.
+Host replay with this shorter response preserves the retained RF successes and
+failures. It has not yet been qualified as a live on-chip frontend.
 
 The decoder stores two magnitudes, an index and signs in four bytes per check.
 Beliefs and check state occupy 216,000 bytes, with no expanded edge-message buffer.
@@ -248,11 +249,23 @@ BBHEADER before extracting payload. The byte BCH table combines eight polynomial
 steps per lookup; the original nibble checker remains available. BCH error
 correction is not implemented here.
 
+Carrier processing uses pilot estimates and a Q32 phase accumulator with a Q15
+quarter-wave sine table. One pass rotates the Q6 symbols, removes the Gold phase
+sequence and writes both soft bits and packed signs. Descrambling precedes the
+asymmetric soft thresholds. Symbol spans stop at pilot and phase-model boundaries;
+64-bit sample origins and fractional positions remain attached to each frame.
+Sparse timing derivatives are available, but closed-loop timing is not integrated.
+
+The parity checker transposes eight small groups at a time in 40 bytes of scratch.
+It checks the full natural-order word without allocating a parity plane. The public
+payload extraction API retains its full validation contract.
+
 `tests/test_rx_filter.py` and `tests/test_rx_mc6.py` check the portable implementations
 against independent arithmetic, graph and streaming oracles. `tests/rx_bench` builds
 a separate radio-off S3 app. `fecfast` checks the packed clean path; `fecblocked`
 compares grouped belief access and vector message reconstruction. `filter` and
-`fec` retain reference measurements. Commands check native PIE results, guards
+`fec` retain reference measurements. `carrier` checks phase arithmetic, complete
+MC6 words, packed signs and payload against independent controls. Commands check native PIE results, guards
 and reference CRCs and report work separately from deliberate task delays.
 These components are not yet a continuous receiver or part of the capture app.
 The [radio-off measurements](measurements.md#receiver-components) show both the first

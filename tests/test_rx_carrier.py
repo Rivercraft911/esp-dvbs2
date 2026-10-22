@@ -13,7 +13,7 @@ sys.path.insert(0, str(ROOT / "host"))
 import dvbs2
 
 DRIVER = r'''
-#include "rx_carrier.h"
+#include "rx_carrier.c"
 #include <assert.h>
 #include <limits.h>
 #include <stdio.h>
@@ -31,6 +31,17 @@ static void write_file(const char *prefix, const char *suffix, const void *data,
 int main(int argc,char **argv)
 {
     assert(argc==4);
+    if (!strcmp(argv[1], "wedge")) {
+        FILE *in = fopen(argv[2], "rb"), *out = fopen(argv[3], "wb");
+        assert(in && out);
+        uint32_t pair[2];
+        while (fread(pair, sizeof pair, 1, in) == 1) {
+            float r, i; memcpy(&r, pair, 4); memcpy(&i, pair+1, 4);
+            uint8_t value = pilot_error(r, i);
+            assert(fwrite(&value, 1, 1, out) == 1);
+        }
+        fclose(in); fclose(out); return 0;
+    }
     rx_carrier_gold(gold);
     write_file(argv[3],"gold",gold,sizeof gold);
     int8_t header[90][2]; assert(rx_carrier_header((unsigned)atoi(argv[2]),header));
@@ -113,7 +124,34 @@ def main():
         subprocess.run(["cc","-std=c11","-O2","-Wall","-Wextra","-Werror",
                         "-ffp-contract=off","-fno-fast-math","-fsanitize=address,undefined",
                         "-I"+str(ROOT/"firmware/rx/dsp"),str(source),
-                        str(ROOT/"firmware/rx/dsp/rx_carrier.c"),"-lm","-o",str(exe)],check=True)
+                        "-lm","-o",str(exe)],check=True)
+        # Binary32 inputs checked with exact binary64 halfspaces. No angles
+        # are used for finite inputs, including near-diagonal ties.
+        pairs = []
+        for exponent in range(1, 255):
+            for mantissa in (0, 0x400000, 0x7ffffb):
+                real = (exponent << 23) | mantissa
+                for offset in range(-4, 5):
+                    imag = max(0, min(0x7f7fffff, real+offset))
+                    for sr in (0, 0x80000000):
+                        for si in (0, 0x80000000):
+                            pairs.append((real | sr, imag | si))
+        special = (0, 0x80000000, 1, 0x80000001, 0x7fffff, 0x807fffff,
+                   0x800000, 0x80800000, 0x3f800000, 0xbf800000,
+                   0x7f7fffff, 0xff7fffff, 0x7f800000, 0xff800000, 0x7fc00000, 0xffc00000)
+        pairs.extend((a, b) for a in special for b in special)
+        raw = np.asarray(pairs, dtype='<u4'); raw.tofile(p/'wedges')
+        real, imag = raw.view('<f4').astype(np.float64).T
+        with np.errstate(invalid='ignore'):
+            expected = (real+imag < 0) | (real-imag < 0)
+        zero = (real == 0) & (imag == 0)
+        expected[zero] = (raw[zero, 0] >> 31).astype(bool)
+        finite = np.isfinite(real) & np.isfinite(imag)
+        with np.errstate(invalid='ignore'):
+            expected[~finite] = np.abs(np.arctan2(imag[~finite], real[~finite])) > np.float32(np.pi/4)
+        subprocess.run([str(exe), 'wedge', str(p/'wedges'), str(p/'wedge-out')], check=True)
+        assert np.array_equal(expected, np.fromfile(p/'wedge-out', np.uint8))
+        print(f"Carrier wedge: {len(raw)} independent boundary controls PASS", flush=True)
         for case, (modcod, rate, cfo, initial) in enumerate([
                 (4,"1/2",-12000,-2.7),(4,"1/2",12000,2.9),
                 (6,"2/3",-12000,1.4),(6,"2/3",12000,-.4)]):

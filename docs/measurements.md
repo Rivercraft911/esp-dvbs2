@@ -358,6 +358,16 @@ Eight-output PIE filter batching also passed its arithmetic and stream checks,
 but was about 0.44% slower with PSRAM I/O. It failed the 20% improvement gate and
 is not the default.
 
+A subsequent paired carrier test reduced rotation, Gold descrambling and soft-bit
+publication from 32.00–33.51 ms to 16.21–17.70 ms with exact outputs. A small
+parity transpose reduced validation and extraction from at most 6.463 to 4.785 ms.
+The integrated public code then passed two complete synthetic MC6 words: pilot
+estimation, projection and validation together took at most 24.946 ms. Filtering,
+capture and acquisition are excluded. Adding the separately measured 30.18 ms
+filter gives roughly 55.1 ms; this sum is a budget estimate, not a measured pipeline.
+The initial carrier benchmark overflowed its 3,584-byte test stack after one frame.
+The corrected 8,192-byte benchmark retained at least 4,640 bytes free and passed both.
+
 These are radio-off tests with reused small buffers and synthetic inputs. The
 filter still takes about 30 ms before carrier processing or concurrent capture;
 a frame arrives every 33.282 ms. Component gains do not establish continuous

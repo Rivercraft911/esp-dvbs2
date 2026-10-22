@@ -302,33 +302,70 @@ static unsigned ones32(uint32_t value)
     return (value * UINT32_C(0x01010101)) >> 24;
 }
 
+/* MSB-first natural parity window; the last group has only four live bits.
+ * Load the following byte only when a live bit crosses its boundary. */
+static uint8_t window(const uint8_t *p, unsigned k, unsigned live)
+{
+    unsigned shift = k % 8U, value = (unsigned)p[k / 8U] << shift;
+    if (shift + live > 8) value |= p[k / 8U + 1U] >> (8U - shift);
+    return (uint8_t)(value & (255U << (8U - live)));
+}
+
+/* At each stage exchange the off-diagonal bit groups of size d. For example
+ * d=4 exchanges the low nibble of row j with the high nibble of row j+4.
+ * The successive 4/2/1 exchanges map input row j bit 7-l to row l bit 7-j. */
+static void transpose8(uint8_t x[8])
+{
+    for (unsigned d = 4; d; d /= 2) {
+        unsigned mask = d == 4 ? 15U : d == 2 ? 51U : 85U;
+        for (unsigned group = 0; group < 8; group += 2U * d)
+            for (unsigned n = 0; n < d; ++n) {
+                unsigned a = group + n, b = a + d;
+                unsigned exchange = (x[a] ^ (x[b] >> d)) & mask;
+                x[a] ^= (uint8_t)exchange;
+                x[b] ^= (uint8_t)(exchange << d);
+            }
+    }
+}
+
 static unsigned syndrome(const uint8_t *bits)
 {
+    struct {
+        uint32_t before, parity[8];
+        uint8_t x[8];
+        uint32_t after;
+    } w = {.before = UINT32_C(0x6d6d6d6d), .after = UINT32_C(0x6d6d6d6d)};
+    const uint8_t *p = bits + 5400;
     unsigned bad = 0;
-    for (unsigned layer = 0; layer < 60; ++layer)
+    for (unsigned layer = 0; layer < 60; layer += 8) {
+        unsigned live = layer == 56 ? 4U : 8U;
         for (unsigned first = 0; first < 360; first += 32) {
             unsigned count = first == 352 ? 8U : 32U;
-            uint32_t word = 0;
-            /* Parity is transmitted column-major, unlike the information
-             * blocks. Adjacent natural parity bits share a byte except at
-             * bit offset zero. The first check has no predecessor. */
-            for (unsigned j = 0; j < count; ++j) {
-                unsigned k = layer + 60U * (first + j), shift = k % 8U;
-                unsigned at = RX_MC6_K / 8U + k / 8U;
-                unsigned byte = bits[at], value = byte >> (7U - shift);
-                if (k) value ^= shift ? byte >> (8U - shift) : bits[at - 1U];
-                word = (word << 1) | (value & 1U);
+            for (unsigned l = 0; l < live; ++l) w.parity[l] = 0;
+            for (unsigned group = 0; group < count; group += 8) {
+                for (unsigned j = 0; j < 8; ++j) {
+                    unsigned k = 60U * (first + group + j) + layer;
+                    unsigned previous = k ? window(p, k - 1U, live) : p[0] >> 1;
+                    w.x[j] = (uint8_t)(window(p, k, live) ^ previous);
+                }
+                transpose8(w.x);
+                for (unsigned l = 0; l < live; ++l)
+                    w.parity[l] = (w.parity[l] << 8) | w.x[l];
             }
-            if (count == 8) word <<= 24;
-            for (unsigned e = 0; e < 8; ++e) {
-                unsigned token = mc6_graph[layer][e], shift = token & 511U;
-                unsigned position = first + 360U - shift;
-                if (position >= 360) position -= 360;
-                word ^= circular32(bits + 45U * (token >> 9), position);
+            for (unsigned l = 0; l < live; ++l) {
+                uint32_t word = count == 8 ? w.parity[l] << 24 : w.parity[l];
+                for (unsigned e = 0; e < 8; ++e) {
+                    unsigned token = mc6_graph[layer + l][e], shift = token & 511U;
+                    unsigned position = first + 360U - shift;
+                    if (position >= 360) position -= 360;
+                    word ^= circular32(bits + 45U * (token >> 9), position);
+                }
+                if (count == 8) word &= UINT32_C(0xff000000);
+                bad += ones32(word);
             }
-            if (count == 8) word &= UINT32_C(0xff000000);
-            bad += ones32(word);
         }
+    }
+    if (w.before != UINT32_C(0x6d6d6d6d) || w.after != UINT32_C(0x6d6d6d6d)) return UINT32_MAX;
     return bad;
 }
 

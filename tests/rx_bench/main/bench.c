@@ -18,6 +18,8 @@
 #include "esp_private/esp_clk.h"
 #include "freertos/task.h"
 
+extern bool rx_carrier_bench(void);
+
 static _Alignas(16) rx_filter filter;
 static int8_t input[2 * RX_FILTER_INPUT];
 static int16_t pulse[RX_FILTER_OUTPUT][2], derivative[RX_FILTER_OUTPUT][2];
@@ -105,7 +107,14 @@ static bool fec_controls(void)
 static bool fec_block_controls(void)
 {
     uint32_t seed = 0x622026U;
-    unsigned errors = 0;
+    unsigned errors = 0, owned_errors = 0, abi_only_errors = 0;
+    struct {
+        unsigned c, flags, byte;
+        uint32_t before[3], after[3];
+        bool tile, q, magnitudes, metadata, high, pre, post;
+        unsigned actual, expected;
+    } first = {0};
+    bool observed = false;
     for (unsigned c = 0; c < 512; ++c) {
         _Alignas(16) rx_mc6_tile got, want;
         memset(&got, 0x6d, sizeof got);
@@ -136,10 +145,55 @@ static bool fec_block_controls(void)
         __asm__ volatile("rsr.ps %0; rsr.cpenable %1; rsr.sar %2" : "=a"(ps), "=a"(cp), "=a"(sar));
         rx_mc6_block_leaf(&got, flags);
         __asm__ volatile("rsr.ps %0; rsr.cpenable %1; rsr.sar %2" : "=a"(after_ps), "=a"(after_cp), "=a"(after_sar));
-        if (memcmp(&got, &want, sizeof got) || ps != after_ps || cp != after_cp || sar != after_sar) ++errors;
+        bool tile_equal = !memcmp(&got, &want, sizeof got);
+        bool strict_error = !tile_equal || ps != after_ps || cp != after_cp || sar != after_sar;
+        /* RETW can change ABI window-history bits. Data, CPE, scalar SAR
+         * and every other PS bit must still match. */
+        bool owned_error = !tile_equal || ((ps ^ after_ps) & ~UINT32_C(0x30f00)) ||
+                           cp != after_cp || sar != after_sar;
+        if (owned_error) ++owned_errors;
+        if (strict_error) {
+            ++errors;
+            if (!owned_error) ++abi_only_errors;
+            if (!observed) {
+                observed = true;
+                first.c = c; first.flags = flags;
+                first.before[0] = ps; first.before[1] = cp; first.before[2] = sar;
+                first.after[0] = after_ps; first.after[1] = after_cp; first.after[2] = after_sar;
+                first.tile = tile_equal;
+                first.q = !memcmp(got.q, want.q, sizeof got.q);
+                first.magnitudes = !memcmp(got.magnitudes, want.magnitudes, sizeof got.magnitudes);
+                first.metadata = !memcmp(got.metadata, want.metadata, sizeof got.metadata);
+                first.high = !memcmp(got.high, want.high, sizeof got.high);
+                first.pre = !memcmp(got.before, want.before, sizeof got.before);
+                first.post = !memcmp(got.after, want.after, sizeof got.after);
+                first.byte = sizeof got;
+                for (unsigned n = 0; n < sizeof got; ++n) {
+                    unsigned g = ((const uint8_t *)&got)[n], w = ((const uint8_t *)&want)[n];
+                    if (g != w) { first.byte = n; first.actual = g; first.expected = w; break; }
+                }
+            }
+        }
     }
-    printf("@{\"cmd\":\"mc6_block_controls\",\"cases\":512,\"errors\":%u}\n", errors);
-    return !errors;
+    if (observed) {
+        printf("@{\"cmd\":\"mc6_block_failure\",\"case\":%u,\"flags\":%u,"
+               "\"full_tile_equal\":%s,\"data_equal\":[%s,%s,%s,%s,%s,%s],"
+               "\"first_bad_byte\":%u,\"actual_byte\":%u,\"expected_byte\":%u,"
+               "\"context_before\":[%lu,%lu,%lu],\"context_after\":[%lu,%lu,%lu],"
+               "\"ps_xor\":%lu,\"abi_ps_mask\":200448}\n",
+               first.c, first.flags, first.tile ? "true" : "false",
+               first.q ? "true" : "false", first.magnitudes ? "true" : "false",
+               first.metadata ? "true" : "false", first.high ? "true" : "false",
+               first.pre ? "true" : "false", first.post ? "true" : "false",
+               first.byte, first.actual, first.expected,
+               (unsigned long)first.before[0], (unsigned long)first.before[1], (unsigned long)first.before[2],
+               (unsigned long)first.after[0], (unsigned long)first.after[1], (unsigned long)first.after[2],
+               (unsigned long)(first.before[0] ^ first.after[0]));
+    }
+    printf("@{\"cmd\":\"mc6_block_controls\",\"cases\":512,\"errors\":%u,"
+           "\"strict_errors\":%u,\"owned_errors\":%u,\"abi_only_errors\":%u}\n",
+           errors, errors, owned_errors, abi_only_errors);
+    return !owned_errors && errors == abi_only_errors;
 }
 
 static bool filter_frame(int8_t *in, int16_t (*pout)[2], int16_t (*dout)[2],
@@ -434,14 +488,14 @@ void app_main(void)
                    esp_app_get_description()->version, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
                    (unsigned)esp_psram_get_size(), (unsigned)esp_clk_cpu_freq());
         } else if (!strcmp(line, "filter") || !strcmp(line, "fec") ||
-                   !strcmp(line, "fecfast") || !strcmp(line, "fecblocked")) {
+                   !strcmp(line, "fecfast") || !strcmp(line, "fecblocked") || !strcmp(line, "carrier")) {
             bool ok = !strcmp(line, "filter") ? filter_bench() :
-                      !strcmp(line, "fec") ? fec_bench() : fec_fast_bench(!strcmp(line, "fecblocked"));
+                      !strcmp(line, "fec") ? fec_bench() : !strcmp(line, "carrier") ? rx_carrier_bench() : fec_fast_bench(!strcmp(line, "fecblocked"));
             unsigned reserve = (unsigned)uxTaskGetStackHighWaterMark(NULL);
             ok = ok && reserve >= 512;
             printf("@{\"cmd\":\"summary\",\"passed\":%s,\"radio\":false,\"tx\":false,"
                    "\"stack_free\":%u}\n", ok ? "true" : "false", reserve);
-        } else printf("@{\"error\":\"use info, filter, fec, fecfast or fecblocked\"}\n");
+        } else printf("@{\"error\":\"use info, filter, fec, fecfast, fecblocked or carrier\"}\n");
         printf("@{\"done\":true}\n");
     }
 }
