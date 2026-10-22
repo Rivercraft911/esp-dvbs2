@@ -16,6 +16,7 @@
 
 #include "capture.h"
 #include "receive.h"
+#include "kernels.h"
 
 // IDF's VFS drops characters after a 50 ms full-buffer timeout; block instead.
 static int console_put(char c, FILE *stream)
@@ -42,6 +43,44 @@ static void print_capture(const capture_stats_t *s)
            (unsigned long)s->free_ready, (unsigned long)s->largest_ready, s->gain_max,
            esp_err_to_name(s->error), esp_err_to_name(s->cleanup));
     if (s->fault) printf(",\"fault\":\"%s\"", s->fault);
+}
+
+/* First n samples as separate I and Q planes in PSRAM, floor(s10/4), for host analysis. */
+typedef struct { int8_t *i, *q; size_t n; } dump_t;
+
+static esp_err_t IRAM_ATTR dump_unit(const uint32_t *w, size_t count, uint64_t first, void *ctx)
+{
+    dump_t *d = ctx;
+    if (first < d->n) rx_unpack_span(w, first + count > d->n ? d->n - first : count,
+                                     d->i + first, d->q + first);
+    return ESP_OK;
+}
+
+static void dump(unsigned mhz, unsigned gain, unsigned pairs)
+{
+    dump_t d = {heap_caps_aligned_alloc(16, 2 * (size_t)pairs, MALLOC_CAP_SPIRAM), NULL, pairs};
+    if (!d.i || !pairs) {
+        printf("@{\"cmd\":\"dump\",\"error\":\"no memory for %u pairs\"}\n", pairs);
+        return;
+    }
+    d.q = d.i + pairs;
+    capture_config_t c = {mhz, gain, 1 + pairs / CAPTURE_RATE, false};
+    capture_stats_t s;
+    capture_run(&c, dump_unit, &d, &s);
+    printf("@{\"cmd\":\"dump\",\"mhz\":%u,\"gain\":%u,\"pairs\":%u,\"layout\":\"i plane, q plane\"",
+           mhz, gain, pairs);
+    print_capture(&s);
+    if (s.error == ESP_OK) printf(",\"binary_bytes\":%u", 2 * pairs);
+    printf("}\n");
+    if (s.error == ESP_OK) {
+        fflush(stdout);
+        for (size_t sent = 0; sent < 2 * (size_t)pairs;) {
+            int n = usb_serial_jtag_write_bytes(d.i + sent, 2 * pairs - sent > 4096 ? 4096 : 2 * pairs - sent,
+                                                portMAX_DELAY);
+            if (n > 0) sent += n;
+        }
+    }
+    heap_caps_free(d.i);
 }
 
 /* Level, DC, ADC clipping and the gain field (bits 27:20) on every 64th sample. */
@@ -154,6 +193,8 @@ void app_main(void)
                    (unsigned long)r.demod.acquire_cycles, r.demod.dc_i, r.demod.dc_q);
             print_capture(&s);
             printf("}\n");
+        } else if (fields == 4 && !strcmp(cmd, "dump")) {
+            dump(mhz, gain, seconds);
         } else if (fields >= 3 && !strcmp(cmd, "membench")) {
             capture_config_t c = {mhz, gain, 1, false};
             uint32_t r[16];
@@ -165,7 +206,7 @@ void app_main(void)
             print_capture(&s);
             printf("}\n");
         } else {
-            printf("@{\"error\":\"use info, rxprobe MHz gain seconds [promisc], rx MHz gain seconds MODCOD, membench MHz gain\"}\n");
+            printf("@{\"error\":\"use info, rxprobe MHz gain seconds [promisc], rx MHz gain seconds MODCOD, dump MHz gain pairs, membench MHz gain\"}\n");
         }
         printf("@{\"done\":true}\n");
     }
