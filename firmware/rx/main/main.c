@@ -16,6 +16,7 @@
 
 #include "capture.h"
 #include "receive.h"
+#include "replay.h"
 #include "kernels.h"
 
 // IDF's VFS drops characters after a 50 ms full-buffer timeout; block instead.
@@ -35,10 +36,12 @@ static int log_filter(const char *format, va_list args)
 static void print_capture(const capture_stats_t *s)
 {
     printf(",\"samples\":%llu,\"units\":%lu,\"max_late\":%lu,\"max_service\":%lu,\"max_clear\":%lu,"
+           "\"max_spin\":%lu,\"max_lag\":%lu,"
            "\"free_before\":%lu,\"free_wifi\":%lu,\"free_ready\":%lu,\"largest_ready\":%lu,"
            "\"gain_max\":%u,\"status\":\"%s\",\"cleanup\":\"%s\"",
            (unsigned long long)s->samples, (unsigned long)s->units, (unsigned long)s->max_late,
            (unsigned long)s->max_service, (unsigned long)s->max_clear,
+           (unsigned long)s->max_spin, (unsigned long)s->max_lag,
            (unsigned long)s->free_before, (unsigned long)s->free_wifi,
            (unsigned long)s->free_ready, (unsigned long)s->largest_ready, s->gain_max,
            esp_err_to_name(s->error), esp_err_to_name(s->cleanup));
@@ -193,6 +196,28 @@ void app_main(void)
                    (unsigned long)r.demod.acquire_cycles, r.demod.dc_i, r.demod.dc_q);
             print_capture(&s);
             printf("}\n");
+        } else if (fields == 2 && !strcmp(cmd, "upload")) {
+            replay_upload(mhz);
+        } else if (fields == 2 && !strcmp(cmd, "replay")) {
+            static replay_stats_t r;
+            quiet = true;
+            esp_err_t e = replay_run(mhz, &r);
+            quiet = false;
+            printf("@{\"cmd\":\"replay\",\"result\":\"%s\",\"pushes\":%lu,\"push_words\":6144,"
+                   "\"max_push_cycles\":%lu,\"max_push_at\":%llu,\"push_cycles\":%llu,\"frames\":%lu,"
+                   "\"good\":%lu,\"failed\":%lu,\"max_fec_cycles\":%lu,\"fec_cycles\":%llu,"
+                   "\"demod\":{\"frames\":%lu,\"lost\":%lu,\"relocks\":%lu,\"locked\":%u,"
+                   "\"cfo_hz\":%ld,\"clock_ppb\":%ld,\"rejects\":%lu}}\n",
+                   esp_err_to_name(e), (unsigned long)r.pushes, (unsigned long)r.max_push_cycles,
+                   (unsigned long long)r.max_push_at, (unsigned long long)r.push_cycles,
+                   (unsigned long)r.frames, (unsigned long)r.good, (unsigned long)r.failed,
+                   (unsigned long)r.max_fec_cycles, (unsigned long long)r.fec_cycles,
+                   (unsigned long)r.demod.frames, (unsigned long)r.demod.lost,
+                   (unsigned long)r.demod.relocks, r.demod.locked, (long)r.demod.cfo_hz,
+                   (long)r.demod.clock_ppb, (unsigned long)r.demod.rejects);
+            printf("@{\"cmd\":\"replay\",\"push_log\":[");
+            for (unsigned k = 0; k < r.pushes && k < REPLAY_LOG; ++k) printf("%s%lu", k ? "," : "", (unsigned long)r.log[k]);
+            printf("]}\n");
         } else if (fields == 4 && !strcmp(cmd, "dump")) {
             dump(mhz, gain, seconds);
         } else if (fields >= 3 && !strcmp(cmd, "membench")) {
@@ -206,7 +231,7 @@ void app_main(void)
             print_capture(&s);
             printf("}\n");
         } else {
-            printf("@{\"error\":\"use info, rxprobe MHz gain seconds [promisc], rx MHz gain seconds MODCOD, dump MHz gain pairs, membench MHz gain\"}\n");
+            printf("@{\"error\":\"use info, rxprobe MHz gain seconds [promisc], rx MHz gain seconds MODCOD, dump MHz gain pairs, upload bytes, replay MODCOD, membench MHz gain\"}\n");
         }
         printf("@{\"done\":true}\n");
     }

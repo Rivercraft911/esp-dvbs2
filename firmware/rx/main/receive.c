@@ -82,11 +82,14 @@ esp_err_t receive_run(const capture_config_t *capture, unsigned modcod, receive_
 {
     memset(s, 0, sizeof *s);
     receiver_t r = {.stats = s};
-    rx_config_t config = {.modcod = modcod, .cfo_hint_hz = -10000, .cfo_span_hz = 30000};
+    rx_config_t config = {.modcod = modcod, .cfo_hint_hz = -10000, .cfo_span_hz = 30000,
+                          .carrier_khz = capture->mhz * 1000U};
     const unsigned internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     esp_err_t error = ESP_ERR_NO_MEM;
     r.demod = heap_caps_aligned_alloc(16, rx_demod_size(), internal);
+    /* The iterative decoder's workspace does not fit beside the demodulator yet. */
     r.fec = heap_caps_aligned_alloc(16, rx_fec_size(modcod), internal);
+    if (!r.fec) r.fec = heap_caps_aligned_alloc(16, rx_fec_size(modcod), MALLOC_CAP_SPIRAM);
     r.full = xQueueCreate(SLOTS + 1, 1);
     r.empty = xQueueCreate(SLOTS, 1);
     r.done = xSemaphoreCreateBinary();
@@ -103,7 +106,7 @@ esp_err_t receive_run(const capture_config_t *capture, unsigned modcod, receive_
     error = ESP_ERR_INVALID_ARG;
     if (rx_demod_init(r.demod, &config) || rx_fec_init(r.fec, modcod)) goto done;
     error = ESP_ERR_NO_MEM;
-    if (xTaskCreatePinnedToCore(decoder, "decoder", 6144, &r, 10, NULL, 0) != pdPASS) goto done;
+    if (xTaskCreatePinnedToCore(decoder, "decoder", 8192, &r, 10, NULL, 0) != pdPASS) goto done;
     printf("@{\"cmd\":\"rx\",\"stream\":\"binary\",\"record_bytes\":%u}\n",
            (unsigned)sizeof(receive_record_t));
     fflush(stdout);

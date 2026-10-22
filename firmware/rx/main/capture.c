@@ -11,6 +11,7 @@
 #include "esp_heap_caps.h"
 #include "esp_private/regi2c_ctrl.h"
 #include "esp_async_memcpy.h"
+#include "driver/gptimer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -98,78 +99,143 @@ static void select_lo(bool divided)
     regi2c_ctrl_write_reg_mask(0x65, 0, 0, 4, 4, divided);
 }
 
+/* Handoffs run in a timer interrupt on core 1, so the consumer may lag. The engine
+ * re-owns a bank two handoffs after releasing it; the interrupt faults instead of
+ * handing back a bank the task has not finished. */
+#define TIMER_HZ 10000000U
+#define EARLY_US 15U            /* alarm this far before a handoff, then spin */
+#define UNIT_TICKS ((uint64_t)CAPTURE_UNIT * TIMER_HZ / CAPTURE_RATE)
+#define EARLY_TICKS ((uint64_t)EARLY_US * (TIMER_HZ / 1000000U))
+typedef struct {
+    gptimer_handle_t timer;
+    uint32_t owner, current, max_late, max_spin;
+    uint16_t index, before[4], after[4];
+    uint8_t bank[4];
+    uint64_t pairs, target;
+    volatile uint32_t posted, done;
+    const char *volatile fault;
+    TaskHandle_t task;
+} sched_t;
+
+static bool IRAM_ATTR handoff(gptimer_handle_t timer, const gptimer_alarm_event_data_t *event,
+                              void *arg)
+{
+    sched_t *h = arg;
+    BaseType_t woken = pdFALSE;
+    uint32_t start = esp_cpu_get_cycle_count(), now = start;
+    for (;;) {
+        unsigned at = REG_READ(DUMP_INDEX) & RING_MASK;
+        h->pairs += (at - h->index) & RING_MASK;
+        h->index = at;
+        if (h->pairs >= h->target) break;
+        now = esp_cpu_get_cycle_count();
+        if (now - start > 4U * EARLY_US * 240U) { h->fault = "stalled"; goto wake; }
+    }
+    if (h->posted - h->done >= 2) { h->fault = "consumer late"; goto wake; }
+    unsigned next = (h->current + 1U) % 3U, slot = h->posted & 3U;
+    h->before[slot] = REG_READ(DUMP_INDEX) & RING_MASK;
+    REG_WRITE(BANK_USAGE, h->owner | (1U << next));
+    __asm__ volatile ("memw" ::: "memory");
+    h->after[slot] = REG_READ(DUMP_INDEX) & RING_MASK;
+    h->bank[slot] = h->current;
+    uint32_t late = (uint32_t)(h->pairs - h->target) + ((h->after[slot] - h->index) & RING_MASK);
+    if (late > h->max_late) h->max_late = late;
+    if (late >= CAPTURE_LATE) { h->fault = "late"; goto wake; }
+    ++h->posted;
+    h->current = next;
+    h->target += CAPTURE_UNIT;
+    uint32_t spin = esp_cpu_get_cycle_count() - start;
+    if (spin > h->max_spin) h->max_spin = spin;
+    /* Re-anchor on the handoff just made: the dump clock need not match the timer's. */
+    gptimer_alarm_config_t alarm = {
+        .alarm_count = event->count_value + UNIT_TICKS - EARLY_TICKS
+                       + spin / 24U,   /* cycles at 240 MHz to 0.1 us ticks */
+    };
+    gptimer_set_alarm_action(timer, &alarm);
+wake:
+    vTaskNotifyGiveFromISR(h->task, &woken);
+    return woken == pdTRUE;
+}
+
 static const char *IRAM_ATTR stream(job_t *job)
 {
     const capture_config_t *c = job->config;
     capture_stats_t *s = job->stats;
-    const uint32_t owner = REG_READ(BANK_USAGE) & ~15U;
+    sched_t h = {.owner = REG_READ(BANK_USAGE) & ~15U, .target = CAPTURE_UNIT,
+                 .task = xTaskGetCurrentTaskHandle()};
+    gptimer_config_t tc = {.clk_src = GPTIMER_CLK_SRC_DEFAULT, .direction = GPTIMER_COUNT_UP,
+                           .resolution_hz = TIMER_HZ, .intr_priority = 3};
+    gptimer_event_callbacks_t callbacks = {.on_alarm = handoff};
+    gptimer_alarm_config_t first = {.alarm_count = UNIT_TICKS - EARLY_TICKS};
+    if (gptimer_new_timer(&tc, &h.timer) != ESP_OK) return "timer";
+    const char *fault = NULL;
+    if (gptimer_register_event_callbacks(h.timer, &callbacks, &h) != ESP_OK ||
+        gptimer_enable(h.timer) != ESP_OK || gptimer_set_alarm_action(h.timer, &first) != ESP_OK) {
+        fault = "timer";
+        goto done;
+    }
     REG_WRITE(DUMP_CTRL, 0);
-    REG_WRITE(BANK_USAGE, owner);
+    REG_WRITE(BANK_USAGE, h.owner);
     __asm__ volatile ("memw" ::: "memory");
     for (unsigned n = 0; n < 3; ++n) clear(bank(n));
     REG_WRITE(DUMP_LANES, 0x000c2040U);
-    REG_WRITE(BANK_USAGE, owner | 1U);
+    REG_WRITE(BANK_USAGE, h.owner | 1U);
     __asm__ volatile ("memw" ::: "memory");
+    uint32_t irq = portSET_INTERRUPT_MASK_FROM_ISR();
+    REG_WRITE(DUMP_CTRL, DUMP_RUN | DUMP_CIRCULAR | DUMP_16M | CAPTURE_RING);
+    gptimer_start(h.timer);
+    portCLEAR_INTERRUPT_MASK_FROM_ISR(irq);
 
     const uint64_t total = (uint64_t)c->seconds * CAPTURE_RATE;
-    uint64_t pairs = 0, target = CAPTURE_UNIT;
-    unsigned index = 0, before = 0, after = 0, expected = 0, current = 0;
-    uint32_t irq = portSET_INTERRUPT_MASK_FROM_ISR();
-    uint32_t polled = esp_cpu_get_cycle_count(), changed = polled;
-    REG_WRITE(DUMP_CTRL, DUMP_RUN | DUMP_CIRCULAR | DUMP_16M | CAPTURE_RING);
-    portCLEAR_INTERRUPT_MASK_FROM_ISR(irq);
-    while (s->samples < total) {
-        uint32_t now = esp_cpu_get_cycle_count();
-        unsigned at = REG_READ(DUMP_INDEX) & RING_MASK, delta = (at - index) & RING_MASK;
-        /* A whole unobserved revolution would make the ring index ambiguous. */
-        if (now - polled >= (CAPTURE_RING - EDGE_GUARD) * PAIR_CYCLES) return "overrun";
-        if (delta) changed = now;
-        else if (now - changed >= CAPTURE_RING * PAIR_CYCLES) return "stalled";
-        polled = now;
-        pairs += delta;
-        index = at;
-        if (pairs < target) continue;
-
-        unsigned next = (current + 1U) % 3U;
-        irq = portSET_INTERRUPT_MASK_FROM_ISR();
-        unsigned end_before = REG_READ(DUMP_INDEX) & RING_MASK;
-        REG_WRITE(BANK_USAGE, owner | (1U << next));
-        __asm__ volatile ("memw" ::: "memory");
-        unsigned end_after = REG_READ(DUMP_INDEX) & RING_MASK;
-        portCLEAR_INTERRUPT_MASK_FROM_ISR(irq);
-        uint32_t late = (uint32_t)(pairs - target) + ((end_after - index) & RING_MASK);
-        if (late > s->max_late) s->max_late = late;
-        if (late >= CAPTURE_LATE) return "late";
-
+    unsigned before = 0, after = 0, expected = 0;
+    while (s->samples < total && !h.fault) {
+        if (h.done == h.posted) {
+            if (!ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(20))) { fault = "no handoff"; break; }
+            continue;
+        }
+        uint32_t lag = h.posted - h.done;
+        if (lag > s->max_lag) s->max_lag = lag;
+        unsigned slot = h.done & 3U;
         uint32_t start = esp_cpu_get_cycle_count();
-        const uint32_t *b = bank(current);
+        const uint32_t *b = bank(h.bank[slot]);
         unsigned first, last;
-        if (!edge(b, before, after, true, &first) || !edge(b, end_before, end_after, false, &last))
-            return "edge";
+        if (!edge(b, before, after, true, &first) ||
+            !edge(b, h.before[slot], h.after[slot], false, &last)) { fault = "edge"; break; }
         size_t count = (last - first) & RING_MASK;
-        if (first != expected) return "gap";
-        if (count + CAPTURE_LATE < CAPTURE_UNIT || count > CAPTURE_UNIT + CAPTURE_LATE)
-            return "span";
+        if (first != expected) { fault = "gap"; break; }
+        if (count + CAPTURE_LATE < CAPTURE_UNIT || count > CAPTURE_UNIT + CAPTURE_LATE) {
+            fault = "span";
+            break;
+        }
         size_t head = CAPTURE_RING - first < count ? CAPTURE_RING - first : count;
         if (job->fn(b + first, head, s->samples, job->ctx) != ESP_OK ||
-            (count > head && job->fn(b, count - head, s->samples + head, job->ctx) != ESP_OK))
-            return "consumer";
+            (count > head && job->fn(b, count - head, s->samples + head, job->ctx) != ESP_OK)) {
+            fault = "consumer";
+            break;
+        }
         uint32_t cleared = esp_cpu_get_cycle_count();
-        clear(bank(current));
-        now = esp_cpu_get_cycle_count();
+        clear((uint32_t *)b);
+        uint32_t now = esp_cpu_get_cycle_count();
         if (now - cleared > s->max_clear) s->max_clear = now - cleared;
         if (now - start > s->max_service) s->max_service = now - start;
         s->samples += count;
         ++s->units;
         expected = last;
-        before = end_before;
-        after = end_after;
-        current = next;
-        target += CAPTURE_UNIT;
+        before = h.before[slot];
+        after = h.after[slot];
+        ++h.done;
     }
-    return NULL;
-}
+    if (!fault) fault = h.fault;
 
+done:
+    REG_WRITE(DUMP_CTRL, 0);
+    gptimer_stop(h.timer);
+    gptimer_disable(h.timer);
+    gptimer_del_timer(h.timer);
+    s->max_late = h.max_late;
+    s->max_spin = h.max_spin;
+    return fault;
+}
 
 static uint32_t IRAM_ATTR read_words(const uint32_t *p, size_t words)
 {
