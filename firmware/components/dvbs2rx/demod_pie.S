@@ -269,3 +269,96 @@ demod_llr_pie:
 2:
     retw
     .size demod_llr_pie, . - demod_llr_pie
+
+/* uint64_t demod_signs_pie(const int16_t *hi, const int16_t *hq, int16_t *a, int32_t *sums,
+ *                          int16_t *scratch)
+ * Per axis, 8 candidates a pass: a = h + h shifted one lane (EE.SRC.Q at SAR_BYTE 2), a two
+ * candidates back = the previous a and this one at SAR_BYTE 12, both to scratch (a_I, a_Q,
+ * back_I, back_Q, 128 bytes each), h summed for the DC. Then each candidate's turn
+ * aq back_i - ai back_q exactly in QACC, its sign by VCMP, and 8 signs a byte through ACCX with
+ * weights 128 .. 1 (minus the byte, as the lanes are -1). */
+    .macro pairs h, ap, ao, bo, off
+    ee.vld.128.ip q1, \h, 16                 /* h[0..7] */
+    ee.vld.128.ip q4, \ap, 0                 /* a[-2], a[-1] in lanes 6, 7 */
+    ee.zero.q q6
+    movi a12, 8
+    loopnez a12, .Lpairs\@
+    ee.vld.128.ip q2, \h, 16                 /* h[8b + 8 ..] */
+    wur.sar_byte a7
+    ee.src.q q3, q1, q2                      /* h[8b + 1 ..] */
+    ee.vadds.s16 q5, q1, q3                  /* a[8b ..] */
+    ee.vadds.s16 q6, q6, q3
+    wur.sar_byte a8
+    ee.src.q q4, q4, q5                      /* a[8b - 2 ..] */
+    ee.vst.128.ip q5, \ao, 16
+    ee.vst.128.ip q4, \bo, 16
+    ee.orq q4, q5, q5
+    ee.orq q1, q2, q2
+.Lpairs\@:
+    ee.vst.128.ip q4, \ap, 16                /* a[56..63] for the next block */
+    ee.zero.accx
+    ee.vmulas.s16.accx q6, q0
+    rur.accx_0 a12
+    l32i a13, a5, \off
+    add a13, a13, a12
+    s32i a13, a5, \off
+    .endm
+
+    .align 4
+    .global demod_signs_pie
+    .type demod_signs_pie, @function
+demod_signs_pie:
+    entry a1, 32
+    movi a7, 2
+    movi a8, 12
+    movi a9, 0x00010001
+    ee.movi.32.q q0, a9, 0
+    ee.movi.32.q q0, a9, 1
+    ee.movi.32.q q0, a9, 2
+    ee.movi.32.q q0, a9, 3                   /* ones */
+    mov a10, a6
+    addmi a11, a6, 256
+    pairs a2, a4, a10, a11, 0
+    pairs a3, a4, a10, a11, 4                /* a10, a11 continue at the Q halves */
+    movi a9, 0x00400080
+    ee.movi.32.q q0, a9, 0
+    movi a9, 0x00100020
+    ee.movi.32.q q0, a9, 1
+    movi a9, 0x00040008
+    ee.movi.32.q q0, a9, 2
+    movi a9, 0x00010002
+    ee.movi.32.q q0, a9, 3                   /* lane l: 128 >> l */
+    ee.zero.q q7
+    mov a10, a6
+    addi a11, a6, 64
+    addi a11, a11, 64
+    addmi a12, a6, 256
+    addi a13, a12, 64
+    addi a13, a13, 64
+    movi a14, 0
+    movi a15, 0
+    movi a9, 0
+    ssai 24
+    movi a8, 8
+    loopnez a8, 1f
+    ee.vld.128.ip q1, a10, 16                /* ai */
+    ee.vld.128.ip q2, a11, 16                /* aq */
+    ee.vld.128.ip q3, a12, 16                /* back i */
+    ee.vld.128.ip q4, a13, 16                /* back q */
+    ee.zero.qacc
+    ee.vmulas.s16.qacc q2, q3
+    ee.vsubs.s16 q5, q7, q1
+    ee.vmulas.s16.qacc q5, q4
+    ee.srcmb.s16.qacc q6, a9, 0              /* the turns, saturated: the sign is exact */
+    ee.vcmp.lt.s16 q6, q6, q7
+    ee.zero.accx
+    ee.vmulas.s16.accx q6, q0
+    rur.accx_0 a7
+    src a14, a14, a15
+    slli a15, a15, 8
+    sub a15, a15, a7
+1:
+    mov a2, a15
+    mov a3, a14
+    retw
+    .size demod_signs_pie, . - demod_signs_pie
