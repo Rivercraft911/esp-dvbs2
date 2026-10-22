@@ -43,10 +43,12 @@ class Native:
                        check=True)
         self.tmp = tempfile.TemporaryDirectory(prefix="rx-fec-")
         library = pathlib.Path(self.tmp.name) / "rx_fec.so"
+        encoder = ROOT / "firmware/components/dvbs2"
         subprocess.run(shlex.split(os.environ.get("CC", "cc")) + [
             "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-fPIC", "-shared",
-            "-I", str(COMPONENT / "include"), "-I", str(COMPONENT),
-            str(COMPONENT / "rx_fec.c"), "-o", str(library)], check=True)
+            "-I", str(COMPONENT / "include"), "-I", str(COMPONENT), "-I", str(encoder / "include"),
+            str(COMPONENT / "rx_fec.c"), str(encoder / "dvbs2.c"), str(encoder / "fast.c"),
+            "-o", str(library)], check=True)
         self.lib = ct.CDLL(str(library))
         self.lib.rx_fec_size.restype = ct.c_size_t
         self.lib.rx_fec_size.argtypes = [ct.c_uint]

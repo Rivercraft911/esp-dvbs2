@@ -1,8 +1,9 @@
 /* Short-frame FEC for the receiver: check the hard bits, decode only if needed.
  *
- * Clean path. The hard bits are checked as received: the LDPC syndrome in
- * quasi-cyclic form on packed words, the BCH remainder, then BB descrambling of
- * the BBHEADER, its CRC-8 and the data field. Nothing reads the LLRs.
+ * Clean path. The received information bits are re-encoded with the transmitter's
+ * fast encoder (components/dvbs2, PIE on the S3) and both parity fields compared;
+ * then the BBHEADER is descrambled and its CRC-8 and fields checked, and the data
+ * field descrambled in place. Nothing reads the LLRs.
  *
  * Decoder. Layered min-sum with int8 beliefs and messages (EN 302 307-1 Annex C
  * codes; rx_fec_tables.h has the derivation). A row group of q is a layer of 360
@@ -22,6 +23,7 @@
  * that would read p_(M-1). That lane sees +127 with message 0, so it never sets a
  * minimum or a sign, and p_(M-1) is restored after the layer. */
 #include "dvbs2rx.h"
+#include "dvbs2.h"
 #include "rx_fec_internal.h"
 #include "rx_fec_tables.h"
 
@@ -33,20 +35,25 @@
 
 static unsigned rate_index(unsigned modcod) { return modcod - FIRST_MODCOD; }
 
+static const dvbs2_mode *short_mode(unsigned modcod)
+{
+    return modcod >= FIRST_MODCOD && modcod <= LAST_MODCOD ? dvbs2_find_mode_short(modcod) : NULL;
+}
+
 static size_t round16(size_t n) { return (n + 15) & ~(size_t)15; }
 
 /* Layout of the workspace after the header, in bytes, for one MODCOD. */
 typedef struct {
-    size_t belief, r, qtmp, reads, edges, prbs, rows, total;
+    size_t belief, r, qtmp, reads, edges, prbs, encoder, bits, total;
 } layout_t;
 
 /* Edges in all row groups; the largest row group and most repeated groups in one. */
-static unsigned count_edges(unsigned k, unsigned *most, unsigned *repeats)
+static unsigned count_edges(unsigned k, unsigned q, unsigned *most, unsigned *repeats)
 {
     const uint16_t *e = rx_edges[k];
     unsigned total = 0;
     *most = *repeats = 0;
-    for (unsigned r = 0; r < rx_q[k]; ++r, e += 1 + e[0]) {
+    for (unsigned r = 0; r < q; ++r, e += 1 + e[0]) {
         unsigned seen = 0;
         for (unsigned j = 0; j < e[0]; ++j) {
             for (unsigned i = 0; i < j; ++i) {
@@ -63,10 +70,10 @@ static unsigned count_edges(unsigned k, unsigned *most, unsigned *repeats)
     return total;
 }
 
-static layout_t layout(unsigned k)
+static layout_t layout(const dvbs2_mode *mode)
 {
     unsigned most, repeats;
-    const unsigned edges = count_edges(k, &most, &repeats);
+    const unsigned k = rate_index(mode->modcod), edges = count_edges(k, mode->q, &most, &repeats);
     layout_t l;
     l.belief = round16(sizeof(rx_fec_t));
     l.r = l.belief + (size_t)RX_SLOT * (RX_GROUPS + repeats);
@@ -74,44 +81,48 @@ static layout_t layout(unsigned k)
     l.reads = l.qtmp + (size_t)most * RX_VECTORS * 16;
     l.edges = l.reads + round16((size_t)edges * RX_VECTORS * 2);
     l.prbs = l.edges + round16(edges * sizeof(rx_edge_t));
-    l.rows = l.prbs + round16(rx_kbch[k] / 8);
-    l.total = l.rows + 4 * (RX_ROW_WORDS * rx_q[k] + RX_TWICE_WORDS * rx_nbch[k] / 360);
+    l.encoder = l.prbs + round16(mode->kbch / 8);
+    l.bits = l.encoder + round16(dvbs2_fast_mode_size(mode));
+    l.total = l.bits + DVBS2_SHORT_FAST_WORKSPACE_USED;
     return l;
 }
 
 size_t rx_fec_size(unsigned modcod)
 {
-    if (modcod < FIRST_MODCOD || modcod > LAST_MODCOD) {
-        return 0;
-    }
-    return layout(rate_index(modcod)).total;
+    const dvbs2_mode *mode = short_mode(modcod);
+    return mode ? layout(mode).total : 0;
 }
 
 /* ---------------------------------------------------------------- init */
 
 int rx_fec_init(rx_fec_t *f, unsigned modcod)
 {
-    if (!f || ((uintptr_t)f & 15) || !rx_fec_size(modcod)) {
+    const dvbs2_mode *mode = short_mode(modcod);
+    if (!f || ((uintptr_t)f & 15) || !mode) {
         return -1;
     }
     const unsigned k = rate_index(modcod);
-    const layout_t l = layout(k);
+    const layout_t l = layout(mode);
     memset(f, 0, l.total);
     uint8_t *base = (uint8_t *)f;
     f->modcod = modcod;
-    f->kbch = rx_kbch[k];
-    f->nbch = rx_nbch[k];
-    f->q = rx_q[k];
-    f->groups = rx_nbch[k] / 360;
+    f->kbch = mode->kbch;
+    f->nbch = mode->nbch;
+    f->q = mode->q;
+    f->groups = mode->nbch / 360;
     unsigned repeats;
-    f->edge_count = count_edges(k, &f->most, &repeats);
+    f->edge_count = count_edges(k, f->q, &f->most, &repeats);
     f->belief = (int8_t *)(base + l.belief);
     f->r = (int8_t *)(base + l.r);
     f->qtmp = (int8_t *)(base + l.qtmp);
     f->reads = (uint16_t *)(base + l.reads);
     f->edges = (rx_edge_t *)(base + l.edges);
     f->prbs = base + l.prbs;
-    f->rows = (uint32_t *)(base + l.rows);
+    f->encoder = (dvbs2_fast *)(base + l.encoder);
+    f->bits = (dvbs2_workspace *)(base + l.bits);
+    if (dvbs2_fast_prepare(f->encoder, mode, 1, DVBS2_PIE_BCH | DVBS2_PIE_LDPC)) {
+        return -1;
+    }
     f->max_iterations = MAX_ITERATIONS;
     f->scale = RX_SCALE;
     f->offset = RX_OFFSET;
@@ -182,128 +193,44 @@ int rx_fec_init(rx_fec_t *f, unsigned modcod)
 
 /* ---------------------------------------------------------------- clean check */
 
-static uint32_t be32(const uint8_t *p)
+static unsigned popcount8(unsigned x)
 {
-    return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
+    x -= (x >> 1) & 0x55;
+    x = (x & 0x33) + ((x >> 2) & 0x33);
+    return (x + (x >> 4)) & 15;
 }
 
-/* 32 bits starting at bit 'bit' of big-endian words w (bit 0 = MSB of w[0]). */
-static uint32_t window32(const uint32_t *w, unsigned bit)
+/* Failing LDPC parity checks of hard bits: re-encode their BCH word and compare.
+ * A parity difference d (natural order) fails check c when d_c ^ d_(c-1) is set. */
+static unsigned ldpc_failed(rx_fec_t *f, const uint8_t *hard)
 {
-    const unsigned i = bit / 32, s = bit % 32;
-    return s ? (w[i] << s) | (w[i + 1] >> (32 - s)) : w[i];
-}
-
-/* Hacker's Delight transpose: afterwards bit 31 - j of a[i] is the old bit 31 - i of a[j]. */
-static void transpose32(uint32_t a[32])
-{
-    uint32_t m = 0x0000ffffu;
-    for (unsigned j = 16; j; j >>= 1, m ^= m << j) {
-        for (unsigned k = 0; k < 32; k = (k + j + 1) & ~j) {
-            const uint32_t t = (a[k] ^ (a[k + j] >> j)) & m;
-            a[k] ^= t;
-            a[k + j] ^= t << j;
-        }
-    }
-}
-
-static unsigned popcount32(uint32_t x)
-{
-    x -= (x >> 1) & 0x55555555u;
-    x = (x & 0x33333333u) + ((x >> 2) & 0x33333333u);
-    x = (x + (x >> 4)) & 0x0f0f0f0fu;
-    return (x * 0x01010101u) >> 24;
-}
-
-/* Number of failing parity checks on packed hard bits. Row group r of the
- * information part is A_r = sum of the information groups rotated by their shifts,
- * as 12 big-endian words (bit t = check (r, t)). The parity part of check c is
- * p_c ^ p_(c-1), a stream in natural order c = r + q t: cut it into 360 columns of q
- * bits and transpose 32 columns at a time into the same row form. */
-static unsigned ldpc_syndrome(rx_fec_t *f, const uint8_t *hard)
-{
-    uint32_t *rows = f->rows, *twice = rows + RX_ROW_WORDS * f->q;
-    const unsigned q = f->q;
-    memset(rows, 0, 4 * RX_ROW_WORDS * q);
-    /* Each information group doubled (720 bits), so a rotation is one window. */
-    for (unsigned g = 0; g < f->groups; ++g) {
-        uint8_t bytes[96] = {0};
-        memcpy(bytes, hard + 45 * g, 45);
-        memcpy(bytes + 45, hard + 45 * g, 45);
-        memcpy(bytes + 90, hard + 45 * g, 6);
-        for (unsigned w = 0; w < RX_TWICE_WORDS; ++w) {
-            twice[RX_TWICE_WORDS * g + w] = be32(bytes + 4 * w);
-        }
-    }
-    for (unsigned i = 0; i < f->edge_count; ++i) {
-        const rx_edge_t *x = &f->edges[i];
-        if (x->group >= f->groups) {
-            continue;
-        }
-        unsigned r = 0;
-        while (i >= (unsigned)f->layer_first[r] + f->layer_count[r]) {
-            ++r;
-        }
-        const uint32_t *u = twice + RX_TWICE_WORDS * x->group;
-        for (unsigned w = 0; w < 12; ++w) {
-            rows[RX_ROW_WORDS * r + w] ^= window32(u, 360 - x->shift + 32 * w);
-        }
-    }
-    /* d_c = p_c ^ p_(c-1) on the packed parity stream (p_(-1) = 0), as 32-bit columns. */
-    const uint8_t *p = hard + f->nbch / 8;
-    const unsigned parity_bits = 360 * q;
-    uint32_t prev = 0, a[32];
-    for (unsigned w = 0; w < 12; ++w) {
-        for (unsigned j = 0; j < 32; ++j) {
-            const unsigned t = 32 * w + j;
-            uint32_t col = 0;
-            if (t < 360) {
-                /* Bits q t .. q t + q - 1 of d, MSB first; q <= 25 fits a window of 32. */
-                const unsigned bit = q * t;
-                const uint8_t *b = p + bit / 8;
-                uint64_t x = 0;
-                for (unsigned k = 0; k < 5; ++k) {
-                    x = (x << 8) | (bit / 8 + k < (parity_bits + 7) / 8 ? b[k] : 0);
-                }
-                const uint32_t bits = (uint32_t)(x >> (8 - bit % 8));
-                const uint32_t mask = ~0u << (32 - q);
-                col = (bits ^ ((bits >> 1) | (prev << 31))) & mask;
-                prev = (bits >> (32 - q)) & 1;
-            }
-            a[j] = col;
-        }
-        transpose32(a);
-        for (unsigned r = 0; r < q; ++r) {
-            rows[RX_ROW_WORDS * r + w] ^= a[r];
-        }
-    }
+    uint8_t *bits = f->bits->bits;
+    const unsigned word = f->nbch / 8;
+    memcpy(bits, hard, word);
+    dvbs2_fast_ldpc(f->encoder, f->bits);
     unsigned failed = 0;
-    for (unsigned r = 0; r < q; ++r) {
-        rows[RX_ROW_WORDS * r + 11] &= 0xff000000u;    /* bits 352..359 */
-        for (unsigned w = 0; w < 12; ++w) {
-            failed += popcount32(rows[RX_ROW_WORDS * r + w]);
+    if (memcmp(bits + word, hard + word, RX_SHORT_BITS / 8 - word)) {
+        unsigned previous = 0;
+        for (unsigned i = word; i < RX_SHORT_BITS / 8; ++i) {
+            const unsigned d = bits[i] ^ hard[i];
+            failed += popcount8(d ^ (d >> 1) ^ (previous << 7));
+            previous = d & 1;
         }
     }
     return failed;
 }
 
-/* Remainder of the Nbch-bit BCH word mod g(x) is zero. Byte-wise division, the
- * 168-bit register as 21 bytes. */
-static int bch_ok(const rx_fec_t *f, const uint8_t *hard)
+/* BCH parity of the hard bits matches their re-encoded BBFRAME. ldpc_failed has
+ * already copied the BBFRAME if copied is set. */
+static int bch_ok(rx_fec_t *f, const uint8_t *hard, int copied)
 {
-    uint8_t reg[21] = {0};
-    for (unsigned i = 0; i < f->nbch / 8; ++i) {
-        const uint8_t *t = rx_bch_table + 21 * (reg[0] ^ hard[i]);
-        for (unsigned j = 0; j < 20; ++j) {
-            reg[j] = reg[j + 1] ^ t[j];
-        }
-        reg[20] = t[20];
+    uint8_t *bits = f->bits->bits;
+    const unsigned info = f->kbch / 8;
+    if (!copied) {
+        memcpy(bits, hard, info);
     }
-    uint8_t any = 0;
-    for (unsigned j = 0; j < 21; ++j) {
-        any |= reg[j];
-    }
-    return !any;
+    dvbs2_fast_bch(f->encoder, f->bits);
+    return !memcmp(bits + info, hard + info, f->nbch / 8 - info);
 }
 
 /* CRC-8 of 5.1.4: polynomial 0xd5, MSB first. */
@@ -545,7 +472,7 @@ int rx_fec_frame(rx_fec_t *f, rx_frame_t *frame, const uint8_t **payload,
     if (!f || !frame || !payload || frame->modcod != f->modcod || !(frame->type & 2)) {
         goto out;
     }
-    s.failed_checks = (uint16_t)ldpc_syndrome(f, frame->hard);
+    s.failed_checks = (uint16_t)ldpc_failed(f, frame->hard);
     if (s.failed_checks) {
         load(f, frame->llr);
         while (s.iterations < f->max_iterations) {
@@ -566,7 +493,7 @@ int rx_fec_frame(rx_fec_t *f, rx_frame_t *frame, const uint8_t **payload,
         }
     }
     s.ldpc_ok = 1;
-    s.bch_ok = (uint8_t)bch_ok(f, frame->hard);
+    s.bch_ok = (uint8_t)bch_ok(f, frame->hard, !s.iterations);
     if (s.bch_ok) {
         bytes = bbframe(f, frame->hard);
         s.header_ok = bytes >= 0;
