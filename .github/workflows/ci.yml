@@ -35,6 +35,7 @@ jobs:
         run: |
           python tests/test_receive.py
           python tests/test_rx_filter.py
+          python tests/test_rx_carrier.py
           python tests/test_rx_mc6.py
       - run: python tests/test_live_iio.py
       - run: python tests/test_ota.py
