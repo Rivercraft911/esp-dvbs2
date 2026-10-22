@@ -16,6 +16,7 @@
 #define RX_UNITS 3              /* integer LLR units per natural LLR unit after loading */
 #define RX_LMAX 63              /* channel clip: two checks (2 x 47) can overturn any bit */
 #define RX_STAT_VECTORS 1012    /* LLR statistics over the first 16,192 values */
+#define RX_ENCODER_TAIL 1664    /* resident LDPC program, columns and CRC (1,600 at most) */
 
 typedef struct {
     uint16_t home;      /* byte offset of the group's slot from belief */
@@ -25,11 +26,12 @@ typedef struct {
 } rx_edge_t;
 
 /* Per row group, edges are first occurrences of their groups, then repeats; every
- * per-edge array below follows that order, row group after row group. */
+ * per-edge array below follows that order, row group after row group. state holds
+ * min1, min2 and the q and b sign parities of each vector of the current layer. */
 struct rx_fec {
     unsigned modcod, kbch, nbch, q, groups, edge_count, most, max_iterations, pie;
     unsigned missing_edge, missing_read;
-    int8_t *belief, *r, *qtmp;
+    int8_t *belief, *r, *qtmp, *state;  /* work area; belief is NULL without one */
     uint16_t *reads;    /* per layer, vector, edge: window start as a belief offset */
     uint16_t *writes;   /* per edge: where pass 2 writes (the slot, or scratch for repeats) */
     uint16_t *checks;   /* per edge: slot and window start at the start of an iteration */
@@ -40,7 +42,7 @@ struct rx_fec {
     uint16_t layer_first[RX_MAX_Q];
     uint8_t layer_count[RX_MAX_Q], layer_repeats[RX_MAX_Q];
     uint16_t frame[RX_GROUPS];  /* each slot's frame at the start of an iteration */
-    int8_t state[RX_VECTORS * 64] __attribute__((aligned(16)));  /* min1, min2, q, b signs */
+    uint8_t crc8[256];          /* BBHEADER CRC-8 by byte */
 };
 
 /* Kernels. Each has a portable version (rx_fec.c) and, on the S3, a PIE version with
@@ -64,7 +66,8 @@ struct rx_fec {
  * parity: XOR of 'count' windows, edge e at belief + checks[2e] + (checks[2e + 1] + 16 v)
  *   mod 360 for vector v; nonzero if any check of lanes 0..359 has odd parity.
  * hard: 'groups' slots, slot g read from position frames[g], to packed sign bits
- *   (45 bytes per group, one more byte scribbled after the last). */
+ *   (45 bytes per group, one more byte scribbled after the last).
+ * xor: x ^= prbs over 16 * vectors bytes. */
 void rx_pass1(const int8_t *belief, const uint16_t *reads, const int8_t *r, int8_t *qtmp,
               int8_t *state, unsigned count);
 void rx_pass2(int8_t *belief, const uint16_t *writes, int8_t *r, const int8_t *qtmp,
@@ -75,6 +78,7 @@ void rx_scale(int8_t *belief, unsigned slots, unsigned gain);
 void rx_moments(const int8_t *llr, unsigned vectors, uint32_t sums[2]);
 int rx_parity(const int8_t *belief, const uint16_t *checks, unsigned count);
 void rx_hard(const int8_t *belief, const uint16_t *frames, unsigned groups, uint8_t *hard);
+void rx_xor(uint8_t *x, const uint8_t *prbs, unsigned vectors);
 void rx_pass1_pie(const int8_t *belief, const uint16_t *reads, const int8_t *r, int8_t *qtmp,
                   int8_t *state, unsigned count);
 void rx_pass2_pie(int8_t *belief, const uint16_t *writes, int8_t *r, const int8_t *qtmp,
@@ -85,5 +89,6 @@ void rx_scale_pie(int8_t *belief, unsigned slots, unsigned gain);
 void rx_moments_pie(const int8_t *llr, unsigned vectors, uint32_t sums[2]);
 int rx_parity_pie(const int8_t *belief, const uint16_t *checks, unsigned count);
 void rx_hard_pie(const int8_t *belief, const uint16_t *frames, unsigned groups, uint8_t *hard);
+void rx_xor_pie(uint8_t *x, const uint8_t *prbs, unsigned vectors);
 
 #endif

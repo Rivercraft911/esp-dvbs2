@@ -22,6 +22,7 @@
 typedef struct {
     rx_demod_t *demod;
     rx_fec_t *fec;
+    void *fec_work;
     rx_frame_t slot[SLOTS], *current;
     QueueHandle_t full, empty;
     SemaphoreHandle_t done;
@@ -87,10 +88,11 @@ esp_err_t receive_run(const capture_config_t *capture, unsigned modcod, receive_
     esp_err_t error = ESP_ERR_NO_MEM;
     r.demod = heap_caps_aligned_alloc(16, rx_demod_size(), internal);
     r.fec = heap_caps_aligned_alloc(16, rx_fec_size(modcod), internal);
+    r.fec_work = heap_caps_aligned_alloc(16, rx_fec_work_size(modcod), MALLOC_CAP_SPIRAM);
     r.full = xQueueCreate(SLOTS + 1, 1);
     r.empty = xQueueCreate(SLOTS, 1);
     r.done = xSemaphoreCreateBinary();
-    bool ready = r.demod && r.fec && r.full && r.empty && r.done;
+    bool ready = r.demod && r.fec && r.fec_work && r.full && r.empty && r.done;
     for (unsigned i = 0; ready && i < SLOTS; ++i) {
         r.slot[i].hard = heap_caps_aligned_alloc(16, RX_HARD_BYTES, internal);
         r.slot[i].llr = heap_caps_aligned_alloc(16, RX_SHORT_BITS, MALLOC_CAP_SPIRAM);
@@ -101,7 +103,7 @@ esp_err_t receive_run(const capture_config_t *capture, unsigned modcod, receive_
     r.current = &r.slot[0];
     if (!ready) goto done;
     error = ESP_ERR_INVALID_ARG;
-    if (rx_demod_init(r.demod, &config) || rx_fec_init(r.fec, modcod)) goto done;
+    if (rx_demod_init(r.demod, &config) || rx_fec_init(r.fec, modcod, r.fec_work)) goto done;
     error = ESP_ERR_NO_MEM;
     if (xTaskCreatePinnedToCore(decoder, "decoder", 6144, &r, 10, NULL, 0) != pdPASS) goto done;
     printf("@{\"cmd\":\"rx\",\"stream\":\"binary\",\"record_bytes\":%u}\n",
@@ -124,6 +126,7 @@ done:
     if (r.empty) vQueueDelete(r.empty);
     if (r.full) vQueueDelete(r.full);
     heap_caps_free(r.fec);
+    heap_caps_free(r.fec_work);
     heap_caps_free(r.demod);
     return error;
 }
