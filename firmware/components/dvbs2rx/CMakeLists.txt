@@ -1,6 +1,6 @@
 set(srcs "kernels.c" "demod.c" "rx_fec.c")
 if(IDF_TARGET STREQUAL "esp32s3")
-    list(APPEND srcs "kernels_pie.S" "rx_fec_pie.S")
+    list(APPEND srcs "kernels_pie.S" "rx_fec_pie.S" "demod_pie.S")
 endif()
 idf_component_register(SRCS ${srcs} INCLUDE_DIRS "include" "."
                        LDFRAGMENTS "linker.lf"

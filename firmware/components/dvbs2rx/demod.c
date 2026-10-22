@@ -1,7 +1,8 @@
 /* DVB-S2 demodulator for the S3's radio dump: acquisition, timing, carrier, PL descrambling
  * and LLRs. ETSI EN 302 307-1 V1.4.1 clauses 5.5.2-5.5.4. Portable C99 with integers only, so
- * the S3 and a host build emit identical frames. The heavy loops are rx_unpack and rx_mf
- * (kernels.h) and demod_run below.
+ * the S3 and a host build emit identical frames. The heavy loops are rx_unpack (kernels.h) and
+ * the demod_pie.h kernels: demod_mf, demod_turn, demod_llr and demod_halves, with PIE
+ * versions in demod_pie.S.
  *
  * Samples: 16 MS/s int8 I/Q, floor(s10 / 4), in a ring whose head is mirrored past its end so
  * every matched-filter window is contiguous. One 96-tap RRC output per symbol at the tracked
@@ -13,24 +14,38 @@
 
 #include <string.h>
 
+#include "demod_pie.h"
 #include "demod_tables.h"
 #include "kernels.h"
+
+#if DVBS2RX_PIE
+#define demod_halves demod_halves_pie
+#define demod_mf demod_mf_pie
+#define demod_turn demod_turn_pie
+#define demod_llr demod_llr_pie
+#else
+#define demod_halves demod_halves_c
+#define demod_mf demod_mf_c
+#define demod_turn demod_turn_c
+#define demod_llr demod_llr_c
+#endif
 
 #ifndef RX_DEMOD_NORMAL
 #define RX_DEMOD_NORMAL 0         /* 1: also 64,800-bit frames (host tests on the corpus) */
 #endif
 
-#define RING 4096u                /* sample ring per axis, a power of two */
-#define PAD 128u                  /* mirrored head: one rx_mf window plus 16 readable bytes */
+#define RING DEMOD_RING         /* sample ring per axis, a power of two */
+#define PAD (DEMOD_STRIDE - RING) /* mirrored head: at least a window plus 16 readable bytes */
 #define CHUNK 2048u               /* words unpacked per pass of the consumers */
-#define BATCH 128u                /* matched-filter outputs per rx_mf call */
-#define HOLD 2560u                /* matched-filter outputs kept until their run is released */
+#define BATCH 128u                /* matched-filter outputs per demod_mf pass */
+#define HOLD 2560u                /* data symbols kept until their run is released, 8k */
 #define DRAIN 896u                /* data symbols released per push call (8,100 per frame in 11) */
 #define SPS 16u
 #define HDR 90u                   /* PLHEADER symbols */
 #define PIL 36u                   /* pilot block symbols */
 #define SPAN 1440u                /* data symbols between pilot blocks (16 slots) */
-#define MAX_SCR (RX_DEMOD_NORMAL ? 33192u : 8280u)   /* scrambled symbols per frame */
+#define MAX_DATA (RX_DEMOD_NORMAL ? 32400u : 8100u)  /* data symbols per frame */
+#define MAX_PIL (RX_DEMOD_NORMAL ? 792u : 180u)      /* pilot symbols per frame */
 #define Q 24                      /* fractional bits of sample times */
 #define ONE ((uint64_t)1 << Q)
 #define EIGHTH (1u << 29)         /* pi/4; phases are 2^32 per turn */
@@ -49,15 +64,14 @@ typedef struct {
     int32_t theta;                /* phase residual against the prediction */
     int32_t amp;                  /* amplitude of the known symbols */
     int32_t tau;                  /* timing error, symbols Q16, > 0 = sampling late */
-    int64_t sig, err;             /* known-symbol and error power */
+    int64_t sig, err;             /* known-symbol and error power, x 180 */
     int32_t leak[2];              /* mean residual after the known symbols, Q4 */
 } block_t;
 
 typedef struct {
-    uint32_t sc, n, d0;           /* first symbol's count, symbols, data index of the first */
-    uint32_t phase, inc;          /* carrier phase at the first symbol, step per symbol */
-    int32_t gain;                 /* LLR scale, Q16 */
-    int32_t leak[8];              /* carrier leak after descrambling by R = 0..3 */
+    demod_run_t k;                /* the kernels' constants */
+    uint32_t dw, n, d0;           /* data count of the first symbol, symbols, its data index */
+    uint32_t phase, inc;          /* carrier phase at the first symbol (+ rounding), step */
     uint32_t frame;               /* sequence number of its frame */
     int last;                     /* the frame's last run */
 } run_t;
@@ -65,14 +79,14 @@ typedef struct {
 struct rx_demod {
     int8_t ri[RING + PAD] __attribute__((aligned(16)));
     int8_t rq[RING + PAD] __attribute__((aligned(16)));
-    rx_mf_step_t steps[BATCH];
-    int32_t mf[2 * BATCH];
-    int16_t held[2 * (HOLD + 4)]; /* DC-free matched-filter outputs at symbol count % HOLD;
-                                   * the first 4 repeat past the end so 4-symbol groups never
-                                   * wrap */
-    int16_t blk[2 * HDR];         /* one known block, linear */
+    demod_mf_t mf;
+    int16_t yi[HOLD] __attribute__((aligned(16)));   /* data symbols' raw outputs, at data */
+    int16_t yq[HOLD] __attribute__((aligned(16)));   /* count % HOLD; runs start 8-aligned */
+    run_t runs[2];
+    int16_t blk[2 * HDR];         /* one known block: I, then Q at HDR */
     int32_t ref[2 * HDR];         /* that block derotated */
-    uint8_t scr[MAX_SCR / 4];     /* PL scrambling R(i), four per byte, first in the low bits */
+    uint8_t scr[MAX_DATA / 4 + 2] __attribute__((aligned(4)));  /* PL scrambling R of data */
+    uint8_t scr_pil[MAX_PIL / 4]; /* ... and of pilots, four per byte, first in the low bits */
     rx_config_t cfg;
     uint32_t frame, data, pilots; /* symbols per frame, data symbols, pilot blocks */
     uint8_t hq[HDR];              /* PLHEADER symbol k = exp(j pi/4) j^hq[k] */
@@ -92,14 +106,15 @@ struct rx_demod {
     uint32_t step;                /* samples per symbol, Q24 */
     int32_t step_i;               /* timing loop integrator, Q24 */
     int32_t omega;                /* carrier rotation per symbol */
+    int32_t kstep;                /* clock seed per unit of omega, 2^-32 */
     uint32_t phase, anchor2, sc;  /* phase at the last block's centre, 2 x its symbol count;
                                    * count of the next symbol since lock */
     int32_t amp;                  /* amplitude of the last block */
     int32_t dc[2], leak[2];       /* Q4: receiver DC before derotation, TX carrier leak after */
-    int32_t dc_sum[2];            /* DC-free outputs since the last block */
+    int32_t dc_sum[2];            /* raw outputs since the last block */
     uint32_t fk, since, d0;       /* frame index of the next symbol; symbols since the last
                                    * block; data index of the first data symbol after it */
-    uint32_t hpos;                /* sc % HOLD */
+    uint32_t dw, run_dw;          /* data symbols written; at the current run's start */
     uint64_t now, hdr_t, frame_t; /* times: current symbol, latest header symbol 0, frame */
     int64_t sig, err;             /* frame MER sums */
     int in_frame, locked_once, fresh;
@@ -107,7 +122,6 @@ struct rx_demod {
     uint64_t seq_t;               /* header time of the frame numbered seq */
 
     /* release */
-    run_t runs[2];
     unsigned nrun;
     uint32_t done;                /* symbols of runs[0] already released */
     uint32_t wframe;              /* frame being written */
@@ -127,11 +141,6 @@ static unsigned popcount(uint32_t v)
     v = v - ((v >> 1) & 0x55555555u);
     v = (v & 0x33333333u) + ((v >> 2) & 0x33333333u);
     return (((v + (v >> 4)) & 0x0f0f0f0fu) * 0x01010101u) >> 24;
-}
-
-static inline int32_t clamp127(int32_t v)
-{
-    return v > 127 ? 127 : v < -127 ? -127 : v;
 }
 
 /* (re, im) times exp(-j phase), Q14 table. |(re, im)| < 2^17 keeps the sums in int32. */
@@ -239,17 +248,25 @@ static inline uint32_t gold_y(uint32_t s)
     return s >> 1 | ((s ^ s >> 5 ^ s >> 7 ^ s >> 10) & 1) << 17;
 }
 
-/* R(i) = 2 z(i + 131072) + z(i), z = x ^ y, code 0 (5.5.4). Registers hold x(i .. i + 17). */
-static void scrambling(uint8_t *out, unsigned n)
+/* R(i) = 2 z(i + 131072) + z(i), z = x ^ y, code 0 (5.5.4), for the n symbols after the
+ * header. Registers hold x(i .. i + 17). Data symbols' codes go to data in data order, pilot
+ * blocks' (36 after every 1,440 data) to pil. */
+static void scrambling(uint8_t *data, uint8_t *pil, unsigned n)
 {
     uint32_t x = 1, y = 0x3ffff, x2 = x, y2 = y;
     for (unsigned i = 0; i < 131072; ++i) {
         x2 = gold_x(x2);
         y2 = gold_y(y2);
     }
-    for (unsigned i = 0; i < n; ++i) {
+    for (unsigned i = 0, nd = 0, np = 0; i < n; ++i) {
         unsigned r = 2 * ((x2 ^ y2) & 1) + ((x ^ y) & 1);
-        out[i >> 2] |= (uint8_t)(r << (2 * (i & 3)));
+        if (i % (SPAN + PIL) < SPAN) {
+            data[nd >> 2] |= (uint8_t)(r << (2 * (nd & 3)));
+            ++nd;
+        } else {
+            pil[np >> 2] |= (uint8_t)(r << (2 * (np & 3)));
+            ++np;
+        }
         x = gold_x(x);
         y = gold_y(y);
         x2 = gold_x(x2);
@@ -268,11 +285,9 @@ static inline unsigned scr_at(const uint8_t *scr, unsigned i)
  * the clock offset is -CFO / f_c: step = 16 (1 - cfo / f_c), cfo = omega Rs / 2^32. */
 static uint32_t base_step(const rx_demod_t *d)
 {
-    int64_t s = (int64_t)SPS << Q;
-    if (d->cfg.carrier_khz) {
-        s -= (int64_t)d->omega * 125 / (2 * (int64_t)d->cfg.carrier_khz);
-    }
-    return (uint32_t)(s + d->step_i);
+    /* omega 62.5 / f_kHz as a high multiply: kstep = 2^32 62.5 / f_kHz, set at init */
+    return (uint32_t)(((int32_t)SPS << Q) - (int32_t)(((int64_t)d->omega * d->kstep) >> 32) +
+                      d->step_i);
 }
 
 static int32_t cfo_hz(const rx_demod_t *d)
@@ -291,7 +306,7 @@ static int32_t clock_ppb(const rx_demod_t *d)
 static void acquire_from(rx_demod_t *d, uint64_t sample)
 {
     d->state = ACQUIRE;
-    d->c = sample / 8 + 3;
+    d->c = (sample / 8 + 3) | 1;                 /* odd: its window starts 16-aligned */
     d->fill[0] = d->fill[1] = 0;
     d->half[0] = d->half[1] = 0;
     d->pending = 0;
@@ -315,14 +330,26 @@ static void put(rx_demod_t *d, const uint32_t *w, size_t n)
     }
 }
 
-/* Matched-filter step for output time t: window samples n0 - 47 .. n0 + 48, n0 + p/4 = t,
- * rounded to a quarter sample. Only t mod RING samples matters, so 32 bits do. */
-static inline void mf_step(rx_mf_step_t *s, uint64_t t)
+void demod_mf_c(demod_mf_t *m, unsigned n, int16_t *oi, int16_t *oq)
 {
-    uint32_t tq = (uint32_t)((t + (ONE >> 3)) >> (Q - 2));
-    uint32_t s0 = (tq >> 2) - RX_MF_CENTRE;
-    s->base = s0 & (RING - 16);
-    s->coef = rx_mf_sets + ((s0 & 15) * RX_MF_PHASES + (tq & 3)) * 16 * RX_MF_VECTORS;
+    uint64_t t = (uint64_t)m->t_hi << 32 | m->t_lo;
+    for (unsigned k = 0; k < n; ++k, t += m->step) {
+        /* window samples n0 - 47 .. n0 + 48 for output time n0 + p / 4 */
+        uint32_t tq = (uint32_t)(t >> (Q - 2)), s0 = (tq >> 2) - RX_MF_CENTRE;
+        const int8_t *xi = m->ri + (s0 & (RING - 16)), *xq = m->rq + (s0 & (RING - 16));
+        const int8_t *h = m->sets + ((s0 & 15) * RX_MF_PHASES + (tq & 3)) * 16 * RX_MF_VECTORS;
+        int32_t ai = 0, aq = 0;
+        for (unsigned j = 0; j < 16 * RX_MF_VECTORS; ++j) {
+            ai += xi[j] * h[j];
+            aq += xq[j] * h[j];
+        }
+        oi[k] = (int16_t)(ai >> RX_MF_SHIFT);
+        oq[k] = (int16_t)(aq >> RX_MF_SHIFT);
+        m->sum_i += oi[k];
+        m->sum_q += oq[k];
+    }
+    m->t_lo = (uint32_t)t;
+    m->t_hi = (uint32_t)(t >> 32);
 }
 
 /* Outputs from time t on whose windows are all written, at most `most`. */
@@ -336,22 +363,23 @@ static inline unsigned mf_ready(const rx_demod_t *d, uint64_t t, uint32_t step, 
     return n < most ? (unsigned)n : most;
 }
 
-/* n DC-free outputs at t, t + step, ... as int16 pairs. */
-static void mf_run(rx_demod_t *d, uint64_t t, uint32_t step, unsigned n, int16_t *y)
+/* Point the matched filter at time t and step. */
+static void mf_at(rx_demod_t *d, uint64_t t, uint32_t step)
 {
-    int32_t dr = (d->dc[0] + 8) >> 4, di = (d->dc[1] + 8) >> 4;
-    while (n) {
-        unsigned b = n < BATCH ? n : BATCH;
-        for (unsigned k = 0; k < b; ++k, t += step) {
-            mf_step(&d->steps[k], t);
-        }
-        rx_mf(d->ri, d->rq, d->steps, b, RX_MF_VECTORS, d->mf);
-        for (unsigned k = 0; k < b; ++k) {
-            y[2 * k] = (int16_t)((d->mf[2 * k] >> RX_MF_SHIFT) - dr);
-            y[2 * k + 1] = (int16_t)((d->mf[2 * k + 1] >> RX_MF_SHIFT) - di);
-        }
-        y += 2 * b;
-        n -= b;
+    t += ONE >> 3;                               /* rounds to a quarter sample */
+    d->mf.t_lo = (uint32_t)t;
+    d->mf.t_hi = (uint32_t)(t >> 32);
+    d->mf.step = step;
+    d->mf.sum_i = d->mf.sum_q = 0;
+}
+
+/* Raw outputs less the DC estimate (refine's header). */
+static void minus_dc(const rx_demod_t *d, int16_t *yi, int16_t *yq, unsigned n)
+{
+    int16_t dr = (int16_t)((d->dc[0] + 8) >> 4), di = (int16_t)((d->dc[1] + 8) >> 4);
+    for (unsigned k = 0; k < n; ++k) {
+        yi[k] = (int16_t)(yi[k] - dr);
+        yq[k] = (int16_t)(yq[k] - di);
     }
 }
 
@@ -362,22 +390,22 @@ static void mf_run(rx_demod_t *d, uint64_t t, uint32_t step, unsigned n, int16_t
  * (32, 6) word whose 32 correlations one Hadamard transform gives. */
 static unsigned pls_decode(const rx_demod_t *d, const int32_t *z)
 {
-    int64_t cr = 0, ci = 0;
+    int32_t cr = 0, ci = 0;
     for (unsigned k = 0; k < 26; ++k) {
         int32_t re = z[2 * k], im = z[2 * k + 1];
         quad(&re, &im, d->hq[k]);
         cr += re;
         ci += im;
     }
-    while (cr > 32767 || cr < -32767 || ci > 32767 || ci < -32767) {
+    while (cr > 16383 || cr < -16383 || ci > 16383 || ci < -16383) {
         cr /= 2;
         ci /= 2;
     }
     int32_t t[64];
     for (unsigned i = 0; i < 64; ++i) {
-        int32_t re = z[2 * (26 + i)], im = z[2 * (26 + i) + 1];
+        int32_t re = z[2 * (26 + i)] >> 2, im = z[2 * (26 + i) + 1] >> 2;   /* < 2^14 */
         quad(&re, &im, (26 + i) & 1);
-        t[i] = (int32_t)(((int64_t)re * cr + (int64_t)im * ci) >> 16);
+        t[i] = (re * cr + im * ci) >> 14;
         t[i] = (PLS_SCRAMBLE >> (63 - i) & 1) ? -t[i] : t[i];
     }
     unsigned best = 0;
@@ -409,18 +437,20 @@ static unsigned pls_decode(const rx_demod_t *d, const int32_t *z)
     return best;
 }
 
-/* Measure a known block of n DC-free outputs y (first symbol count sc0, symbol k =
+/* Measure a known block of n raw outputs (first symbol count sc0, symbol k =
  * exp(j pi/4) j^q[k]) against the carrier prediction. Returns 0 if it is not there. */
-static int block(rx_demod_t *d, const int16_t *y, uint32_t sc0, unsigned n, const uint8_t *q,
-                 int header, block_t *b)
+static int block(rx_demod_t *d, const int16_t *yi, const int16_t *yq, uint32_t sc0, unsigned n,
+                 const uint8_t *q, int header, block_t *b)
 {
     int32_t *z = d->ref;
     int32_t lr = (d->leak[0] + 8) >> 4, li = (d->leak[1] + 8) >> 4;
+    int32_t dr = (d->dc[0] + 8) >> 4, di = (d->dc[1] + 8) >> 4;
     uint32_t ph = d->phase + (uint32_t)((int64_t)d->omega * (int32_t)(2 * sc0 - d->anchor2) / 2);
-    int64_t cr = 0, ci = 0, e = 0, sr0 = 0, si0 = 0, jr = 0, ji = 0;
+    int32_t cr = 0, ci = 0, sr0 = 0, si0 = 0, jr = 0, ji = 0;   /* |z| < 2^16, n <= 90 */
+    int64_t e = 0;
     for (unsigned k = 0; k < n; ++k, ph += (uint32_t)d->omega) {
         int32_t re, im;
-        rotate(y[2 * k], y[2 * k + 1], ph, &re, &im);
+        rotate(yi[k] - dr, yq[k] - di, ph, &re, &im);
         z[2 * k] = re - lr;
         z[2 * k + 1] = im - li;
         sr0 += z[2 * k];
@@ -434,9 +464,10 @@ static int block(rx_demod_t *d, const int16_t *y, uint32_t sc0, unsigned n, cons
         ci += im;
         e += (int64_t)re * re + (int64_t)im * im;
     }
-    /* A real block puts most of its power in the coherent sum. */
-    int64_t c2 = cr * cr + ci * ci;
-    if (!e || c2 < (header ? n * e / 2 : n * e / 4)) {
+    /* A real block puts most of its power in the coherent sum: |C|^2 >= n e / 2 (header) or
+     * n e / 4 (pilots). */
+    int64_t c2 = (int64_t)cr * cr + (int64_t)ci * ci;
+    if (!e || (header ? 2 : 4) * c2 < (int64_t)n * e) {
         return 0;
     }
     if (header && pls_decode(d, z) != d->pls) {
@@ -444,18 +475,20 @@ static int block(rx_demod_t *d, const int16_t *y, uint32_t sc0, unsigned n, cons
     }
     int64_t mag;
     b->theta = (int32_t)(cordic(cr, ci, &mag) - EIGHTH);
-    b->amp = (int32_t)(mag / n);
-    b->sig = c2 / n;
-    b->err = e - b->sig > 0 ? e - b->sig : 1;
+    b->amp = (int32_t)mag / (int32_t)n;
+    /* MER sums in 1/180 of the block power, 180 being a multiple of both block lengths:
+     * signal |C|^2 / n and error e - |C|^2 / n. */
+    b->sig = c2 * (int32_t)(180 / n);
+    b->err = 180 * e - b->sig > 0 ? 180 * e - b->sig : 1;
     b->phase = d->phase + (uint32_t)((int64_t)d->omega * (int32_t)(2 * sc0 + n - 1 - d->anchor2) / 2) +
                (uint32_t)b->theta;
     /* Leak error: mean of y - (C / n) j^q. */
-    b->leak[0] = (int32_t)((sr0 - (cr * jr - ci * ji) / (int64_t)n) * 16 / (int64_t)n);
-    b->leak[1] = (int32_t)((si0 - (cr * ji + ci * jr) / (int64_t)n) * 16 / (int64_t)n);
+    b->leak[0] = (sr0 - (cr * jr - ci * ji) / (int32_t)n) * 16 / (int32_t)n;
+    b->leak[1] = (si0 - (cr * ji + ci * jr) / (int32_t)n) * 16 / (int32_t)n;
     /* Data-aided Mueller-Muller timing error: sum Re{c*_{k-1} y_k - c*_k y_{k-1}} after
      * derotation is about -1.78 tau A (n - 1) for an RRC cascade (slope 2 p'(1) of the raised
      * cosine at roll-off 0.35). With z = y j^-q and C = sum z this is sum Re{X conj C} / |C|. */
-    int64_t sr = cr, si = ci;
+    int32_t sr = cr, si = ci;
     unsigned sh = 0;
     while (sr > 16383 || sr < -16383 || si > 16383 || si < -16383) {
         sr /= 2;
@@ -477,40 +510,88 @@ static int block(rx_demod_t *d, const int16_t *y, uint32_t sc0, unsigned n, cons
 
 /* ---------------------------------------------------------------- data runs */
 
-/* The hot loops, for n DC-free outputs y of data symbols d .. d + n - 1 in groups of 4 (one
- * scrambling byte, one hard-bit byte); d and n are multiples of 4. W4 ports these to PIE.
- *
- * demod_turn: one complex multiply by exp(-j(phase + R pi/2)) both derotates and descrambles
- * (R from scr byte s / 4), then the carrier leak as descrambling turned it comes off. In
- * place: y's slots are free afterwards. */
-static __attribute__((noinline)) void demod_turn(int16_t *y, unsigned n, uint32_t phase,
-                                                 uint32_t inc, const int32_t leak[8],
-                                                 const uint8_t *scr)
+static inline int16_t sat16(int32_t v)
 {
-    for (unsigned g = 0; g < n / 4; ++g) {
-        unsigned rs = scr[g];
-        for (unsigned k = 0; k < 4; ++k, y += 2, rs >>= 2, phase += inc) {
-            unsigned r = rs & 3, a = (phase + (r << 30)) >> 22;
-            int32_t c = rx_sin[(a + 256) & 1023], sn = rx_sin[a], yr = y[0], yi = y[1];
-            y[0] = (int16_t)(((yr * c + yi * sn + 8192) >> 14) - leak[2 * r]);
-            y[1] = (int16_t)(((yi * c - yr * sn + 8192) >> 14) - leak[2 * r + 1]);
+    return (int16_t)(v > 32767 ? 32767 : v < -32768 ? -32768 : v);
+}
+
+static inline int16_t mul14(int16_t a, int16_t b)
+{
+    return (int16_t)((int32_t)a * b >> 14);
+}
+
+void demod_run_init(demod_run_t *k, uint32_t inc, int16_t lr, int16_t li, int16_t dr, int16_t di,
+                    int16_t gain)
+{
+    for (unsigned j = 0; j < 8; ++j) {
+        unsigned b = (j * inc + (1u << 21)) >> 22;
+        k->co[j] = rx_sin[(b + 256) & 1023];
+        k->so[j] = rx_sin[b];
+        k->lr[j] = lr;
+        k->li[j] = li;
+        k->dr[j] = dr;
+        k->di[j] = di;
+        k->sel[0][j] = (int16_t)(1u << 2 * j);
+        k->sel[1][j] = (int16_t)(1u << (2 * j + 1));
+        k->gain[j] = gain;
+        k->hi[j] = 127;
+        k->lo[j] = -127;
+        k->weight[0][j] = (int16_t)(0x8000u >> j);
+        k->weight[1][j] = (int16_t)(0x80u >> j);
+        k->one[j] = 1;
+    }
+    k->table = rx_sin;
+}
+
+/* The release kernels (demod_pie.h), in the PIE's lane arithmetic. */
+void demod_turn_c(int16_t *yi, int16_t *yq, unsigned groups, uint32_t phase, uint32_t step8,
+                  const demod_run_t *k)
+{
+    for (unsigned g = 0; g < groups; ++g, yi += 8, yq += 8, phase += step8) {
+        unsigned a = phase >> 22;
+        int16_t cg = rx_sin[(a + 256) & 1023], sg = rx_sin[a];
+        for (unsigned j = 0; j < 8; ++j) {
+            int16_t c = sat16(mul14(cg, k->co[j]) - mul14(sg, k->so[j]));
+            int16_t s = sat16(mul14(sg, k->co[j]) + mul14(cg, k->so[j]));
+            int16_t xr = sat16(yi[j] - k->dr[j]), xi = sat16(yq[j] - k->di[j]);
+            int16_t ur = sat16(mul14(xr, c) + mul14(xi, s));
+            int16_t ui = sat16(mul14(xi, c) - mul14(xr, s));
+            yi[j] = sat16(ur - k->lr[j]);
+            yq[j] = sat16(ui - k->li[j]);
         }
     }
 }
 
-/* demod_llr: LLR scale (Q16), clipping to +-127, codeword order; hard bits are the LLR signs,
- * MSB first. llr and hard point at symbol d's bits. */
-static __attribute__((noinline)) void demod_llr(const int16_t *u, unsigned n, int32_t gain,
-                                                int8_t *llr, uint8_t *hard)
+/* Descrambling multiplies by j^-R: (r, i) becomes (r, i), (i, -r), (-r, -i), (-i, r) for
+ * R = 0..3. Lane masks from the code bits: `even` where R is even, `low` where R < 2. */
+void demod_llr_c(const int16_t *yi, const int16_t *yq, unsigned n, const uint8_t *scr,
+                 const demod_run_t *k, const demod_out_t *o)
 {
-    for (unsigned g = 0; g < n / 4; ++g, u += 8, llr += 8) {
-        unsigned bits = 0;
-        for (unsigned k = 0; k < 8; ++k) {
-            int32_t v = clamp127((u[k] * gain + 32768) >> 16);
-            llr[k] = (int8_t)v;
-            bits = bits << 1 | (uint32_t)v >> 31;
+    int8_t *llr = o->llr;
+    uint8_t *hard = o->hard;
+    for (unsigned g = 0; 8 * g < n; ++g, yi += 8, yq += 8, llr += 16, hard += 2) {
+        unsigned w = scr[2 * g] | (unsigned)scr[2 * g + 1] << 8, bits = 0;
+        for (unsigned j = 0; j < 8; ++j) {
+            int16_t even = (w & (unsigned)k->sel[0][j]) ? 0 : -1;
+            int16_t low = (w & (uint16_t)k->sel[1][j]) ? 0 : -1;
+            int16_t e = (int16_t)((yi[j] ^ yq[j]) & even);
+            int16_t a = (int16_t)(yq[j] ^ e), b = (int16_t)(yi[j] ^ e);
+            int16_t na = (int16_t)~low, nb = (int16_t)(even ^ low);
+            a = sat16((int16_t)(a ^ na) - na);
+            b = sat16((int16_t)(b ^ nb) - nb);
+            int16_t la = mul14(a, k->gain[j]), lb = mul14(b, k->gain[j]);
+            la = la > 127 ? 127 : la < -127 ? -127 : la;
+            lb = lb > 127 ? 127 : lb < -127 ? -127 : lb;
+            if (8 * g + j < n) {
+                llr[2 * j] = (int8_t)la;
+                llr[2 * j + 1] = (int8_t)lb;
+            }
+            bits = bits << 2 | (unsigned)(la < 0) << 1 | (unsigned)(lb < 0);
         }
-        hard[g] = (uint8_t)bits;
+        hard[0] = (uint8_t)(bits >> 8);
+        if (8 * g + 8 <= n) {
+            hard[1] = (uint8_t)bits;
+        }
     }
 }
 
@@ -533,10 +614,10 @@ static void emit(rx_demod_t *d)
     ++d->st.frames;
 }
 
-/* Release up to limit queued data symbols, in groups of 4 (a frame ends the call's releases). */
+/* Release up to limit queued data symbols, in groups of 8 (a frame ends the call's releases). */
 static void drain(rx_demod_t *d, uint32_t limit)
 {
-    limit = (limit + 3) & ~3u;
+    limit = (limit + 7) & ~7u;
     while (d->nrun && limit) {
         run_t *r = &d->runs[0];
         if (r->frame != d->wframe || (!d->done && !r->d0)) {
@@ -544,17 +625,18 @@ static void drain(rx_demod_t *d, uint32_t limit)
             d->broken = 0;
         }
         rx_frame_t *f = d->out_done < d->out_max ? &d->out[d->out_done] : NULL;
-        uint32_t at = (r->sc + d->done) % HOLD;
+        uint32_t at = (r->dw + d->done) % HOLD;
         uint32_t k = r->n - d->done;
         k = k < limit ? k : limit;
-        k = (k < HOLD + 4 - at ? k : HOLD + 4 - at) & ~3u;
+        k = k < HOLD - at ? k : HOLD - at;            /* runs start 8-aligned, HOLD is 8k */
         if (!f || !f->llr || !f->hard) {
             d->broken = 1;                     /* no buffer: the frame is lost */
         } else {
             unsigned d0 = r->d0 + d->done;
-            demod_turn(d->held + 2 * at, k, r->phase + r->inc * d->done, r->inc, r->leak,
-                       d->scr + (d0 + PIL * (d0 / SPAN)) / 4);
-            demod_llr(d->held + 2 * at, k, r->gain, f->llr + 2 * d0, f->hard + d0 / 4);
+            demod_turn(d->yi + at, d->yq + at, (k + 7) / 8, r->phase + r->inc * d->done,
+                       8 * r->inc, &r->k);
+            demod_out_t o = {f->llr + 2 * d0, f->hard + d0 / 4};
+            demod_llr(d->yi + at, d->yq + at, k, d->scr + d0 / 4, &r->k, &o);
         }
         d->done += k;
         limit -= k;
@@ -578,20 +660,17 @@ static void queue_run(rx_demod_t *d, unsigned n, unsigned nblock, int32_t inc, i
         drain(d, d->runs[0].n);                /* cannot happen at DRAIN >= 768 per call */
     }
     run_t *r = &d->runs[d->nrun++];
-    r->sc = d->sc - nblock - n;
+    uint32_t sc = d->sc - nblock - n;
+    r->dw = d->run_dw;
     r->n = n;
     r->d0 = d->d0;
-    r->phase = d->phase + (uint32_t)((int64_t)inc * (int32_t)(2 * r->sc - d->anchor2) / 2) +
+    r->phase = d->phase + (uint32_t)((int64_t)inc * (int32_t)(2 * sc - d->anchor2) / 2) +
                (1u << 21);                     /* rounds the table index */
     r->inc = (uint32_t)inc;
     int32_t a = (d->amp + amp) / 2;
-    r->gain = LLR_UNIT / (a > 91 ? a : 91);
-    for (unsigned q = 0; q < 4; ++q) {
-        int32_t lr = (d->leak[0] + 8) >> 4, li = (d->leak[1] + 8) >> 4;
-        quad(&lr, &li, q);
-        r->leak[2 * q] = lr;
-        r->leak[2 * q + 1] = li;
-    }
+    demod_run_init(&r->k, (uint32_t)inc, (int16_t)((d->leak[0] + 8) >> 4),
+                   (int16_t)((d->leak[1] + 8) >> 4), (int16_t)((d->dc[0] + 8) >> 4),
+                   (int16_t)((d->dc[1] + 8) >> 4), (int16_t)(LLR_UNIT / 4 / (a > 91 ? a : 91)));
     r->frame = d->seq;
     r->last = last;
 }
@@ -665,9 +744,9 @@ static void update_loops(rx_demod_t *d, const block_t *b, uint32_t centre2, int3
     d->amp = b->amp;
     d->t -= (uint64_t)((int64_t)b->tau * (1 << (Q + 4 - 16 - 1)));
     if (span) {
-        d->step_i -= (int32_t)((int64_t)b->tau * 16 / (int32_t)span);
-        for (unsigned x = 0; x < 2; ++x) {
-            d->dc[x] += (int32_t)((int64_t)d->dc_sum[x] * 16 / (int32_t)span) >> 2;
+        d->step_i -= b->tau * 16 / (int32_t)span;
+        for (unsigned x = 0; x < 2; ++x) {           /* raw sums: < 1,476 * 2^15 * 16 */
+            d->dc[x] += (d->dc_sum[x] * 16 / (int32_t)d->since - d->dc[x]) >> 2;
             d->dc_sum[x] = 0;
             d->leak[x] += b->leak[x] >> 3;
         }
@@ -677,35 +756,38 @@ static void update_loops(rx_demod_t *d, const block_t *b, uint32_t centre2, int3
 
 /* The header's carrier estimate can miss by a multiple of 1 / 1476 symbols (677 Hz at
  * 1 Msym/s), which every pilot phase then hides. So the first data run after a lock decides:
- * the fourth power of a QPSK symbol is unmodulated, and its phase slope over 32 blocks of 45
- * symbols (every third symbol, to bound the call) gives the residual rotation per symbol to
- * +-1/360 turn (+-2.8 kHz). */
+ * the fourth power of a QPSK symbol is unmodulated, and its phase slope over 16 blocks of 90
+ * symbols (every fifth symbol, to bound the call) gives the residual rotation per symbol to
+ * +-1/720 turn (+-1.4 kHz). */
 static int64_t fourth_power_slope(rx_demod_t *d, unsigned nd, uint32_t sc0)
 {
     int32_t lr = (d->leak[0] + 8) >> 4, li = (d->leak[1] + 8) >> 4;
+    int32_t dr = (d->dc[0] + 8) >> 4, di = (d->dc[1] + 8) >> 4;
     unsigned sh = 0;
-    while ((d->amp >> sh) > 64) {
+    while ((d->amp >> sh) > 16) {                /* 4th powers of < 2^6 sum below 2^30 */
         ++sh;
     }
     uint32_t ph = d->phase + (uint32_t)((int64_t)d->omega * (int32_t)(2 * sc0 - d->anchor2) / 2);
     int64_t last = 0, sum = 0;
-    for (unsigned b = 0; b < nd / 45; ++b) {
-        int64_t br = 0, bi = 0;
-        for (unsigned k = 45 * b; k < 45 * b + 45; k += 3, ph += 3 * (uint32_t)d->omega) {
-            const int16_t *y = d->held + 2 * ((sc0 + k) % HOLD);
+    for (unsigned b = 0; b < nd / 90; ++b) {
+        int32_t br = 0, bi = 0;
+        for (unsigned k = 90 * b; k < 90 * b + 90; k += 5, ph += 5 * (uint32_t)d->omega) {
+            unsigned at = (d->run_dw + k) % HOLD;
             int32_t re, im;
-            rotate(y[0], y[1], ph, &re, &im);
+            rotate(d->yi[at] - dr, d->yq[at] - di, ph, &re, &im);
             re = (re - lr) >> sh;
             im = (im - li) >> sh;
-            int64_t r2 = (int64_t)re * re - (int64_t)im * im, i2 = 2 * (int64_t)re * im;
-            br += r2 * r2 - i2 * i2;
-            bi += 2 * r2 * i2;
+            re = re > 63 ? 63 : re < -63 ? -63 : re;
+            im = im > 63 ? 63 : im < -63 ? -63 : im;
+            int32_t r2 = re * re - im * im, i2 = 2 * re * im;
+            br += (r2 * r2 - i2 * i2) >> 4;
+            bi += (2 * r2 * i2) >> 4;
         }
         uint32_t a = cordic(br, bi, NULL);
         last = b ? last + (int32_t)(a - (uint32_t)last) : (int32_t)a;
-        sum += (int64_t)(2 * (int)b - 31) * last;             /* centres 45b + 22, symbols */
+        sum += (int64_t)(2 * (int)b - 15) * last;             /* centres 90b + 42, symbols */
     }
-    return sum / 982080;    /* slope / 4: sum (2b - 31)^2 = 10912, x 22.5 symbols x 4 */
+    return sum / 244800;    /* slope / 4: sum (2b - 15)^2 = 1360, x 45 symbols x 4 */
 }
 
 /* A known block just ended. Returns 1 if the lock was lost. */
@@ -718,17 +800,12 @@ static int on_block(rx_demod_t *d, int header)
     if (!header) {
         unsigned j = d->d0 / SPAN + 1;               /* pilot block number in the frame */
         for (unsigned k = 0; k < PIL; ++k) {
-            pq[k] = (uint8_t)scr_at(d->scr, SPAN * j + PIL * (j - 1) + k);
+            pq[k] = (uint8_t)scr_at(d->scr_pil, PIL * (j - 1) + k);
         }
         q = pq;
     }
-    for (unsigned k = 0; k < n; ++k) {
-        const int16_t *y = d->held + 2 * ((sc0 + k) % HOLD);
-        d->blk[2 * k] = y[0];
-        d->blk[2 * k + 1] = y[1];
-    }
     block_t b;
-    if (!block(d, d->blk, sc0, n, q, header, &b)) {
+    if (!block(d, d->blk, d->blk + HDR, sc0, n, q, header, &b)) {
         if (header && d->in_frame && d->d0 + nd == d->data) {
             /* The transmitter stopped after a whole frame: finish it on the frequency loop. */
             queue_run(d, nd, n, d->omega, d->amp, 1);
@@ -744,7 +821,8 @@ static int on_block(rx_demod_t *d, int header)
         theta += ((want - theta + ((int64_t)1 << 31)) >> 32) * ((int64_t)1 << 32);
         d->budget = d->budget > 320 ? d->budget - 320 : 0;    /* it costs about 320 releases */
     }
-    int32_t inc = d->omega + (int32_t)(theta * 2 / (int32_t)(centre2 - d->anchor2));
+    int32_t span = (int32_t)(centre2 - d->anchor2) / 2;    /* symbols between the centres */
+    int32_t inc = d->omega + (theta == (int32_t)theta ? (int32_t)theta / span : (int32_t)(theta / span));
     if (d->fresh && !header) {
         d->omega = inc;
         d->fresh = 0;
@@ -764,67 +842,66 @@ static int on_block(rx_demod_t *d, int header)
     }
     update_loops(d, &b, centre2, inc);
     d->since = 0;
+    d->dw = (d->dw + 7) & ~7u;                  /* the next run starts 8-aligned */
+    d->run_dw = d->dw;
     return 0;
 }
 
-/* Symbols from the next one to the end of the next known block. Batches stop there, so each
- * block's corrections start at the symbol after it, however the dump arrives. */
-static unsigned until_block(const rx_demod_t *d)
+/* Where the next symbol falls. Returns the symbols up to the end of the next known block;
+ * *nd of them are data before it begins, and the first block symbol is at *boff in it.
+ * Batches stop at block ends, so each block's corrections start at the symbol after it,
+ * however the dump arrives. */
+static unsigned layout(const rx_demod_t *d, unsigned *nd, unsigned *boff)
 {
-    if (d->fk < HDR) {
-        return HDR - d->fk;
+    uint32_t fk = d->fk;
+    *boff = 0;
+    if (fk < HDR) {
+        *nd = 0;
+        *boff = fk;
+        return HDR - fk;
     }
-    unsigned j = (d->fk - HDR) / (SPAN + PIL) + 1;
-    return j <= d->pilots ? HDR + (SPAN + PIL) * j - d->fk : d->frame - d->fk + HDR;
+    unsigned p = fk - HDR, j = p / (SPAN + PIL), r = p - j * (SPAN + PIL);
+    if (j >= d->pilots) {
+        *nd = d->frame - fk;                         /* the last run, then the next header */
+        return d->frame - fk + HDR;
+    }
+    *nd = r < SPAN ? SPAN - r : 0;
+    *boff = r < SPAN ? 0 : r - SPAN;
+    return SPAN + PIL - r;
 }
 
 static int track(rx_demod_t *d)
 {
     for (;;) {
-        unsigned left = until_block(d), n = mf_ready(d, d->t, d->step, left < BATCH ? left : BATCH);
-        uint64_t t = d->t;
+        unsigned nd, boff, left = layout(d, &nd, &boff);
+        unsigned n = mf_ready(d, d->t, d->step, left < BATCH ? left : BATCH);
         if (!n) {
             return 0;
         }
-        for (unsigned k = 0; k < n; ++k, t += d->step) {
-            mf_step(&d->steps[k], t);
-        }
-        if (d->nrun && d->sc + n - (d->runs[0].sc + d->done) > HOLD) {
-            drain(d, d->sc + n - (d->runs[0].sc + d->done) - HOLD);   /* keep the ring whole */
+        unsigned m = nd < n ? nd : n;
+        if (m && d->nrun && d->dw + m - (d->runs[0].dw + d->done) > HOLD) {
+            drain(d, d->dw + m - (d->runs[0].dw + d->done) - HOLD);   /* keep the ring whole */
         }
         uint64_t t1 = d->t;
-        uint32_t step = d->step;
-        int32_t dr = (d->dc[0] + 8) >> 4, di = (d->dc[1] + 8) >> 4, sr = 0, si = 0;
-        d->t = t;
-        rx_mf(d->ri, d->rq, d->steps, n, RX_MF_VECTORS, d->mf);
-        uint32_t hpos = d->hpos, fk = d->fk, wrap = 0;
-        for (unsigned k = 0; k < n; ++k) {
-            int16_t *y = d->held + 2 * hpos;
-            y[0] = (int16_t)((d->mf[2 * k] >> RX_MF_SHIFT) - dr);
-            y[1] = (int16_t)((d->mf[2 * k + 1] >> RX_MF_SHIFT) - di);
-            sr += y[0];
-            si += y[1];
-            if (hpos < 4) {
-                y[2 * HOLD] = y[0];
-                y[2 * HOLD + 1] = y[1];
-            }
-            hpos = hpos + 1 < HOLD ? hpos + 1 : 0;
-            if (++fk == d->frame) {
-                fk = 0;
-                wrap = k + 1;                          /* the next symbol starts a frame */
-            }
+        uint32_t step = d->step, at = d->dw % HOLD, c = m < HOLD - at ? m : HOLD - at;
+        mf_at(d, t1, step);
+        demod_mf(&d->mf, c, d->yi + at, d->yq + at);              /* data, wrapping the ring */
+        demod_mf(&d->mf, m - c, d->yi, d->yq);
+        demod_mf(&d->mf, n - m, d->blk + boff, d->blk + HDR + boff); /* known symbols */
+        d->t = t1 + (uint64_t)n * step;
+        d->dw += m;
+        d->dc_sum[0] += d->mf.sum_i;
+        d->dc_sum[1] += d->mf.sum_q;
+        if (d->fk + n >= d->frame) {                   /* the next frame's header starts */
+            d->hdr_t = t1 + (uint64_t)(d->frame - d->fk) * step;
+            d->fk = d->fk + n - d->frame;
+        } else {
+            d->fk += n;
         }
-        d->hpos = hpos;
-        d->fk = fk;
-        if (wrap) {
-            d->hdr_t = t1 + (uint64_t)wrap * step;
-        }
-        d->dc_sum[0] += sr;
-        d->dc_sum[1] += si;
         d->sc += n;
         d->since += n;
         d->now = t1 + (uint64_t)(n - 1) * step;
-        if (n == left && on_block(d, d->fk == HDR)) {      /* batches end at block ends */
+        if (n == left && on_block(d, d->fk == HDR)) {
             return 1;
         }
     }
@@ -834,12 +911,12 @@ static int track(rx_demod_t *d)
 
 /* |sum_k conj(d_k) y_{k+1} conj(y_k)| over the first n header symbols: insensitive to the
  * carrier offset. */
-static int64_t header_metric(const rx_demod_t *d, const int16_t *y, unsigned n)
+static int64_t header_metric(const rx_demod_t *d, const int16_t *yi, const int16_t *yq, unsigned n)
 {
-    int64_t sr = 0, si = 0;
-    for (unsigned k = 0; k + 1 < n; ++k) {
-        int32_t ar = y[2 * k + 2], ai = y[2 * k + 3], br = y[2 * k], bi = y[2 * k + 1];
-        int64_t vr = (int64_t)ar * br + (int64_t)ai * bi, vi = (int64_t)ai * br - (int64_t)ar * bi;
+    int32_t sr = 0, si = 0;
+    for (unsigned k = 0; k + 1 < n; ++k) {                       /* y >> 4: sums < 2^29 */
+        int32_t ar = yi[k + 1] >> 4, ai = yq[k + 1] >> 4, br = yi[k] >> 4, bi = yq[k] >> 4;
+        int32_t vr = ar * br + ai * bi, vi = ai * br - ar * bi;
         switch ((d->hq[k + 1] - d->hq[k]) & 3) {
         case 1: sr += vi; si -= vr; break;
         case 3: sr -= vi; si += vr; break;
@@ -866,12 +943,14 @@ static int refine(rx_demod_t *d)
     }
     /* Timing: the differential metric at -6 .. 6 samples in steps of 3 (the search picks a
      * candidate within 8), then the vertex of the parabola through the peak and its neighbours. */
-    int16_t *y = d->blk;
+    int16_t *yi = d->blk, *yq = d->blk + HDR;
     int64_t m[5];
     unsigned top = 0;
     for (unsigned o = 0; o < 5; ++o) {
-        mf_run(d, t0 + (uint64_t)((int64_t)(3 * (int)o - 6) * (int64_t)ONE), SPS << Q, HDR / 2, y);
-        m[o] = header_metric(d, y, HDR / 2) >> 8;
+        mf_at(d, t0 + (uint64_t)((int64_t)(3 * (int)o - 6) * (int64_t)ONE), SPS << Q);
+        demod_mf(&d->mf, HDR / 2, yi, yq);
+        minus_dc(d, yi, yq, HDR / 2);
+        m[o] = header_metric(d, yi, yq, HDR / 2) >> 8;
         top = m[o] > m[top] ? o : top;
     }
     int64_t off = (int64_t)(3 * (int)top - 6) * (int64_t)ONE;
@@ -883,25 +962,27 @@ static int refine(rx_demod_t *d)
         }
     }
     t0 += (uint64_t)off;
-    mf_run(d, t0, SPS << Q, HDR, y);
+    mf_at(d, t0, SPS << Q);
+    demod_mf(&d->mf, HDR, yi, yq);       /* raw: block() takes the DC off */
     /* Carrier: w_k = y_k j^-q_k = A exp(j(pi/4 + phase + omega k)). Coarse rotation from the
      * lag-1 product, then a line through the phases of six 15-symbol sums. */
     int32_t *w = d->ref;
-    int64_t sr = 0, si = 0;
+    int32_t sr = 0, si = 0;
     for (unsigned k = 0; k < HDR; ++k) {
-        w[2 * k] = y[2 * k];
-        w[2 * k + 1] = y[2 * k + 1];
+        w[2 * k] = yi[k] - ((d->dc[0] + 8) >> 4);
+        w[2 * k + 1] = yq[k] - ((d->dc[1] + 8) >> 4);
         quad(&w[2 * k], &w[2 * k + 1], d->hq[k]);
-        if (k) {
-            sr += (int64_t)w[2 * k] * w[2 * k - 2] + (int64_t)w[2 * k + 1] * w[2 * k - 1];
-            si += (int64_t)w[2 * k + 1] * w[2 * k - 2] - (int64_t)w[2 * k] * w[2 * k - 1];
+        if (k) {                                                  /* w >> 5: sums < 2^28 */
+            int32_t ar = w[2 * k] >> 5, ai = w[2 * k + 1] >> 5, br = w[2 * k - 2] >> 5, bi = w[2 * k - 1] >> 5;
+            sr += ar * br + ai * bi;
+            si += ai * br - ar * bi;
         }
     }
     int32_t coarse = (int32_t)cordic(sr, si, NULL);
     int64_t ph[6], sum_ph = 0, sum_xy = 0;
     uint32_t p = (uint32_t)((int64_t)coarse * -(int64_t)(HDR - 1) / 2);   /* rotation at k = 0 */
     for (unsigned b = 0; b < 6; ++b) {
-        int64_t br = 0, bi = 0;
+        int32_t br = 0, bi = 0;
         for (unsigned k = 15 * b; k < 15 * b + 15; ++k) {
             int32_t re, im;
             rotate(w[2 * k], w[2 * k + 1], p, &re, &im);
@@ -922,18 +1003,18 @@ static int refine(rx_demod_t *d)
     int64_t miss = (int64_t)cfo_hz(d) - d->cfg.cfo_hint_hz;
     block_t b;
     if (miss > (int64_t)d->cfg.cfo_span_hz || -miss > (int64_t)d->cfg.cfo_span_hz ||
-        !block(d, y, 0, HDR, d->hq, 1, &b)) {
+        !block(d, yi, yq, 0, HDR, d->hq, 1, &b)) {
         ++d->st.rejects;
         return 0;
     }
     d->leak[0] = b.leak[0];                         /* the transmitter's carrier leak */
     d->leak[1] = b.leak[1];
-    int64_t leak2 = ((int64_t)b.leak[0] * b.leak[0] + (int64_t)b.leak[1] * b.leak[1]) * HDR / 256;
+    int64_t leak2 = ((int64_t)b.leak[0] * b.leak[0] + (int64_t)b.leak[1] * b.leak[1]) * HDR * 180 / 256;
     b.err = b.err > leak2 ? b.err - leak2 : 1;      /* the header was measured with the leak in */
     b.leak[0] = b.leak[1] = 0;
     d->fresh = 1;
     d->sc = HDR;
-    d->hpos = HDR;
+    d->dw = d->run_dw = 0;
     d->fk = HDR;
     d->since = 0;
     d->dc_sum[0] = d->dc_sum[1] = 0;
@@ -948,17 +1029,31 @@ static int refine(rx_demod_t *d)
     return 1;
 }
 
-/* Sum of the even-indexed 4 of 8 int8 samples (little-endian words, 8-aligned): one mask
- * per word on bytes offset to unsigned. Every other sample is plenty for detection, since the
- * signal lies far below the 4 MHz this folds. */
-static inline int32_t half_sum(const int8_t *x)
+static const int8_t evens[32] __attribute__((aligned(16))) = {
+    1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0};
+
+/* Every other sample is plenty for detection: the signal lies far below the 4 MHz it folds. */
+void demod_halves_c(const int8_t *xi, const int8_t *xq, unsigned n, int16_t *hi, int16_t *hq,
+                    const int8_t *w)
 {
-    uint32_t a, b;
-    x = __builtin_assume_aligned(x, 8);
-    memcpy(&a, x, 4);
-    memcpy(&b, x + 4, 4);
-    uint32_t s = ((a ^ 0x80808080u) & 0x00ff00ffu) + ((b ^ 0x80808080u) & 0x00ff00ffu);
-    return (int32_t)((s & 0xffffu) + (s >> 16)) - 512;
+    (void)w;                                     /* the PIE's form of the same sums */
+    for (unsigned k = 0; k < n; ++k, xi += 8, xq += 8) {
+        hi[k] = (int16_t)(xi[0] + xi[2] + xi[4] + xi[6]);
+        hq[k] = (int16_t)(xq[0] + xq[2] + xq[4] + xq[6]);
+    }
+}
+
+/* Lock at t0, or unless config.quick_lock on the next header: one frame later at the clock
+ * the CFO hint implies (short frames: +-2 samples for +-30 kHz), so a search and a refine
+ * never share a call. */
+static void defer_lock(rx_demod_t *d)
+{
+    if (!d->cfg.quick_lock) {
+        d->omega = (int32_t)(uint32_t)((int64_t)d->cfg.cfo_hint_hz * 4295);   /* 2^32 / 1e6 */
+        d->t0 += (uint64_t)d->frame * base_step(d);
+        d->omega = 0;
+    }
+    d->state = REFINE;
 }
 
 /* The search over the block of SEARCH candidates from c. Candidate c sums the even samples
@@ -972,27 +1067,27 @@ static inline int32_t half_sum(const int8_t *x)
 static int search(rx_demod_t *d)
 {
     const uint32_t n = SEARCH;
-    int32_t half[2 * SEARCH + 2];
-    unsigned at = (unsigned)(8 * d->c - 8) & (RING - 1);
-    int32_t ci = d->dc_acc[0], cq = d->dc_acc[1];
-    half[0] = d->half[0];
-    half[1] = d->half[1];
-    for (uint32_t k = 0; k < n; ++k, at = (at + 8) & (RING - 1)) {
-        int32_t si = half_sum(d->ri + at), sq = half_sum(d->rq + at);
-        half[2 * k + 2] = si;
-        half[2 * k + 3] = sq;
-        ci += si;
-        cq += sq;
-        if (!(++d->dc_n & 255)) {   /* every 256 candidates, 1/8 of the mean, as a 16-sample sum */
-            d->acq_dc[0] += (ci * 4 - d->acq_dc[0]) >> 3;
-            d->acq_dc[1] += (cq * 4 - d->acq_dc[1]) >> 3;
-            ci = cq = 0;
-        }
+    int16_t hi[SEARCH + 1] __attribute__((aligned(16))), hq[SEARCH + 1] __attribute__((aligned(16)));
+    unsigned at = (unsigned)(8 * d->c - 8) & (RING - 1), part = (RING - at) / 8;  /* c odd */
+    part = part < n ? part : n;
+    hi[0] = (int16_t)d->half[0];
+    hq[0] = (int16_t)d->half[1];
+    demod_halves(d->ri + at, d->rq + at, part, hi + 1, hq + 1, evens);
+    demod_halves(d->ri, d->rq, n - part, hi + 1 + part, hq + 1 + part, evens);
+    int32_t ci = 0, cq = 0;
+    for (uint32_t k = 1; k <= n; ++k) {
+        ci += hi[k];
+        cq += hq[k];
     }
-    d->dc_acc[0] = ci;
-    d->dc_acc[1] = cq;
-    d->half[0] = half[2 * n];
-    d->half[1] = half[2 * n + 1];
+    d->dc_acc[0] += ci;
+    d->dc_acc[1] += cq;
+    if (!((d->dc_n += n) & 255)) {      /* every 256 candidates, 1/8 of the mean, as a 16-sample sum */
+        d->acq_dc[0] += (d->dc_acc[0] * 4 - d->acq_dc[0]) >> 3;
+        d->acq_dc[1] += (d->dc_acc[1] * 4 - d->acq_dc[1]) >> 3;
+        d->dc_acc[0] = d->dc_acc[1] = 0;
+    }
+    d->half[0] = hi[n];
+    d->half[1] = hq[n];
     uint32_t hit_k[8];
     unsigned hit_m[8], hits = 0;
     for (unsigned ph = 0; ph < 2; ++ph) {
@@ -1001,7 +1096,7 @@ static int search(rx_demod_t *d)
         uint32_t r0 = d->reg[x][0], r1 = d->reg[x][1], r2 = d->reg[x][2], fill = d->fill[x];
         for (uint32_t k = ph; k < n; k += 2) {
             /* One sign bit per candidate: Im(a_c conj(a_{c-2})), the turn between symbols. */
-            int32_t ai = half[2 * k + 2] + half[2 * k], aq = half[2 * k + 3] + half[2 * k + 1];
+            int32_t ai = hi[k + 1] + hi[k], aq = hq[k + 1] + hq[k];
             uint32_t neg = (uint32_t)(aq * p0 - ai * p1) >> 31;
             p0 = ai;
             p1 = aq;
@@ -1052,7 +1147,7 @@ static int search(rx_demod_t *d)
      * 8c - 9 - 89 * 16 = 8c - 1433. */
     d->t0 = (uint64_t)(8 * d->pick - 1433) << Q;
     d->pending = 0;
-    d->state = REFINE;
+    defer_lock(d);
     return 1;
 }
 
@@ -1113,7 +1208,13 @@ int rx_demod_init(rx_demod_t *d, const rx_config_t *config)
             d->pat[(88 - k) / 32] |= 1u << ((88 - k) % 32);
         }
     }
-    scrambling(d->scr, d->frame - HDR);
+    scrambling(d->scr, d->scr_pil, d->frame - HDR);
+    if (config->carrier_khz) {
+        d->kstep = (int32_t)(((int64_t)125 << 31) / config->carrier_khz);
+    }
+    d->mf.ri = d->ri;
+    d->mf.rq = d->rq;
+    d->mf.sets = rx_mf_sets;
     d->step = SPS << Q;
     d->wframe = ~0u;
     acquire_from(d, 0);

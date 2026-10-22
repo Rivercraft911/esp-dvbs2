@@ -42,26 +42,27 @@ def main():
         # Real dump (short7-gain32, 2420 MHz, 2026-10-22), 1,140 symbols from 150 before a
         # PLHEADER: acquisition, timing and carrier on the S3's own samples. The whole capture
         # gives 22 of 22 frames exact at CFO -3,267 to -3,291 Hz.
-        d = R.Demod(so, 7, False, 2420000)
+        d = R.Demod(so, 7, False, 2420000, quick_lock=True)
         d.feed(R.sc8_words(ROOT / "tests/data/rx_short7.sc8"), first=38280)
         s = d.stats()
         assert s["locked"] and s["rejects"] == 0 and not d.frames, s
         assert abs(s["cfo_hz"] + 3267) < 100 and abs(s["clock_ppb"] + 1350) < 50, s
 
         # Twin, QPSK 3/4 short frames at Es/N0 18 dB with the measured offsets and impairments,
-        # and a 20 ms keyed-tone gap after frame 8: every frame exact, one relock.
+        # and a 20 ms keyed-tone gap after frame 8. Each acquisition locks on the header after
+        # the one it finds, so frames 0 and 8 go to acquisition; the other 18 are exact.
         link = T.Link(frames=20, gap=(8, 0.02))
         d, words, truth = run_twin(so, link)
         pairs = matched(d, truth)
-        assert len(pairs) == link.frames, (len(pairs), d.stats())
+        assert [truth.index(t) for _, t in pairs] == list(range(1, 8)) + list(range(9, 20))
         assert all(np.array_equal(f["hard"], t["codeword"]) for f, t in pairs)
         assert all((f["llr"] < 0).astype(np.uint8).tolist() == f["hard"].tolist() for f, _ in pairs[:2])
         # Sequence numbers count frame periods since the first lock, so the gap (2.4 periods)
-        # reads as two lost frames.
+        # and the relock's frame read as three lost frames.
         s = d.stats()
-        assert s["relocks"] == 1 and s["lost"] == 2, s
+        assert s["relocks"] == 1 and s["lost"] == 3, s
         seq = [f["sequence"] for f, _ in pairs]
-        assert seq == list(range(8)) + list(range(10, 22)), seq
+        assert seq == list(range(7)) + list(range(10, 21)), seq
         assert all(f["modcod"] == 7 and f["type"] == 3 for f, _ in pairs)
         assert all(abs(f["cfo_hz"] - link.cfo_hz) < 60 for f, _ in pairs[:8])
 
@@ -75,20 +76,21 @@ def main():
         assert len(d2.frames) == len(d.frames)
         assert all(np.array_equal(a["llr"], b["llr"]) for a, b in zip(d.frames, d2.frames))
 
-        # A gap in the dump indices forces a relock and loses only the frame it cuts.
+        # A gap in the dump indices forces a relock: it loses the frame it cuts and the one
+        # the relock finds.
         d3 = R.Demod(so, 7)
         w, truth = T.twin(T.Link(frames=8, seed=7))
         cut = len(w) // 2
         d3.feed(w[:cut])
         d3.feed(w[cut + 5000:], first=cut + 5000)
         s = d3.stats()
-        assert s["relocks"] == 1 and s["lost"] == 1 and len(d3.frames) == 7, (s, len(d3.frames))
+        assert s["relocks"] == 1 and s["lost"] == 2 and len(d3.frames) == 5, (s, len(d3.frames))
 
         # Normal frames, as in the recorded corpus (QPSK 1/2, 2245 MHz offsets).
         link = T.Link(modcod=4, short=False, frames=3, cfo_hz=-11800, carrier_hz=2245e6, seed=5)
         d, _, truth = run_twin(so, link)
         pairs = matched(d, truth)
-        assert len(pairs) == 3 and all(np.array_equal(f["hard"], t["codeword"]) for f, t in pairs)
+        assert len(pairs) == 2 and all(np.array_equal(f["hard"], t["codeword"]) for f, t in pairs)
 
     print("rx demodulator passed: real excerpt locked, twin frames exact, "
           f"implementation loss {loss:.2f} dB")

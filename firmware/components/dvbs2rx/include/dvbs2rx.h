@@ -48,6 +48,9 @@ typedef struct {
                              * clock offset is -CFO / carrier (0: track it from timing alone) */
     uint8_t normal;         /* 64,800-bit frames (host tests on the normal-frame corpus): llr
                              * then holds 64,800 and hard 8,100 bytes */
+    uint8_t quick_lock;     /* lock on the PLHEADER found rather than the next one: one more
+                             * frame per acquisition, but the search and the lock then share
+                             * a call (for recorded captures) */
 } rx_config_t;
 
 typedef struct {
