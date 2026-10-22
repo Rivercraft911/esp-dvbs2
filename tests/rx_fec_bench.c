@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "esp32s3/rom/cache.h"
 #include "esp_cpu.h"
 #include "esp_heap_caps.h"
 #include "esp_rom_crc.h"
@@ -297,24 +298,20 @@ static void clean(rx_fec_t *f, frame_set_t *x)
            ",\"cold\":%" PRIu32 ",\"cold_max\":%" PRIu32 ",\"copy\":%" PRIu32 ",\"ldpc\":%" PRIu32
            ",\"bch\":%" PRIu32 ",\"length\":%d,\"payload_ok\":%s}\n", first, warm, cold, cold_max,
            copy, ldpc, bch, length, sum == x->want ? "true" : "false");
-    /* W1's paired BCH table: 4 KB more internal RAM. */
-    uint8_t *low = alloc(DVBS2_BCH_PAIR_BYTES);
-    if (low && !dvbs2_fast_cache_bch_pair(f->encoder, low)) {
-        bch = warm = UINT32_MAX;
-        for (unsigned run = 0; run < 2 * RUNS; ++run) {
-            uint32_t t = decode(f, x, &length, &sum, &st);
-            warm = t < warm ? t : warm;
-            memcpy(f->bits->bits, x->hard_in, f->kbch / 8);
-            t = now();
-            dvbs2_fast_bch(f->encoder, f->bits);
-            t = now() - t;
-            bch = t < bch ? t : bch;
-        }
-        printf("@{\"cmd\":\"fecbench\",\"frame\":\"clean_bch_pair\",\"warm\":%" PRIu32 ",\"bch\":%"
-               PRIu32 ",\"payload_ok\":%s}\n", warm, bch, sum == x->want ? "true" : "false");
+    /* Cold cases: after a write-back and invalidation of the whole data cache, and after
+     * 16 KB of PSRAM writes, as core 1 writes LLRs each frame. */
+    uint32_t flushed = UINT32_MAX, llr_writes = UINT32_MAX;
+    for (unsigned run = 0; run < 2 * RUNS; ++run) {
+        Cache_WriteBack_All();
+        Cache_Invalidate_DCache_All();
+        uint32_t t = decode(f, x, &length, &sum, &st);
+        flushed = t < flushed ? t : flushed;
+        for (unsigned i = 0; evictor && i < RX_SHORT_BITS; i += 4) *(volatile uint32_t *)(evictor + i) = i;
+        t = decode(f, x, &length, &sum, &st);
+        llr_writes = t < llr_writes ? t : llr_writes;
     }
-    heap_caps_free(low);
-    rx_fec_init(f, MODCOD, f->belief);   /* back to the plain resident table */
+    printf("@{\"cmd\":\"fecbench\",\"frame\":\"clean_cold\",\"flushed\":%" PRIu32 ",\"llr_writes\":%"
+           PRIu32 ",\"payload_ok\":%s}\n", flushed, llr_writes, sum == x->want ? "true" : "false");
 }
 
 /* Damaged frames with the work area at 'placement', cold cache each time; C too if asked. */

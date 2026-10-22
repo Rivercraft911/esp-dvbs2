@@ -84,7 +84,7 @@ static unsigned count_edges(const uint16_t *e, unsigned q, unsigned *most, unsig
  * the header, the BB PRBS, the encoder context with its resident BCH table and the
  * encoder's 2 KB workspace. The work area holds the decoder. */
 typedef struct {
-    size_t prbs, encoder, table, tail, bits, total;
+    size_t prbs, encoder, tail, bits, total;
     size_t belief, r, qtmp, reads, writes, checks, edges, state, work;
 } layout_t;
 
@@ -96,8 +96,7 @@ static layout_t layout(const dvbs2_mode *mode)
     layout_t l;
     l.prbs = round16(sizeof(rx_fec_t));
     l.encoder = l.prbs + round16(mode->kbch / 8);
-    l.table = l.encoder + round16(dvbs2_fast_mode_size(mode));
-    l.tail = l.table + DVBS2_BCH_CACHE_BYTES;
+    l.tail = l.encoder + round16(dvbs2_fast_mode_size(mode));
     l.bits = l.tail + RX_ENCODER_TAIL;
     l.total = l.bits + DVBS2_SHORT_FAST_WORKSPACE_USED;
     l.belief = 0;
@@ -180,11 +179,11 @@ int rx_fec_init(rx_fec_t *f, unsigned modcod, void *work)
     f->prbs = base + l.prbs;
     f->encoder = (dvbs2_fast *)(base + l.encoder);
     f->bits = (dvbs2_workspace *)(base + l.bits);
-    /* Every encoder table the check reads stays resident: the BCH bytes and the LDPC
-     * program, columns and CRC. */
+    /* The LDPC program, columns and CRC stay resident (1.6 KB); the 8 KB BCH table is
+     * read from flash: core 0 has the data cache to itself and keeps it warm (31.6k
+     * cycles a clean frame either way, 155k after a full cache flush). */
     if (dvbs2_fast_prepare(f->encoder, mode, 1, DVBS2_PIE_BCH | DVBS2_PIE_LDPC) ||
         dvbs2_fast_cache_tail_size(f->encoder) > RX_ENCODER_TAIL ||
-        dvbs2_fast_cache_bch(f->encoder, base + l.table) ||
         dvbs2_fast_cache_split(f->encoder, NULL, base + l.tail)) {
         return -1;
     }
