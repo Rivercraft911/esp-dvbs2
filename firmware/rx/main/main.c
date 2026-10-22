@@ -201,10 +201,10 @@ void app_main(void)
             printf("}\n");
         } else if (fields == 2 && !strcmp(cmd, "upload")) {
             replay_upload(mhz);
-        } else if (fields == 2 && !strcmp(cmd, "replay")) {
+        } else if ((fields == 2 || fields == 3) && !strcmp(cmd, "replay")) {
             static replay_stats_t r;
             quiet = true;
-            esp_err_t e = replay_run(mhz, &r);
+            esp_err_t e = replay_run(mhz, fields == 3 ? gain : 0, &r);
             quiet = false;
             printf("@{\"cmd\":\"replay\",\"result\":\"%s\",\"pushes\":%lu,\"push_words\":6144,"
                    "\"max_push_cycles\":%lu,\"max_push_at\":%llu,\"push_cycles\":%llu,\"frames\":%lu,"
@@ -234,7 +234,7 @@ void app_main(void)
             print_capture(&s);
             printf("}\n");
         } else {
-            printf("@{\"error\":\"use info, rxprobe MHz gain seconds [promisc], rx MHz gain seconds MODCOD, dump MHz gain pairs, upload bytes, replay MODCOD, membench MHz gain\"}\n");
+            printf("@{\"error\":\"use info, rxprobe MHz gain seconds [promisc], rx MHz gain seconds MODCOD, dump MHz gain pairs, upload bytes, replay MODCOD [skip], membench MHz gain\"}\n");
         }
         printf("@{\"done\":true}\n");
     }
