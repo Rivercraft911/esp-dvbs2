@@ -26,7 +26,9 @@ static inline int rx_word_q(uint32_t w) { return (int32_t)(w << 22) >> 22; }
  * caller's choice (hard bits internal, LLRs may live in PSRAM: the clean path
  * never reads them). */
 typedef struct {
-    int8_t *llr;            /* RX_SHORT_BITS, codeword order, > 0 favours bit 0 */
+    int8_t *llr;            /* RX_SHORT_BITS, codeword order, > 0 favours bit 0. Soft bits
+                             * 32 x / a, clipped to +-127: a is the noise-free axis amplitude,
+                             * so the true LLR is about llr * 10^(MER/10) / 16. */
     uint8_t *hard;          /* RX_HARD_BYTES, MSB first, bit = llr < 0 */
     uint64_t header_sample; /* dump index of the PLHEADER's first symbol centre */
     uint32_t sequence;      /* frames since lock; a jump means frames were lost */
@@ -41,7 +43,11 @@ typedef struct {
 typedef struct {
     uint8_t modcod;         /* expected MODCOD, QPSK 4..10 */
     int32_t cfo_hint_hz;    /* centre of the acquisition search */
-    uint32_t cfo_span_hz;   /* half-width of the search */
+    uint32_t cfo_span_hz;   /* half-width of the search (0: 50 kHz) */
+    uint32_t carrier_khz;   /* RF carrier: both radios run from 40 MHz crystals, so the symbol
+                             * clock offset is -CFO / carrier (0: track it from timing alone) */
+    uint8_t normal;         /* 64,800-bit frames (host tests on the normal-frame corpus): llr
+                             * then holds 64,800 and hard 8,100 bytes */
 } rx_config_t;
 
 typedef struct {
@@ -49,16 +55,21 @@ typedef struct {
     uint32_t frames, lost, relocks;
     uint32_t acquire_cycles;
     int16_t dc_i, dc_q;     /* current DC estimate, 10-bit LSB */
+    uint8_t locked;
+    int32_t cfo_hz, clock_ppb;  /* current estimates, as in rx_frame_t */
+    uint32_t rejects;       /* acquisition detections that failed the header checks */
 } rx_demod_stats_t;
 
 typedef struct rx_demod rx_demod_t;
 size_t rx_demod_size(void);
 int rx_demod_init(rx_demod_t *d, const rx_config_t *config);
 /* Consume count consecutive words starting at dump index first (a gap in first
- * forces a relock). Writes up to max complete frames to out, whose llr/hard
- * pointers the caller has set, and returns how many. Real-time safe: bounded
- * work per word, no allocation, no blocking. Acquisition's heavy search may be
- * split out to another core; it must not stall push. */
+ * forces a relock). LLRs and hard bits are written progressively, in order, into
+ * out[0] while a frame is in progress, so keep out[0]'s llr/hard pointers stable
+ * across calls until push returns a frame, then set fresh buffers. Returns the
+ * number of complete frames in out (at most max; one per call when count is at
+ * most 12,288 words). Real-time safe: bounded work per word, no allocation, no
+ * blocking. Acquisition runs inline and is cheaper per word than tracking. */
 size_t rx_demod_push(rx_demod_t *d, const uint32_t *words, uint64_t first, size_t count,
                      rx_frame_t *out, size_t max);
 void rx_demod_stats(const rx_demod_t *d, rx_demod_stats_t *stats);

@@ -38,6 +38,7 @@ jobs:
       - run: python tests/test_live_vcm.py
       - run: python tests/test_rx_host.py
       - run: python tests/test_rx_kernels.py
+      - run: python tests/test_rx_demod.py
       - run: python tests/test_rx_fec.py
       - name: SPI input
         run: |
