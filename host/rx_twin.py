@@ -2,6 +2,7 @@
 """Digital twin of the S3-to-S3 link: transmitter frames in, receiver dump words out.
 
     python3 host/rx_twin.py --frames 40 --mer-db 18 --out twin.u32      write dump words
+    python3 host/rx_twin.py --frames 10 --gap 0 0.1 --out tone.sc8      int8 pairs, for replay
     python3 host/rx_twin.py --frames 3584 --check --reference 40         30 s through the C demodulator
 
 Transmitter: host/dvbs2.py frames carrying the firmware's test payload (host/rx.py model), the
@@ -278,7 +279,7 @@ def main():
             p.add_argument("--" + f.name.replace("_", "-"), type=f.type, default=f.default)
     p.add_argument("--normal", action="store_true")
     p.add_argument("--gap", type=float, nargs=2, metavar=("AFTER", "SECONDS"))
-    p.add_argument("--out", type=pathlib.Path)
+    p.add_argument("--out", type=pathlib.Path, help=".u32 dump words, or .sc8 int8 I, Q pairs")
     p.add_argument("--check", action="store_true", help="run the C demodulator on it")
     p.add_argument("--reference", type=int, default=0, help="frames for the float reference")
     a = p.parse_args()
@@ -289,7 +290,10 @@ def main():
         out = check(link, a.reference)
         return 0 if out["exact"] == out["matched"] and not out["missing"] else 1
     words, truth = twin(link)
-    if a.out:
+    if a.out and a.out.suffix == ".sc8":
+        s10 = lambda v: ((v.astype(np.int32) & 1023) ^ 512) - 512           # noqa: E731
+        np.stack([s10(words >> 10) >> 2, s10(words) >> 2], 1).astype(np.int8).tofile(a.out)
+    elif a.out:
         words.tofile(a.out)
     print(f"{len(words)} words, {len(truth)} frames")
     return 0
