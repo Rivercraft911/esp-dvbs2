@@ -574,6 +574,7 @@ def main():
     p.add_argument("--callsign", default="N0CALL", help="callsign in the dumped payload")
     p.add_argument("--receiver", type=Path, help="leandvb executable, or set LEANDVB")
     p.add_argument("--ldpc-helper", type=Path, help=HELPER_REQUIREMENT)
+    p.add_argument("--timeout", type=float, default=120, help="seconds allowed for LeanDVB")
     p.add_argument("--log", type=Path)
     p.add_argument("--output", type=Path, help="save recovered bytes")
     a = p.parse_args()
@@ -599,7 +600,7 @@ def main():
                 # Receiver lookahead only. Never included in a dump's CRC.
                 np.r_[raw[:, 0] + 1j*raw[:, 1], np.zeros(4096)].astype("<c8").tofile(source)
             report, got = decode(source, sample_rate=a.rate, symbol_rate=a.symbol_rate,
-                                 alpha=a.rolloff, receiver=a.receiver, output=a.output, log=a.log,
+                                 alpha=a.rolloff, receiver=a.receiver, output=a.output, log=a.log, timeout=a.timeout,
                                  ldpc_helper=a.ldpc_helper, modcod=a.modcod, short=a.short,
                                  **({"bb_output": Path(tmp) / "frames.bbf"} if a.pattern else {}))
             if a.pattern:

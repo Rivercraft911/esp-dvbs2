@@ -179,6 +179,21 @@ static void cmd_dvbpace(char *args)
     dvbtx_pace_options(modcod,seconds,top,stall,sps,rate,phy_solo,fused);
 }
 
+void fecbench_command(unsigned modcod, bool short_frame);
+
+static void cmd_fecbench(char *args)
+{
+    bool short_frames;
+    const bool short_ok = take_option(args, "--short", &short_frames);
+    char *save, *code = strtok_r(args, " \t", &save);
+    uint32_t modcod;
+    if (!short_ok || !number(code, 4, 17, &modcod) || strtok_r(NULL, " \t", &save)) {
+        printf("@{\"cmd\":\"fecbench\",\"error\":\"usage: fecbench <modcod 4..17> [--short (4..10)]\"}\n");
+        return;
+    }
+    fecbench_command(modcod, short_frames);
+}
+
 static void cmd_wifimem(char *args)
 {
     char *save, *code = strtok_r(args, " \t", &save);
@@ -336,6 +351,9 @@ void app_main(void)
         } else if (strncmp(line, "dvb ", 4) == 0) {
             cmd_dvb(line + 4);
             strcpy(line, "dvb");
+        } else if (strncmp(line, "fecbench ", 9) == 0) {
+            cmd_fecbench(line + 9);
+            strcpy(line, "fecbench");
         } else if (strcmp(line, "wifimem") == 0 || strncmp(line, "wifimem ", 8) == 0) {
             cmd_wifimem(line + 7);
             strcpy(line, "wifimem");
