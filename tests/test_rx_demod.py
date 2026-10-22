@@ -82,7 +82,7 @@ def main():
         d3.feed(w[:cut])
         d3.feed(w[cut + 5000:], first=cut + 5000)
         s = d3.stats()
-        assert s["relocks"] == 1 and len(d3.frames) == 6, (s, len(d3.frames))
+        assert s["relocks"] == 1 and s["lost"] == 1 and len(d3.frames) == 7, (s, len(d3.frames))
 
         # Normal frames, as in the recorded corpus (QPSK 1/2, 2245 MHz offsets).
         link = T.Link(modcod=4, short=False, frames=3, cfo_hz=-11800, carrier_hz=2245e6, seed=5)

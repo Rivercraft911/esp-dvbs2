@@ -96,7 +96,7 @@ def frames(link):
         parts.append(ph)
         active.append(np.ones(len(ph), bool))
         at += len(ph)
-    tail = 200
+    tail = 3000                       # receiver keeps running after the last frame
     parts.append(np.zeros(tail, np.uint8))
     active.append(np.zeros(tail, bool))
     return np.concatenate(parts), np.concatenate(active), truth
@@ -139,7 +139,7 @@ def generate(link, chunk=1 << 18):
             x += np.where((k >= 0) & (k < len(a)), a[np.clip(k, 0, len(a) - 1)], 0) * p
         tx_on = act[np.clip(k0, 0, len(act) - 1)]
         x = x + tx_nu * np.conj(x) + leak * tx_on
-        tone = ~tx_on & (k0 >= link.lead_symbols) & (k0 < len(sym) - 200)
+        tone = ~tx_on & (k0 >= link.lead_symbols) & (k0 < len(sym) - 3000)
         if tone.any():                                              # keyed station-ID tone
             key = (np.floor(n / FS / 0.06) % 4) != 3
             x += np.where(tone & key, np.exp(2j * np.pi * 1e6 * n / FS), 0)

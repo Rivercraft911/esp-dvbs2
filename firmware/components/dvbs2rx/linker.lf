@@ -6,4 +6,3 @@ entries:
     kernels (noflash)
     demod (noflash)
     demod:rx_demod_init (default)
-    demod:scrambling (default)

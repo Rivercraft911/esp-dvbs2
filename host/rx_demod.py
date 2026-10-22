@@ -129,10 +129,10 @@ class Stats(ct.Structure):
 
 
 def build(folder, extra=()):
-    """Compile demod.c and the kernel references into a shared library."""
+    """Compile demod.c, with normal frames for the corpus, and the kernel references."""
     lib = pathlib.Path(folder) / "demod.so"
     subprocess.run(["cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC",
-                    "-I", str(SRC / "include"), "-I", str(SRC), str(SRC / "demod.c"),
+                    "-DRX_DEMOD_NORMAL=1", "-I", str(SRC / "include"), "-I", str(SRC), str(SRC / "demod.c"),
                     str(SRC / "kernels.c"), *map(str, extra), "-o", str(lib)], check=True)
     so = ct.CDLL(str(lib))
     so.rx_demod_size.restype = ct.c_size_t
