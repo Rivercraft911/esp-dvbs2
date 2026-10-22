@@ -1,0 +1,5 @@
+# Core 1 runs these inside the capture loop: keep them out of the flash cache.
+[mapping:dvbs2rx]
+archive: libdvbs2rx.a
+entries:
+    kernels (noflash)

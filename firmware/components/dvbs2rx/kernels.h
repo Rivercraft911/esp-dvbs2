@@ -11,6 +11,11 @@
 #define RX_UNPACK_BLOCK 16u
 void rx_unpack(const uint32_t *words, size_t blocks, int8_t *i, int8_t *q);
 
+/* Any span: scalar until i is 16-byte aligned, rx_unpack blocks, scalar tail. Requires
+ * (uintptr_t)words / 4 == (uintptr_t)i modulo 4, as when sample s sits at word s % 16384 of
+ * a bank and at byte s % R of 16-byte-aligned I/Q rings with R a multiple of 16. */
+void rx_unpack_span(const uint32_t *words, size_t n, int8_t *i, int8_t *q);
+
 /* Matched filter at chosen times. For each step k, with x = i (out[2k]) or q (out[2k + 1]):
  *   out[2k + x] = sum_{j < 16 * vectors} x[base_k + j] * coef_k[j]
  * base_k is a multiple of 16. coef_k is a 16-byte-aligned set of 16 * vectors int8 taps: the

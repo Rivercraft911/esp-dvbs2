@@ -34,6 +34,16 @@ def main():
         assert np.array_equal(i[:4096], s10i // 4) and np.array_equal(q[:4096], s10q // 4)
         assert i.min() >= -128 and q.max() <= 127
 
+        # Spans start at any sample s: word s of the bank, byte s of the rings.
+        for s in range(17):
+            for n in (0, 5, 16, 100, 1000):
+                ri = np.zeros(1100, np.int8)
+                rq = np.zeros(1100, np.int8)
+                k.rx_unpack_span(words[s:].ctypes, ctypes.c_size_t(n),
+                                 ctypes.c_void_p(ri.ctypes.data + s), ctypes.c_void_p(rq.ctypes.data + s))
+                assert np.array_equal(ri[s:s + n], i[s:s + n]) and np.array_equal(rq[s:s + n], q[s:s + n])
+                assert not ri[:s].any() and not ri[s + n:].any()
+
         for vectors in (2, 7, 9):
             sets = rng.integers(-128, 128, (8, 16 * vectors), dtype=np.int8)
             n = 200
