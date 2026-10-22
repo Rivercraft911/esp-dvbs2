@@ -159,11 +159,11 @@ def int_model(llr, modcod, iterations=30):
     """The integer decoder of rx_fec.c in codeword order (no slots, frames or vectors).
     Returns (hard bits or None, iterations)."""
     sat, mag = lambda x: np.clip(x, -128, 127), lambda x: np.minimum(np.abs(x), 127)
-    a = mag(llr.astype(np.int64))
+    a = mag(llr[:16192].astype(np.int64))
     n, s1, s2 = len(a), int(a.sum()), int((a * a).sum())
     den = n * s2 - s1 * s1
-    gain = 64 if not den else min(64, max(1, (96 * s1 * n + den // 2) // den))
-    b = np.where(llr < 0, -1, 1) * np.minimum(63, (a * gain + 8) >> 4)
+    gain = min(64, max(1, (96 * s1 * n + den // 2) // den)) if den else 64
+    b = np.where(llr < 0, -1, 1) * np.minimum(63, (mag(llr.astype(np.int64)) * gain) >> 4)
     layers = structure(modcod)
     R = [np.zeros(i.shape, np.int64) for i, _, _ in layers]
     for it in range(1, iterations + 1):
@@ -244,17 +244,21 @@ def test_awgn(native):
         hard, iterations = int_model(llr, modcod)
         assert st.iterations == iterations, (modcod, esn0, st.iterations, iterations)
         assert (payload is not None) == (hard is not None and (hard == cw).all())
-    # FER against float layered BP on the same frames, in the waterfall of 3/4.
-    modcod, frames, esn0 = 7, 60, 3.9
+    # FER against float layered BP (50 iterations) on the same noise draws: in the
+    # waterfall of 3/4, the int8 decoder 0.15 dB higher loses no more frames.
+    modcod, frames, esn0, extra = 7, 60, 3.9, 0.15
     c = d.code(rate_of(modcod), True)
     data = rng.integers(0, 2, c.kbch - 80, dtype=np.uint8)
     cw, want = codeword(modcod, data), np.packbits(data).tobytes()
-    llrs, natural = zip(*(demodulate(cw, esn0, rng) for _ in range(frames)))
-    fer_int = np.mean([native.frame(modcod, x)[0] != want for x in llrs])
-    fer_bp = np.mean((float_bp(np.array(natural), modcod)[:, :c.kbch] != cw[:c.kbch]).any(axis=1))
-    print(f"awgn: 3/4 at {esn0} dB Es/N0, {frames} frames: FER int8 {fer_int:.3f}, "
-          f"float BP {fer_bp:.3f}")
-    assert fer_int <= fer_bp + 0.25
+    seeds = rng.integers(0, 2**32, frames)
+    natural = np.array([demodulate(cw, esn0, np.random.default_rng(x))[1] for x in seeds])
+    fer_bp = np.mean((float_bp(natural, modcod)[:, :c.kbch] != cw[:c.kbch]).any(axis=1))
+    fer_int = np.mean([native.frame(modcod, demodulate(cw, esn0 + extra,
+                                                       np.random.default_rng(x))[0])[0] != want
+                       for x in seeds])
+    print(f"awgn: 3/4, {frames} frames: FER float BP {fer_bp:.3f} at {esn0} dB Es/N0, "
+          f"int8 {fer_int:.3f} at {esn0 + extra} dB")
+    assert fer_int <= fer_bp
     print("awgn: exact payloads above threshold, Python model bit exact, FER near float BP: ok")
 
 
