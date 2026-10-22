@@ -231,6 +231,26 @@ QPSK MODCODs 4..11 select rates 1/2, 3/5, 2/3, 3/4, 4/5, 5/6, 8/9, 9/10.
 8PSK MODCODs 12..17 select 3/5, 2/3, 3/4, 5/6, 8/9, 9/10. Fractional names are
 exact ratios: 80/3 and 100/3 Msym/s. Integer telemetry truncates those rates.
 
+## Receiver experiments
+
+The RX branch has a streaming 32-tap S8 pulse filter and a normal-frame QPSK 2/3
+(MODCOD 6) LDPC decoder in `firmware/rx/dsp` and `firmware/rx/fec`. The filter uses
+64 fractional phases and computes a Q15 derivative only where requested. Its
+coefficient model includes the existing TX pulse, DAC hold and halfband filters;
+RF recovery with this shorter response still needs testing.
+
+The decoder stores two magnitudes, an index and signs in four bytes per check.
+Beliefs and check state occupy 216,000 bytes, with no expanded edge-message buffer.
+Each call processes a bounded number of conflict-free check tiles. The output must
+pass LDPC parity, BCH parity and BBHEADER checks before payload extraction. BCH
+error correction is not implemented here.
+
+`tests/test_rx_filter.py` and `tests/test_rx_mc6.py` check the portable implementations
+against independent arithmetic, graph and streaming oracles. `tests/rx_bench` builds
+a separate radio-off S3 app; its `filter` and `fec` commands check native PIE results,
+guards and reference CRCs and report measured work separately from deliberate task
+delays. These components are not yet a continuous receiver or part of the capture app.
+
 ## Table provenance
 
 Current waveform coverage is `tests/test_stream.py`; `tests/test_rational.py` also checks

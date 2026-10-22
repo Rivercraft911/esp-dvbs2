@@ -31,6 +31,11 @@ jobs:
       - run: python tests/test_self_check.py
       - run: python tests/test_live_video.py
       - run: python tests/test_soft_helper.py
+      - name: Receiver arithmetic
+        run: |
+          python tests/test_receive.py
+          python tests/test_rx_filter.py
+          python tests/test_rx_mc6.py
       - run: python tests/test_live_iio.py
       - run: python tests/test_ota.py
       - run: python tests/test_file_ota.py
@@ -60,3 +65,13 @@ jobs:
           esp_idf_version: v6.1
           target: esp32s3
           path: firmware
+
+  receiver:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v6.1
+          target: esp32s3
+          path: tests/rx_bench
