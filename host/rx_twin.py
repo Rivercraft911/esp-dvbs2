@@ -96,9 +96,10 @@ def frames(link):
         parts.append(ph)
         active.append(np.ones(len(ph), bool))
         at += len(ph)
-    e0 = clock(link)[0]
+    e0, de = clock(link)
     for f in truth:                   # pulse peak 4.5 symbols in; approximate, for matching
-        f["header_sample"] = (f["symbol"] + 4.5) * 16 / (1 + e0)
+        n = (f["symbol"] + 4.5) * 16 / (1 + e0)
+        f["header_sample"] = n - de * n * n / 2 / (1 + e0)
     tail = 3000                       # receiver keeps running after the last frame
     parts.append(np.zeros(tail, np.uint8))
     active.append(np.zeros(tail, bool))
