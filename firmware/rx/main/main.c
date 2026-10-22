@@ -35,10 +35,12 @@ static int log_filter(const char *format, va_list args)
 static void print_capture(const capture_stats_t *s)
 {
     printf(",\"samples\":%llu,\"units\":%lu,\"max_late\":%lu,\"max_service\":%lu,\"max_clear\":%lu,"
+           "\"max_spin\":%lu,\"max_lag\":%lu,"
            "\"free_before\":%lu,\"free_wifi\":%lu,\"free_ready\":%lu,\"largest_ready\":%lu,"
            "\"gain_max\":%u,\"status\":\"%s\",\"cleanup\":\"%s\"",
            (unsigned long long)s->samples, (unsigned long)s->units, (unsigned long)s->max_late,
            (unsigned long)s->max_service, (unsigned long)s->max_clear,
+           (unsigned long)s->max_spin, (unsigned long)s->max_lag,
            (unsigned long)s->free_before, (unsigned long)s->free_wifi,
            (unsigned long)s->free_ready, (unsigned long)s->largest_ready, s->gain_max,
            esp_err_to_name(s->error), esp_err_to_name(s->cleanup));

@@ -28,3 +28,7 @@ CONFIG_HEAP_PLACE_FUNCTION_INTO_FLASH=y
 
 # Core 1 belongs to the capture loop for the whole run; its idle task never runs.
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
+
+# The handoff interrupt and its alarm updates stay in IRAM.
+CONFIG_GPTIMER_ISR_HANDLER_IN_IRAM=y
+CONFIG_GPTIMER_CTRL_FUNC_IN_IRAM=y
