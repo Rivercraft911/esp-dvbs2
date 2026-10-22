@@ -416,7 +416,7 @@ static void worker(void *arg)
     rom_set_rxclk_en(0);
     select_lo(lo_saved & 0x10U);
     xSemaphoreGive(job->done);
-    vTaskDelete(NULL);
+    vTaskSuspend(NULL);     /* the launcher deletes it, so its static buffers are free again */
 }
 
 static esp_err_t launch(job_t *job);
@@ -463,12 +463,19 @@ static esp_err_t launch(job_t *job)
     s->free_wifi = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     if (job->config->ready && (s->error = job->config->ready(job->ctx)) != ESP_OK) goto done;
     if (!(job->done = xSemaphoreCreateBinary())) { s->error = ESP_ERR_NO_MEM; goto done; }
-    if (xTaskCreatePinnedToCore(worker, "capture", CAPTURE_STACK, job, configMAX_PRIORITIES - 1,
-                                NULL, 1) != pdPASS) {
+    /* A static stack stays in internal SRAM. From the heap, after Wi-Fi, it can land in
+     * RTC FAST memory, where the demodulator's stack traffic ran 3.4 times slower. */
+    static StackType_t stack[CAPTURE_STACK / sizeof(StackType_t)];
+    static StaticTask_t task;
+    TaskHandle_t handle = xTaskCreateStaticPinnedToCore(worker, "capture", CAPTURE_STACK, job,
+                                                        configMAX_PRIORITIES - 1, stack, &task, 1);
+    if (!handle) {
         s->error = ESP_ERR_NO_MEM;
         goto done;
     }
     xSemaphoreTake(job->done, portMAX_DELAY);
+    while (eTaskGetState(handle) != eSuspended) vTaskDelay(1);
+    vTaskDelete(handle);
 
 done:
     if (job->done) vSemaphoreDelete(job->done);

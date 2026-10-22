@@ -79,7 +79,7 @@ static void decoder(void *arg)
     }
     s->decoder_stack_free = uxTaskGetStackHighWaterMark(NULL);
     xSemaphoreGive(r->done);
-    vTaskDelete(NULL);
+    vTaskSuspend(NULL);     /* receive_run deletes it, so its static buffers are free again */
 }
 
 /* After Wi-Fi is up: every run allocation, the decoder task and the stream header. */
@@ -106,7 +106,11 @@ static esp_err_t ready(void *ctx)
     if (!ok) return ESP_ERR_NO_MEM;
     if (rx_demod_init(r->demod, &r->config) || rx_fec_init(r->fec, r->config.modcod, r->fec_work))
         return ESP_ERR_INVALID_ARG;
-    if (xTaskCreatePinnedToCore(decoder, "decoder", DECODER_STACK, r, 10, &r->task, 0) != pdPASS)
+    /* Static, like the capture task's stack: never in slow RTC FAST memory. */
+    static StackType_t stack[DECODER_STACK / sizeof(StackType_t)];
+    static StaticTask_t task;
+    if (!(r->task = xTaskCreateStaticPinnedToCore(decoder, "decoder", DECODER_STACK, r, 10,
+                                                  stack, &task, 0)))
         return ESP_ERR_NO_MEM;
     printf("@{\"cmd\":\"rx\",\"stream\":\"binary\",\"record_bytes\":%u}\n",
            (unsigned)sizeof(receive_record_t));
@@ -127,6 +131,8 @@ esp_err_t receive_run(const capture_config_t *capture, unsigned modcod, receive_
         uint8_t stop = STOP;
         xQueueSend(r.full, &stop, portMAX_DELAY);
         xSemaphoreTake(r.done, portMAX_DELAY);
+        while (eTaskGetState(r.task) != eSuspended) vTaskDelay(1);
+        vTaskDelete(r.task);
         receive_record_t end = {RECEIVE_MAGIC, 0, 0, 0, RECEIVE_END, 0, 0};
         usb_serial_jtag_write_bytes(&end, sizeof end, portMAX_DELAY);
         rx_demod_stats(r.demod, &s->demod);

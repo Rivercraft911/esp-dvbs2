@@ -143,8 +143,8 @@ def check(frames, modcod: int, callsign: str, tx_frames: int) -> dict:
     exact = sum(index.get(f["payload"]) == k0 + f["sequence"] - s0 for f in good) if k0 is not None else 0
     span = good[-1]["sequence"] - s0 + 1
     rate = 8 * size * 1e6 / 8370
-    report.update(first_model_frame=k0, sequence_span=span, exact=exact,
-                  missing=span - len(good), payload_mbps=round(rate / 1e6, 4),
+    report.update(first_model_frame=k0, sequence_span=span, span_seconds=round(span * 8370 / 1e6, 3),
+                  exact=exact, missing=span - len(good), payload_mbps=round(rate / 1e6, 4),
                   exact_bytes=exact * size, passed=k0 is not None and exact == span == len(good))
     return report
 
