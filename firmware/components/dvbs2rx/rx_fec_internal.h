@@ -75,7 +75,6 @@ void rx_scale(int8_t *belief, unsigned slots, unsigned gain);
 void rx_moments(const int8_t *llr, unsigned vectors, uint32_t sums[2]);
 int rx_parity(const int8_t *belief, const uint16_t *checks, unsigned count);
 void rx_hard(const int8_t *belief, const uint16_t *frames, unsigned groups, uint8_t *hard);
-#ifdef DVBS2RX_PIE
 void rx_pass1_pie(const int8_t *belief, const uint16_t *reads, const int8_t *r, int8_t *qtmp,
                   int8_t *state, unsigned count);
 void rx_pass2_pie(int8_t *belief, const uint16_t *writes, int8_t *r, const int8_t *qtmp,
@@ -86,6 +85,5 @@ void rx_scale_pie(int8_t *belief, unsigned slots, unsigned gain);
 void rx_moments_pie(const int8_t *llr, unsigned vectors, uint32_t sums[2]);
 int rx_parity_pie(const int8_t *belief, const uint16_t *checks, unsigned count);
 void rx_hard_pie(const int8_t *belief, const uint16_t *frames, unsigned groups, uint8_t *hard);
-#endif
 
 #endif
