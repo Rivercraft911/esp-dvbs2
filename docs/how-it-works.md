@@ -250,6 +250,8 @@ against independent arithmetic, graph and streaming oracles. `tests/rx_bench` bu
 a separate radio-off S3 app; its `filter` and `fec` commands check native PIE results,
 guards and reference CRCs and report measured work separately from deliberate task
 delays. These components are not yet a continuous receiver or part of the capture app.
+The [radio-off measurements](measurements.md#receiver-components) show both the first
+implementation and the gains from processing filter spans and parity-check words.
 
 ## Table provenance
 

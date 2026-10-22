@@ -8,6 +8,7 @@
 static unsigned controls;
 static uint32_t rng = 20261022;
 #ifdef RX_FILTER_MOCK_PIE
+static int fail_after = -1;
 /* Exercise the production staging branch on the host. This is explicitly
  * not an instruction emulator or native context proof. */
 bool rx_filter_unpack_s8(const int8_t *src, int8_t *i, int8_t *q, unsigned groups)
@@ -18,6 +19,8 @@ bool rx_filter_unpack_s8(const int8_t *src, int8_t *i, int8_t *q, unsigned group
 }
 bool rx_filter_dot_s8(const int8_t *i, const int8_t *q, const int8_t *c, int32_t sums[2])
 {
+    if (fail_after == 0) return false;
+    if (fail_after > 0) --fail_after;
     assert(!((uintptr_t)c & 15) && ((uintptr_t)i & 15) == ((uintptr_t)q & 15));
     /* Read the exact enclosing vectors that the leaf can read. */
     unsigned offset = (uintptr_t)i & 15;
@@ -175,6 +178,55 @@ static void refusals(void)
     controls += 20;
 }
 
+static void span_boundaries(void)
+{
+    rx_filter s;
+    int16_t pulse[64][2], derivative[64][2];
+    rx_filter_progress p;
+    assert(rx_filter_init(&s, UINT64_MAX-90, UINT32_MAX, UINT64_C(4)<<32));
+    s.base = UINT64_MAX-96;
+    s.received = UINT64_MAX-32;
+    s.count = 64;
+    for (unsigned a = 0; a < 2; ++a)
+        for (unsigned k = 0; k < 64; ++k) s.plane[a][k] = (int8_t)(3*k+a);
+    uint64_t origin = s.origin;
+    assert(rx_filter_push(&s, NULL, 0, pulse, derivative, 64, UINT64_MAX, &p));
+    assert(!p.consumed && p.written == 7 && !s.failed);
+    assert(s.origin == origin+4*p.written && s.fraction == UINT32_MAX);
+    for (unsigned j = 0; j < p.written; ++j)
+        for (unsigned a = 0; a < 2; ++a) {
+            int64_t sum = 0, ds = 0;
+            for (unsigned k = 0; k < 32; ++k) {
+                sum += s.plane[a][7+4*j+k]*rx_filter_pulse[0][k];
+                ds += s.plane[a][7+4*j+k]*rx_filter_derivative[0][k];
+            }
+            assert(pulse[j][a] == rounded(sum, 1) && derivative[j][a] == rounded(ds, 9));
+        }
+#ifdef RX_FILTER_MOCK_PIE
+    _Alignas(16) int8_t input[1024];
+    int16_t reference[64][2], reference_d[64][2];
+    for (unsigned k = 0; k < 1024; ++k) input[k] = (int8_t)(k*37);
+    assert(rx_filter_init(&s, 0, UINT32_MAX, RX_FILTER_STEP_MIN));
+    assert(rx_filter_push(&s, input, 512, reference, reference_d, 64, UINT64_MAX, &p));
+    for (unsigned n = 0; n < 3; ++n) {
+        unsigned done = n == 0 ? 0 : n == 1 ? 7 : 63;
+        assert(rx_filter_init(&s, 0, UINT32_MAX, RX_FILTER_STEP_MIN));
+        memset(pulse, 0x31, sizeof pulse); memset(derivative, 0x57, sizeof derivative);
+        fail_after = (int)done;
+        assert(!rx_filter_push(&s, input, 512, pulse, derivative, 64, UINT64_MAX, &p));
+        fail_after = -1;
+        assert(s.failed && p.consumed == 512 && p.written == done);
+        uint64_t expected = UINT32_MAX + done*RX_FILTER_STEP_MIN;
+        assert(s.origin == expected>>32 && s.fraction == (uint32_t)expected);
+        assert(!memcmp(pulse, reference, 4*done) && !memcmp(derivative, reference_d, 4*done));
+        for (unsigned j = done; j < 64; ++j) {
+            assert(pulse[j][0] == 0x3131 && pulse[j][1] == 0x3131);
+            assert(derivative[j][0] == 0x5757 && derivative[j][1] == 0x5757);
+        }
+    }
+#endif
+}
+
 int main(void)
 {
     rx_filter_check check;
@@ -190,6 +242,7 @@ int main(void)
         for (unsigned k = 0; k < 3; ++k)
             stream((phase+k)%32, phase, steps[k], (phase+k)%4);
     refusals();
+    span_boundaries();
     printf("RX filter: %u streams/refusals, %u dot controls, state %zu B, host%s\n",
            controls, check.cases, sizeof(rx_filter), check.native ? "-mock-PIE-path" : "-scalar");
     return 0;

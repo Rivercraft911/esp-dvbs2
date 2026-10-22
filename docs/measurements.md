@@ -320,6 +320,31 @@ current firmware, compares firmware, USB and file CRCs with pinned original wave
 and decodes them independently. CI checks all supported modulation/rate combinations
 on the host. Neither check substitutes for an RF receiver measurement.
 
+## Receiver components
+
+On October 22, the RX branch's S8 filter and compressed MODCOD 6 decoder passed
+native checks on a 240 MHz ESP32-S3 with 80 MHz PSRAM. Processing several filter
+outputs per C loop removed repeated 64-bit work; checking 32 parity equations at
+a time replaced the bit loop. Coefficients, PIE leaves and test inputs stayed fixed.
+
+| Measured work | First implementation | Revised |
+|---|---:|---:|
+| 33,282 pulse outputs and 882 derivatives, PSRAM I/O | 48.603 ms | 30.099 ms |
+| MC6 init, clean-word checks and payload extraction | 68.486 ms | 31.494 ms |
+| Same API with one correction sweep, 9 wrong-sign LLRs | 172.676 ms | 117.098 ms |
+
+The filter's two output CRCs match the independent integer oracle. Three changing
+MC6 codewords, with 0, 9 and 80 deliberately flipped LLR signs, recover exact words
+and payloads; all native leaf controls and buffer guards pass.
+[Cycle counters and original results](measurements/2026-10-22-rx-components.json)
+include the extraction API's repeated parity check and exclude explicit task delays.
+
+These are radio-off component tests with reused small buffers and synthetic inputs.
+Filter plus clean FEC still takes 61.593 ms before acquisition, carrier processing
+or concurrent capture. A 1 Msym/s QPSK frame arrives every 33.282 ms. The shorter
+filter response also needs RF qualification; these measurements do not establish
+continuous reception. The saved receiver firmware was restored after each run.
+
 ## Recreate the figures
 
 ```sh

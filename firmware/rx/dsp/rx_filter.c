@@ -157,6 +157,62 @@ static bool emit(rx_filter *s, uint64_t at, unsigned phase,
     return true;
 }
 
+/* Sparse derivative work stays out of the common pulse loop's register set. */
+static __attribute__((noinline)) void derivative_at(const rx_filter *s, unsigned offset,
+                                                   unsigned phase, int16_t out[2])
+{
+    for (unsigned a = 0; a < 2; ++a) {
+        int32_t sum = 0;
+        for (unsigned k = 0; k < 32; ++k)
+            sum += (int32_t)s->plane[a][offset+k]*rx_filter_derivative[phase][k];
+        out[a] = narrow(sum, 9);
+    }
+}
+
+/* Bounds and absolute64-bit headroom are established by push. At most64
+ * outputs move a local origin by320 samples. A rounded history origin can
+ * make relative == -1 initially; the rounded window itself is nonnegative.
+ * Commit only completed outputs, including on a leaf-context refusal. */
+static __attribute__((noinline)) bool emit_span(rx_filter *s, int16_t (*pulse)[2],
+                    int16_t (*derivative)[2], size_t capacity,
+                    uint32_t *mask_low, uint32_t *mask_high, rx_filter_progress *progress)
+{
+    int relative = s->origin < s->base ? -1 : (int)(s->origin-s->base);
+    uint32_t fraction = s->fraction, step = (uint32_t)s->step;
+    unsigned whole = (unsigned)(s->step >> 32), count = s->count, bias = s->bias;
+    uint32_t low = *mask_low, high = *mask_high;
+    size_t first = progress->written, j = first;
+    bool ok = true;
+    for (; j < capacity; ++j) {
+        uint32_t rounded = fraction + (UINT32_C(1)<<25);
+        unsigned at = (unsigned)(relative + (rounded < fraction));
+        if (at+32 > count) break;
+        unsigned offset = bias+at, phase = rounded >> 26;
+        int32_t sums[2];
+        if (!rx_filter_dot_s8(s->plane[0]+offset, s->plane[1]+offset,
+                             rx_filter_pulse[phase], sums)) { ok = false; break; }
+        pulse[j][0] = narrow(sums[0], 1);
+        pulse[j][1] = narrow(sums[1], 1);
+        if (derivative) {
+            if (low & 1) derivative_at(s, offset, phase, derivative[j]);
+            else derivative[j][0] = derivative[j][1] = 0;
+        }
+        uint32_t previous = fraction;
+        fraction += step;
+        relative += (int)(whole + (fraction < previous));
+        low = (low >> 1) | (high << 31);
+        high >>= 1;
+    }
+    if (j != first) {
+        s->origin = s->base + (unsigned)relative;
+        s->fraction = fraction;
+    }
+    *mask_low = low; *mask_high = high;
+    progress->written = j;
+    if (!ok) s->failed = true;
+    return ok;
+}
+
 bool rx_filter_push(rx_filter *s, const int8_t *iq, size_t pairs,
                     int16_t (*pulse)[2], int16_t (*derivative)[2],
                     size_t capacity, uint64_t derivative_mask,
@@ -177,15 +233,23 @@ bool rx_filter_push(rx_filter *s, const int8_t *iq, size_t pairs,
         for (unsigned b = 0; b < a; ++b)
             if (n[a] && n[b] && !disjoint(p[a], n[a], p[b], n[b])) return false;
     *progress = (rx_filter_progress){0, 0};
+    uint32_t mask_low = (uint32_t)derivative_mask, mask_high = (uint32_t)(derivative_mask >> 32);
     bool appended = false;
     while (progress->written < capacity) {
         unsigned phase;
         uint64_t at = selection(s, &phase);
         if (at <= s->received && s->received-at >= 32) {
-            size_t j = progress->written;
-            if (!emit(s, at, phase, pulse[j], derivative ? derivative[j] : NULL,
-                      (derivative_mask >> j) & 1)) { s->failed = true; return false; }
-            ++progress->written;
+            if (s->origin <= UINT64_MAX-321 && at >= s->base && at-s->base+32 <= s->count) {
+                if (!emit_span(s, pulse, derivative, capacity, &mask_low, &mask_high, progress))
+                    return false;
+            } else {
+                size_t j = progress->written;
+                if (!emit(s, at, phase, pulse[j], derivative ? derivative[j] : NULL,
+                          mask_low & 1)) { s->failed = true; return false; }
+                ++progress->written;
+                mask_low = (mask_low >> 1) | (mask_high << 31);
+                mask_high >>= 1;
+            }
         } else {
             if (appended || !pairs) break;
             if (!append(s, iq, pairs, at)) { s->failed = true; return false; }

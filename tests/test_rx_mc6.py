@@ -69,6 +69,27 @@ def test():
         # ownership is explicit and every worker frees its own buffers.
         os.environ["ASAN_OPTIONS"] = "detect_leaks=0:halt_on_error=1"
         subprocess.run([str(exe)], check=True)
+        # Exercise the real full-word checker on arbitrary inputs: retaining
+        # only the zero-syndrome predicate would miss tail/popcount mistakes.
+        checker_rng = np.random.default_rng(0x6C360)
+        packed_words = [bytes(8100), bytes([255]) * 8100, bytes([0x55]) * 8100,
+                        bytes([0xaa]) * 8100]
+        packed_words += [checker_rng.integers(0, 256, 8100, dtype=np.uint8).tobytes()
+                         for _ in range(32)]
+        for packed in packed_words:
+            checked = subprocess.run([str(exe), "check"], input=packed,
+                                     capture_output=True, check=True, timeout=30)
+            result = json.loads(checked.stdout)
+            expected = int(oracle.syndrome(np.unpackbits(np.frombuffer(packed, np.uint8))).sum())
+            assert result["H"] == expected, (result, expected)
+        # All 64800 natural variable positions: every byte, 32-bit chunk,
+        # circular 360-bit row, QC/parity transition and final-bit boundary.
+        basis = subprocess.run([str(exe), "basis", "64800"], capture_output=True,
+                               check=True, timeout=300)
+        got = np.frombuffer(basis.stdout, dtype="<u2")
+        expected = np.array([len(oracle.natural_checks(n)) for n in range(64800)], dtype=np.uint16)
+        assert np.array_equal(got, expected)
+        print("MC6 QC checker: exact H on 36 arbitrary words and all 64800 natural bit columns PASS", flush=True)
         for word, bb in oracle.crosschecked_frames():
             llr = (1 - 2 * word.astype(np.int16)) * 24
             result = check_result(exe, word, np.packbits(bb[80:]).tobytes(), llr)

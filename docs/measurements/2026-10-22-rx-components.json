@@ -1,0 +1,251 @@
+{
+  "date": "2026-10-22",
+  "scope": "Radio-off component checks on ESP32-S3, not a full or continuous receiver",
+  "cpu_hz": 240000000,
+  "psram_hz": 80000000,
+  "symbol_outputs": 33282,
+  "derivative_outputs": 882,
+  "baseline": {
+    "commit": "538060a",
+    "app_sha256": "ea5f543100d6e018247d9fbf9a4b47384aa185829ae04e6bac7c635dc4ae29af",
+    "manifest_sha256": "1774c409614f706fc1e6272111cd3184d1868739920a79666494790bcee47296",
+    "filter": [
+      {
+        "cmd": "filter_controls",
+        "cases": 64,
+        "errors": 0,
+        "native": true
+      },
+      {
+        "cmd": "filter_frame",
+        "psram_io": false,
+        "outputs": 33282,
+        "push_elapsed_cycles": 11686932,
+        "elapsed_us": 2617613,
+        "wait_us": 2545007,
+        "pulse_crc32": 1678845495,
+        "derivative_crc32": 3371518343
+      },
+      {
+        "cmd": "filter_frame",
+        "psram_io": true,
+        "outputs": 33282,
+        "push_elapsed_cycles": 11664726,
+        "elapsed_us": 2618086,
+        "wait_us": 2545618,
+        "pulse_crc32": 1678845495,
+        "derivative_crc32": 3371518343
+      },
+      {
+        "cmd": "summary",
+        "passed": true,
+        "radio": false,
+        "tx": false,
+        "stack_free": 2096
+      }
+    ],
+    "fec": [
+      {
+        "cmd": "mc6_controls",
+        "cases": 128,
+        "errors": 0
+      },
+      {
+        "cmd": "mc6_frame",
+        "case": 0,
+        "flipped_bits": 0,
+        "iterations": 0,
+        "tiles": 0,
+        "work_elapsed_cycles": 16436720,
+        "wait_us": 0,
+        "init_cycles": 1343912,
+        "step_cycles": 0,
+        "check_cycles": 8586420,
+        "extract_cycles": 6506388,
+        "H": 0,
+        "bch": true,
+        "header": true,
+        "word_exact": true,
+        "payload_exact": true,
+        "word_crc32": 4240430337,
+        "guards": true
+      },
+      {
+        "cmd": "mc6_frame",
+        "case": 1,
+        "flipped_bits": 9,
+        "iterations": 1,
+        "tiles": 2745,
+        "work_elapsed_cycles": 41442146,
+        "wait_us": 354359,
+        "init_cycles": 1337478,
+        "step_cycles": 16479049,
+        "check_cycles": 17122458,
+        "extract_cycles": 6503161,
+        "H": 0,
+        "bch": true,
+        "header": true,
+        "word_exact": true,
+        "payload_exact": true,
+        "word_crc32": 2144775371,
+        "guards": true
+      },
+      {
+        "cmd": "mc6_frame",
+        "case": 2,
+        "flipped_bits": 80,
+        "iterations": 1,
+        "tiles": 2745,
+        "work_elapsed_cycles": 41418623,
+        "wait_us": 354601,
+        "init_cycles": 1335614,
+        "step_cycles": 16457962,
+        "check_cycles": 17121882,
+        "extract_cycles": 6503165,
+        "H": 0,
+        "bch": true,
+        "header": true,
+        "word_exact": true,
+        "payload_exact": true,
+        "word_crc32": 1400211940,
+        "guards": true
+      },
+      {
+        "cmd": "summary",
+        "passed": true,
+        "radio": false,
+        "tx": false,
+        "stack_free": 2096
+      }
+    ]
+  },
+  "restored_receiver": "a0dada9",
+  "radio_transmitted": false,
+  "limitations": [
+    "Filter uses a new 32-tap response; no RF/blocker or payload qualification",
+    "FEC uses synthetic LLRs, not captured RF words",
+    "Work cycles include interrupt/cache cost, exclude deliberate task delays",
+    "FEC total includes init, iteration work, sign packing, all full checks and extraction recheck",
+    "No concurrent sample ingestion, acquisition or carrier tracking in this benchmark",
+    "Filter timing reuses 1 KB of SC8 input and small Q6 output buffers; cold full-record memory traffic is unmeasured"
+  ],
+  "followup": {
+    "parent_commit": "538060a",
+    "app_sha256": "57d234e7d4e9970be589ca79ab6afe817d33c54d9dd74184359aed6e88cf3618",
+    "manifest_sha256": "f74f6da301453914182b3eb44e9ebf1133c2d464143af053b803d97746de4552",
+    "source_sha256": {
+      "firmware/rx/dsp/rx_filter.c": "5c990663677ce0d89c5589fe0a8d9f0c69a5735003fea8f396dc200a8ede4945",
+      "firmware/rx/fec/rx_mc6.c": "369b174c0681edd26d96e1f7d4e08431c6edc4bcece49a3e43646c8ca590e7b0",
+      "tests/rx_bench/main/bench.c": "39c4e276cabf1bfa33959c53a88a2e5dc1adf33bf267bceaddac47601ebb05e6"
+    },
+    "filter": [
+      {
+        "cmd": "filter_controls",
+        "cases": 64,
+        "errors": 0,
+        "native": true
+      },
+      {
+        "cmd": "filter_frame",
+        "psram_io": false,
+        "outputs": 33282,
+        "push_elapsed_cycles": 7251186,
+        "elapsed_us": 2618257,
+        "wait_us": 2564139,
+        "pulse_crc32": 1678845495,
+        "derivative_crc32": 3371518343
+      },
+      {
+        "cmd": "filter_frame",
+        "psram_io": true,
+        "outputs": 33282,
+        "push_elapsed_cycles": 7223805,
+        "elapsed_us": 2618047,
+        "wait_us": 2564021,
+        "pulse_crc32": 1678845495,
+        "derivative_crc32": 3371518343
+      },
+      {
+        "cmd": "summary",
+        "passed": true,
+        "radio": false,
+        "tx": false,
+        "stack_free": 2096
+      }
+    ],
+    "fec": [
+      {
+        "cmd": "mc6_controls",
+        "cases": 128,
+        "errors": 0
+      },
+      {
+        "cmd": "mc6_frame",
+        "case": 0,
+        "flipped_bits": 0,
+        "iterations": 0,
+        "tiles": 0,
+        "work_elapsed_cycles": 7558481,
+        "wait_us": 0,
+        "init_cycles": 1352399,
+        "step_cycles": 0,
+        "check_cycles": 4149675,
+        "extract_cycles": 2056407,
+        "H": 0,
+        "bch": true,
+        "header": true,
+        "word_exact": true,
+        "payload_exact": true,
+        "word_crc32": 4240430337,
+        "guards": true
+      },
+      {
+        "cmd": "mc6_frame",
+        "case": 1,
+        "flipped_bits": 9,
+        "iterations": 1,
+        "tiles": 2745,
+        "work_elapsed_cycles": 28103630,
+        "wait_us": 355085,
+        "init_cycles": 1344376,
+        "step_cycles": 16465610,
+        "check_cycles": 8240597,
+        "extract_cycles": 2053047,
+        "H": 0,
+        "bch": true,
+        "header": true,
+        "word_exact": true,
+        "payload_exact": true,
+        "word_crc32": 2144775371,
+        "guards": true
+      },
+      {
+        "cmd": "mc6_frame",
+        "case": 2,
+        "flipped_bits": 80,
+        "iterations": 1,
+        "tiles": 2745,
+        "work_elapsed_cycles": 28084282,
+        "wait_us": 360085,
+        "init_cycles": 1345715,
+        "step_cycles": 16444869,
+        "check_cycles": 8240651,
+        "extract_cycles": 2053047,
+        "H": 0,
+        "bch": true,
+        "header": true,
+        "word_exact": true,
+        "payload_exact": true,
+        "word_crc32": 1400211940,
+        "guards": true
+      },
+      {
+        "cmd": "summary",
+        "passed": true,
+        "radio": false,
+        "tx": false,
+        "stack_free": 2096
+      }
+    ]
+  }
+}

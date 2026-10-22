@@ -214,7 +214,7 @@ static void state_controls(unsigned iterations)
 static void ownership_controls(void)
 {
     int16_t *belief = calloc(RX_MC6_N, 2);
-    rx_mc6_check *checks = malloc(4U * RX_MC6_CHECKS);
+    rx_mc6_check *checks = malloc(4U * RX_MC6_CHECKS + 4U);
     int8_t *llr = calloc(RX_MC6_N, 1);
     rx_mc6 d;
     assert(belief && checks && llr);
@@ -284,13 +284,43 @@ static void decode(unsigned iterations)
     free(llr); free(belief); free(checks);
 }
 
+static void check_packed(void)
+{
+    uint8_t bits[RX_MC6_WORD_BYTES];
+    read_exact(bits, sizeof bits);
+    assert(getchar() == EOF);
+    rx_mc6_result result;
+    bool valid = rx_mc6_check_word(bits, &result);
+    printf("{\"valid\":%s,\"H\":%u,\"bch\":%s,\"header\":%s}\n",
+           valid ? "true" : "false", result.unsatisfied,
+           result.bch_ok ? "true" : "false", result.header_ok ? "true" : "false");
+}
+
+static void basis_checks(unsigned count)
+{
+    assert(count <= RX_MC6_N);
+    uint8_t bits[RX_MC6_WORD_BYTES] = {0};
+    for (unsigned n = 0; n < count; ++n) {
+        bits[n / 8] = (uint8_t)(128U >> (n % 8U));
+        rx_mc6_result result;
+        assert(!rx_mc6_check_word(bits, &result));
+        assert(result.bch_ok == (n >= RX_MC6_K));
+        assert(result.unsatisfied <= 13);
+        uint8_t value[2] = {(uint8_t)result.unsatisfied, (uint8_t)(result.unsatisfied >> 8)};
+        assert(fwrite(value, 1, sizeof value, stdout) == sizeof value);
+        bits[n / 8] = 0;
+    }
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 1) {
         leaf_controls();
         ownership_controls();
         puts("MC6: 512 independent full-range leaf vectors; ownership/refusal controls PASS");
-    } else if (argc == 3 && !strcmp(argv[1], "state")) state_controls((unsigned)strtoul(argv[2], NULL, 10));
+    } else if (argc == 2 && !strcmp(argv[1], "check")) check_packed();
+    else if (argc == 3 && !strcmp(argv[1], "basis")) basis_checks((unsigned)strtoul(argv[2], NULL, 10));
+    else if (argc == 3 && !strcmp(argv[1], "state")) state_controls((unsigned)strtoul(argv[2], NULL, 10));
     else if (argc == 3 && !strcmp(argv[1], "decode")) decode((unsigned)strtoul(argv[2], NULL, 10));
     else return 2;
     return 0;

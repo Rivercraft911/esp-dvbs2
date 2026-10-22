@@ -194,9 +194,55 @@ bool rx_mc6_pack(const rx_mc6 *d, uint8_t bits[RX_MC6_WORD_BYTES])
     return true;
 }
 
-static unsigned bit(const uint8_t *p, unsigned n)
+/* A systematic QC block is exactly 45 bytes. Extract 32 MSB-first bits,
+ * wrapping inside that block, never into the next one or a guard byte. */
+static uint32_t circular32(const uint8_t *row, unsigned position)
 {
-    return (p[n / 8] >> (7U - n % 8U)) & 1U;
+    unsigned byte = position / 8U, shift = position % 8U;
+    uint32_t value = 0;
+    for (unsigned n = 0; n < 4; ++n) {
+        value = (value << 8) | row[byte];
+        if (++byte == 45) byte = 0;
+    }
+    return shift ? (value << shift) | (row[byte] >> (8U - shift)) : value;
+}
+
+static unsigned ones32(uint32_t value)
+{
+    value -= (value >> 1) & UINT32_C(0x55555555);
+    value = (value & UINT32_C(0x33333333)) + ((value >> 2) & UINT32_C(0x33333333));
+    value = (value + (value >> 4)) & UINT32_C(0x0f0f0f0f);
+    return (value * UINT32_C(0x01010101)) >> 24;
+}
+
+static unsigned syndrome(const uint8_t *bits)
+{
+    unsigned bad = 0;
+    for (unsigned layer = 0; layer < 60; ++layer)
+        for (unsigned first = 0; first < 360; first += 32) {
+            unsigned count = first == 352 ? 8U : 32U;
+            uint32_t word = 0;
+            /* Parity is transmitted column-major, unlike the information
+             * blocks. Adjacent natural parity bits share a byte except at
+             * bit offset zero. The first check has no predecessor. */
+            for (unsigned j = 0; j < count; ++j) {
+                unsigned k = layer + 60U * (first + j), shift = k % 8U;
+                unsigned at = RX_MC6_K / 8U + k / 8U;
+                unsigned byte = bits[at], value = byte >> (7U - shift);
+                if (k) value ^= shift ? byte >> (8U - shift) : bits[at - 1U];
+                word = (word << 1) | (value & 1U);
+            }
+            if (count == 8) word <<= 24;
+            for (unsigned e = 0; e < 8; ++e) {
+                unsigned token = mc6_graph[layer][e], shift = token & 511U;
+                unsigned position = first + 360U - shift;
+                if (position >= 360) position -= 360;
+                word ^= circular32(bits + 45U * (token >> 9), position);
+            }
+            if (count == 8) word &= UINT32_C(0xff000000);
+            bad += ones32(word);
+        }
+    return bad;
 }
 
 static uint8_t descramble(uint8_t b, unsigned *state)
@@ -235,19 +281,7 @@ bool rx_mc6_check_word(const uint8_t bits[RX_MC6_WORD_BYTES], rx_mc6_result *r)
 {
     if (!r || !separate(bits, RX_MC6_WORD_BYTES, r, sizeof *r)) return false;
     *r = (rx_mc6_result){0};
-    for (unsigned layer = 0; layer < 60; ++layer)
-        for (unsigned column = 0; column < 360; ++column) {
-            unsigned k = 60U * column + layer;
-            unsigned value = bit(bits, RX_MC6_K + k);
-            if (k) value ^= bit(bits, RX_MC6_K + k - 1U);
-            for (unsigned e = 0; e < 8; ++e) {
-                unsigned token = mc6_graph[layer][e], shift = token & 511U;
-                unsigned p = column + 360U - shift;
-                if (p >= 360) p -= 360;
-                value ^= bit(bits, 360U * (token >> 9) + p);
-            }
-            r->unsatisfied += value;
-        }
+    r->unsatisfied = syndrome(bits);
     uint32_t bch[5] = {0};
     for (unsigned n = 0; n < RX_MC6_K / 8; ++n)
         for (unsigned half = 0; half < 2; ++half) {

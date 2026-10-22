@@ -8,6 +8,9 @@ firmware/build/
 firmware/sdkconfig
 firmware/sdkconfig.old
 firmware/managed_components/
+tests/rx_bench/build/
+tests/rx_bench/sdkconfig
+tests/rx_bench/sdkconfig.old
 
 # Latest standalone USB sender diagnostic report
 usb-send-report.json
