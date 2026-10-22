@@ -1,11 +1,8 @@
 #ifndef RX_FEC_INTERNAL_H
 #define RX_FEC_INTERNAL_H
 
-/* Workspace layout and kernels shared by rx_fec.c, rx_fec_pie.S and the bench. */
-#include <stddef.h>
-#include <stdint.h>
-
-#include "dvbs2.h"
+/* Workspace layout and kernels shared by rx_fec.c, rx_fec_pie.S and the bench. The
+ * assembler sees only the constants. */
 
 #define RX_GROUPS 45            /* 16,200 / 360 column groups, information then parity */
 #define RX_VECTORS 23           /* 360 checks of a row group in 23 x 16 lanes */
@@ -14,9 +11,15 @@
 #define RX_SCALE 112            /* message = min(min * 112 / 128, 47): normalized min-sum */
 #define RX_RMAX 47              /* well below 127, so q = b - R stays large when b saturates */
 #define RX_UNITS 3              /* integer LLR units per natural LLR unit after loading */
-#define RX_LMAX 63              /* channel clip: two checks (2 x 47) can overturn any bit */
+#define RX_LMAX 31              /* channel clip below RX_RMAX: one check can overturn a bit */
 #define RX_STAT_VECTORS 1012    /* LLR statistics over the first 16,192 values */
 #define RX_ENCODER_TAIL 1664    /* resident LDPC program, columns and CRC (1,600 at most) */
+
+#ifndef __ASSEMBLER__
+#include <stddef.h>
+#include <stdint.h>
+
+#include "dvbs2.h"
 
 typedef struct {
     uint16_t home;      /* byte offset of the group's slot from belief */
@@ -51,8 +54,9 @@ struct rx_fec {
  *
  * pass1: for 23 vectors of 'count' edges, window b at belief + reads[v][e] (any
  *   alignment), q = sat(b - r[v][e]); qtmp[v][e] = |q| (at most 127), then q; state[v] =
- *   min1, min2 of |q|, XOR of q, XOR of b. Reads one more reads entry, r vector and
- *   window than it uses.
+ *   min1, min2 of |q|, XOR of q, XOR of b; then 16 bytes counting, per lane, the vectors
+ *   whose XOR of b is negative. Reads one more reads entry, r vector and window than it
+ *   uses.
  * pass2: messages and beliefs. edges = first | repeats << 8. For each vector,
  *   n = min(m * RX_SCALE >> 7, RX_RMAX) of both minima, signed by the q parity;
  *   message = sign(q) * (|q| < min2 ? n2 : n1). r[v][e] = message; the belief at
@@ -90,5 +94,6 @@ void rx_moments_pie(const int8_t *llr, unsigned vectors, uint32_t sums[2]);
 int rx_parity_pie(const int8_t *belief, const uint16_t *checks, unsigned count);
 void rx_hard_pie(const int8_t *belief, const uint16_t *frames, unsigned groups, uint8_t *hard);
 void rx_xor_pie(uint8_t *x, const uint8_t *prbs, unsigned vectors);
+#endif /* __ASSEMBLER__ */
 
 #endif

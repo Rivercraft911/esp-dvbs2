@@ -9,6 +9,8 @@
  *    8 bits of (x * y) >> SAR; VMULAS.U8.ACCX adds the 16 unsigned products to ACCX.
  * The coprocessor is enabled lazily by FreeRTOS on first use. Clobbers q0..q7, SAR,
  * SAR_BYTE and ACCX. Windowed ABI: arguments in a2..a7. */
+#include "rx_fec_internal.h"
+
     .section .iram1, "ax", @progbits
 
 /* void rx_pass1_pie(belief a2, reads a3, r a4, qtmp a5, state a6, count a7)
@@ -21,6 +23,10 @@ rx_pass1_pie:
     entry a1, 32
     movi a10, rx_pie_consts
     movi a8, 23
+    movi a11, 23 * 64
+    add a11, a11, a6                         /* per-lane count of failed checks */
+    ee.zero.q q7
+    ee.vst.128.ip q7, a11, 0
     l16ui a9, a3, 0
     addi a3, a3, 2
     add a9, a9, a2
@@ -50,6 +56,11 @@ rx_pass1_pie:
     ee.vst.128.ip q1, a6, 16
     ee.vst.128.ip q2, a6, 16
     ee.vst.128.ip q3, a6, 16
+    ee.zero.q q7
+    ee.vcmp.lt.s8 q6, q3, q7                 /* -1 where the check failed */
+    ee.vld.128.ip q7, a11, 0
+    ee.vsubs.s8 q7, q7, q6
+    ee.vst.128.ip q7, a11, 0
     addi a8, a8, -1
     bnez a8, .Lp1_vector
     retw
@@ -67,7 +78,7 @@ rx_pass2_pie:
     extui a12, a7, 8, 8
     movi a13, 7
     wsr.sar a13
-    movi a14, rx_pie_consts + 16             /* 112, then 47 */
+    movi a14, rx_pie_consts + 16             /* RX_SCALE, then RX_RMAX */
     mov a15, a3
     mov a10, a2
     movi a8, 23
@@ -80,9 +91,9 @@ rx_pass2_pie:
     ee.vld.128.ip q3, a6, 32                 /* q parity, skip b parity */
     ee.vld.128.ip q6, a14, 16
     ee.vld.128.ip q7, a14, -16
-    ee.vmul.s8 q2, q2, q6                    /* min * 112 >> 7 */
+    ee.vmul.s8 q2, q2, q6                    /* min * RX_SCALE >> 7 */
     ee.vmul.s8 q6, q1, q6
-    ee.vmin.s8 q2, q2, q7                    /* at most 47 */
+    ee.vmin.s8 q2, q2, q7                    /* at most RX_RMAX */
     ee.vmin.s8 q6, q6, q7
     ee.vcmp.lt.s8 q3, q3, q0
     ee.xorq q2, q2, q3
@@ -221,7 +232,7 @@ rx_scale_pie:
     addi a6, a1, 17
     ee.vldbc.8 q5, a6                        /* gain */
     movi a6, rx_pie_consts + 48
-    ee.vld.128.ip q6, a6, 0                  /* 63 */
+    ee.vld.128.ip q6, a6, 0                  /* RX_LMAX */
     ee.zero.q q7
     movi a6, 4
     wsr.sar a6
@@ -389,9 +400,9 @@ rx_xor_pie:
     .global rx_pie_consts
 rx_pie_consts:
     .fill 16, 1, 127
-    .fill 16, 1, 112
-    .fill 16, 1, 47
-    .fill 16, 1, 63
+    .fill 16, 1, RX_SCALE
+    .fill 16, 1, RX_RMAX
+    .fill 16, 1, RX_LMAX
     .fill 16, 1, 1
     .byte 128, 64, 32, 16, 8, 4, 2, 1, 128, 64, 32, 16, 8, 4, 2, 1
     .fill 8, 1, 1

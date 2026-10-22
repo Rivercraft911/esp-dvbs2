@@ -81,6 +81,8 @@ void rx_demod_stats(const rx_demod_t *d, rx_demod_stats_t *stats);
 typedef struct {
     uint16_t iterations;    /* 0: the received hard bits were already a codeword */
     uint16_t failed_checks; /* parity checks failing on the received hard bits */
+    uint16_t unsatisfied;   /* checks failing in the last iteration (stops: 8 iterations, or no
+                             * progress over two from the third, or more than a sixth failing) */
     uint8_t ldpc_ok, bch_ok, header_ok;
 } rx_fec_stats_t;
 

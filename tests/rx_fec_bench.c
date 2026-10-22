@@ -84,7 +84,7 @@ static void compare(const char *name, run_fn fn)
 #define B_R (B_BELIEF + BELIEF)
 #define B_QTMP (B_R + 16 * (EDGES * RX_VECTORS + 1))
 #define B_STATE (B_QTMP + 32 * (EDGES * RX_VECTORS + 1))
-#define B_READS (B_STATE + 64 * RX_VECTORS)
+#define B_READS (B_STATE + 64 * RX_VECTORS + 16)
 #define B_WRITES (B_READS + 2 * (EDGES * RX_VECTORS + 8))
 #define B_LLR (B_WRITES + 64)
 #define B_HARD (B_LLR + 16224)
@@ -235,26 +235,28 @@ static uint32_t decode(rx_fec_t *f, frame_set_t *x, int *length, uint32_t *sum, 
     return t;
 }
 
-/* Frame c: 0 clean, 1/2/3 one, 8 or 64 weak wrong bits, 4/5/6 AWGN at 6.0/4.5/4.0 dB,
- * 7 a 600-bit erasure. LLRs at 24 per unit amplitude, hard bits their signs. */
-static const char *const names[] = {"clean", "wrong_1", "wrong_8", "wrong_64", "awgn_6.0dB",
-                                    "awgn_4.5dB", "awgn_4.0dB", "erased"};
+/* Frame c: 0 clean; 1/2/3 one, 8 or 64 weak wrong bits; 4 100 confidently wrong bits;
+ * 5/6/7 AWGN at 6.0/4.75/3.8 dB (3.8 dB runs all 8 iterations: the worst case); 8 random
+ * LLRs (hopeless, stops at 3); 9 a 600-bit erasure. LLRs 32 per unit amplitude as the
+ * demodulator scales them, hard bits their signs. */
+static const char *const names[] = {"clean", "wrong_1", "wrong_8", "wrong_64", "flip_100",
+                                    "awgn_6.0dB", "awgn_4.75dB", "awgn_3.8dB", "random", "erased"};
 static void make_frame(frame_set_t *x, unsigned c)
 {
     seed = 100 + c;
-    const float esn0 = c == 4 ? 6.0f : c == 5 ? 4.5f : 4.0f, sigma = sqrtf(0.5f / powf(10, esn0 / 10));
+    const float esn0 = c == 5 ? 6.0f : c == 6 ? 4.75f : 3.8f, sigma = sqrtf(0.5f / powf(10, esn0 / 10));
     for (unsigned i = 0; i < RX_SHORT_BITS; ++i) {
         float y = x->bits[i] ? -1.0f : 1.0f;
-        if (c >= 4 && c <= 6) y += 1.41421356f * sigma * gaussian();
-        const float v = roundf(24 * y);
+        if (c >= 5 && c <= 7) y += 1.41421356f * sigma * gaussian();
+        const float v = c == 8 ? (float)((int)(rnd() % 81) - 40) : roundf(32 * y);
         x->llr[i] = (int8_t)(v > 127 ? 127 : v < -127 ? -127 : v);
     }
-    const unsigned wrong = c == 1 ? 1 : c == 2 ? 8 : c == 3 ? 64 : 0;
+    const unsigned wrong = c == 1 ? 1 : c == 2 ? 8 : c == 3 ? 64 : c == 4 ? 100 : 0;
     for (unsigned k = 0; k < wrong; ++k) {
         const unsigned i = rnd() % RX_SHORT_BITS;
-        x->llr[i] = (int8_t)(x->bits[i] ? 4 : -4);
+        x->llr[i] = (int8_t)(c == 4 ? -x->llr[i] : x->bits[i] ? 4 : -4);
     }
-    if (c == 7) memset(x->llr + 3000, 0, 600);
+    if (c == 9) memset(x->llr + 3000, 0, 600);
     memset(x->hard_in, 0, RX_HARD_BYTES);
     for (unsigned i = 0; i < RX_SHORT_BITS; ++i) x->hard_in[i / 8] |= (x->llr[i] < 0) << (7 - i % 8);
 }
@@ -336,8 +338,9 @@ static void frames(rx_fec_t *f, frame_set_t *x, const char *placement, bool with
                    length[0] == length[1] && sums[0] == sums[1] && st[0].iterations == st[1].iterations
                        ? "true" : "false");
         }
-        printf(",\"length\":%d,\"payload_ok\":%s,\"iterations\":%u,\"failed_checks\":%u}\n",
-               length[1], sums[1] == x->want ? "true" : "false", st[1].iterations, st[1].failed_checks);
+        printf(",\"length\":%d,\"payload_ok\":%s,\"iterations\":%u,\"failed_checks\":%u,"
+               "\"unsatisfied\":%u}\n", length[1], sums[1] == x->want ? "true" : "false",
+               st[1].iterations, st[1].failed_checks, st[1].unsatisfied);
     }
     /* One iteration: a hopeless frame decoded with 1 and 2 iterations allowed. */
     seed = 99;
@@ -357,7 +360,7 @@ static void frames(rx_fec_t *f, frame_set_t *x, const char *placement, bool with
         }
         t[n - 1] = best;
     }
-    f->max_iterations = 30;
+    f->max_iterations = 8;
     printf("@{\"cmd\":\"fecbench\",\"work\":\"%s\",\"iteration_cycles\":%" PRIu32
            ",\"setup_cycles\":%" PRIu32 "}\n", placement, t[1] - t[0], 2 * t[0] - t[1]);
 }

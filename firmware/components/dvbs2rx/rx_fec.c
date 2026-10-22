@@ -25,7 +25,13 @@
  *
  * Quantization (tests/test_rx_fec.py measures it): channel LLRs are rescaled per
  * frame to about RX_UNITS units per natural LLR and clipped at RX_LMAX; messages are
- * 112/128 of the minimum, at most RX_RMAX. */
+ * 112/128 of the minimum, at most RX_RMAX. The clip below RX_RMAX lets checks overturn
+ * confidently wrong bits, which a high-SNR frame hit by a glitch has; it costs nothing
+ * in AWGN.
+ *
+ * Stopping: after at most MAX_ITERATIONS, or from the third iteration when the checks
+ * failing on the beliefs pass 1 read are no fewer than two iterations before, or more
+ * than a sixth of all checks (hopeless frames stay near half). */
 #include "dvbs2rx.h"
 #include "dvbs2.h"
 #include "rx_fec_internal.h"
@@ -35,7 +41,7 @@
 
 #define FIRST_MODCOD 4
 #define LAST_MODCOD 10
-#define MAX_ITERATIONS 30
+#define MAX_ITERATIONS 8   /* a damaged frame on a good link needs 2 to 5 */
 
 /* Functions of the frame path keep their own sections, so linker.lf can place them in
  * IRAM by name. */
@@ -102,7 +108,7 @@ static layout_t layout(const dvbs2_mode *mode)
     l.checks = l.writes + round16(edges * 2);
     l.edges = l.checks + round16(edges * 4);
     l.state = l.edges + round16(edges * sizeof(rx_edge_t));
-    l.work = l.state + RX_VECTORS * 64;
+    l.work = l.state + RX_VECTORS * 64 + 16;
     return l;
 }
 
@@ -369,6 +375,8 @@ static int norm(int m) { const int n = (m * RX_SCALE) >> 7; return n > RX_RMAX ?
 void rx_pass1(const int8_t *belief, const uint16_t *reads, const int8_t *r, int8_t *qtmp,
               int8_t *state, unsigned count)
 {
+    int8_t *failed = state + 64 * RX_VECTORS;
+    memset(failed, 0, 16);
     for (unsigned v = 0; v < RX_VECTORS; ++v, reads += count, r += 16 * count, state += 64) {
         for (unsigned lane = 0; lane < 16; ++lane) {
             int m1 = 127, m2 = 127, s = 0, sb = 0;
@@ -386,6 +394,7 @@ void rx_pass1(const int8_t *belief, const uint16_t *reads, const int8_t *r, int8
             state[16 + lane] = (int8_t)m2;
             state[32 + lane] = (int8_t)s;
             state[48 + lane] = (int8_t)sb;
+            failed[lane] = (int8_t)(failed[lane] + (sb < 0));
         }
         qtmp += 32 * count;
     }
@@ -483,9 +492,9 @@ void rx_hard(const int8_t *belief, const uint16_t *frames, unsigned groups, uint
 
 /* ---------------------------------------------------------------- decoder */
 
-/* One layer. Returns nonzero if a check of the layer failed on the beliefs that
- * pass 1 read (a cheap sign that more iterations are needed). */
-static HOT int layer(rx_fec_t *f, unsigned L)
+/* One layer. Returns how many of its checks failed on the beliefs that pass 1 read:
+ * zero over a whole iteration is a cheap sign of convergence, and the sum tracks progress. */
+static HOT unsigned layer(rx_fec_t *f, unsigned L)
 {
     const unsigned first = f->layer_first[L], count = f->layer_count[L];
     const unsigned repeats = f->layer_repeats[L], normal = count - repeats;
@@ -502,11 +511,11 @@ static HOT int layer(rx_fec_t *f, unsigned L)
     if (missing) {
         *missing = saved;
     }
-    /* Sign bits of the belief parity, lanes 0..359. */
-    uint32_t odd = 0;
-    for (unsigned v = 0; v < RX_VECTORS; ++v) {
-        const uint32_t *w = (const uint32_t *)(f->state + 64 * v + 48);
-        odd |= w[0] | w[1] | (v < RX_VECTORS - 1 ? w[2] | w[3] : 0);
+    /* Failed checks per lane from pass 1, less the padding lanes 360..367. */
+    unsigned odd = 0;
+    const int8_t *failed = f->state + 64 * RX_VECTORS, *last = f->state + 64 * (RX_VECTORS - 1) + 48;
+    for (unsigned lane = 0; lane < 16; ++lane) {
+        odd += (unsigned)failed[lane] - (lane >= 8 && last[lane] < 0);
     }
     KERNEL(f, rx_pass2)(f->belief, writes, r, f->qtmp, f->state, normal | repeats << 8);
     if (missing) {
@@ -519,7 +528,7 @@ static HOT int layer(rx_fec_t *f, unsigned L)
         KERNEL(f, rx_repeat)(f->belief + edges[j].home, f->belief + writes[j],
                              (edges[j].previous + 360 - edges[j].shift) % 360);
     }
-    return (odd & 0x80808080u) != 0;
+    return odd;
 }
 
 /* Every check satisfied by the signs of the current beliefs. Layer 0 sees +127 for
@@ -584,16 +593,24 @@ int rx_fec_frame(rx_fec_t *f, rx_frame_t *frame, const uint8_t **payload,
             goto out;
         }
         load(f, frame->llr);
+        unsigned before[2] = {~0u, ~0u};
         while (s.iterations < f->max_iterations) {
-            int odd = 0;
+            unsigned odd = 0;
             ++s.iterations;
             for (unsigned L = 0; L < f->q; ++L) {
-                odd |= layer(f, L);
+                odd += layer(f, L);
             }
+            s.unsatisfied = (uint16_t)odd;
+            const int stuck = s.iterations >= 3 && (odd >= before[1] || 6 * odd > 360 * f->q);
+            before[1] = before[0];
+            before[0] = odd;
             /* The layers saw satisfied checks, or this is the last chance. */
-            if ((!odd || s.iterations == f->max_iterations) && syndrome_ok(f)) {
+            if ((!odd || stuck || s.iterations == f->max_iterations) && syndrome_ok(f)) {
                 KERNEL(f, rx_hard)(f->belief, f->frame, f->groups, frame->hard);
                 s.ldpc_ok = 1;
+                break;
+            }
+            if (stuck) {
                 break;
             }
         }
