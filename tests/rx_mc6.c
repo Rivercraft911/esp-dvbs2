@@ -4,6 +4,7 @@
 #include "mc6_internal.h"
 
 #include <assert.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -214,15 +215,16 @@ static void state_controls(unsigned iterations)
 static void ownership_controls(void)
 {
     int16_t *belief = calloc(RX_MC6_N, 2);
-    rx_mc6_check *checks = malloc(4U * RX_MC6_CHECKS + 4U);
+    rx_mc6_check *checks = malloc(4U * RX_MC6_CHECKS);
+    unsigned char *unaligned = malloc(4U * RX_MC6_CHECKS + 4U);
     int8_t *llr = calloc(RX_MC6_N, 1);
     rx_mc6 d;
-    assert(belief && checks && llr);
+    assert(belief && checks && unaligned && llr);
     memset(checks, 0xa5, 4U * RX_MC6_CHECKS);
     assert(!rx_mc6_init(&d, belief, checks, (const int8_t *)belief));
     assert(checks[0].metadata == 0xa5a5 && belief[0] == 0);
     assert(!rx_mc6_init((rx_mc6 *)belief, belief, checks, llr));
-    assert(!rx_mc6_init(&d, belief, (rx_mc6_check *)((uint8_t *)checks + 2), llr));
+    assert(!rx_mc6_init(&d, belief, (rx_mc6_check *)(unaligned + 2), llr));
     assert(rx_mc6_init(&d, belief, checks, llr));
     assert(!rx_mc6_pack(&d, (uint8_t *)belief));
     assert(rx_mc6_step(&d, 1) == 1);
@@ -246,7 +248,7 @@ static void ownership_controls(void)
     assert(!rx_mc6_extract(bits, payload, sizeof payload, &bytes));
     assert(bytes == 123 && payload[0] == 0x6d);
     assert(!rx_mc6_check_word(bits, (rx_mc6_result *)bits));
-    free(belief); free(checks); free(llr);
+    free(belief); free(checks); free(unaligned); free(llr);
 }
 
 static void decode(unsigned iterations)
@@ -278,7 +280,7 @@ static void decode(unsigned iterations)
     if (valid) assert(rx_mc6_extract(bits, payload, sizeof payload, &count));
     assert(fwrite(bits, 1, sizeof bits, stdout) == sizeof bits);
     assert(fwrite(payload, 1, count, stdout) == count);
-    fprintf(stderr, "{\"valid\":%s,\"iterations\":%u,\"H\":%u,\"bch\":%s,\"header\":%s,\"bytes\":%zu}\n",
+    fprintf(stderr, "{\"valid\":%s,\"iterations\":%" PRIu32 ",\"H\":%" PRIu32 ",\"bch\":%s,\"header\":%s,\"bytes\":%zu}\n",
             valid ? "true" : "false", d.iteration, result.unsatisfied,
             result.bch_ok ? "true" : "false", result.header_ok ? "true" : "false", count);
     free(llr); free(belief); free(checks);
@@ -291,7 +293,7 @@ static void check_packed(void)
     assert(getchar() == EOF);
     rx_mc6_result result;
     bool valid = rx_mc6_check_word(bits, &result);
-    printf("{\"valid\":%s,\"H\":%u,\"bch\":%s,\"header\":%s}\n",
+    printf("{\"valid\":%s,\"H\":%" PRIu32 ",\"bch\":%s,\"header\":%s}\n",
            valid ? "true" : "false", result.unsatisfied,
            result.bch_ok ? "true" : "false", result.header_ok ? "true" : "false");
 }
