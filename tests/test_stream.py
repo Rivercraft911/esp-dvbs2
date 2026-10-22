@@ -382,10 +382,60 @@ def test_stream(output=None, receiver=None, input_only=False):
                            text=True, timeout=120, check=True)
         print("stream host: complete 1365/819-bank wrap cycles, sample reuse matches the oracle")
 
+def test_short_stream(receiver=None, regenerate=False):
+    """Short FECFRAMEs, QPSK 1 Msym/s: the dvbdump path against the plain encoder (every DAC word,
+    checked inside the C harness; the plain encoder is checked against Python in test_dvbs2_c)
+    and pinned CRCs. Keys are MODCOD/frames; the dump is peak 128, pilots, N0CALL."""
+    pins = ROOT / "tests/data/short_crcs.json"
+    golden = json.loads(pins.read_text()) if pins.exists() and not regenerate else {}
+    found = {}
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = pathlib.Path(tmp)
+        exe = compile_stream(folder)
+        for mc in range(4, 11):
+            iq = folder / f"short-{mc}.iq"
+            frames = 16
+            out = subprocess.run([str(exe), str(100 + mc), "40", str(iq), "N0CALL", "40000000", str(frames)],
+                                 capture_output=True, text=True, timeout=120, check=True).stdout
+            records = [json.loads(line[1:]) for line in out.splitlines() if line.startswith("@")]
+            dumps = [r for r in records if "crc32" in r]
+            assert len(dumps) == 2
+            for r in dumps:
+                assert r["crc32"] == zlib.crc32(iq.read_bytes())
+                assert r["short"] is True and r["frame_symbols"] == 8370
+                assert r["payload_bytes_per_frame"] == (d_kbch(mc) - 80) // 8
+                assert r["status"] == "ESP_OK" and not r["encoder_failed"]
+                assert r["ring_slots"] == 8 and r["ring_format"] == "raw"
+                assert all(p["calls"] == r["frames_encoded"] for p in r["profile"]["encoder"].values())
+            found[f"{mc}/{frames}"] = dumps[0]["crc32"]
+            if receiver:
+                cmd = [sys.executable, str(ROOT / "host/decode.py"), str(iq), "--rate", "4000000",
+                       "--symbol-rate", "1000000", "--scale", "512", "--modcod", str(mc), "--stream", str(frames),
+                       "--callsign", "N0CALL", "--receiver", str(receiver), "--short"]
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                assert result.returncode == 0, (cmd, result.stdout, result.stderr)
+                decoded = json.loads(result.stdout)
+                assert decoded["payload_match"] and decoded["payload_frames"] >= frames - 2, decoded
+                print(f"LeanDVB: short MODCOD {mc}, {decoded['payload_frames']} contiguous bit-exact frames")
+    if regenerate:
+        pins.write_text(json.dumps(found, indent=1, sort_keys=True) + "\n")
+        golden = found
+    assert found == golden, (found, golden)
+    print("short stream host: MODCOD 4..10, 16 frames each, all DAC words match the plain encoder, CRCs pinned")
+
+
+def d_kbch(mc):
+    return (7032, 9552, 10632, 11712, 12432, 13152, 14232)[mc - 4]
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", nargs="?", type=pathlib.Path)
     parser.add_argument("--receiver", type=pathlib.Path, help="also decode QPSK and 8PSK 2/3, 5/6 waveforms in LeanDVB")
     parser.add_argument("--input-only", action="store_true")
+    parser.add_argument("--short-only", action="store_true")
+    parser.add_argument("--regenerate-short", action="store_true", help="rewrite tests/data/short_crcs.json")
     args = parser.parse_args()
-    test_stream(args.output, args.receiver, args.input_only)
+    if not args.short_only:
+        test_stream(args.output, args.receiver, args.input_only)
+    test_short_stream(args.receiver, args.regenerate_short)

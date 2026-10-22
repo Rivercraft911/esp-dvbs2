@@ -9,7 +9,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "host"))
 
-from gen_dvbs2_c import RATES, multiply
+from gen_dvbs2_c import RATES, SHORT_RATES, bch_generator
 from dvbs2_tables import BCH_PARAMS, BCH_POLYS, LDPC, Q
 
 OUTPUT = pathlib.Path(__file__).resolve().parents[2] / "firmware/components/dvbs2/fast_tables.h"
@@ -23,10 +23,8 @@ def array(name, ctype, values, columns=16):
     return "\n".join(out + ["};\n"])
 
 
-def bch(t):
-    g = 1
-    for powers in BCH_POLYS["normal"][:t]:
-        g = multiply(g, sum(1 << k for k in powers))
+def bch(t, short=False):
+    g = bch_generator(t, short)
     r = g.bit_length() - 1
     table = bytearray(4096)
     for k in range(8):
@@ -41,10 +39,8 @@ def bch(t):
     return table
 
 
-def bch_byte(t):
-    g = 1
-    for powers in BCH_POLYS["normal"][:t]:
-        g = multiply(g, sum(1 << k for k in powers))
+def bch_byte(t, short=False):
+    g = bch_generator(t, short)
     r = g.bit_length() - 1
     table = bytearray(8192)
     for v in range(256):
@@ -60,9 +56,7 @@ def bch_byte(t):
 def bch_pair():
     # t=8 has a 128-bit remainder. Two byte tables advance it by 16 bits:
     # R' = (R << 16) XOR T0[head0 ^ b0] XOR T1[head1 ^ b1].
-    g = 1
-    for powers in BCH_POLYS["normal"][:8]:
-        g = multiply(g, sum(1 << k for k in powers))
+    g = bch_generator(8)
     table = bytearray()
     for shift in (136, 128):
         for v in range(256):
@@ -73,10 +67,10 @@ def bch_pair():
     return table
 
 
-def program(rate):
-    q = Q["normal"][rate]
+def program(rate, frame="normal"):
+    q = Q[frame][rate]
     rows = [[] for _ in range(q)]
-    for group, edges in enumerate(LDPC["normal", rate]):
+    for group, edges in enumerate(LDPC[frame, rate]):
         for x in edges:
             s = (360 - x // q) % 360
             rows[x % q].append((s % 8, 96 * group + s // 8))
@@ -108,6 +102,9 @@ def generate():
     for t in (10, 12):
         out.append(array(f"fast_bch_byte_{t}", "uint8_t", bch_byte(t)))
     out.append(array("fast_bch_pair_8", "uint8_t", bch_pair()))
+    # Short frames: left-aligned in the t = 12 register (see gen_dvbs2_c.bch_generator).
+    out.append(array("fast_bch_12s", "uint8_t", bch(12, True)))
+    out.append(array("fast_bch_byte_12s", "uint8_t", bch_byte(12, True)))
     rot = rotations()
     for bps in (2, 3):
         words = []
@@ -151,19 +148,21 @@ def generate():
     # Header and pilot phases depend only on MODCOD/pilots and code 0.
     generators = (0x55555555, 0x33333333, 0x0f0f0f0f, 0x00ff00ff, 0x0000ffff)
     headers = []
-    for modcod in range(4, 18):
-        y = 0
-        for k, generator in enumerate(generators):
-            if (modcod >> (4 - k)) & 1:
-                y ^= generator
-        for pilots in (0, 1):
-            for k in range(90):
-                if k < 26:
-                    bit = (0x18d2e82 >> (25 - k)) & 1
-                else:
-                    j = k - 26
-                    bit = ((y >> (31 - j // 2)) ^ (0x719d83c953422dfa >> (63 - j)) ^ (pilots & j)) & 1
-                headers.append((3 if k % 2 else 1) + 4 * bit)
+    # Normal frames for MODCOD 4..17, then short QPSK 4..10 (TYPE = 1 adds the all-ones row).
+    for short, modcods in ((0, range(4, 18)), (1, range(4, 11))):
+        for modcod in modcods:
+            y = 0xffffffff if short else 0
+            for k, generator in enumerate(generators):
+                if (modcod >> (4 - k)) & 1:
+                    y ^= generator
+            for pilots in (0, 1):
+                for k in range(90):
+                    if k < 26:
+                        bit = (0x18d2e82 >> (25 - k)) & 1
+                    else:
+                        j = k - 26
+                        bit = ((y >> (31 - j // 2)) ^ (0x719d83c953422dfa >> (63 - j)) ^ (pilots & j)) & 1
+                    headers.append((3 if k % 2 else 1) + 4 * bit)
     out.append(array("fast_headers", "uint8_t", headers))
     out.append(array("fast_pilots", "uint8_t", [(1 + 2 * rot[1440*(b+1) + 36*b + j]) & 7
                                                 for b in range(22) for j in range(36)]))
@@ -171,6 +170,10 @@ def generate():
         out.append(array(f"fast_prog_{i}", "uint16_t", program(rate), 12))
     out.append("static const uint16_t *const fast_prog[] = {" +
                ", ".join(f"fast_prog_{i}" for i in range(len(RATES))) + "};\n")
+    for i, rate in enumerate(SHORT_RATES):
+        out.append(array(f"fast_prog_s{i}", "uint16_t", program(rate, "short"), 12))
+    out.append("static const uint16_t *const fast_prog_short[] = {" +
+               ", ".join(f"fast_prog_s{i}" for i in range(len(SHORT_RATES))) + "};\n")
     out.append(array("fast_cols", "uint16_t", [48 * (8 * (3 - (t % 32) // 8) + t % 8) + 4 * (t // 32) for t in range(360)], 12))
     crc = []
     for v in range(256):

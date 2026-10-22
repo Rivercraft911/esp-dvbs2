@@ -72,7 +72,8 @@
 #if !LOFTY_FUSED
     // Preserve the qualified fetch position without raising IRAM alignment.
     // The linker assertion below the stream mappings guards this placement.
-    .space 8
+    // 16: the short-frame options moved the IRAM code before this section 8 bytes lower.
+    .space 16
 #endif
 lofty_render_pages_pie:
     entry a1,32

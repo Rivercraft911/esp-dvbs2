@@ -44,6 +44,14 @@
 #define RING_SLOTS 8                // legacy QPSK frames ahead: 233 ms at 1 Msym/s
 #define PACKED_SLOTS 3              // fast rates: three packed frames at 4 sps, two at 8, plus a cache
 #define PILOTS 1
+
+// Short FECFRAMEs (16,200 bits) for the next dvb, dvbdump or dvbpace run: QPSK, 1 Msym/s only.
+static bool short_frames_enabled;
+void dvbtx_set_short(bool enabled) { short_frames_enabled = enabled; }
+static const dvbs2_mode *tx_find_mode(unsigned modcod)
+{
+    return short_frames_enabled ? dvbs2_find_mode_short(modcod) : dvbs2_find_mode(modcod);
+}
 #define BANK_SYMBOLS 4096           // ceil(16380/4) + 1, worst offset at 4 sps
 #define TAPS (9 * 40)
 #define WORST_PEAK 718.4            // conservative sqrt(2)*508 LSB axis bound, before rounding
@@ -710,7 +718,7 @@ static __attribute__((noinline)) bool vcm_memory(const char *cmd, const dvbs2_mo
 static size_t start_encoder_options(const char *cmd, unsigned modcod, unsigned level, unsigned stall_ms,
                                    unsigned sps, uint32_t dac_rate, bool auto_pages, bool fixture, bool fused)
 {
-    const dvbs2_mode *mode = dvbs2_find_mode(modcod);
+    const dvbs2_mode *mode = tx_find_mode(modcod);
     const bool fractional = sps == DVB_SPS_12_5;
     const bool lofty = mode && mode->bits_per_symbol == 3 && sps == 3;
     const bool moon = fractional || lofty;
@@ -721,6 +729,10 @@ static size_t start_encoder_options(const char *cmd, unsigned modcod, unsigned l
                    (dac_rate == RADIO_S3_DAC_RATE_80M &&
                     (sps == 4 || sps == 3 || fractional)))) {
         printf("@{\"cmd\":\"%s\",\"error\":\"invalid MODCOD/sps\"}\n", cmd);
+        return 0;
+    }
+    if (mode->short_frame && (vcm.enabled || sps != 40)) {
+        printf("@{\"cmd\":\"%s\",\"error\":\"short frames need QPSK 1 Msym/s without VCM\"}\n", cmd);
         return 0;
     }
     if (vcm.enabled) {
@@ -1459,11 +1471,11 @@ static void stop_encoder(void)
 
 static void print_mode(const char *cmd, unsigned modcod, size_t symbols, unsigned level)
 {
-    const dvbs2_mode *mode = dvbs2_find_mode(modcod);
+    const dvbs2_mode *mode = tx_find_mode(modcod);
     printf("@{\"cmd\":\"%s\",\"modcod\":%u,\"rate\":\"%s\",\"symbol_rate\":%u,\"rolloff\":%.2f,"
-           "\"pilots\":%d,\"frame_symbols\":%u,\"payload_bytes_per_frame\":%u,\"peak_level\":%u",
+           "\"pilots\":%d,\"frame_symbols\":%u,\"payload_bytes_per_frame\":%u,\"peak_level\":%u,\"short\":%s",
            cmd, modcod, mode->rate, (unsigned)((uint64_t)dvb.dac_rate*dvb.den / dvb.table.n), dvb.moon && dvb.den == 5 ? .20 : .35, PILOTS, (unsigned)symbols,
-           (unsigned)((mode->kbch - 80) / 8), level);
+           (unsigned)((mode->kbch - 80) / 8), level, mode->short_frame ? "true" : "false");
 }
 
 static void print_timing(const radio_s3_stats_t *s)
