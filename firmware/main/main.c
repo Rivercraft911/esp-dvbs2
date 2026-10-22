@@ -99,6 +99,8 @@ static void cmd_dvb(char *args)
     const bool options_ok = take_option(args,"--phy-solo",&phy_solo);
     const bool fused_ok = take_option(args,"--fused",&fused);
     const bool source_ok = take_option(args,"--fixture",&fixture);
+    bool short_frames;
+    const bool short_ok = take_option(args,"--short",&short_frames);
     char *save, *mhz = strtok_r(args, " \t", &save);
     char *code = strtok_r(NULL, " \t", &save);
     char *duration = strtok_r(NULL, " \t", &save);
@@ -108,7 +110,7 @@ static void cmd_dvb(char *args)
     char *peak = strtok_r(NULL, " \t", &save);
     char *extra = strtok_r(NULL, " \t", &save);
     uint32_t freq, seconds, gain = RADIO_S3_GAIN_DEFAULT, top = 128;
-    if (!source_ok || !options_ok || !fused_ok ||
+    if (!source_ok || !options_ok || !fused_ok || !short_ok || (short_frames && (modcod > 10 || sps != 40 || fixture || fused)) ||
         !number(mhz, RADIO_S3_FREQ_MIN_MHZ, RADIO_S3_FREQ_MAX_MHZ, &freq) || !mode_ok ||
         (fused && !(sps == 3 && modcod >= 12)) ||
         (fixture && !(sps == DVB_SPS_12_5 || (sps == 3 && modcod >= 12))) ||
@@ -116,16 +118,19 @@ static void cmd_dvb(char *args)
         (level && !number(level, 0, RADIO_S3_GAIN_MAX, &gain)) ||
         (peak && !number(peak, 16, 508, &top)) || extra) {
         printf("@{\"cmd\":\"dvb\",\"error\":\"usage: dvb <%u..%u MHz> <modcod 4..17> [5m|10m|20m|26m667|33m333] "
-               "<1..%u seconds> [0..17 gain] [16..508 peak] [--fixture] [--phy-solo (<=%u s)] [--fused (8PSK 26m667)]\"}\n",
+               "<1..%u seconds> [0..17 gain] [16..508 peak] [--fixture] [--phy-solo (<=%u s)] [--fused (8PSK 26m667)] [--short (QPSK 4..10, 1 Msym/s)]\"}\n",
                RADIO_S3_FREQ_MIN_MHZ, RADIO_S3_FREQ_MAX_MHZ,
                RADIO_S3_MAX_SECONDS, RADIO_S3_PHY_SOLO_MAX_SECONDS);
         return;
     }
+    dvbtx_set_short(short_frames);
     dvbtx_run_options(freq,modcod,seconds,gain,top,sps,rate,fixture,phy_solo,fused);
 }
 
 static void cmd_dvbdump(char *args)
 {
+    bool short_frames;
+    const bool short_ok = take_option(args,"--short",&short_frames);
     char *save, *code = strtok_r(args, " \t", &save);
     char *count = strtok_r(NULL, " \t", &save);
     uint32_t modcod, sps, rate;
@@ -135,14 +140,15 @@ static void cmd_dvbdump(char *args)
     char *pause = strtok_r(NULL, " \t", &save);
     char *extra = strtok_r(NULL, " \t", &save);
     uint32_t frames, top = 128, decim = sps == 40 ? 10 : sps < 4 || sps == DVB_SPS_12_5 ? 1 : sps / 4, stall = 0;
-    if (!mode_ok || !number(count, 1, 256, &frames) ||
+    if (!mode_ok || !short_ok || (short_frames && (modcod > 10 || sps != 40)) || !number(count, 1, 256, &frames) ||
         (peak && !number(peak, 16, 508, &top)) || (step && !number(step, 1, 20, &decim)) ||
         (sps == DVB_SPS_12_5 ? decim != 1 : (sps % decim || decim > sps / 2)) || (pause && !number(pause, 0, 2000, &stall)) || extra) {
         printf("@{\"cmd\":\"dvbdump\",\"error\":\"usage: dvbdump <modcod 4..17> [5m|10m|20m|26m667|33m333] <1..256 frames> "
                "[16..508 peak] [decimation: 33m333=1; otherwise divides sps, at most sps/2] "
-               "[0..2000 ms encoder stall]\"}\n");
+               "[0..2000 ms encoder stall] [--short (QPSK 4..10, 1 Msym/s)]\"}\n");
         return;
     }
+    dvbtx_set_short(short_frames);
     dvbtx_dump(modcod, frames, top, decim, stall, sps, rate);
 }
 
@@ -151,6 +157,8 @@ static void cmd_dvbpace(char *args)
     bool phy_solo, fused;
     const bool options_ok = take_option(args,"--phy-solo",&phy_solo);
     const bool fused_ok = take_option(args,"--fused",&fused);
+    bool short_frames;
+    const bool short_ok = take_option(args,"--short",&short_frames);
     char *save, *code = strtok_r(args, " \t", &save);
     char *duration = strtok_r(NULL, " \t", &save);
     uint32_t modcod, sps, rate;
@@ -159,15 +167,31 @@ static void cmd_dvbpace(char *args)
     char *pause = strtok_r(NULL, " \t", &save);
     char *extra = strtok_r(NULL, " \t", &save);
     uint32_t seconds, top = 128, stall = 0;
-    if (!options_ok || !fused_ok || !mode_ok || !number(duration, 1, phy_solo ? RADIO_S3_PHY_SOLO_MAX_SECONDS : 600, &seconds) ||
+    if (!options_ok || !fused_ok || !short_ok || !mode_ok || (short_frames && (modcod > 10 || sps != 40 || fused)) || !number(duration, 1, phy_solo ? RADIO_S3_PHY_SOLO_MAX_SECONDS : 600, &seconds) ||
         (fused && !(sps == 3 && modcod >= 12)) ||
         (peak && !number(peak, 16, 508, &top)) || (pause && !number(pause, 0, 2000, &stall)) ||
         extra) {
         printf("@{\"cmd\":\"dvbpace\",\"error\":\"usage: dvbpace <modcod 4..17> [5m|10m|20m|26m667|33m333] <1..600 seconds> "
-               "[16..508 peak] [0..2000 ms encoder stall] [--phy-solo (<=60 s)] [--fused (8PSK 26m667)]\"}\n");
+               "[16..508 peak] [0..2000 ms encoder stall] [--phy-solo (<=60 s)] [--fused (8PSK 26m667)] [--short (QPSK 4..10, 1 Msym/s)]\"}\n");
         return;
     }
+    dvbtx_set_short(short_frames);
     dvbtx_pace_options(modcod,seconds,top,stall,sps,rate,phy_solo,fused);
+}
+
+void fecbench_command(unsigned modcod, bool short_frame);
+
+static void cmd_fecbench(char *args)
+{
+    bool short_frames;
+    const bool short_ok = take_option(args, "--short", &short_frames);
+    char *save, *code = strtok_r(args, " \t", &save);
+    uint32_t modcod;
+    if (!short_ok || !number(code, 4, 17, &modcod) || strtok_r(NULL, " \t", &save)) {
+        printf("@{\"cmd\":\"fecbench\",\"error\":\"usage: fecbench <modcod 4..17> [--short (4..10)]\"}\n");
+        return;
+    }
+    fecbench_command(modcod, short_frames);
 }
 
 static void cmd_wifimem(char *args)
@@ -184,6 +208,7 @@ static void cmd_wifimem(char *args)
             return;
         }
     }
+    dvbtx_set_short(false);
     dvbtx_wifi(modcod, sps, dac_rate);
 }
 
@@ -326,6 +351,9 @@ void app_main(void)
         } else if (strncmp(line, "dvb ", 4) == 0) {
             cmd_dvb(line + 4);
             strcpy(line, "dvb");
+        } else if (strncmp(line, "fecbench ", 9) == 0) {
+            cmd_fecbench(line + 9);
+            strcpy(line, "fecbench");
         } else if (strcmp(line, "wifimem") == 0 || strncmp(line, "wifimem ", 8) == 0) {
             cmd_wifimem(line + 7);
             strcpy(line, "wifimem");

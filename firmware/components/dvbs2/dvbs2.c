@@ -1,4 +1,4 @@
-/* Independent normal-frame encoder. ETSI EN 302 307-1 V1.4.1 clauses 5.1-5.5.
+/* Independent normal and short frame encoder. ETSI EN 302 307-1 V1.4.1 clauses 5.1-5.5.
  * Portable C99, no platform headers. DVBS2_IRAM places timed stages in ESP32
  * instruction RAM; constant tables stay in flash and use the normal data cache. */
 #include "dvbs2.h"
@@ -15,22 +15,50 @@
 #include "tables.h"
 
 const dvbs2_mode dvbs2_modes[] = {
-    {"1/2", 32208, 32400, 4, 2, 90, 12},
-    {"3/5", 38688, 38880, 5, 2, 72, 12},
-    {"2/3", 43040, 43200, 6, 2, 60, 10},
-    {"3/4", 48408, 48600, 7, 2, 45, 12},
-    {"4/5", 51648, 51840, 8, 2, 36, 12},
-    {"5/6", 53840, 54000, 9, 2, 30, 10},
-    {"8/9", 57472, 57600, 10, 2, 20, 8},
-    {"9/10", 58192, 58320, 11, 2, 18, 8},
-    {"3/5", 38688, 38880, 12, 3, 72, 12},
-    {"2/3", 43040, 43200, 13, 3, 60, 10},
-    {"3/4", 48408, 48600, 14, 3, 45, 12},
-    {"5/6", 53840, 54000, 15, 3, 30, 10},
-    {"8/9", 57472, 57600, 16, 3, 20, 8},
-    {"9/10", 58192, 58320, 17, 3, 18, 8},
+    {"1/2", 32208, 32400, 4, 2, 12, 90, 0},
+    {"3/5", 38688, 38880, 5, 2, 12, 72, 0},
+    {"2/3", 43040, 43200, 6, 2, 10, 60, 0},
+    {"3/4", 48408, 48600, 7, 2, 12, 45, 0},
+    {"4/5", 51648, 51840, 8, 2, 12, 36, 0},
+    {"5/6", 53840, 54000, 9, 2, 10, 30, 0},
+    {"8/9", 57472, 57600, 10, 2, 8, 20, 0},
+    {"9/10", 58192, 58320, 11, 2, 8, 18, 0},
+    {"3/5", 38688, 38880, 12, 3, 12, 72, 0},
+    {"2/3", 43040, 43200, 13, 3, 10, 60, 0},
+    {"3/4", 48408, 48600, 14, 3, 12, 45, 0},
+    {"5/6", 53840, 54000, 15, 3, 10, 30, 0},
+    {"8/9", 57472, 57600, 16, 3, 8, 20, 0},
+    {"9/10", 58192, 58320, 17, 3, 8, 18, 0},
 };
 const size_t dvbs2_mode_count = sizeof dvbs2_modes / sizeof dvbs2_modes[0];
+
+/* Table 5b: short FECFRAMEs (16,200 bits), QPSK only, always t = 12 (168 parity bits). */
+const dvbs2_mode dvbs2_modes_short[] = {
+    {"1/2", 7032, 7200, 4, 2, 12, 25, 1},
+    {"3/5", 9552, 9720, 5, 2, 12, 18, 1},
+    {"2/3", 10632, 10800, 6, 2, 12, 15, 1},
+    {"3/4", 11712, 11880, 7, 2, 12, 12, 1},
+    {"4/5", 12432, 12600, 8, 2, 12, 10, 1},
+    {"5/6", 13152, 13320, 9, 2, 12, 8, 1},
+    {"8/9", 14232, 14400, 10, 2, 12, 5, 1},
+};
+const size_t dvbs2_mode_short_count = sizeof dvbs2_modes_short / sizeof dvbs2_modes_short[0];
+
+const dvbs2_mode *dvbs2_find_mode_short(unsigned modcod)
+{
+    if (modcod < 4 || modcod > 10) {
+        return NULL;
+    }
+    return &dvbs2_modes_short[modcod - 4];
+}
+
+const dvbs2_mode *dvbs2_canonical_mode(const dvbs2_mode *mode)
+{
+    if (!mode) {
+        return NULL;
+    }
+    return mode->short_frame ? dvbs2_find_mode_short(mode->modcod) : dvbs2_find_mode(mode->modcod);
+}
 
 const dvbs2_mode *dvbs2_find_mode(unsigned modcod)
 {
@@ -45,8 +73,8 @@ static inline int valid_mode(const dvbs2_mode *mode)
     if (!mode) {
         return 0;
     }
-    const dvbs2_mode *known = dvbs2_find_mode(mode->modcod);
-    return known && mode->kbch == known->kbch && mode->nbch == known->nbch &&
+    const dvbs2_mode *known = dvbs2_canonical_mode(mode);
+    return known && mode->short_frame == known->short_frame && mode->kbch == known->kbch && mode->nbch == known->nbch &&
            mode->bits_per_symbol == known->bits_per_symbol &&
            mode->q == known->q && mode->t == known->t;
 }
@@ -56,7 +84,7 @@ size_t dvbs2_frame_symbols(const dvbs2_mode *mode, int pilots)
     if (!valid_mode(mode)) {
         return 0;
     }
-    size_t slots = 64800 / (90 * mode->bits_per_symbol);
+    size_t slots = dvbs2_fec_bits(mode) / (90 * mode->bits_per_symbol);
     return 90 * (slots + 1) + (pilots ? 36 * ((slots - 1) / 16) : 0);
 }
 
@@ -153,9 +181,11 @@ HOT void dvbs2_bb_scramble(dvbs2_workspace *ws, const dvbs2_mode *mode)
 
 HOT void dvbs2_bch(dvbs2_workspace *ws, const dvbs2_mode *mode)
 {
-    const uint32_t (*table)[6] = mode->t == 12 ? bch_12 :
+    /* Short frames: 168 parity bits held left-aligned in the six-word register. */
+    const uint32_t (*table)[6] = mode->short_frame ? bch_12s : mode->t == 12 ? bch_12 :
                                  mode->t == 10 ? bch_10 : bch_8;
-    unsigned words = (mode->nbch - mode->kbch) / 32;
+    const unsigned parity = (mode->nbch - mode->kbch) / 8;
+    const unsigned words = (parity + 3) / 4;
     uint32_t reg[6] = {0}; /* Most significant word first. */
     for (unsigned k = 0; k < mode->kbch / 8; ++k) {
         unsigned index = (reg[0] >> 24) ^ ws->bits[k];
@@ -164,27 +194,31 @@ HOT void dvbs2_bch(dvbs2_workspace *ws, const dvbs2_mode *mode)
             reg[w] = (reg[w] << 8) ^ (next >> 24) ^ table[index][w];
         }
     }
-    for (unsigned w = 0; w < words; ++w) {
-        for (unsigned b = 0; b < 4; ++b) {
-            ws->bits[mode->kbch / 8 + 4 * w + b] = (uint8_t)(reg[w] >> (24 - 8 * b));
-        }
+    for (unsigned b = 0; b < parity; ++b) {
+        ws->bits[mode->kbch / 8 + b] = (uint8_t)(reg[b / 4] >> (24 - 8 * (b % 4)));
     }
 }
 
-static inline const uint16_t *ldpc_rows(unsigned modcod)
+static inline const uint16_t *ldpc_rows(const dvbs2_mode *mode)
 {
+    static const uint16_t *const short_tables[] = {
+        ldpc_s0, ldpc_s1, ldpc_s2, ldpc_s3, ldpc_s4, ldpc_s5, ldpc_s6,
+    };
+    if (mode->short_frame) {
+        return short_tables[mode->modcod - 4];
+    }
     static const uint16_t *const tables[] = {
         ldpc_0, ldpc_1, ldpc_2, ldpc_3, ldpc_4, ldpc_5, ldpc_6, ldpc_7,
         ldpc_1, ldpc_2, ldpc_3, ldpc_5, ldpc_6, ldpc_7,
     };
-    return tables[modcod - 4];
+    return tables[mode->modcod - 4];
 }
 
 HOT void dvbs2_ldpc(dvbs2_workspace *ws, const dvbs2_mode *mode)
 {
     unsigned q = mode->q;
     memset(ws->parity, 0, q * sizeof ws->parity[0]);
-    const uint16_t *row = ldpc_rows(mode->modcod);
+    const uint16_t *row = ldpc_rows(mode);
     for (unsigned group = 0; group < mode->nbch / 360; ++group) {
         /* Repeat the 360-bit input twice so each cyclic rotation is a plain
          * pair of shifted 32-bit loads. Bit t is held in bit t%32. */
@@ -270,16 +304,17 @@ HOT void dvbs2_map(const dvbs2_workspace *ws, const dvbs2_mode *mode,
 {
     if (mode->bits_per_symbol == 2) {
         static const uint8_t phases[] = {1, 7, 3, 5}; /* Figure 9. */
-        for (unsigned k = 0; k < 32400; ++k) {
+        for (unsigned k = 0; k < dvbs2_fec_bits(mode) / 2; ++k) {
             unsigned pair = (ws->bits[k / 4] >> (6 - 2 * (k % 4))) & 3;
             data_phases[k] = phases[pair];
         }
     } else {
         static const uint8_t phases[] = {1, 0, 4, 5, 2, 7, 3, 6}; /* Figure 10. */
-        for (unsigned k = 0; k < 21600; ++k) {
+        const unsigned column = dvbs2_fec_bits(mode) / 3;
+        for (unsigned k = 0; k < column; ++k) {
             unsigned a = bit_at(ws->bits, k);
-            unsigned b = bit_at(ws->bits, k + 21600);
-            unsigned c = bit_at(ws->bits, k + 43200);
+            unsigned b = bit_at(ws->bits, k + column);
+            unsigned c = bit_at(ws->bits, k + 2 * column);
             /* 5.3.3: rate 3/5 reads the columns in reverse order. */
             unsigned label = mode->modcod == 12 ? (c << 2) | (b << 1) | a :
                                                   (a << 2) | (b << 1) | c;
@@ -290,7 +325,7 @@ HOT void dvbs2_map(const dvbs2_workspace *ws, const dvbs2_mode *mode,
 
 HOT void dvbs2_plframe(const dvbs2_mode *mode, int pilots, uint8_t *output)
 {
-    size_t data_symbols = 64800 / mode->bits_per_symbol;
+    size_t data_symbols = dvbs2_fec_bits(mode) / mode->bits_per_symbol;
     size_t blocks = pilots ? (data_symbols / 90 - 1) / 16 : 0;
     if (blocks) {
         /* Expanding from the last block preserves mapped data in this buffer. */
@@ -311,26 +346,26 @@ HOT void dvbs2_plframe(const dvbs2_mode *mode, int pilots, uint8_t *output)
         unsigned rotation = (pl_rotations[k / 4] >> (2 * (k % 4))) & 3;
         output[90 + k] = (uint8_t)((output[90 + k] + 2 * rotation) & 7);
     }
-    dvbs2_plheader(mode->modcod, pilots, output);
+    dvbs2_plheader(mode->modcod, mode->short_frame, pilots, output);
 }
 
 void dvbs2_dummy(uint8_t *output)
 {
-    dvbs2_plheader(0, 0, output);
+    dvbs2_plheader(0, 0, 0, output);
     for (unsigned k = 0; k < DVBS2_DUMMY_SYMBOLS - 90; ++k) {
         const unsigned rotation = (pl_rotations[k / 4] >> (2 * (k % 4))) & 3;
         output[90 + k] = (uint8_t)((1 + 2 * rotation) & 7);
     }
 }
 
-HOT void dvbs2_plheader(unsigned modcod, int pilots, uint8_t *output)
+HOT void dvbs2_plheader(unsigned modcod, int short_frame, int pilots, uint8_t *output)
 {
     /* 5.5.2: SOF and scrambled (64,7) PLS code, pi/2-BPSK mapped. */
     static const uint32_t generators[6] = {
         0x55555555u, 0x33333333u, 0x0f0f0f0fu,
         0x00ff00ffu, 0x0000ffffu, 0xffffffffu,
     };
-    uint32_t y = 0;
+    uint32_t y = short_frame ? generators[5] : 0; /* b6 = TYPE */
     for (unsigned k = 0; k < 5; ++k) {
         if ((modcod >> (4 - k)) & 1) {
             y ^= generators[k];

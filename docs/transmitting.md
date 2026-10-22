@@ -76,8 +76,8 @@ with a receiver. Tuning selections last until changed or the board restarts.
 |---|---|
 | `info` | Firmware revision, clocks, memory and stored callsign |
 | `callsign [CALL\|clear]` | Read, set or clear the station ID |
-| `dvbdump MODCOD [rate] frames [peak] [decimation] [stall_ms]` | Samples over USB, radio off |
-| `dvbpace MODCOD [rate] seconds [peak] [stall_ms]` | Live encoder and bank deadlines, no playback |
+| `dvbdump MODCOD [rate] frames [peak] [decimation] [stall_ms] [--short]` | Samples over USB, radio off |
+| `dvbpace MODCOD [rate] seconds [peak] [stall_ms] [--short]` | Live encoder and bank deadlines, no playback |
 | `spiinput on\|quad\|off [ts\|gcs]` | Select [SPI payload input](spi-input.md) for the next run |
 | `vcm off\|on\|mixed\|N MODCOD...` | Opt-in [GCS rate switching](vcm.md); repeat each mode for N frames |
 | `spipins devkit\|xiao` | Select the SPI pin preset |
@@ -86,10 +86,11 @@ with a receiver. Tuning selections last until changed or the board restarts.
 | `wifimem MODCOD [rate]` | Radio-off Wi-Fi startup and heap check |
 | `iddump [CALL] [40\|80]` | Morse ID samples at 10 kS/s, radio off |
 | `tx MHz signal seconds [gain] [40\|80]` | Transmit a test tone |
-| `dvb MHz MODCOD [rate] seconds [gain] [peak]` | Transmit DVB-S2 |
+| `dvb MHz MODCOD [rate] seconds [gain] [peak] [--short]` | Transmit DVB-S2 |
 
 MODCOD selects modulation and code rate: QPSK 4..11, 8PSK 12..17. The
 [rate table](how-it-works.md#rates) gives the exact choices. QPSK defaults to 1 Msym/s.
+`--short` selects 16,200-bit short frames for QPSK MODCOD 4..10 at 1 Msym/s (not VCM; SPI input untested); each frame carries (Kbch - 80) / 8 payload bytes, 1,454 at MODCOD 7.
 Both modulations accept `5m`, `10m`, `20m` and `26m667`; `33m333` is QPSK only.
 Dumps are little-endian int16 I/Q with full scale 512. Golden CRCs use peak 128 and N0CALL.
 SPI argument ranges, custom pins and fault/replay options: [diagnostics](spi-input.md#diagnostics).

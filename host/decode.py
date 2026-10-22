@@ -253,8 +253,15 @@ def stop_decoder(process, timeout=3):
         process.wait()
 
 
+# Kbch (Tables 5a, 5b) by MODCOD; short frames exist for QPSK 4..10 only.
+KBCH = {4: 32208, 5: 38688, 6: 43040, 7: 48408, 8: 51648,
+        9: 53840, 10: 57472, 11: 58192, 12: 38688, 13: 43040,
+        14: 48408, 15: 53840, 16: 57472, 17: 58192}
+KBCH_SHORT = {4: 7032, 5: 9552, 6: 10632, 7: 11712, 8: 12432, 9: 13152, 10: 14232}
+
+
 def receiver_command(executable, fs, rs, alpha, bb_fd, *, tune=0.0, rrc_rej=20,
-                     ldpc_helper=None, modcod=None):
+                     ldpc_helper=None, modcod=None, short=False):
     """Shared executable argv, with a placeholder BB descriptor allowed for plans.
 
     LeanDVB searches for the next PLHEADER within +-round(sr_tol * slots), so the default
@@ -266,7 +273,9 @@ def receiver_command(executable, fs, rs, alpha, bb_fd, *, tune=0.0, rrc_rej=20,
                "--sr-tol", "0.0005", "--roll-off", str(alpha)]
     command += ldpc_options(ldpc_helper, modcod)
     if ldpc_helper is not None:
-        command += ["--modcods", str(1 << modcod), "--framesizes", "1"]
+        command += ["--modcods", str(1 << modcod), "--framesizes", "2" if short else "1"]
+    elif short:
+        command += ["--framesizes", "2"]
     command += ["--fd-bbf", str(bb_fd), "--fd-info", "2", "-d", "-d"]
     if tune:
         command += ["--tune", str(tune)]
@@ -275,7 +284,7 @@ def receiver_command(executable, fs, rs, alpha, bb_fd, *, tune=0.0, rrc_rej=20,
 
 def decode(capture, *, sample_rate=None, symbol_rate=None, alpha=None,
            receiver=None, expected=None, output=None, log=None, tune=0.0, timeout=120,
-           rrc_rej=20, bb_output=None, ldpc_helper=None, modcod=None):
+           rrc_rej=20, bb_output=None, ldpc_helper=None, modcod=None, short=False):
     """Decode one file, returning a JSON-serializable report and recovered bytes.
 
     LDPC counts are bit flips and unsatisfied parity checks, not a measured BER.
@@ -294,7 +303,7 @@ def decode(capture, *, sample_rate=None, symbol_rate=None, alpha=None,
     with tempfile.TemporaryFile() as bb, tempfile.TemporaryFile() as ts, \
             tempfile.TemporaryFile() as diagnostics, path.open("rb") as source:
         command = receiver_command(executable, fs, rs, alpha, bb.fileno(), tune=tune,
-                                   rrc_rej=rrc_rej, ldpc_helper=helper, modcod=modcod)
+                                   rrc_rej=rrc_rej, ldpc_helper=helper, modcod=modcod, short=short)
         if helper is None:
             returncode = subprocess.run(command, stdin=source, stdout=ts, stderr=diagnostics,
                                         pass_fds=(bb.fileno(),), timeout=timeout, check=False).returncode
@@ -340,12 +349,10 @@ def decode(capture, *, sample_rate=None, symbol_rate=None, alpha=None,
     return report, payload
 
 
-def payload_sequence(pattern, frames, callsign, hold_frames=1):
+def payload_sequence(pattern, frames, callsign, hold_frames=1, short=False):
     """Yield (MODCOD, payload) with one continuous firmware PRNG across frames."""
     import morse
-    kbch = {4: 32208, 5: 38688, 6: 43040, 7: 48408, 8: 51648,
-            9: 53840, 10: 57472, 11: 58192, 12: 38688, 13: 43040,
-            14: 48408, 15: 53840, 16: 57472, 17: 58192}
+    kbch = KBCH_SHORT if short else KBCH
     if not pattern or any(mc not in kbch for mc in pattern) or frames < 1 or hold_frames < 1:
         raise ValueError("need MODCODs 4..17, positive frame count and hold_frames")
     header = (("ESP-DVBS2 ID=" + morse.callsign(callsign)).ljust(39).encode("ascii") + b"\n"
@@ -364,10 +371,10 @@ def payload_sequence(pattern, frames, callsign, hold_frames=1):
         yield mc, bytes(data)
 
 
-def payload(modcod, frames, callsign, *, pattern=None, hold_frames=1):
+def payload(modcod, frames, callsign, *, pattern=None, hold_frames=1, short=False):
     """Firmware test payload. No FEC model or receiver code is used here."""
     return b"".join(data for _, data in payload_sequence(
-        pattern if pattern is not None else (modcod,), frames, callsign, hold_frames))
+        pattern if pattern is not None else (modcod,), frames, callsign, hold_frames, short))
 
 
 def vcm_match(frames, modcods, *, pattern, hold_frames, max_frames, callsign):
@@ -517,19 +524,19 @@ def stream_match(expected, got, per_frame):
     return at if at >= 0 else None
 
 
-def stream_layout(modcod, frames, dummy_before=()):
+def stream_layout(modcod, frames, dummy_before=(), short=False):
     """Count complete data/dummy frames inside a nominal dump duration.
 
     Dummy positions are zero-based data-frame indices, repeated for a pair.
     A physical dummy has 3,330 symbols and produces no BBFRAME or payload.
     The final partial frame cannot be expected from a receiver.
     """
-    if not 4 <= modcod <= 17 or frames < 1:
-        raise ValueError("need MODCOD 4..17 and at least one nominal frame")
+    if not 4 <= modcod <= (10 if short else 17) or frames < 1:
+        raise ValueError("need MODCOD 4..17 (short 4..10) and at least one nominal frame")
     if list(dummy_before) != sorted(dummy_before) or any(
             not isinstance(n, int) or not 0 <= n <= frames for n in dummy_before):
         raise ValueError("dummy positions must be ordered data-frame indices in 0..frames")
-    symbols = 33282 if modcod < 12 else 22194
+    symbols = 8370 if short else 33282 if modcod < 12 else 22194
     left, data, dummies, at = frames * symbols, 0, 0, 0
     while left:
         dummy = at < len(dummy_before) and dummy_before[at] == data
@@ -562,9 +569,12 @@ def main():
     p.add_argument("--hold", type=int, default=1, help="VCM frames per pattern entry")
     p.add_argument("--dummy-before", type=lambda s: tuple(map(int, s.split(","))), default=(),
                    help="known dummy schedule: comma-separated data-frame indices, repeated for pairs")
+    p.add_argument("--short", action="store_true",
+                   help="short FECFRAMEs (QPSK 4..10): LeanDVB --framesizes 2, Kbch and symbol counts of Table 5b")
     p.add_argument("--callsign", default="N0CALL", help="callsign in the dumped payload")
     p.add_argument("--receiver", type=Path, help="leandvb executable, or set LEANDVB")
     p.add_argument("--ldpc-helper", type=Path, help=HELPER_REQUIREMENT)
+    p.add_argument("--timeout", type=float, default=120, help="seconds allowed for LeanDVB")
     p.add_argument("--log", type=Path)
     p.add_argument("--output", type=Path, help="save recovered bytes")
     a = p.parse_args()
@@ -576,8 +586,10 @@ def main():
         if a.pattern and (not 1 <= len(a.pattern) <= 16 or any(mc not in range(4, 18) for mc in a.pattern)
                           or not 1 <= a.hold <= 65535 or a.stream < 1 or a.dummy_before):
             raise ValueError("need 1..16 MODCODs in 4..17, positive stream, hold 1..65535, no dummy schedule")
-        expected = payload(a.modcod, a.stream, a.callsign) if not a.pattern else None
-        layout = stream_layout(a.modcod, a.stream, a.dummy_before)
+        if a.short and (a.pattern or a.ldpc_helper is not None or a.modcod not in KBCH_SHORT):
+            raise ValueError("--short needs one QPSK MODCOD 4..10, no --pattern or helper")
+        expected = payload(a.modcod, a.stream, a.callsign, short=a.short) if not a.pattern else None
+        layout = stream_layout(a.modcod, a.stream, a.dummy_before, a.short)
         with tempfile.TemporaryDirectory() as tmp:
             source = a.capture
             if a.format == "i16":
@@ -588,8 +600,8 @@ def main():
                 # Receiver lookahead only. Never included in a dump's CRC.
                 np.r_[raw[:, 0] + 1j*raw[:, 1], np.zeros(4096)].astype("<c8").tofile(source)
             report, got = decode(source, sample_rate=a.rate, symbol_rate=a.symbol_rate,
-                                 alpha=a.rolloff, receiver=a.receiver, output=a.output, log=a.log,
-                                 ldpc_helper=a.ldpc_helper, modcod=a.modcod,
+                                 alpha=a.rolloff, receiver=a.receiver, output=a.output, log=a.log, timeout=a.timeout,
+                                 ldpc_helper=a.ldpc_helper, modcod=a.modcod, short=a.short,
                                  **({"bb_output": Path(tmp) / "frames.bbf"} if a.pattern else {}))
             if a.pattern:
                 frames = parse_bbframes((Path(tmp) / "frames.bbf").read_bytes())

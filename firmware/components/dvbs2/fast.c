@@ -1,4 +1,4 @@
-/* Fast normal-frame encoder: the stages of dvbs2.c reorganized for word and
+/* Fast normal and short frame encoder: the stages of dvbs2.c reorganized for word and
  * 128-bit operations. Every stage keeps the canonical workspace format
  * (ws->bits, MSB first), so each one can be checked and timed on its own.
  *
@@ -57,11 +57,13 @@ _Static_assert(offsetof(dvbs2_fast,scratch) == 608, "retain QPSK scratch placeme
 
 size_t dvbs2_fast_mode_size(const dvbs2_mode *mode)
 {
-    if (!mode || dvbs2_find_mode(mode->modcod) != mode) {
+    if (!mode || dvbs2_canonical_mode(mode) != mode) {
         return 0;
     }
     const size_t ldpc = mode->nbch / 360 * U2 + ((mode->q + 31) / 32) * 32 * ROW;
-    const size_t index = mode->bits_per_symbol == 3 ? 169 * 64 : 507 * 32;
+    const unsigned symbols = dvbs2_fec_bits(mode) / mode->bits_per_symbol;
+    const size_t index = mode->bits_per_symbol == 3 ? (size_t)((symbols + 127) / 128) * 64
+                                                    : (size_t)((symbols + 63) / 64) * 32;
     return sizeof(dvbs2_fast) + (ldpc > index ? ldpc : index);
 }
 
@@ -160,7 +162,8 @@ static void prepare_map(dvbs2_fast *f)
     f->gold = f->mode->bits_per_symbol == 3
                   ? (f->pilots ? fast_gold_3_1 : fast_gold_3_0)
                   : (f->pilots ? fast_gold_2_1 : fast_gold_2_0);
-    f->header = fast_headers + 90 * (2 * (f->mode->modcod - 4) + f->pilots);
+    f->header = fast_headers + 90 * (2 * (f->mode->modcod - 4) + f->pilots +
+                                     (f->mode->short_frame ? 28 : 0));
     if (f->pie & DVBS2_MAP_QUADS) {
         dvbs2_pack_quads(f->header, f->packed_header, 90);
         dvbs2_pack_quads(fast_pilots, f->packed_pilots, 36 * f->pilot_blocks);
@@ -175,16 +178,16 @@ static void prepare_map(dvbs2_fast *f)
 
 int dvbs2_fast_prepare(dvbs2_fast *f, const dvbs2_mode *mode, int pilots, unsigned pie)
 {
-    if (!f || !mode || dvbs2_find_mode(mode->modcod) != mode ||
-        ((pie & DVBS2_MAP_QUADS) && mode->bits_per_symbol != 2)) {
+    if (!f || !mode || dvbs2_canonical_mode(mode) != mode ||
+        ((pie & DVBS2_MAP_QUADS) && (mode->bits_per_symbol != 2 || mode->short_frame))) {
         return -1;
     }
     f->mode = mode;
     f->pilots = pilots ? 1 : 0;
-    f->bch_bytes = (mode->nbch - mode->kbch) / 8;
+    f->bch_bytes = mode->short_frame ? 24 : (mode->nbch - mode->kbch) / 8; /* register bytes */
     f->groups = mode->nbch / 360;
     f->q = mode->q;
-    f->data_symbols = 64800 / mode->bits_per_symbol;
+    f->data_symbols = dvbs2_fec_bits(mode) / mode->bits_per_symbol;
     f->pilot_blocks = pilots ? (f->data_symbols / 90 - 1) / 16 : 0;
     f->pie = pie & (PIE_MASK | DVBS2_BCH_NIBBLE | DVBS2_MAP_SPARSE | DVBS2_MAP_QUADS | DVBS2_RO_20 | DVBS2_VCM);
     f->ldxq_bias = 0;
@@ -206,12 +209,15 @@ int dvbs2_fast_prepare(dvbs2_fast *f, const dvbs2_mode *mode, int pilots, unsign
     }
 #endif
     f->prbs = dvbs2_prbs_table();
-    f->bch = mode->t == 12 ? fast_bch_12 : mode->t == 10 ? fast_bch_10 : fast_bch_8;
-    f->byte_bch = mode->t == 8 ? fast_bch_pair_8 : mode->t == 12 ? fast_bch_byte_12 : fast_bch_byte_10;
+    f->bch = mode->short_frame ? fast_bch_12s :
+             mode->t == 12 ? fast_bch_12 : mode->t == 10 ? fast_bch_10 : fast_bch_8;
+    f->byte_bch = mode->short_frame ? fast_bch_byte_12s : mode->t == 8 ? fast_bch_pair_8 :
+                  mode->t == 12 ? fast_bch_byte_12 : fast_bch_byte_10;
     f->cols = fast_cols;
     f->crc8 = fast_crc8;
     /* QPSK and 8PSK share their code-rate program. */
-    f->prog = fast_prog[mode->bits_per_symbol == 2 ? mode->modcod - 4U :
+    f->prog = mode->short_frame ? fast_prog_short[mode->modcod - 4U] :
+              fast_prog[mode->bits_per_symbol == 2 ? mode->modcod - 4U :
                         (unsigned[]){1, 2, 3, 5, 6, 7}[mode->modcod - 12]];
     f->p = f->scratch + f->groups * U2;
     memset(f->scratch, 0, dvbs2_fast_mode_size(mode) - sizeof *f);
@@ -224,7 +230,8 @@ int dvbs2_fast_cache_bch(dvbs2_fast *f, uint8_t *table)
     if (!f || !f->mode || f->mode->t == 8 || ((uintptr_t)table & 15)) {
         return -1;
     }
-    const uint8_t *source = f->mode->t == 12 ? fast_bch_byte_12 : fast_bch_byte_10;
+    const uint8_t *source = f->mode->short_frame ? fast_bch_byte_12s :
+                            f->mode->t == 12 ? fast_bch_byte_12 : fast_bch_byte_10;
     if (table) memcpy(table, source, DVBS2_BCH_CACHE_BYTES);
     f->byte_bch = table ? table : source;
     f->pair_bch = NULL;
@@ -238,7 +245,8 @@ int dvbs2_fast_cache_bch_pair(dvbs2_fast *f, uint8_t *low)
 {
     if (!f || !f->mode || !low || ((uintptr_t)low&15) || f->bch_bytes <= 16 ||
         f->bch_bytes > 24 || f->mode->kbch%16 || (f->pie&DVBS2_BCH_NIBBLE) ||
-        f->byte_bch == fast_bch_byte_12 || f->byte_bch == fast_bch_byte_10) return -1;
+        f->byte_bch == fast_bch_byte_12 || f->byte_bch == fast_bch_byte_10 ||
+        f->byte_bch == fast_bch_byte_12s) return -1;
     uint8_t *t = (uint8_t *)f->byte_bch;
     for (unsigned v = 0; v < 256; ++v) {
         unsigned head = t[16*v];
@@ -261,6 +269,9 @@ static size_t cache_prog_bytes(const dvbs2_fast *f)
 {
     const size_t bytes[] = {sizeof fast_prog_0, sizeof fast_prog_1, sizeof fast_prog_2,
         sizeof fast_prog_3, sizeof fast_prog_4, sizeof fast_prog_5, sizeof fast_prog_6, sizeof fast_prog_7};
+    const size_t short_bytes[] = {sizeof fast_prog_s0, sizeof fast_prog_s1, sizeof fast_prog_s2,
+        sizeof fast_prog_s3, sizeof fast_prog_s4, sizeof fast_prog_s5, sizeof fast_prog_s6};
+    if (f->mode->short_frame) return (short_bytes[f->mode->modcod-4U]+15) & ~(size_t)15;
     const unsigned rate = f->mode->bits_per_symbol == 2 ? f->mode->modcod-4U :
         (unsigned[]){1,2,3,5,6,7}[f->mode->modcod-12];
     return (bytes[rate]+15) & ~(size_t)15;
@@ -547,7 +558,7 @@ HOT void dvbs2_fast_bch(dvbs2_fast *f, dvbs2_workspace *ws)
             }
         }
     }
-    memcpy(ws->bits + bytes, w, f->bch_bytes);
+    memcpy(ws->bits + bytes, w, (f->mode->nbch - f->mode->kbch) / 8);
 }
 
 /* ---------------------------------------------------------------- LDPC */
@@ -710,6 +721,20 @@ static __attribute__((noinline)) void pack(dvbs2_fast *f, uint8_t *bits)
     }
 }
 
+/* Short frames end 1 byte past a whole word (2,025 bytes), which the word packers leave
+ * out. Take the last fec_bytes % 4 bytes straight from the transposed rows: parity bit
+ * i is row i % q of column i / q, bit 31 - row % 32 of the column's word row / 32. */
+static void pack_tail(const dvbs2_fast *f, uint8_t *bits)
+{
+    const unsigned total = 8 * (dvbs2_fec_bits(f->mode) / 8 % 4);
+    for (unsigned n = 0; n < total; ++n) {
+        const unsigned i = f->q * 360 - total + n, t = i / f->q, r = i % f->q;
+        const uint32_t v = W(f->p + f->cols[t] + ROW * 32 * (r / 32));
+        uint8_t *byte = bits + dvbs2_fec_bits(f->mode) / 8 - total / 8 + n / 8;
+        *byte = (uint8_t)((n % 8 ? *byte << 1 : 0) | ((v >> (31 - r % 32)) & 1));
+    }
+}
+
 HOT void dvbs2_fast_ldpc(dvbs2_fast *f, dvbs2_workspace *ws)
 {
     const unsigned blocks = (f->q + 31) / 32;
@@ -722,7 +747,8 @@ HOT void dvbs2_fast_ldpc(dvbs2_fast *f, dvbs2_workspace *ws)
         /* Pack big-endian words into the free u2 area, then reverse their
          * bytes into ws->bits from the word holding the parity start. */
         const unsigned start = f->mode->nbch / 8, base = start - start % 4;
-        const unsigned words = (DVBS2_FEC_BYTES - base) / 4, vectors = words / 4;
+        const unsigned fec_bytes = dvbs2_fec_bits(f->mode) / 8;
+        const unsigned words = (fec_bytes - base) / 4, vectors = words / 4;
         uint32_t pending;
         const unsigned have = pack_start(ws->bits, start, &pending);
         uint32_t *packed = (uint32_t *)f->scratch;
@@ -738,6 +764,7 @@ HOT void dvbs2_fast_ldpc(dvbs2_fast *f, dvbs2_workspace *ws)
         for (unsigned i = 4 * vectors; i < words; ++i) {
             W(dst + 4 * i) = bswap(packed[i]);
         }
+        pack_tail(f, ws->bits);
         return;
     }
 #endif
@@ -752,6 +779,7 @@ HOT void dvbs2_fast_ldpc(dvbs2_fast *f, dvbs2_workspace *ws)
     carry_row(f);
     transpose_c(f, blocks);
     pack(f, ws->bits);
+    pack_tail(f, ws->bits);
 }
 
 /* ---------------------------------------------------------------- mapping */
@@ -809,9 +837,10 @@ static __attribute__((noinline)) void map_c_run(const dvbs2_fast *f, const uint8
     const uint32_t *map = f->map;
     writer w = writer_start(dst);
     if (f->mode->bits_per_symbol == 3) {
-        const uint8_t *a = bits, *b = bits + 2700, *c = bits + 5400;
+        const unsigned column = f->data_symbols / 8;
+        const uint8_t *a = bits, *b = bits + column, *c = bits + 2 * column;
         if (f->mode->modcod == 12) {   /* 5.3.3: rate 3/5 reads the columns backwards */
-            a = bits + 5400;
+            a = bits + 2 * column;
             c = bits;
         }
         for (unsigned j = k0 / 8; j < (k0 + n) / 8; ++j) {
@@ -888,6 +917,14 @@ static HOT void map_pie(dvbs2_fast *f, const uint8_t *bits, uint8_t *output)
         /* The kernel leaves the final aligned block in f->tail: the run's
          * last (at & 15) bytes, or a whole vector when dst is aligned. */
         memcpy(block + 16 * vectors, f->tail, (at & 15) ? (at & 15) : 16);
+        /* Short QPSK runs end 4 or 8 symbols past a whole vector. */
+        for (unsigned j = 16 * vectors; j < length; j += 4) {
+            const uint32_t v = ((const uint32_t *)f->map)[index[(k + j) / 4]];
+            dst[j] = (uint8_t)v;
+            dst[j + 1] = (uint8_t)(v >> 8);
+            dst[j + 2] = (uint8_t)(v >> 16);
+            dst[j + 3] = (uint8_t)(v >> 24);
+        }
     }
 }
 #endif
@@ -925,7 +962,8 @@ static HOT void pack_c(const uint8_t *raw, uint8_t *packed, unsigned symbols)
 static __attribute__((noinline)) int map_packed_runs(dvbs2_fast *f,
                                                    const dvbs2_workspace *ws, uint8_t *packed)
 {
-    uint8_t *temp = f->scratch + PACK_TEMP;
+    /* Short contexts are smaller than PACK_TEMP; their QPSK fallback has no index to protect. */
+    uint8_t *temp = f->scratch + (f->mode->short_frame ? 0 : PACK_TEMP);
 #ifdef DVBS2_PIE
     const int pie = (f->pie & DVBS2_PIE_MAP) != 0;
     uint16_t *index = (uint16_t *)f->scratch;
