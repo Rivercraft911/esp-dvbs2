@@ -1,4 +1,4 @@
-idf_component_register(SRCS "main.c" "capture.c" "receive.c"
+idf_component_register(SRCS "main.c" "capture.c" "receive.c" "replay.c"
                        INCLUDE_DIRS "."
                        PRIV_REQUIRES esp_driver_usb_serial_jtag vfs esp_wifi esp_phy esp_psram
                                      esp_timer esp_app_format esp_hw_support heap esp_driver_dma esp_driver_gptimer dvbs2rx)

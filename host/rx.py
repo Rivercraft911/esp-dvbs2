@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Run the receiver firmware's `rx` command and check every payload against the transmitter.
 
-    python3 host/rx.py --port PORT 2420 32 30 7 --callsign KJ5SCH --out notes/rx.jsonl
+    python3 host/rx.py 7 --mhz 2420 --gain 32 --seconds 30 --port PORT --callsign KJ5SCH
+    python3 host/rx.py 7 --replay capture.sc8 --port PORT --callsign KJ5SCH
+
+--replay uploads a recorded 16 MS/s int8 capture and runs it through the same demodulator
+and FEC with the radio off, timing every push.
 
 The receiver streams one binary record per short frame (firmware/rx/main/receive.h). The
 transmitter's synthetic payload is a continuous xorshift32 stream seeded with 2026, with the
@@ -95,6 +99,36 @@ def receive(port: str, command: str, timeout: float):
         link.close()
 
 
+def upload(port: str, data: bytes) -> dict:
+    """Send a capture to the receiver's PSRAM; returns its CRC record."""
+    import board
+    import zlib
+    link = board.open_port(port, False)
+    try:
+        link.reset_input_buffer()
+        link.write(f"upload {len(data)}\n".encode())
+        records, line, deadline = [], b"", time.monotonic() + 30 + len(data) / 50e3
+        while time.monotonic() < deadline:
+            line += link.read(1)
+            if not line.endswith(b"\n"):
+                continue
+            text, line = line.strip(), b""
+            if not text.startswith(b"@"):
+                continue
+            record = json.loads(text[1:])
+            if record.get("error"):
+                raise RuntimeError(record["error"])
+            if record.get("ready"):
+                link.write(data)
+            if "crc32" in record:
+                if record["crc32"] != zlib.crc32(data):
+                    raise RuntimeError("upload CRC differs")
+                return record
+        raise TimeoutError("upload did not finish")
+    finally:
+        link.close()
+
+
 def check(frames, modcod: int, callsign: str, tx_frames: int) -> dict:
     size = frame_bytes(modcod)
     expected = model(size, tx_frames, callsign)
@@ -118,20 +152,27 @@ def check(frames, modcod: int, callsign: str, tx_frames: int) -> dict:
 def main() -> int:
     import board
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("mhz", type=int)
-    p.add_argument("gain", type=int)
-    p.add_argument("seconds", type=int)
     p.add_argument("modcod", type=int, help="short-frame QPSK MODCOD, 4..10")
+    p.add_argument("--mhz", type=int, default=2420)
+    p.add_argument("--gain", type=int, default=32)
+    p.add_argument("--seconds", type=int, default=30)
+    p.add_argument("--replay", type=pathlib.Path, help="recorded .sc8 capture to run with the radio off")
     p.add_argument("--port", default=board.DEFAULT_PORT)
     p.add_argument("--callsign", default="N0CALL")
     p.add_argument("--tx-frames", type=int, default=8000, help="model frames to search")
     p.add_argument("--out", type=pathlib.Path, help="append the summary to this JSON-lines file")
     a = p.parse_args()
     port = board.resolve_port(a.port)
-    command = f"rx {a.mhz} {a.gain} {a.seconds} {a.modcod}"
+    if a.replay:
+        data = a.replay.read_bytes()
+        command, timeout = f"replay {a.modcod}", 60 + len(data) / 1e6
+    else:
+        command, timeout = f"rx {a.mhz} {a.gain} {a.seconds} {a.modcod}", a.seconds + 60
     with board.reserve_port(port):
-        before, frames, after = receive(port, command, a.seconds + 60)
-    summary = dict(command=command, board=before + after,
+        if a.replay:
+            upload(port, data)
+        before, frames, after = receive(port, command, timeout)
+    summary = dict(command=command, replay=str(a.replay) if a.replay else None, board=before + after,
                    check=check(frames, a.modcod, a.callsign, a.tx_frames),
                    frames=[{k: v for k, v in f.items() if k != "payload"} for f in frames[:3]])
     stamp = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
