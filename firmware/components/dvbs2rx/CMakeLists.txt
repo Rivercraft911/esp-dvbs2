@@ -1,4 +1,4 @@
-set(srcs "kernels.c")
+set(srcs "kernels.c" "demod.c")
 if(IDF_TARGET STREQUAL "esp32s3")
     list(APPEND srcs "kernels_pie.S")
 endif()

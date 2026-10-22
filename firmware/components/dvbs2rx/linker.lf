@@ -1,5 +1,9 @@
 # Core 1 runs these inside the capture loop: keep them out of the flash cache.
+# demod's tables (matched-filter sets, sine) go to internal RAM with it; setup stays in flash.
 [mapping:dvbs2rx]
 archive: libdvbs2rx.a
 entries:
     kernels (noflash)
+    demod (noflash)
+    demod:rx_demod_init (default)
+    demod:scrambling (default)
