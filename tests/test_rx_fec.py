@@ -34,7 +34,8 @@ class Frame(ct.Structure):
 
 class Stats(ct.Structure):
     _fields_ = [("iterations", ct.c_uint16), ("failed_checks", ct.c_uint16),
-                ("ldpc_ok", ct.c_uint8), ("bch_ok", ct.c_uint8), ("header_ok", ct.c_uint8)]
+                ("unsatisfied", ct.c_uint16), ("ldpc_ok", ct.c_uint8), ("bch_ok", ct.c_uint8),
+                ("header_ok", ct.c_uint8)]
 
 
 class Native:
@@ -50,9 +51,10 @@ class Native:
             str(COMPONENT / "rx_fec.c"), str(encoder / "dvbs2.c"), str(encoder / "fast.c"),
             "-o", str(library)], check=True)
         self.lib = ct.CDLL(str(library))
-        self.lib.rx_fec_size.restype = ct.c_size_t
-        self.lib.rx_fec_size.argtypes = [ct.c_uint]
-        self.lib.rx_fec_init.argtypes = [ct.c_void_p, ct.c_uint]
+        for name in ("rx_fec_size", "rx_fec_work_size"):
+            getattr(self.lib, name).restype = ct.c_size_t
+            getattr(self.lib, name).argtypes = [ct.c_uint]
+        self.lib.rx_fec_init.argtypes = [ct.c_void_p, ct.c_uint, ct.c_void_p]
         self.lib.rx_fec_frame.argtypes = [ct.c_void_p, ct.POINTER(Frame),
                                           ct.POINTER(ct.POINTER(ct.c_uint8)), ct.POINTER(Stats)]
         self.decoders = {}
@@ -61,16 +63,16 @@ class Native:
     def __exit__(self, *args):
         self.tmp.cleanup()
 
-    def decoder(self, modcod):
-        if modcod not in self.decoders:
-            size = self.lib.rx_fec_size(modcod)
-            raw = ct.create_string_buffer(size + 16)
-            ws = ct.addressof(raw) + (-ct.addressof(raw) % 16)
-            assert self.lib.rx_fec_init(ws, modcod) == 0
-            self.decoders[modcod] = (raw, ws)
-        return self.decoders[modcod][1]
+    def decoder(self, modcod, work=True):
+        if (modcod, work) not in self.decoders:
+            buffers = [ct.create_string_buffer(self.lib.rx_fec_size(modcod) + 16),
+                       ct.create_string_buffer(self.lib.rx_fec_work_size(modcod) + 16)]
+            ws, area = (ct.addressof(b) + (-ct.addressof(b) % 16) for b in buffers)
+            assert self.lib.rx_fec_init(ws, modcod, area if work else None) == 0
+            self.decoders[modcod, work] = (buffers, ws)
+        return self.decoders[modcod, work][1]
 
-    def frame(self, modcod, llr, hard_bits=None, frame_modcod=None, frame_type=3):
+    def frame(self, modcod, llr, hard_bits=None, frame_modcod=None, frame_type=3, work=True):
         """Decode one frame; returns (payload bytes or None, stats)."""
         llr = np.ascontiguousarray(llr, np.int8)
         hard = np.zeros(2032, np.uint8)
@@ -79,7 +81,7 @@ class Native:
                       hard.ctypes.data_as(ct.POINTER(ct.c_uint8)), 0, 0, 0, 0, 0,
                       modcod if frame_modcod is None else frame_modcod, frame_type)
         payload, stats = ct.POINTER(ct.c_uint8)(), Stats()
-        n = self.lib.rx_fec_frame(self.decoder(modcod), ct.byref(frame), ct.byref(payload),
+        n = self.lib.rx_fec_frame(self.decoder(modcod, work), ct.byref(frame), ct.byref(payload),
                                   ct.byref(stats))
         if n >= 0:
             start = ct.cast(payload, ct.c_void_p).value - hard.ctypes.data
@@ -155,17 +157,18 @@ def float_bp(llr, modcod, iterations=50):
     return out
 
 
-def int_model(llr, modcod, iterations=30):
-    """The integer decoder of rx_fec.c in codeword order (no slots, frames or vectors).
-    Returns (hard bits or None, iterations)."""
+def int_model(llr, modcod, iterations=8):
+    """The integer decoder of rx_fec.c in codeword order (no slots, frames or vectors),
+    with its stopping rule. Returns (hard bits or None, iterations)."""
     sat, mag = lambda x: np.clip(x, -128, 127), lambda x: np.minimum(np.abs(x), 127)
     a = mag(llr[:16192].astype(np.int64))
     n, s1, s2 = len(a), int(a.sum()), int((a * a).sum())
     den = n * s2 - s1 * s1
     gain = min(64, max(1, (96 * s1 * n + den // 2) // den)) if den else 64
-    b = np.where(llr < 0, -1, 1) * np.minimum(63, (mag(llr.astype(np.int64)) * gain) >> 4)
+    b = np.where(llr < 0, -1, 1) * np.minimum(31, (mag(llr.astype(np.int64)) * gain) >> 4)
     layers = structure(modcod)
     R = [np.zeros(i.shape, np.int64) for i, _, _ in layers]
+    before = [None, None]
     for it in range(1, iterations + 1):
         odd = 0
         for L, (idx, mask, groups) in enumerate(layers):
@@ -188,8 +191,12 @@ def int_model(llr, modcod, iterations=30):
                 new[idx[e]] = sat(new[idx[e]] + sat(msg[e] - R[L][e]))
             b, R[L] = new, msg
         hard = (b < 0).astype(np.uint8)
-        if (odd == 0 or it == iterations) and satisfied(layers, hard) == 0:
+        stuck = it >= 3 and (odd >= before[1] or 6 * odd > 360 * d.code(rate_of(modcod), True).q)
+        before = [odd, before[0]]
+        if (odd == 0 or stuck or it == iterations) and satisfied(layers, hard) == 0:
             return hard, it
+        if stuck:
+            return None, it
     return None, iterations
 
 
@@ -207,7 +214,15 @@ def test_clean(native):
                 assert payload == np.packbits(data).tobytes(), (modcod, length)
                 assert (st.iterations, st.failed_checks, st.ldpc_ok, st.bch_ok, st.header_ok) == \
                     (0, 0, 1, 1, 1)
-    print("clean: MODCOD 4/6/7/10, full, 100-byte and empty data fields, no iterations: ok")
+    # Without a work area: clean frames still pass, damaged ones return -1 undecoded.
+    cw = codeword(7, rng.integers(0, 2, 800, dtype=np.uint8))
+    assert native.frame(7, np.where(cw, -K, K), work=False)[0] is not None
+    bad = cw.copy()
+    bad[5] ^= 1
+    payload, st = native.frame(7, np.where(cw, -K, K), hard_bits=bad, work=False)
+    assert payload is None and st.failed_checks > 0 and st.iterations == 0
+    print("clean: MODCOD 4/6/7/10, full, 100-byte and empty data fields, no iterations, "
+          "no work area: ok")
 
 
 def test_failed_checks(native):
@@ -225,8 +240,8 @@ def test_failed_checks(native):
 
 def test_awgn(native):
     rng = np.random.default_rng(3)
-    # Exact payloads 0.5 dB above each code's measured waterfall.
-    for modcod, esn0 in ((4, 2.0), (6, 3.75), (7, 4.5), (10, 6.75)):
+    # Exact payloads where 8 iterations lose under 0.1% of frames.
+    for modcod, esn0 in ((4, 2.75), (6, 4.5), (7, 5.25), (10, 7.25)):
         c = d.code(rate_of(modcod), True)
         data = rng.integers(0, 2, c.kbch - 80, dtype=np.uint8)
         cw, want = codeword(modcod, data), np.packbits(data).tobytes()
@@ -235,7 +250,7 @@ def test_awgn(native):
             payload, st = native.frame(modcod, llr)
             assert payload == want and st.iterations > 0, (modcod, esn0)
     # Bit-exact Python model of the integer decoder on decoded and failed frames.
-    for modcod, esn0 in ((7, 3.8), (7, 4.5), (5, 2.5), (9, 5.25), (10, 6.25)):
+    for modcod, esn0 in ((7, 3.8), (7, 4.5), (5, 2.75), (9, 5.5), (10, 6.25)):
         c = d.code(rate_of(modcod), True)
         data = rng.integers(0, 2, c.kbch - 80, dtype=np.uint8)
         cw = codeword(modcod, data)
@@ -244,15 +259,16 @@ def test_awgn(native):
         hard, iterations = int_model(llr, modcod)
         assert st.iterations == iterations, (modcod, esn0, st.iterations, iterations)
         assert (payload is not None) == (hard is not None and (hard == cw).all())
-    # FER against float layered BP (50 iterations) on the same noise draws: in the
-    # waterfall of 3/4, the int8 decoder 0.15 dB higher loses no more frames.
-    modcod, frames, esn0, extra = 7, 60, 3.9, 0.15
+    # FER against float layered BP on the same noise draws, both stopped after 8
+    # iterations: in the waterfall of 3/4, the int8 decoder 0.25 dB higher loses no
+    # more frames (with 30 iterations each the gap is 0.1 dB).
+    modcod, frames, esn0, extra = 7, 60, 4.25, 0.25
     c = d.code(rate_of(modcod), True)
     data = rng.integers(0, 2, c.kbch - 80, dtype=np.uint8)
     cw, want = codeword(modcod, data), np.packbits(data).tobytes()
     seeds = rng.integers(0, 2**32, frames)
     natural = np.array([demodulate(cw, esn0, np.random.default_rng(x))[1] for x in seeds])
-    fer_bp = np.mean((float_bp(natural, modcod)[:, :c.kbch] != cw[:c.kbch]).any(axis=1))
+    fer_bp = np.mean((float_bp(natural, modcod, iterations=8)[:, :c.kbch] != cw[:c.kbch]).any(axis=1))
     fer_int = np.mean([native.frame(modcod, demodulate(cw, esn0 + extra,
                                                        np.random.default_rng(x))[0])[0] != want
                        for x in seeds])
@@ -289,6 +305,27 @@ def test_int8_edges(native):
     assert native.frame(modcod, llr)[0] is None
     assert native.frame(modcod, np.zeros(c.n, np.int8))[0] is None
     print("int8: saturated wrong bits, clipped and tiny scales, erasures: ok")
+
+
+def test_damage(native):
+    """A good link hit by a glitch: confidently wrong bits are repaired; hopeless frames
+    stop after 3 iterations."""
+    rng = np.random.default_rng(6)
+    modcod = 7
+    c = d.code(rate_of(modcod), True)
+    data = rng.integers(0, 2, c.kbch - 80, dtype=np.uint8)
+    cw, want = codeword(modcod, data), np.packbits(data).tobytes()
+    for wrong in (100, 200):
+        llr = demodulate(cw, 15.0, rng)[0]
+        flip = rng.choice(c.n, wrong, replace=False)
+        llr[flip] = -llr[flip]
+        payload, st = native.frame(modcod, llr)
+        assert payload == want and st.iterations <= 8, wrong
+    for llr in (rng.integers(-40, 41, c.n).astype(np.int8),
+                np.where(rng.random(c.n) < 0.5, 0, demodulate(cw, 15.0, rng)[0]).astype(np.int8)):
+        payload, st = native.frame(modcod, llr)
+        assert payload is None and st.iterations == 3 and 6 * st.unsatisfied > 4320
+    print("damage: 100 and 200 confidently wrong bits repaired, hopeless frames stop at 3: ok")
 
 
 def test_false_accepts(native):
@@ -350,6 +387,6 @@ def test_false_accepts(native):
 
 if __name__ == "__main__":
     with Native() as native:
-        for test in (test_clean, test_failed_checks, test_awgn, test_int8_edges,
+        for test in (test_clean, test_failed_checks, test_awgn, test_int8_edges, test_damage,
                      test_false_accepts):
             test(native)

@@ -33,6 +33,7 @@
 #define SENTINEL 0xa5a5a5a5U
 #define EDGE_GUARD 64U
 #define PAIR_CYCLES 15U         /* 240 MHz / 16 MS/s */
+#define CAPTURE_STACK 4096U     /* the consumer runs here; it needs well under 3 KB */
 
 SOC_RESERVE_MEMORY_REGION(0x3fcb0000, 0x3fce0000, capture_banks);
 
@@ -342,6 +343,8 @@ static void worker(void *arg)
         s->largest_ready = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
         s->fault = job->bench ? bench(job) : stream(job);
         if (s->fault) s->error = ESP_FAIL;
+        s->min_free = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+        s->stack_free = uxTaskGetStackHighWaterMark(NULL);
     }
     REG_WRITE(DUMP_CTRL, 0);
     REG_WRITE(DAC_CTRL, 0);
@@ -397,8 +400,9 @@ static esp_err_t launch(job_t *job)
         ((s->error = esp_wifi_set_promiscuous(true)) != ESP_OK ||
          (s->error = esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE)) != ESP_OK)) goto done;
     s->free_wifi = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    if (job->config->ready && (s->error = job->config->ready(job->ctx)) != ESP_OK) goto done;
     if (!(job->done = xSemaphoreCreateBinary())) { s->error = ESP_ERR_NO_MEM; goto done; }
-    if (xTaskCreatePinnedToCore(worker, "capture", 8192, job, configMAX_PRIORITIES - 1,
+    if (xTaskCreatePinnedToCore(worker, "capture", CAPTURE_STACK, job, configMAX_PRIORITIES - 1,
                                 NULL, 1) != pdPASS) {
         s->error = ESP_ERR_NO_MEM;
         goto done;

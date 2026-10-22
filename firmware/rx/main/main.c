@@ -38,12 +38,14 @@ static void print_capture(const capture_stats_t *s)
     printf(",\"samples\":%llu,\"units\":%lu,\"max_late\":%lu,\"max_service\":%lu,\"max_clear\":%lu,"
            "\"max_spin\":%lu,\"max_lag\":%lu,"
            "\"free_before\":%lu,\"free_wifi\":%lu,\"free_ready\":%lu,\"largest_ready\":%lu,"
+           "\"min_free\":%lu,\"capture_stack_free\":%lu,"
            "\"gain_max\":%u,\"status\":\"%s\",\"cleanup\":\"%s\"",
            (unsigned long long)s->samples, (unsigned long)s->units, (unsigned long)s->max_late,
            (unsigned long)s->max_service, (unsigned long)s->max_clear,
            (unsigned long)s->max_spin, (unsigned long)s->max_lag,
            (unsigned long)s->free_before, (unsigned long)s->free_wifi,
-           (unsigned long)s->free_ready, (unsigned long)s->largest_ready, s->gain_max,
+           (unsigned long)s->free_ready, (unsigned long)s->largest_ready,
+           (unsigned long)s->min_free, (unsigned long)s->stack_free, s->gain_max,
            esp_err_to_name(s->error), esp_err_to_name(s->cleanup));
     if (s->fault) printf(",\"fault\":\"%s\"", s->fault);
 }
@@ -67,7 +69,7 @@ static void dump(unsigned mhz, unsigned gain, unsigned pairs)
         return;
     }
     d.q = d.i + pairs;
-    capture_config_t c = {mhz, gain, 1 + pairs / CAPTURE_RATE, false};
+    capture_config_t c = {.mhz = mhz, .gain = gain, .seconds = 1 + pairs / CAPTURE_RATE};
     capture_stats_t s;
     capture_run(&c, dump_unit, &d, &s);
     printf("@{\"cmd\":\"dump\",\"mhz\":%u,\"gain\":%u,\"pairs\":%u,\"layout\":\"i plane, q plane\"",
@@ -171,12 +173,12 @@ void app_main(void)
                    (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                    (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
         } else if (fields >= 4 && !strcmp(cmd, "rxprobe") && (fields == 4 || !strcmp(mode, "promisc"))) {
-            capture_config_t c = {mhz, gain, seconds, fields == 5};
+            capture_config_t c = {.mhz = mhz, .gain = gain, .seconds = seconds, .promiscuous = fields == 5};
             rxprobe(&c);
         } else if (fields == 5 && !strcmp(cmd, "rx")) {
             unsigned modcod = 0;
             sscanf(mode, "%u", &modcod);
-            capture_config_t c = {mhz, gain, seconds, false};
+            capture_config_t c = {.mhz = mhz, .gain = gain, .seconds = seconds};
             receive_stats_t r;
             capture_stats_t s = {0};
             quiet = true;
@@ -184,14 +186,14 @@ void app_main(void)
             quiet = false;
             printf("@{\"cmd\":\"rx\",\"result\":\"%s\",\"modcod\":%u,\"frames\":%lu,\"good\":%lu,"
                    "\"failed\":%lu,\"dropped\":%lu,\"max_iterations\":%lu,\"max_push_cycles\":%lu,"
-                   "\"push_cycles\":%llu,\"max_fec_cycles\":%lu,\"fec_cycles\":%llu,"
+                   "\"push_cycles\":%llu,\"max_fec_cycles\":%lu,\"fec_cycles\":%llu,\"decoder_stack_free\":%lu,"
                    "\"demod\":{\"words\":%llu,\"frames\":%lu,\"lost\":%lu,\"relocks\":%lu,"
                    "\"acquire_cycles\":%lu,\"dc\":[%d,%d]}",
                    esp_err_to_name(e), modcod, (unsigned long)r.frames, (unsigned long)r.good,
                    (unsigned long)r.failed, (unsigned long)r.dropped, (unsigned long)r.max_iterations,
                    (unsigned long)r.max_push_cycles, (unsigned long long)r.push_cycles,
                    (unsigned long)r.max_fec_cycles, (unsigned long long)r.fec_cycles,
-                   (unsigned long long)r.demod.words, (unsigned long)r.demod.frames,
+                   (unsigned long)r.decoder_stack_free, (unsigned long long)r.demod.words, (unsigned long)r.demod.frames,
                    (unsigned long)r.demod.lost, (unsigned long)r.demod.relocks,
                    (unsigned long)r.demod.acquire_cycles, r.demod.dc_i, r.demod.dc_q);
             print_capture(&s);
@@ -221,7 +223,7 @@ void app_main(void)
         } else if (fields == 4 && !strcmp(cmd, "dump")) {
             dump(mhz, gain, seconds);
         } else if (fields >= 3 && !strcmp(cmd, "membench")) {
-            capture_config_t c = {mhz, gain, 1, false};
+            capture_config_t c = {.mhz = mhz, .gain = gain, .seconds = 1};
             uint32_t r[16];
             capture_stats_t s;
             capture_bench(&c, r, &s);

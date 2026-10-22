@@ -17,7 +17,7 @@ typedef struct __attribute__((packed)) {
 
 typedef struct {
     uint32_t frames, good, failed, dropped, max_iterations;
-    uint32_t max_push_cycles, max_fec_cycles;
+    uint32_t max_push_cycles, max_fec_cycles, decoder_stack_free;
     uint64_t push_cycles, fec_cycles;
     rx_demod_stats_t demod;
 } receive_stats_t;

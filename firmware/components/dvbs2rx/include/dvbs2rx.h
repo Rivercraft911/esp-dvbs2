@@ -78,16 +78,21 @@ size_t rx_demod_push(rx_demod_t *d, const uint32_t *words, uint64_t first, size_
 void rx_demod_stats(const rx_demod_t *d, rx_demod_stats_t *stats);
 
 /* FEC: re-encode check first (clean frames end here), then layered min-sum.
- * Workspace in internal RAM, 16-byte aligned. */
+ * rx_fec_size bytes in internal RAM hold everything the clean path touches; the
+ * decoder's rx_fec_work_size bytes may live anywhere, PSRAM included. Both 16-byte
+ * aligned. With work NULL, frames that fail the check return -1 undecoded. */
 typedef struct {
     uint16_t iterations;    /* 0: the received hard bits were already a codeword */
     uint16_t failed_checks; /* parity checks failing on the received hard bits */
+    uint16_t unsatisfied;   /* checks failing in the last iteration (stops: 8 iterations, or no
+                             * progress over two from the third, or more than a sixth failing) */
     uint8_t ldpc_ok, bch_ok, header_ok;
 } rx_fec_stats_t;
 
 typedef struct rx_fec rx_fec_t;
 size_t rx_fec_size(unsigned modcod);
-int rx_fec_init(rx_fec_t *f, unsigned modcod);
+size_t rx_fec_work_size(unsigned modcod);
+int rx_fec_init(rx_fec_t *f, unsigned modcod, void *work);
 /* Returns the data field length in bytes and points payload at it (valid
  * until the frame's buffers are reused), or -1 if the frame fails. */
 int rx_fec_frame(rx_fec_t *f, rx_frame_t *frame, const uint8_t **payload,

@@ -21,12 +21,15 @@ typedef esp_err_t (*capture_fn)(const uint32_t *words, size_t count, uint64_t fi
 typedef struct {
     unsigned mhz, gain, seconds;
     bool promiscuous;   /* Wi-Fi promiscuous receive on channel 1 during the run */
+    /* Optional, on the calling core after Wi-Fi is up and before streaming: the place
+     * to allocate run memory, so Wi-Fi gets its blocks first. An error aborts the run. */
+    esp_err_t (*ready)(void *ctx);
 } capture_config_t;
 
 typedef struct {
     uint64_t samples;
     uint32_t units, max_late, max_service, max_clear, max_spin, max_lag;
-    uint32_t free_before, free_wifi, free_ready, largest_ready;
+    uint32_t free_before, free_wifi, free_ready, largest_ready, min_free, stack_free;
     uint8_t gain_max;
     const char *fault;  /* first fault, or NULL */
     esp_err_t error, cleanup;

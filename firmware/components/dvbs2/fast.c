@@ -296,7 +296,9 @@ size_t dvbs2_fast_cache_tail_size(const dvbs2_fast *f)
 
 int dvbs2_fast_cache_split(dvbs2_fast *f, uint8_t *table, uint8_t *tail)
 {
-    if (!dvbs2_fast_cache_size(f) || !table || ((uintptr_t)table & 15) || ((uintptr_t)tail & 15)) return -1;
+    if (!dvbs2_fast_cache_size(f) || (!table && !tail) || ((uintptr_t)table & 15) ||
+        ((uintptr_t)tail & 15)) return -1;
+    if (!table) goto tail;
     memcpy(table,f->prbs,f->mode->kbch/8);
     f->prbs = table; table += cache_prbs_bytes(f);
     size_t gold = f->mode->bits_per_symbol == 3 ? sizeof fast_gold_3_1 : sizeof fast_gold_2_1;
@@ -310,6 +312,7 @@ int dvbs2_fast_cache_split(dvbs2_fast *f, uint8_t *table, uint8_t *tail)
         f->byte_bch = table;
     }
     table += DVBS2_BCH_CACHE_BYTES;
+tail:
     if (tail) table = tail;
     size_t bytes = cache_prog_bytes(f);
     // Copy only the real program; its aligned slot may be longer.
