@@ -742,6 +742,7 @@ static int on_block(rx_demod_t *d, int header)
         /* Pick the turn count that agrees with the data's own rotation. */
         int64_t want = fourth_power_slope(d, nd, sc0 - nd) * (int32_t)(centre2 - d->anchor2) / 2;
         theta += ((want - theta + ((int64_t)1 << 31)) >> 32) * ((int64_t)1 << 32);
+        d->budget = d->budget > 320 ? d->budget - 320 : 0;    /* it costs about 320 releases */
     }
     int32_t inc = d->omega + (int32_t)(theta * 2 / (int32_t)(centre2 - d->anchor2));
     if (d->fresh && !header) {
