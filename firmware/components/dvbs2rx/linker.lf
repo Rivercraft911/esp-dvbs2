@@ -1,8 +1,19 @@
 # Core 1 runs these inside the capture loop: keep them out of the flash cache.
 # demod's tables (matched-filter sets, sine) go to internal RAM with it; setup stays in flash.
+# Core 0 runs the FEC frame path the same way (rx_fec_pie.S is in IRAM already).
 [mapping:dvbs2rx]
 archive: libdvbs2rx.a
 entries:
     kernels (noflash)
     demod (noflash)
     demod:rx_demod_init (default)
+    rx_fec:rx_fec_frame (noflash)
+    rx_fec:ldpc_failed (noflash)
+    rx_fec:differ (noflash)
+    rx_fec:bch_ok (noflash)
+    rx_fec:crc8 (noflash)
+    rx_fec:descramble (noflash)
+    rx_fec:bbframe (noflash)
+    rx_fec:layer (noflash)
+    rx_fec:syndrome_ok (noflash)
+    rx_fec:load (noflash)

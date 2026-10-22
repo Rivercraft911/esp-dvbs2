@@ -47,14 +47,14 @@ esp_err_t replay_run(unsigned modcod, replay_stats_t *s)
                           .carrier_khz = 2420000};
     rx_demod_t *d = heap_caps_aligned_alloc(16, rx_demod_size(), internal);
     rx_fec_t *f = heap_caps_aligned_alloc(16, rx_fec_size(modcod), internal);
-    if (!f) f = heap_caps_aligned_alloc(16, rx_fec_size(modcod), MALLOC_CAP_SPIRAM);
+    void *work = heap_caps_aligned_alloc(16, rx_fec_work_size(modcod), MALLOC_CAP_SPIRAM);
     uint32_t *words = heap_caps_aligned_alloc(16, 4 * CHUNK, internal);
     rx_frame_t frame = {.hard = heap_caps_aligned_alloc(16, RX_HARD_BYTES, internal),
                         .llr = heap_caps_aligned_alloc(16, RX_SHORT_BITS, MALLOC_CAP_SPIRAM)};
     esp_err_t error = ESP_ERR_NO_MEM;
-    if (!d || !f || !words || !frame.hard || !frame.llr) goto done;
+    if (!d || !f || !work || !words || !frame.hard || !frame.llr) goto done;
     error = ESP_ERR_INVALID_ARG;
-    if (rx_demod_init(d, &config) || rx_fec_init(f, modcod)) goto done;
+    if (rx_demod_init(d, &config) || rx_fec_init(f, modcod, work)) goto done;
     printf("@{\"cmd\":\"replay\",\"stream\":\"binary\",\"record_bytes\":%u}\n",
            (unsigned)sizeof(receive_record_t));
     fflush(stdout);
@@ -94,6 +94,7 @@ done:
     heap_caps_free(frame.llr);
     heap_caps_free(frame.hard);
     heap_caps_free(words);
+    heap_caps_free(work);
     heap_caps_free(f);
     heap_caps_free(d);
     return error;

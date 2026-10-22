@@ -118,6 +118,10 @@ static void run_parity(int pie)
 {
     *P(int, B_HARD) = (pie ? rx_parity_pie : rx_parity)(P(int8_t, B_BELIEF), P(uint16_t, B_WRITES), EDGES) != 0;
 }
+static void run_xor(int pie)
+{
+    (pie ? rx_xor_pie : rx_xor)(P(uint8_t, B_BELIEF), P(uint8_t, B_QTMP), 91);
+}
 static void run_hard(int pie)
 {
     (pie ? rx_hard_pie : rx_hard)(P(int8_t, B_BELIEF), P(uint16_t, B_READS), 33, P(uint8_t, B_HARD));
@@ -174,6 +178,7 @@ static void kernels(void)
     for (unsigned g = 0; g < 33; ++g) I(uint16_t, B_READS)[g] = (uint16_t)(rnd() % 360);
     fill(in + B_BELIEF, BELIEF);
     compare("hard", run_hard);
+    compare("xor", run_xor);
 }
 
 /* ---------------------------------------------------------------- frames */
@@ -199,76 +204,163 @@ static float gaussian(void)
     return sqrtf(-2.0f * logf(u)) * cosf(6.2831853f * v);
 }
 
-static void frames(rx_fec_t *f, int8_t *llr, uint8_t *hard, uint8_t *bits, uint8_t *payload)
+/* Sweeping 128 KB of PSRAM evicts the 32 KB data cache: flash constants and PSRAM
+ * work areas are then cold. Without PSRAM (QEMU) nothing is evicted. */
+static volatile uint8_t *evictor;
+#define EVICT_BYTES (128 * 1024)
+static void evict(void)
 {
-    codeword(bits, payload);
-    const unsigned bytes = (dvbs2_find_mode_short(MODCOD)->kbch - 80) / 8;
-    const uint32_t want = crc(payload, bytes);
-    static uint8_t hard_in[RX_HARD_BYTES] __attribute__((aligned(16)));
-    const char *names[] = {"clean", "wrong_1", "wrong_8", "wrong_64", "awgn_6.0dB", "awgn_4.5dB",
-                           "awgn_4.0dB", "erased"};
-    for (unsigned c = 0; c < sizeof names / sizeof *names; ++c) {
-        seed = 100 + c;
-        const float esn0 = c == 4 ? 6.0f : c == 5 ? 4.5f : 4.0f, sigma = sqrtf(0.5f / powf(10, esn0 / 10));
-        for (unsigned i = 0; i < RX_SHORT_BITS; ++i) {
-            float y = bits[i] ? -1.0f : 1.0f;
-            if (c >= 4 && c <= 6) y += 1.41421356f * sigma * gaussian();
-            const float x = roundf(24 * y);
-            llr[i] = (int8_t)(x > 127 ? 127 : x < -127 ? -127 : x);
+    uint32_t sum = 0;
+    for (unsigned i = 0; evictor && i < EVICT_BYTES; i += 16) sum += evictor[i];
+    __asm__ volatile("" :: "r"(sum));
+}
+
+typedef struct {
+    int8_t *llr;
+    uint8_t *hard, *bits, *payload;
+    uint8_t hard_in[RX_HARD_BYTES] __attribute__((aligned(16)));
+    uint32_t want;
+    unsigned bytes;
+} frame_set_t;
+
+static uint32_t decode(rx_fec_t *f, frame_set_t *x, int *length, uint32_t *sum, rx_fec_stats_t *st)
+{
+    memcpy(x->hard, x->hard_in, RX_HARD_BYTES);
+    rx_frame_t frame = {.llr = x->llr, .hard = x->hard, .modcod = MODCOD, .type = 3};
+    const uint8_t *p = NULL;
+    const uint32_t t0 = now();
+    *length = rx_fec_frame(f, &frame, &p, st);
+    const uint32_t t = now() - t0;
+    *sum = *length >= 0 ? crc(p, *length) : 0;
+    return t;
+}
+
+/* Frame c: 0 clean, 1/2/3 one, 8 or 64 weak wrong bits, 4/5/6 AWGN at 6.0/4.5/4.0 dB,
+ * 7 a 600-bit erasure. LLRs at 24 per unit amplitude, hard bits their signs. */
+static const char *const names[] = {"clean", "wrong_1", "wrong_8", "wrong_64", "awgn_6.0dB",
+                                    "awgn_4.5dB", "awgn_4.0dB", "erased"};
+static void make_frame(frame_set_t *x, unsigned c)
+{
+    seed = 100 + c;
+    const float esn0 = c == 4 ? 6.0f : c == 5 ? 4.5f : 4.0f, sigma = sqrtf(0.5f / powf(10, esn0 / 10));
+    for (unsigned i = 0; i < RX_SHORT_BITS; ++i) {
+        float y = x->bits[i] ? -1.0f : 1.0f;
+        if (c >= 4 && c <= 6) y += 1.41421356f * sigma * gaussian();
+        const float v = roundf(24 * y);
+        x->llr[i] = (int8_t)(v > 127 ? 127 : v < -127 ? -127 : v);
+    }
+    const unsigned wrong = c == 1 ? 1 : c == 2 ? 8 : c == 3 ? 64 : 0;
+    for (unsigned k = 0; k < wrong; ++k) {
+        const unsigned i = rnd() % RX_SHORT_BITS;
+        x->llr[i] = (int8_t)(x->bits[i] ? 4 : -4);
+    }
+    if (c == 7) memset(x->llr + 3000, 0, 600);
+    memset(x->hard_in, 0, RX_HARD_BYTES);
+    for (unsigned i = 0; i < RX_SHORT_BITS; ++i) x->hard_in[i / 8] |= (x->llr[i] < 0) << (7 - i % 8);
+}
+
+/* The clean path: first call after init, warm (back to back) and cold (data cache
+ * evicted before each call), and the encoder stages alone. */
+static void clean(rx_fec_t *f, frame_set_t *x)
+{
+    make_frame(x, 0);
+    int length;
+    uint32_t sum, first, warm = UINT32_MAX, cold = UINT32_MAX, cold_max = 0;
+    rx_fec_stats_t st;
+    first = decode(f, x, &length, &sum, &st);
+    for (unsigned run = 0; run < 2 * RUNS; ++run) {
+        const uint32_t t = decode(f, x, &length, &sum, &st);
+        warm = t < warm ? t : warm;
+    }
+    for (unsigned run = 0; run < 2 * RUNS; ++run) {
+        evict();
+        const uint32_t t = decode(f, x, &length, &sum, &st);
+        cold = t < cold ? t : cold;
+        cold_max = t > cold_max ? t : cold_max;
+    }
+    uint32_t ldpc = UINT32_MAX, bch = UINT32_MAX, copy = UINT32_MAX;
+    for (unsigned run = 0; run < RUNS; ++run) {
+        const uint32_t t0 = now();
+        memcpy(f->bits->bits, x->hard_in, f->nbch / 8);
+        const uint32_t t1 = now();
+        dvbs2_fast_ldpc(f->encoder, f->bits);
+        const uint32_t t2 = now();
+        dvbs2_fast_bch(f->encoder, f->bits);
+        const uint32_t t3 = now();
+        copy = t1 - t0 < copy ? t1 - t0 : copy;
+        ldpc = t2 - t1 < ldpc ? t2 - t1 : ldpc;
+        bch = t3 - t2 < bch ? t3 - t2 : bch;
+    }
+    printf("@{\"cmd\":\"fecbench\",\"frame\":\"clean\",\"first\":%" PRIu32 ",\"warm\":%" PRIu32
+           ",\"cold\":%" PRIu32 ",\"cold_max\":%" PRIu32 ",\"copy\":%" PRIu32 ",\"ldpc\":%" PRIu32
+           ",\"bch\":%" PRIu32 ",\"length\":%d,\"payload_ok\":%s}\n", first, warm, cold, cold_max,
+           copy, ldpc, bch, length, sum == x->want ? "true" : "false");
+    /* W1's paired BCH table: 4 KB more internal RAM. */
+    uint8_t *low = alloc(DVBS2_BCH_PAIR_BYTES);
+    if (low && !dvbs2_fast_cache_bch_pair(f->encoder, low)) {
+        bch = warm = UINT32_MAX;
+        for (unsigned run = 0; run < 2 * RUNS; ++run) {
+            uint32_t t = decode(f, x, &length, &sum, &st);
+            warm = t < warm ? t : warm;
+            memcpy(f->bits->bits, x->hard_in, f->kbch / 8);
+            t = now();
+            dvbs2_fast_bch(f->encoder, f->bits);
+            t = now() - t;
+            bch = t < bch ? t : bch;
         }
-        const unsigned wrong = c == 1 ? 1 : c == 2 ? 8 : c == 3 ? 64 : 0;
-        for (unsigned k = 0; k < wrong; ++k) {
-            const unsigned i = rnd() % RX_SHORT_BITS;
-            llr[i] = (int8_t)(bits[i] ? 4 : -4);
-        }
-        if (c == 7) memset(llr + 3000, 0, 600);
-        memset(hard_in, 0, sizeof hard_in);
-        for (unsigned i = 0; i < RX_SHORT_BITS; ++i) hard_in[i / 8] |= (llr[i] < 0) << (7 - i % 8);
+        printf("@{\"cmd\":\"fecbench\",\"frame\":\"clean_bch_pair\",\"warm\":%" PRIu32 ",\"bch\":%"
+               PRIu32 ",\"payload_ok\":%s}\n", warm, bch, sum == x->want ? "true" : "false");
+    }
+    heap_caps_free(low);
+    rx_fec_init(f, MODCOD, f->belief);   /* back to the plain resident table */
+}
+
+/* Damaged frames with the work area at 'placement', cold cache each time; C too if asked. */
+static void frames(rx_fec_t *f, frame_set_t *x, const char *placement, bool with_c)
+{
+    for (unsigned c = 1; c < sizeof names / sizeof *names; ++c) {
+        make_frame(x, c);
         uint32_t cycles[2] = {0}, sums[2] = {0};
-        int length[2];
-        rx_fec_stats_t st[2];
-        for (int pie = 1; pie >= 0; --pie) {
+        int length[2] = {0};
+        rx_fec_stats_t st[2] = {0};
+        for (int pie = 1; pie >= !with_c; --pie) {
             f->pie = (unsigned)pie;
-            memcpy(hard, hard_in, sizeof hard_in);
-            rx_frame_t frame = {.llr = llr, .hard = hard, .modcod = MODCOD, .type = 3};
-            const uint8_t *p = NULL;
-            const uint32_t t0 = now();
-            length[pie] = rx_fec_frame(f, &frame, &p, &st[pie]);
-            cycles[pie] = now() - t0;
-            sums[pie] = length[pie] >= 0 ? crc(p, length[pie]) : 0;
+            evict();
+            cycles[pie] = decode(f, x, &length[pie], &sums[pie], &st[pie]);
         }
         f->pie = 1;
-        printf("@{\"cmd\":\"fecbench\",\"frame\":\"%s\",\"pie_cycles\":%" PRIu32 ",\"c_cycles\":%" PRIu32
-               ",\"length\":%d,\"payload_ok\":%s,\"iterations\":%u,\"failed_checks\":%u,\"same\":%s}\n",
-               names[c], cycles[1], cycles[0], length[1], sums[1] == want ? "true" : "false",
-               st[1].iterations, st[1].failed_checks,
-               length[0] == length[1] && sums[0] == sums[1] && st[0].iterations == st[1].iterations
-                   ? "true" : "false");
+        printf("@{\"cmd\":\"fecbench\",\"frame\":\"%s\",\"work\":\"%s\",\"pie_cycles\":%" PRIu32,
+               names[c], placement, cycles[1]);
+        if (with_c) {
+            printf(",\"c_cycles\":%" PRIu32 ",\"same\":%s", cycles[0],
+                   length[0] == length[1] && sums[0] == sums[1] && st[0].iterations == st[1].iterations
+                       ? "true" : "false");
+        }
+        printf(",\"length\":%d,\"payload_ok\":%s,\"iterations\":%u,\"failed_checks\":%u}\n",
+               length[1], sums[1] == x->want ? "true" : "false", st[1].iterations, st[1].failed_checks);
     }
-    /* One iteration: the same hopeless frame decoded with 1 and 2 iterations allowed. */
-    memset(llr, 0, RX_SHORT_BITS);
-    for (unsigned i = 0; i < RX_SHORT_BITS; i += 3) llr[i] = (int8_t)(rnd() % 48) - 24;
+    /* One iteration: a hopeless frame decoded with 1 and 2 iterations allowed. */
+    seed = 99;
+    memset(x->llr, 0, RX_SHORT_BITS);
+    for (unsigned i = 0; i < RX_SHORT_BITS; i += 3) x->llr[i] = (int8_t)(rnd() % 48) - 24;
+    memset(x->hard_in, 0, RX_HARD_BYTES);
+    for (unsigned i = 0; i < RX_SHORT_BITS; ++i) x->hard_in[i / 8] |= (x->llr[i] < 0) << (7 - i % 8);
     uint32_t t[2];
     for (unsigned n = 1; n <= 2; ++n) {
         f->max_iterations = n;
-        uint32_t best = UINT32_MAX;
+        uint32_t best = UINT32_MAX, sum;
+        int length;
+        rx_fec_stats_t st;
         for (unsigned run = 0; run < RUNS; ++run) {
-            memset(hard, 0, RX_HARD_BYTES);
-            for (unsigned i = 0; i < RX_SHORT_BITS; ++i) hard[i / 8] |= (llr[i] < 0) << (7 - i % 8);
-            rx_frame_t frame = {.llr = llr, .hard = hard, .modcod = MODCOD, .type = 3};
-            const uint8_t *p;
-            const uint32_t t0 = now();
-            rx_fec_frame(f, &frame, &p, NULL);
-            const uint32_t dt = now() - t0;
+            const uint32_t dt = decode(f, x, &length, &sum, &st);
             best = dt < best ? dt : best;
         }
         t[n - 1] = best;
     }
     f->max_iterations = 30;
-    printf("@{\"cmd\":\"fecbench\",\"iteration_cycles\":%" PRIu32 ",\"setup_cycles\":%" PRIu32 "}\n",
-           t[1] - t[0], 2 * t[0] - t[1]);
+    printf("@{\"cmd\":\"fecbench\",\"work\":\"%s\",\"iteration_cycles\":%" PRIu32
+           ",\"setup_cycles\":%" PRIu32 "}\n", placement, t[1] - t[0], 2 * t[0] - t[1]);
 }
-
 
 /* PIE pipeline: cycles per repetition of a short sequence, 64 repetitions in a zero-overhead
  * loop, minus nothing (the loop itself is free). */
@@ -321,25 +413,62 @@ static void probe(void)
 
 static void bench(void)
 {
-    const size_t size = rx_fec_size(MODCOD);
-    printf("@{\"cmd\":\"fecbench\",\"modcod\":%u,\"workspace_bytes\":%u,\"free_internal\":%u,"
-           "\"largest_internal\":%u}\n", MODCOD, (unsigned)size,
+    const size_t size = rx_fec_size(MODCOD), work_size = rx_fec_work_size(MODCOD);
+    printf("@{\"cmd\":\"fecbench\",\"modcod\":%u,\"fec_bytes\":%u,\"work_bytes\":%u,\"free_internal\":%u,"
+           "\"largest_internal\":%u}\n", MODCOD, (unsigned)size, (unsigned)work_size,
            (unsigned)heap_caps_get_free_size(INTERNAL), (unsigned)heap_caps_get_largest_free_block(INTERNAL));
     in = alloc(B_TOTAL);
     out_c = alloc(B_TOTAL);
     base = alloc(B_TOTAL);
     rx_fec_t *f = (rx_fec_t *)alloc(size);
-    uint8_t *hard = alloc(RX_HARD_BYTES), *bits = alloc(RX_SHORT_BITS), *payload = alloc(2048);
-    int8_t *llr = (int8_t *)alloc(RX_SHORT_BITS);
+    void *work = alloc(work_size);
+    void *external = heap_caps_aligned_alloc(16, work_size, MALLOC_CAP_SPIRAM);
+    evictor = heap_caps_malloc(EVICT_BYTES, MALLOC_CAP_SPIRAM);
+    frame_set_t *x = (frame_set_t *)alloc(sizeof *x);
+    if (x) {
+        x->hard = alloc(RX_HARD_BYTES);
+        x->bits = alloc(RX_SHORT_BITS);
+        x->payload = alloc(2048);
+        x->llr = (int8_t *)alloc(RX_SHORT_BITS);
+    }
     probe();
     micro();
-    if (in && out_c && base && f && hard && bits && payload && llr) {
+    if (in && out_c && base && f && work && x && x->hard && x->bits && x->payload && x->llr) {
         kernels();
-        if (rx_fec_init(f, MODCOD)) printf("@{\"cmd\":\"fecbench\",\"error\":\"init\"}\n");
-        else frames(f, llr, hard, bits, payload);
+        codeword(x->bits, x->payload);
+        x->bytes = (dvbs2_find_mode_short(MODCOD)->kbch - 80) / 8;
+        x->want = crc(x->payload, x->bytes);
+        if (rx_fec_init(f, MODCOD, work)) {
+            printf("@{\"cmd\":\"fecbench\",\"error\":\"init\"}\n");
+        } else {
+            clean(f, x);
+            frames(f, x, "internal", true);
+            if (external && !rx_fec_init(f, MODCOD, external)) {
+                frames(f, x, "psram", false);
+                /* Parts of the PSRAM work area moved to internal RAM (the internal work
+                 * area is free now): beliefs; beliefs, q and state; messages. */
+                int8_t *b = f->belief, *q = f->qtmp, *st = f->state, *r = f->r;
+                const size_t beliefs = (size_t)(r - b), qtmp = 32 * (f->most * RX_VECTORS + 1);
+                memcpy(work, b, beliefs);
+                f->belief = (int8_t *)work;
+                frames(f, x, "psram_beliefs_internal", false);
+                f->qtmp = (int8_t *)work + beliefs;
+                f->state = (int8_t *)work + beliefs + qtmp;
+                frames(f, x, "psram_beliefs_q_state_internal", false);
+                f->belief = b, f->qtmp = q, f->state = st;
+                f->r = (int8_t *)work;
+                frames(f, x, "psram_messages_internal", false);
+                f->r = r;
+            }
+        }
     }
-    heap_caps_free(in); heap_caps_free(out_c); heap_caps_free(base); heap_caps_free(f);
-    heap_caps_free(hard); heap_caps_free(bits); heap_caps_free(payload); heap_caps_free(llr);
+    if (x) {
+        heap_caps_free(x->hard); heap_caps_free(x->bits); heap_caps_free(x->payload);
+        heap_caps_free(x->llr);
+    }
+    heap_caps_free(x); heap_caps_free(in); heap_caps_free(out_c); heap_caps_free(base);
+    heap_caps_free(f); heap_caps_free(work); heap_caps_free(external);
+    heap_caps_free((void *)evictor);
     printf("@{\"cmd\":\"fecbench\",\"done\":true}\n");
 }
 

@@ -368,6 +368,22 @@ rx_hard_pie:
     retw
     .size rx_hard_pie, . - rx_hard_pie
 
+/* void rx_xor_pie(x a2, prbs a3, vectors a4) */
+    .align 4
+    .global rx_xor_pie
+    .type rx_xor_pie, @function
+rx_xor_pie:
+    entry a1, 32
+    mov a5, a2
+    loopnez a4, .Lxor
+    ee.vld.128.ip q0, a2, 16
+    ee.vld.128.ip q1, a3, 16
+    ee.xorq q0, q0, q1
+    ee.vst.128.ip q0, a5, 16
+.Lxor:
+    retw
+    .size rx_xor_pie, . - rx_xor_pie
+
     .section .dram1, "aw", @progbits
     .balign 16
     .global rx_pie_consts

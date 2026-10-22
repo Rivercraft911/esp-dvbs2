@@ -50,9 +50,10 @@ class Native:
             str(COMPONENT / "rx_fec.c"), str(encoder / "dvbs2.c"), str(encoder / "fast.c"),
             "-o", str(library)], check=True)
         self.lib = ct.CDLL(str(library))
-        self.lib.rx_fec_size.restype = ct.c_size_t
-        self.lib.rx_fec_size.argtypes = [ct.c_uint]
-        self.lib.rx_fec_init.argtypes = [ct.c_void_p, ct.c_uint]
+        for name in ("rx_fec_size", "rx_fec_work_size"):
+            getattr(self.lib, name).restype = ct.c_size_t
+            getattr(self.lib, name).argtypes = [ct.c_uint]
+        self.lib.rx_fec_init.argtypes = [ct.c_void_p, ct.c_uint, ct.c_void_p]
         self.lib.rx_fec_frame.argtypes = [ct.c_void_p, ct.POINTER(Frame),
                                           ct.POINTER(ct.POINTER(ct.c_uint8)), ct.POINTER(Stats)]
         self.decoders = {}
@@ -61,16 +62,16 @@ class Native:
     def __exit__(self, *args):
         self.tmp.cleanup()
 
-    def decoder(self, modcod):
-        if modcod not in self.decoders:
-            size = self.lib.rx_fec_size(modcod)
-            raw = ct.create_string_buffer(size + 16)
-            ws = ct.addressof(raw) + (-ct.addressof(raw) % 16)
-            assert self.lib.rx_fec_init(ws, modcod) == 0
-            self.decoders[modcod] = (raw, ws)
-        return self.decoders[modcod][1]
+    def decoder(self, modcod, work=True):
+        if (modcod, work) not in self.decoders:
+            buffers = [ct.create_string_buffer(self.lib.rx_fec_size(modcod) + 16),
+                       ct.create_string_buffer(self.lib.rx_fec_work_size(modcod) + 16)]
+            ws, area = (ct.addressof(b) + (-ct.addressof(b) % 16) for b in buffers)
+            assert self.lib.rx_fec_init(ws, modcod, area if work else None) == 0
+            self.decoders[modcod, work] = (buffers, ws)
+        return self.decoders[modcod, work][1]
 
-    def frame(self, modcod, llr, hard_bits=None, frame_modcod=None, frame_type=3):
+    def frame(self, modcod, llr, hard_bits=None, frame_modcod=None, frame_type=3, work=True):
         """Decode one frame; returns (payload bytes or None, stats)."""
         llr = np.ascontiguousarray(llr, np.int8)
         hard = np.zeros(2032, np.uint8)
@@ -79,7 +80,7 @@ class Native:
                       hard.ctypes.data_as(ct.POINTER(ct.c_uint8)), 0, 0, 0, 0, 0,
                       modcod if frame_modcod is None else frame_modcod, frame_type)
         payload, stats = ct.POINTER(ct.c_uint8)(), Stats()
-        n = self.lib.rx_fec_frame(self.decoder(modcod), ct.byref(frame), ct.byref(payload),
+        n = self.lib.rx_fec_frame(self.decoder(modcod, work), ct.byref(frame), ct.byref(payload),
                                   ct.byref(stats))
         if n >= 0:
             start = ct.cast(payload, ct.c_void_p).value - hard.ctypes.data
@@ -207,7 +208,15 @@ def test_clean(native):
                 assert payload == np.packbits(data).tobytes(), (modcod, length)
                 assert (st.iterations, st.failed_checks, st.ldpc_ok, st.bch_ok, st.header_ok) == \
                     (0, 0, 1, 1, 1)
-    print("clean: MODCOD 4/6/7/10, full, 100-byte and empty data fields, no iterations: ok")
+    # Without a work area: clean frames still pass, damaged ones return -1 undecoded.
+    cw = codeword(7, rng.integers(0, 2, 800, dtype=np.uint8))
+    assert native.frame(7, np.where(cw, -K, K), work=False)[0] is not None
+    bad = cw.copy()
+    bad[5] ^= 1
+    payload, st = native.frame(7, np.where(cw, -K, K), hard_bits=bad, work=False)
+    assert payload is None and st.failed_checks > 0 and st.iterations == 0
+    print("clean: MODCOD 4/6/7/10, full, 100-byte and empty data fields, no iterations, "
+          "no work area: ok")
 
 
 def test_failed_checks(native):

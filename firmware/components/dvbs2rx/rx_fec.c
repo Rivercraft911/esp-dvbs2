@@ -37,6 +37,14 @@
 #define LAST_MODCOD 10
 #define MAX_ITERATIONS 30
 
+/* Functions of the frame path keep their own sections, so linker.lf can place them in
+ * IRAM by name. */
+#ifdef ESP_PLATFORM
+#define HOT __attribute__((noinline, noclone))
+#else
+#define HOT
+#endif
+
 static size_t round16(size_t n) { return (n + 15) & ~(size_t)15; }
 
 static const dvbs2_mode *short_mode(unsigned modcod)
@@ -66,9 +74,12 @@ static unsigned count_edges(const uint16_t *e, unsigned q, unsigned *most, unsig
     return total;
 }
 
-/* Byte offsets of the workspace parts after the header, for one MODCOD. */
+/* Byte offsets of the two areas. The internal part holds what the clean path touches:
+ * the header, the BB PRBS, the encoder context with its resident BCH table and the
+ * encoder's 2 KB workspace. The work area holds the decoder. */
 typedef struct {
-    size_t belief, r, qtmp, reads, writes, checks, edges, prbs, encoder, bits, total;
+    size_t prbs, encoder, table, tail, bits, total;
+    size_t belief, r, qtmp, reads, writes, checks, edges, state, work;
 } layout_t;
 
 static layout_t layout(const dvbs2_mode *mode)
@@ -77,17 +88,21 @@ static layout_t layout(const dvbs2_mode *mode)
     const unsigned edges = count_edges(rx_edges[mode->modcod - FIRST_MODCOD], mode->q, &most,
                                        &repeats);
     layout_t l;
-    l.belief = round16(sizeof(rx_fec_t));
+    l.prbs = round16(sizeof(rx_fec_t));
+    l.encoder = l.prbs + round16(mode->kbch / 8);
+    l.table = l.encoder + round16(dvbs2_fast_mode_size(mode));
+    l.tail = l.table + DVBS2_BCH_CACHE_BYTES;
+    l.bits = l.tail + RX_ENCODER_TAIL;
+    l.total = l.bits + DVBS2_SHORT_FAST_WORKSPACE_USED;
+    l.belief = 0;
     l.r = l.belief + (size_t)RX_SLOT * (RX_GROUPS + repeats);
     l.qtmp = l.r + (size_t)(edges * RX_VECTORS + 1) * 16;
     l.reads = l.qtmp + (size_t)(most * RX_VECTORS + 1) * 32;
     l.writes = l.reads + round16((size_t)(edges * RX_VECTORS + 1) * 2);
     l.checks = l.writes + round16(edges * 2);
     l.edges = l.checks + round16(edges * 4);
-    l.prbs = l.edges + round16(edges * sizeof(rx_edge_t));
-    l.encoder = l.prbs + round16(mode->kbch / 8);
-    l.bits = l.encoder + round16(dvbs2_fast_mode_size(mode));
-    l.total = l.bits + DVBS2_SHORT_FAST_WORKSPACE_USED;
+    l.state = l.edges + round16(edges * sizeof(rx_edge_t));
+    l.work = l.state + RX_VECTORS * 64;
     return l;
 }
 
@@ -95,6 +110,12 @@ size_t rx_fec_size(unsigned modcod)
 {
     const dvbs2_mode *mode = short_mode(modcod);
     return mode ? layout(mode).total : 0;
+}
+
+size_t rx_fec_work_size(unsigned modcod)
+{
+    const dvbs2_mode *mode = short_mode(modcod);
+    return mode ? layout(mode).work : 0;
 }
 
 /* ---------------------------------------------------------------- init */
@@ -132,10 +153,10 @@ static void order_edges(rx_fec_t *f, const uint16_t *e, unsigned r, unsigned n)
     f->layer_repeats[r] = (uint8_t)repeats;
 }
 
-int rx_fec_init(rx_fec_t *f, unsigned modcod)
+int rx_fec_init(rx_fec_t *f, unsigned modcod, void *work)
 {
     const dvbs2_mode *mode = short_mode(modcod);
-    if (!f || ((uintptr_t)f & 15) || !mode) {
+    if (!f || ((uintptr_t)f & 15) || ((uintptr_t)work & 15) || !mode) {
         return -1;
     }
     const layout_t l = layout(mode);
@@ -150,19 +171,48 @@ int rx_fec_init(rx_fec_t *f, unsigned modcod)
     f->groups = mode->nbch / 360;
     f->edge_count = count_edges(table, f->q, &f->most, &repeats);
     f->max_iterations = MAX_ITERATIONS;
-    f->belief = (int8_t *)(base + l.belief);
-    f->r = (int8_t *)(base + l.r);
-    f->qtmp = (int8_t *)(base + l.qtmp);
-    f->reads = (uint16_t *)(base + l.reads);
-    f->writes = (uint16_t *)(base + l.writes);
-    f->checks = (uint16_t *)(base + l.checks);
-    f->edges = (rx_edge_t *)(base + l.edges);
     f->prbs = base + l.prbs;
     f->encoder = (dvbs2_fast *)(base + l.encoder);
     f->bits = (dvbs2_workspace *)(base + l.bits);
-    if (dvbs2_fast_prepare(f->encoder, mode, 1, DVBS2_PIE_BCH | DVBS2_PIE_LDPC)) {
+    /* Every encoder table the check reads stays resident: the BCH bytes and the LDPC
+     * program, columns and CRC. */
+    if (dvbs2_fast_prepare(f->encoder, mode, 1, DVBS2_PIE_BCH | DVBS2_PIE_LDPC) ||
+        dvbs2_fast_cache_tail_size(f->encoder) > RX_ENCODER_TAIL ||
+        dvbs2_fast_cache_bch(f->encoder, base + l.table) ||
+        dvbs2_fast_cache_split(f->encoder, NULL, base + l.tail)) {
         return -1;
     }
+    /* BB scrambling PRBS (5.2.2): 1 + X^14 + X^15 from 100101010000000. */
+    unsigned st = 0x00a9;
+    for (unsigned i = 0; i < f->kbch / 8; ++i) {
+        unsigned byte = 0;
+        for (unsigned b = 0; b < 8; ++b) {
+            const unsigned bit = ((st >> 13) ^ (st >> 14)) & 1;
+            st = ((st << 1) | bit) & 0x7fff;
+            byte = (byte << 1) | bit;
+        }
+        f->prbs[i] = (uint8_t)byte;
+    }
+    for (unsigned v = 0; v < 256; ++v) {
+        unsigned c = v;
+        for (unsigned b = 0; b < 8; ++b) {
+            c = ((c << 1) ^ (c & 0x80 ? 0xd5 : 0)) & 0xff;
+        }
+        f->crc8[v] = (uint8_t)c;
+    }
+    if (!work) {
+        return 0;
+    }
+    uint8_t *w = work;
+    memset(w, 0, l.work);
+    f->belief = (int8_t *)(w + l.belief);
+    f->r = (int8_t *)(w + l.r);
+    f->qtmp = (int8_t *)(w + l.qtmp);
+    f->reads = (uint16_t *)(w + l.reads);
+    f->writes = (uint16_t *)(w + l.writes);
+    f->checks = (uint16_t *)(w + l.checks);
+    f->edges = (rx_edge_t *)(w + l.edges);
+    f->state = (int8_t *)(w + l.state);
 #ifdef DVBS2RX_PIE
     f->pie = 1;
 #endif
@@ -197,40 +247,55 @@ int rx_fec_init(rx_fec_t *f, unsigned modcod)
      * 0 is the missing p_(-1). It reads position 359, which has no copy in the tail. */
     f->missing_edge = f->layer_count[0] - f->layer_repeats[0] - 1;
     f->missing_read = f->reads[f->missing_edge];
-
-    /* BB scrambling PRBS (5.2.2): 1 + X^14 + X^15 from 100101010000000. */
-    unsigned st = 0x00a9;
-    for (unsigned i = 0; i < f->kbch / 8; ++i) {
-        unsigned byte = 0;
-        for (unsigned b = 0; b < 8; ++b) {
-            const unsigned bit = ((st >> 13) ^ (st >> 14)) & 1;
-            st = ((st << 1) | bit) & 0x7fff;
-            byte = (byte << 1) | bit;
-        }
-        f->prbs[i] = (uint8_t)byte;
-    }
     return 0;
 }
 
 /* ---------------------------------------------------------------- checks */
 
-static unsigned popcount8(unsigned x)
+#ifdef DVBS2RX_PIE
+#define KERNEL(f, name) ((f)->pie ? name##_pie : name)
+#else
+#define KERNEL(f, name) ((void)(f), name)
+#endif
+
+
+static inline unsigned popcount8(unsigned x)
 {
     x -= (x >> 1) & 0x55;
     x = (x & 0x33) + ((x >> 2) & 0x33);
     return (x + (x >> 4)) & 15;
 }
 
+/* Nonzero if n bytes differ: a word at a time when a and b share their alignment
+ * (the ROM memcmp takes 13 cycles a byte). */
+static HOT int differ(const uint8_t *a, const uint8_t *b, unsigned n)
+{
+    uint32_t d = 0;
+    unsigned i = 0;
+    if (!(((uintptr_t)a ^ (uintptr_t)b) & 3)) {
+        for (; i < n && ((uintptr_t)(a + i) & 3); ++i) {
+            d |= a[i] ^ b[i];
+        }
+        for (; i + 4 <= n; i += 4) {
+            d |= *(const uint32_t *)(const void *)(a + i) ^ *(const uint32_t *)(const void *)(b + i);
+        }
+    }
+    for (; i < n; ++i) {
+        d |= a[i] ^ b[i];
+    }
+    return d != 0;
+}
+
 /* Failing LDPC parity checks of hard bits: re-encode their BCH word and compare.
  * A parity difference d (natural order) fails check c when d_c ^ d_(c-1) is set. */
-static unsigned ldpc_failed(rx_fec_t *f, const uint8_t *hard)
+static HOT unsigned ldpc_failed(rx_fec_t *f, const uint8_t *hard)
 {
     uint8_t *bits = f->bits->bits;
     const unsigned word = f->nbch / 8;
     memcpy(bits, hard, word);
     dvbs2_fast_ldpc(f->encoder, f->bits);
     unsigned failed = 0;
-    if (memcmp(bits + word, hard + word, RX_SHORT_BITS / 8 - word)) {
+    if (differ(bits + word, hard + word, RX_SHORT_BITS / 8 - word)) {
         unsigned previous = 0;
         for (unsigned i = word; i < RX_SHORT_BITS / 8; ++i) {
             const unsigned d = bits[i] ^ hard[i];
@@ -243,7 +308,7 @@ static unsigned ldpc_failed(rx_fec_t *f, const uint8_t *hard)
 
 /* BCH parity of the hard bits matches their re-encoded BBFRAME. ldpc_failed has
  * already copied the BBFRAME if copied is set. */
-static int bch_ok(rx_fec_t *f, const uint8_t *hard, int copied)
+static HOT int bch_ok(rx_fec_t *f, const uint8_t *hard, int copied)
 {
     uint8_t *bits = f->bits->bits;
     const unsigned info = f->kbch / 8;
@@ -251,38 +316,47 @@ static int bch_ok(rx_fec_t *f, const uint8_t *hard, int copied)
         memcpy(bits, hard, info);
     }
     dvbs2_fast_bch(f->encoder, f->bits);
-    return !memcmp(bits + info, hard + info, f->nbch / 8 - info);
+    return !differ(bits + info, hard + info, f->nbch / 8 - info);
 }
 
-/* CRC-8 of 5.1.4: polynomial 0xd5, MSB first. */
-static uint8_t crc8(const uint8_t *p, unsigned n)
+/* CRC-8 of 5.1.4 by table: polynomial 0xd5, MSB first. */
+static HOT uint8_t crc8(const rx_fec_t *f, const uint8_t *p, unsigned n)
 {
     unsigned c = 0;
     for (unsigned i = 0; i < n; ++i) {
-        c ^= p[i];
-        for (unsigned b = 0; b < 8; ++b) {
-            c = ((c << 1) ^ (c & 0x80 ? 0xd5 : 0)) & 0xff;
-        }
+        c = f->crc8[c ^ p[i]];
     }
     return (uint8_t)c;
+}
+
+/* x ^= prbs over n bytes; x and prbs share their alignment modulo 16. */
+static HOT void descramble(const rx_fec_t *f, uint8_t *x, const uint8_t *prbs, unsigned n)
+{
+    unsigned i = 0;
+    for (; i < n && ((uintptr_t)(x + i) & 15); ++i) {
+        x[i] ^= prbs[i];
+    }
+    if (!(((uintptr_t)x ^ (uintptr_t)prbs) & 15) && n - i >= 16) {
+        KERNEL(f, rx_xor)(x + i, prbs + i, (n - i) / 16);
+        i += (n - i) & ~15u;
+    }
+    for (; i < n; ++i) {
+        x[i] ^= prbs[i];
+    }
 }
 
 /* Descramble the BBHEADER in place and check it (GCS, single stream, UPL = 0,
  * SYNCD = 0, byte-aligned DFL that fits); then descramble the data field.
  * Returns DFL in bytes or -1. */
-static int bbframe(const rx_fec_t *f, uint8_t *hard)
+static HOT int bbframe(const rx_fec_t *f, uint8_t *hard)
 {
-    for (unsigned i = 0; i < 10; ++i) {
-        hard[i] ^= f->prbs[i];
-    }
+    descramble(f, hard, f->prbs, 10);
     const unsigned dfl = (unsigned)hard[4] << 8 | hard[5];
-    if (crc8(hard, 9) != hard[9] || (hard[0] & 0xe0) != 0x60 || hard[2] || hard[3] ||
+    if (crc8(f, hard, 9) != hard[9] || (hard[0] & 0xe0) != 0x60 || hard[2] || hard[3] ||
         hard[7] || hard[8] || dfl % 8 || dfl > f->kbch - 80u) {
         return -1;
     }
-    for (unsigned i = 10; i < 10 + dfl / 8; ++i) {
-        hard[i] ^= f->prbs[i];
-    }
+    descramble(f, hard + 10, f->prbs + 10, dfl / 8);
     return (int)(dfl / 8);
 }
 
@@ -334,6 +408,13 @@ void rx_pass2(int8_t *belief, const uint16_t *writes, int8_t *r, const int8_t *q
                 r[16 * j + lane] = (int8_t)msg;
             }
         }
+    }
+}
+
+void rx_xor(uint8_t *x, const uint8_t *prbs, unsigned vectors)
+{
+    for (unsigned i = 0; i < 16 * vectors; ++i) {
+        x[i] ^= prbs[i];
     }
 }
 
@@ -400,17 +481,11 @@ void rx_hard(const int8_t *belief, const uint16_t *frames, unsigned groups, uint
     }
 }
 
-#ifdef DVBS2RX_PIE
-#define KERNEL(f, name) ((f)->pie ? name##_pie : name)
-#else
-#define KERNEL(f, name) name
-#endif
-
 /* ---------------------------------------------------------------- decoder */
 
 /* One layer. Returns nonzero if a check of the layer failed on the beliefs that
  * pass 1 read (a cheap sign that more iterations are needed). */
-static int layer(rx_fec_t *f, unsigned L)
+static HOT int layer(rx_fec_t *f, unsigned L)
 {
     const unsigned first = f->layer_first[L], count = f->layer_count[L];
     const unsigned repeats = f->layer_repeats[L], normal = count - repeats;
@@ -449,7 +524,7 @@ static int layer(rx_fec_t *f, unsigned L)
 
 /* Every check satisfied by the signs of the current beliefs. Layer 0 sees +127 for
  * the missing p_(-1); layer q - 1 reads the real p_(M-1) at the same position. */
-static int syndrome_ok(rx_fec_t *f)
+static HOT int syndrome_ok(rx_fec_t *f)
 {
     int8_t *missing = f->belief + f->missing_read, saved = *missing;
     *missing = 127;
@@ -467,7 +542,7 @@ static int syndrome_ok(rx_fec_t *f)
  * K: if x / K ~ N(+-1, s^2), the natural LLR is 2 x / (K s^2) = 2 m x / v with m and v
  * the mean and variance of |x| (|x| rarely folds over zero above about 1 dB Es/N0).
  * The gain is at most 4. */
-static void load(rx_fec_t *f, const int8_t *llr)
+static HOT void load(rx_fec_t *f, const int8_t *llr)
 {
     const unsigned groups = f->groups, q = f->q;
     for (unsigned g = 0; g < RX_GROUPS; ++g) {
@@ -505,6 +580,9 @@ int rx_fec_frame(rx_fec_t *f, rx_frame_t *frame, const uint8_t **payload,
     }
     s.failed_checks = (uint16_t)ldpc_failed(f, frame->hard);
     if (s.failed_checks) {
+        if (!f->belief) {
+            goto out;
+        }
         load(f, frame->llr);
         while (s.iterations < f->max_iterations) {
             int odd = 0;

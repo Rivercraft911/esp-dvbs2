@@ -145,7 +145,8 @@ size_t dvbs2_fast_cache_size(const dvbs2_fast *f);
 int dvbs2_fast_cache_tables(dvbs2_fast *f, uint8_t *table);
 /* Optional disjoint tail for LDPC program, columns and header CRC. Allocate
  * cache_size()-cache_tail_size() bytes at table and cache_tail_size() at tail.
- * Both buffers have the same alignment/lifetime as cache_tables. */
+ * Both buffers have the same alignment/lifetime as cache_tables. table NULL caches
+ * the tail alone (a receiver's LDPC check needs only that and the BCH table). */
 size_t dvbs2_fast_cache_tail_size(const dvbs2_fast *f);
 int dvbs2_fast_cache_split(dvbs2_fast *f, uint8_t *table, uint8_t *tail);
 unsigned dvbs2_fast_pie(const dvbs2_fast *f);
