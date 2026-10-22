@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Digital twin of the S3-to-S3 link: transmitter frames in, receiver dump words out.
 
-    python3 host/rx_twin.py --frames 40 --mer 18 --out twin.u32     write dump words
-    python3 host/rx_twin.py --frames 40 --check                     run the C demodulator on it
+    python3 host/rx_twin.py --frames 40 --mer-db 18 --out twin.u32      write dump words
+    python3 host/rx_twin.py --frames 3584 --check --reference 40         30 s through the C demodulator
 
 Transmitter: host/dvbs2.py frames carrying the firmware's test payload (host/rx.py model), the
 firmware pulse (shaper_taps.h: inverse-hold RRC, 360 taps at 40 MS/s), each DAC sample held
@@ -96,6 +96,10 @@ def frames(link):
         parts.append(ph)
         active.append(np.ones(len(ph), bool))
         at += len(ph)
+    e0, de = clock(link)
+    for f in truth:                   # pulse peak 4.5 symbols in; approximate, for matching
+        n = (f["symbol"] + 4.5) * 16 / (1 + e0)
+        f["header_sample"] = n - de * n * n / 2 / (1 + e0)
     tail = 3000                       # receiver keeps running after the last frame
     parts.append(np.zeros(tail, np.uint8))
     active.append(np.zeros(tail, bool))
@@ -109,12 +113,12 @@ def clock(link):
     return link.clock_ppm * 1e-6, 0.0
 
 
-def generate(link, chunk=1 << 18):
-    """Yield (first sample, dump words) chunks, and finally the truth list."""
+def generate(link, plan=None, chunk=1 << 18):
+    """Yield (first sample, dump words) chunks, and finally (None, truth list)."""
     rng = np.random.default_rng(link.seed)
     table = pulse()
-    sym, act, truth = frames(link)
-    a = np.where(act, np.exp(1j * np.pi / 4 * sym), 0)
+    sym, act, truth = plan or frames(link)
+    unit = np.exp(1j * np.pi / 4 * np.arange(8))
     e0, de = clock(link)
     total = int(len(sym) * 16 / (1 + e0)) - 16
     db = lambda v: 10 ** (v / 20)                                   # noqa: E731
@@ -136,7 +140,8 @@ def generate(link, chunk=1 << 18):
             i = np.clip(tau.astype(np.int64), 0, len(table) - 2)
             w = tau - i
             p = table[i] * (1 - w) + table[i + 1] * w
-            x += np.where((k >= 0) & (k < len(a)), a[np.clip(k, 0, len(a) - 1)], 0) * p
+            kk = np.clip(k, 0, len(sym) - 1)
+            x += np.where((k >= 0) & (k < len(sym)) & act[kk], unit[sym[kk]], 0) * p
         tx_on = act[np.clip(k0, 0, len(act) - 1)]
         x = x + tx_nu * np.conj(x) + leak * tx_on
         tone = ~tx_on & (k0 >= link.lead_symbols) & (k0 < len(sym) - 3000)
@@ -154,8 +159,6 @@ def generate(link, chunk=1 << 18):
         q_ = np.clip(np.round(x.imag), -512, 511).astype(np.int64)
         junk = rng.integers(0, 4096, len(n), dtype=np.int64) << 20
         yield first, ((i_ & 1023) << 10 | (q_ & 1023) | junk).astype(np.uint32)
-    for f in truth:                                                 # approximate, for matching
-        f["header_sample"] = (f["symbol"] + 4.5) * 16 / (1 + e0)
     yield None, truth
 
 
@@ -213,21 +216,82 @@ def twin(link):
     return np.concatenate(words), truth
 
 
+def check(link, reference_frames=0):
+    """Stream the twin through the C demodulator. Every emitted frame is matched to the
+    transmitted one by header time and compared bit for bit; the first reference_frames also
+    go through the float reference for the implementation loss."""
+    import json
+    import tempfile
+    import rx_demod
+    plan = frames(link)
+    truth = plan[2]
+    keep = truth[reference_frames - 1]["header_sample"] + 140000 if reference_frames else 0
+    kept, emitted = [], 0
+    with tempfile.TemporaryDirectory() as tmp:
+        d = rx_demod.Demod(rx_demod.build(tmp), link.modcod, not link.short,
+                           int(link.carrier_hz) // 1000, cfo_hint=int(link.cfo_hz), cfo_span=40000)
+        rows = {}
+        for first, w in generate(link, plan):
+            if first is None:
+                break
+            if first < keep:
+                kept.append(w)
+            d.feed(w)
+            for f in d.frames:
+                near = [k for k, t in enumerate(truth) if abs(t["header_sample"] - f["header_sample"]) < 32]
+                if near:
+                    t = truth[near[0]]
+                    rows[near[0]] = dict(errors=int(np.count_nonzero(t["codeword"] != f["hard"])),
+                                         mer=f["mer_db"], data_mer=rx_demod.data_mer(f, t["codeword"]),
+                                         cfo=f["cfo_hz"], ppb=f["clock_ppb"])
+            emitted += len(d.frames)
+            d.frames = []
+        stats = d.stats()
+    out = dict(frames=len(truth), emitted=emitted, matched=len(rows),
+               exact=sum(r["errors"] == 0 for r in rows.values()),
+               bit_errors=sum(r["errors"] for r in rows.values()),
+               missing=[k for k in range(len(truth)) if k not in rows][:20],
+               pilot_mer_db=[round(min(r["mer"] for r in rows.values()), 2),
+                             round(float(np.median([r["mer"] for r in rows.values()])), 2)],
+               data_mer_db=[round(min(r["data_mer"] for r in rows.values()), 2),
+                            round(float(np.median([r["data_mer"] for r in rows.values()])), 2)],
+               cfo_hz=[min(r["cfo"] for r in rows.values()), max(r["cfo"] for r in rows.values())],
+               clock_ppb=[min(r["ppb"] for r in rows.values()), max(r["ppb"] for r in rows.values())],
+               lost=stats["lost"], relocks=stats["relocks"], rejects=stats["rejects"])
+    if reference_frames:
+        ref = reference(np.concatenate(kept), truth[:reference_frames], link)
+        pairs = [(r, rows[k]["data_mer"]) for k, r in enumerate(ref) if r is not None and k in rows]
+        out.update(reference_mer_db=round(float(np.mean([r for r, _ in pairs])), 2),
+                   demod_mer_db=round(float(np.mean([c for _, c in pairs])), 2),
+                   implementation_loss_db=round(float(np.mean([r - c for r, c in pairs])), 3),
+                   reference_frames=len(pairs))
+    print(json.dumps(out))
+    return out
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     for f in dataclasses.fields(Link):
         if f.type in (int, float, str):
             p.add_argument("--" + f.name.replace("_", "-"), type=f.type, default=f.default)
     p.add_argument("--normal", action="store_true")
+    p.add_argument("--gap", type=float, nargs=2, metavar=("AFTER", "SECONDS"))
     p.add_argument("--out", type=pathlib.Path)
+    p.add_argument("--check", action="store_true", help="run the C demodulator on it")
+    p.add_argument("--reference", type=int, default=0, help="frames for the float reference")
     a = p.parse_args()
-    link = Link(**{f.name: getattr(a, f.name) for f in dataclasses.fields(Link) if hasattr(a, f.name)},
-                short=not a.normal)
+    link = Link(**{f.name: getattr(a, f.name) for f in dataclasses.fields(Link)
+                   if f.name not in ("gap", "short") and hasattr(a, f.name)},
+                short=not a.normal, gap=(int(a.gap[0]), a.gap[1]) if a.gap else None)
+    if a.check:
+        out = check(link, a.reference)
+        return 0 if out["exact"] == out["frames"] else 1
     words, truth = twin(link)
     if a.out:
         words.tofile(a.out)
     print(f"{len(words)} words, {len(truth)} frames")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

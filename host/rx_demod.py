@@ -111,7 +111,7 @@ def tables(check):
 
 class Config(ct.Structure):
     _fields_ = [("modcod", ct.c_uint8), ("cfo_hint_hz", ct.c_int32), ("cfo_span_hz", ct.c_uint32),
-                ("carrier_khz", ct.c_uint32), ("normal", ct.c_uint8)]
+                ("carrier_khz", ct.c_uint32), ("normal", ct.c_uint8), ("quick_lock", ct.c_uint8)]
 
 
 class Frame(ct.Structure):
@@ -147,11 +147,12 @@ def build(folder, extra=()):
 class Demod:
     """One C demodulator instance. feed() pushes words in firmware-sized units."""
 
-    def __init__(self, so, modcod, normal=False, carrier_khz=2420000, cfo_hint=-10000, cfo_span=30000):
+    def __init__(self, so, modcod, normal=False, carrier_khz=2420000, cfo_hint=-10000, cfo_span=30000,
+                 quick_lock=False):
         self.so, self.bits = so, 64800 if normal else 16200
         self.mem = np.zeros(so.rx_demod_size() + 16, np.uint8)
         self.ptr = (self.mem.ctypes.data + 15) & ~15
-        cfg = Config(modcod, cfo_hint, cfo_span, carrier_khz, int(normal))
+        cfg = Config(modcod, cfo_hint, cfo_span, carrier_khz, int(normal), int(quick_lock))
         if so.rx_demod_init(ct.c_void_p(self.ptr), ct.byref(cfg)):
             raise ValueError("rx_demod_init rejected the configuration")
         self.next, self.frames = 0, []
@@ -239,7 +240,7 @@ def check(frames, modcod, normal, callsign, limit=4000):
 def run(a):
     words = sc8_words(a.capture) if a.capture.suffix == ".sc8" else np.fromfile(a.capture, np.uint32)
     with tempfile.TemporaryDirectory() as tmp:
-        d = Demod(build(tmp), a.modcod, a.normal, a.carrier_khz, a.cfo_hint, a.cfo_span)
+        d = Demod(build(tmp), a.modcod, a.normal, a.carrier_khz, a.cfo_hint, a.cfo_span, quick_lock=True)
         d.feed(words)
         stats = d.stats()
     rows = check(d.frames, a.modcod, a.normal, a.callsign)
