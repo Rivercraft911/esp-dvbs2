@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "esp32s3/rom/cache.h"
 #include "esp_cpu.h"
 #include "esp_heap_caps.h"
 #include "esp_rom_crc.h"
@@ -82,9 +83,10 @@ static void compare(const char *name, run_fn fn)
 /* Buffer layout for the kernel tests, all inside base. */
 #define B_BELIEF 0
 #define B_R (B_BELIEF + BELIEF)
-#define B_QTMP (B_R + 16 * (EDGES * RX_VECTORS + 1))
-#define B_STATE (B_QTMP + 32 * (EDGES * RX_VECTORS + 1))
-#define B_READS (B_STATE + 64 * RX_VECTORS)
+#define B_SAVED (B_R + 16 * (EDGES * RX_VECTORS + 1))
+#define B_STATE (B_SAVED + 16 * 2 * RX_VECTORS)
+#define B_PACKED (B_STATE + 64 * RX_VECTORS + 16)
+#define B_READS (B_PACKED + 16 * RX_VECTORS * 5)
 #define B_WRITES (B_READS + 2 * (EDGES * RX_VECTORS + 8))
 #define B_LLR (B_WRITES + 64)
 #define B_HARD (B_LLR + 16224)
@@ -95,12 +97,20 @@ static void compare(const char *name, run_fn fn)
 static void run_pass1(int pie)
 {
     (pie ? rx_pass1_pie : rx_pass1)(P(int8_t, B_BELIEF), P(uint16_t, B_READS), P(int8_t, B_R),
-                                     P(int8_t, B_QTMP), P(int8_t, B_STATE), EDGES);
+                                     P(int8_t, B_STATE), EDGES);
 }
 static void run_pass2(int pie)
 {
     (pie ? rx_pass2_pie : rx_pass2)(P(int8_t, B_BELIEF), P(uint16_t, B_WRITES), P(int8_t, B_R),
-                                     P(int8_t, B_QTMP), P(int8_t, B_STATE), 11 | 2 << 8);
+                                     P(int8_t, B_SAVED), P(int8_t, B_STATE), 11 | 2 << 8);
+}
+static void run_compress(int pie)
+{
+    (pie ? rx_compress_pie : rx_compress)(P(int8_t, B_R), P(int8_t, B_STATE), P(int8_t, B_PACKED), EDGES);
+}
+static void run_expand(int pie)
+{
+    (pie ? rx_expand_pie : rx_expand)(P(int8_t, B_PACKED), P(int8_t, B_R), P(int8_t, B_SAVED), 11 | 2 << 8);
 }
 static void run_tails(int pie) { (pie ? rx_tails_pie : rx_tails)(P(int8_t, B_BELIEF), P(uint16_t, B_WRITES), 11); }
 static unsigned start;
@@ -120,7 +130,7 @@ static void run_parity(int pie)
 }
 static void run_xor(int pie)
 {
-    (pie ? rx_xor_pie : rx_xor)(P(uint8_t, B_BELIEF), P(uint8_t, B_QTMP), 91);
+    (pie ? rx_xor_pie : rx_xor)(P(uint8_t, B_BELIEF), P(uint8_t, B_R), 91);
 }
 static void run_hard(int pie)
 {
@@ -134,23 +144,25 @@ static void kernels(void)
     in_bytes = B_TOTAL;
     fill(in, B_TOTAL);
     for (unsigned i = 0; i < EDGES * RX_VECTORS + 8; ++i) I(uint16_t, B_READS)[i] = rnd() % (45 * RX_SLOT);
+    for (unsigned i = 0; i < 16 * (EDGES * RX_VECTORS + 1); ++i) in[B_R + i] = (uint8_t)((int)(rnd() % 95) - 47);
     compare("pass1", run_pass1);
-    /* pass 2: consistent |q| and q, min1 <= min2, 11 slots and 2 scratch slots. */
-    seed = 2;
-    fill(in, B_TOTAL);
-    int8_t *q = I(int8_t, B_QTMP), *state = I(int8_t, B_STATE);
-    for (unsigned i = 0; i < 16 * (EDGES * RX_VECTORS + 1); ++i) {
-        const int x = q[32 * (i / 16) + 16 + i % 16];
-        q[32 * (i / 16) + i % 16] = (int8_t)(x < 0 ? (x == -128 ? 127 : -x) : x);
-    }
-    for (unsigned i = 0; i < 16 * RX_VECTORS; ++i) {
-        int8_t *s = state + 64 * (i / 16) + i % 16;
-        const unsigned a = rnd() % 128, b = rnd() % 128;
-        s[0] = (int8_t)(a < b ? a : b);
-        s[16] = (int8_t)(a < b ? b : a);
-    }
+    /* pass 2 on what pass 1 left: 11 slots and 2 repeats into scratch slots. */
     for (unsigned j = 0; j < EDGES; ++j) I(uint16_t, B_WRITES)[j] = (uint16_t)(RX_SLOT * (3 * j + 1));
+    rx_pass1(I(int8_t, B_BELIEF), I(uint16_t, B_READS), I(int8_t, B_R), I(int8_t, B_STATE), EDGES);
     compare("pass2", run_pass2);
+    /* compress the messages pass 2 made (one argmin per check at most, as in a frame),
+     * then expand them back. */
+    rx_pass2(I(int8_t, B_BELIEF), I(uint16_t, B_WRITES), I(int8_t, B_R), I(int8_t, B_SAVED),
+             I(int8_t, B_STATE), 11 | 2 << 8);
+    compare("compress", run_compress);
+    rx_compress(I(int8_t, B_R), I(int8_t, B_STATE), I(int8_t, B_PACKED), EDGES);
+    memset(in + B_R, 0, 16 * (EDGES * RX_VECTORS + 1));
+    compare("expand", run_expand);
+    rx_expand(I(int8_t, B_PACKED), I(int8_t, B_R), I(int8_t, B_SAVED), 11 | 2 << 8);
+    rx_pass1(I(int8_t, B_BELIEF), I(uint16_t, B_READS), I(int8_t, B_R), I(int8_t, B_STATE), EDGES);
+    rx_pass2(I(int8_t, B_BELIEF), I(uint16_t, B_WRITES), I(int8_t, B_R), I(int8_t, B_SAVED),
+             I(int8_t, B_STATE), 11 | 2 << 8);
+    seed = 2;
     compare("tails", run_tails);
     for (unsigned k = 0; k < 6; ++k) {
         start = k < 4 ? (unsigned[]){0, 7, 8, 359}[k] : rnd() % 360;
@@ -235,26 +247,28 @@ static uint32_t decode(rx_fec_t *f, frame_set_t *x, int *length, uint32_t *sum, 
     return t;
 }
 
-/* Frame c: 0 clean, 1/2/3 one, 8 or 64 weak wrong bits, 4/5/6 AWGN at 6.0/4.5/4.0 dB,
- * 7 a 600-bit erasure. LLRs at 24 per unit amplitude, hard bits their signs. */
-static const char *const names[] = {"clean", "wrong_1", "wrong_8", "wrong_64", "awgn_6.0dB",
-                                    "awgn_4.5dB", "awgn_4.0dB", "erased"};
+/* Frame c: 0 clean; 1/2/3 one, 8 or 64 weak wrong bits; 4 100 confidently wrong bits;
+ * 5/6/7 AWGN at 6.0/4.75/3.8 dB (3.8 dB runs all 8 iterations: the worst case); 8 random
+ * LLRs (hopeless, stops at 3); 9 a 600-bit erasure. LLRs 32 per unit amplitude as the
+ * demodulator scales them, hard bits their signs. */
+static const char *const names[] = {"clean", "wrong_1", "wrong_8", "wrong_64", "flip_100",
+                                    "awgn_6.0dB", "awgn_4.75dB", "awgn_3.8dB", "random", "erased"};
 static void make_frame(frame_set_t *x, unsigned c)
 {
     seed = 100 + c;
-    const float esn0 = c == 4 ? 6.0f : c == 5 ? 4.5f : 4.0f, sigma = sqrtf(0.5f / powf(10, esn0 / 10));
+    const float esn0 = c == 5 ? 6.0f : c == 6 ? 4.75f : 3.8f, sigma = sqrtf(0.5f / powf(10, esn0 / 10));
     for (unsigned i = 0; i < RX_SHORT_BITS; ++i) {
         float y = x->bits[i] ? -1.0f : 1.0f;
-        if (c >= 4 && c <= 6) y += 1.41421356f * sigma * gaussian();
-        const float v = roundf(24 * y);
+        if (c >= 5 && c <= 7) y += 1.41421356f * sigma * gaussian();
+        const float v = c == 8 ? (float)((int)(rnd() % 81) - 40) : roundf(32 * y);
         x->llr[i] = (int8_t)(v > 127 ? 127 : v < -127 ? -127 : v);
     }
-    const unsigned wrong = c == 1 ? 1 : c == 2 ? 8 : c == 3 ? 64 : 0;
+    const unsigned wrong = c == 1 ? 1 : c == 2 ? 8 : c == 3 ? 64 : c == 4 ? 100 : 0;
     for (unsigned k = 0; k < wrong; ++k) {
         const unsigned i = rnd() % RX_SHORT_BITS;
-        x->llr[i] = (int8_t)(x->bits[i] ? 4 : -4);
+        x->llr[i] = (int8_t)(c == 4 ? -x->llr[i] : x->bits[i] ? 4 : -4);
     }
-    if (c == 7) memset(x->llr + 3000, 0, 600);
+    if (c == 9) memset(x->llr + 3000, 0, 600);
     memset(x->hard_in, 0, RX_HARD_BYTES);
     for (unsigned i = 0; i < RX_SHORT_BITS; ++i) x->hard_in[i / 8] |= (x->llr[i] < 0) << (7 - i % 8);
 }
@@ -295,24 +309,20 @@ static void clean(rx_fec_t *f, frame_set_t *x)
            ",\"cold\":%" PRIu32 ",\"cold_max\":%" PRIu32 ",\"copy\":%" PRIu32 ",\"ldpc\":%" PRIu32
            ",\"bch\":%" PRIu32 ",\"length\":%d,\"payload_ok\":%s}\n", first, warm, cold, cold_max,
            copy, ldpc, bch, length, sum == x->want ? "true" : "false");
-    /* W1's paired BCH table: 4 KB more internal RAM. */
-    uint8_t *low = alloc(DVBS2_BCH_PAIR_BYTES);
-    if (low && !dvbs2_fast_cache_bch_pair(f->encoder, low)) {
-        bch = warm = UINT32_MAX;
-        for (unsigned run = 0; run < 2 * RUNS; ++run) {
-            uint32_t t = decode(f, x, &length, &sum, &st);
-            warm = t < warm ? t : warm;
-            memcpy(f->bits->bits, x->hard_in, f->kbch / 8);
-            t = now();
-            dvbs2_fast_bch(f->encoder, f->bits);
-            t = now() - t;
-            bch = t < bch ? t : bch;
-        }
-        printf("@{\"cmd\":\"fecbench\",\"frame\":\"clean_bch_pair\",\"warm\":%" PRIu32 ",\"bch\":%"
-               PRIu32 ",\"payload_ok\":%s}\n", warm, bch, sum == x->want ? "true" : "false");
+    /* Cold cases: after a write-back and invalidation of the whole data cache, and after
+     * 16 KB of PSRAM writes, as core 1 writes LLRs each frame. */
+    uint32_t flushed = UINT32_MAX, llr_writes = UINT32_MAX;
+    for (unsigned run = 0; run < 2 * RUNS; ++run) {
+        Cache_WriteBack_All();
+        Cache_Invalidate_DCache_All();
+        uint32_t t = decode(f, x, &length, &sum, &st);
+        flushed = t < flushed ? t : flushed;
+        for (unsigned i = 0; evictor && i < RX_SHORT_BITS; i += 4) *(volatile uint32_t *)(evictor + i) = i;
+        t = decode(f, x, &length, &sum, &st);
+        llr_writes = t < llr_writes ? t : llr_writes;
     }
-    heap_caps_free(low);
-    rx_fec_init(f, MODCOD, f->belief);   /* back to the plain resident table */
+    printf("@{\"cmd\":\"fecbench\",\"frame\":\"clean_cold\",\"flushed\":%" PRIu32 ",\"llr_writes\":%"
+           PRIu32 ",\"payload_ok\":%s}\n", flushed, llr_writes, sum == x->want ? "true" : "false");
 }
 
 /* Damaged frames with the work area at 'placement', cold cache each time; C too if asked. */
@@ -336,8 +346,9 @@ static void frames(rx_fec_t *f, frame_set_t *x, const char *placement, bool with
                    length[0] == length[1] && sums[0] == sums[1] && st[0].iterations == st[1].iterations
                        ? "true" : "false");
         }
-        printf(",\"length\":%d,\"payload_ok\":%s,\"iterations\":%u,\"failed_checks\":%u}\n",
-               length[1], sums[1] == x->want ? "true" : "false", st[1].iterations, st[1].failed_checks);
+        printf(",\"length\":%d,\"payload_ok\":%s,\"iterations\":%u,\"failed_checks\":%u,"
+               "\"unsatisfied\":%u}\n", length[1], sums[1] == x->want ? "true" : "false",
+               st[1].iterations, st[1].failed_checks, st[1].unsatisfied);
     }
     /* One iteration: a hopeless frame decoded with 1 and 2 iterations allowed. */
     seed = 99;
@@ -357,7 +368,7 @@ static void frames(rx_fec_t *f, frame_set_t *x, const char *placement, bool with
         }
         t[n - 1] = best;
     }
-    f->max_iterations = 30;
+    f->max_iterations = 8;
     printf("@{\"cmd\":\"fecbench\",\"work\":\"%s\",\"iteration_cycles\":%" PRIu32
            ",\"setup_cycles\":%" PRIu32 "}\n", placement, t[1] - t[0], 2 * t[0] - t[1]);
 }
@@ -444,21 +455,23 @@ static void bench(void)
             clean(f, x);
             frames(f, x, "internal", true);
             if (external && !rx_fec_init(f, MODCOD, external)) {
+                /* The work area in PSRAM, the per-layer scratch internal (the default);
+                 * then the scratch in PSRAM too; then the slots internal as well. */
                 frames(f, x, "psram", false);
-                /* Parts of the PSRAM work area moved to internal RAM (the internal work
-                 * area is free now): beliefs; beliefs, q and state; messages. */
-                int8_t *b = f->belief, *q = f->qtmp, *st = f->state, *r = f->r;
-                const size_t beliefs = (size_t)(r - b), qtmp = 32 * (f->most * RX_VECTORS + 1);
-                memcpy(work, b, beliefs);
+                int8_t *r = f->r, *saved = f->saved, *st = f->state, *b = f->belief;
+                const size_t scratch = rx_fec_size(MODCOD) - (size_t)((uint8_t *)r - (uint8_t *)f);
+                int8_t *ps = heap_caps_aligned_alloc(16, scratch, MALLOC_CAP_SPIRAM);
+                if (ps) {
+                    f->r = ps, f->saved = ps + (saved - r), f->state = ps + (st - r);
+                    frames(f, x, "psram_scratch_psram", false);
+                    f->r = r, f->saved = saved, f->state = st;
+                }
+                heap_caps_free(ps);
+                const size_t slots = (size_t)(f->packed - b);
+                memcpy(work, b, slots);
                 f->belief = (int8_t *)work;
-                frames(f, x, "psram_beliefs_internal", false);
-                f->qtmp = (int8_t *)work + beliefs;
-                f->state = (int8_t *)work + beliefs + qtmp;
-                frames(f, x, "psram_beliefs_q_state_internal", false);
-                f->belief = b, f->qtmp = q, f->state = st;
-                f->r = (int8_t *)work;
-                frames(f, x, "psram_messages_internal", false);
-                f->r = r;
+                frames(f, x, "psram_slots_internal", false);
+                f->belief = b;
             }
         }
     }

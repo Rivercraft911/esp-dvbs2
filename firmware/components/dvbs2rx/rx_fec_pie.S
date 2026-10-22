@@ -9,11 +9,62 @@
  *    8 bits of (x * y) >> SAR; VMULAS.U8.ACCX adds the 16 unsigned products to ACCX.
  * The coprocessor is enabled lazily by FreeRTOS on first use. Clobbers q0..q7, SAR,
  * SAR_BYTE and ACCX. Windowed ABI: arguments in a2..a7. */
+#include "rx_fec_internal.h"
+
     .section .iram1, "ax", @progbits
 
-/* void rx_pass1_pie(belief a2, reads a3, r a4, qtmp a5, state a6, count a7)
+/* void rx_expand_pie(packed a2, r a3, saved a4, edges a5)
+ * Per vector: q0 n1 signed, q1 n1 ^ n2 signed, q2 argmin + 1, q3 sign plane; each edge
+ * j takes j + 1 (q4) and its plane bit (q5) from rx_pie_edges. */
+    .align 4
+    .global rx_expand_pie
+    .type rx_expand_pie, @function
+rx_expand_pie:
+    entry a1, 32
+    extui a6, a5, 0, 8
+    extui a7, a5, 8, 8
+    add a6, a6, a7                           /* edges in a row */
+    movi a8, 23
+.Lex_vector:
+    ee.vld.128.ip q0, a2, 16
+    ee.vld.128.ip q1, a2, 16
+    ee.xorq q1, q1, q0
+    ee.vld.128.ip q2, a2, 16
+    movi a9, rx_pie_edges
+    mov a10, a6
+.Lex_plane:
+    ee.vld.128.ip q3, a2, 16
+    movi a11, 8
+    minu a11, a11, a10
+    sub a10, a10, a11
+    loopnez a11, .Lex_edges
+    ee.vld.128.ip q4, a9, 16
+    ee.vld.128.ip q5, a9, 16
+    ee.vcmp.eq.s8 q6, q2, q4                 /* the argmin edge */
+    ee.andq q6, q6, q1
+    ee.xorq q6, q6, q0                       /* n2 or n1 */
+    ee.andq q7, q3, q5
+    ee.vcmp.eq.s8 q7, q7, q5                 /* q < 0 */
+    ee.xorq q6, q6, q7
+    ee.vsubs.s8 q6, q6, q7
+    ee.vst.128.ip q6, a3, 16
+.Lex_edges:
+    bnez a10, .Lex_plane
+    slli a11, a7, 4
+    sub a11, a3, a11                         /* the repeats, last in the row */
+    loopnez a7, .Lex_saved
+    ee.vld.128.ip q6, a11, 16
+    ee.vst.128.ip q6, a4, 16
+.Lex_saved:
+    addi a8, a8, -1
+    bnez a8, .Lex_vector
+    retw
+    .size rx_expand_pie, . - rx_expand_pie
+
+/* void rx_pass1_pie(belief a2, reads a3, r a4, state a5, count a6)
  * q0 min1, q1 min2, q2 q parity, q3 b parity. Each edge starts with its window's
- * blocks in q5 (low) and q4 (high), SAR_BYTE set, and prefetches the next edge's. */
+ * blocks in q5 (low) and q4 (high), SAR_BYTE set, and prefetches the next edge's; q
+ * replaces the message it was computed from (a7 trails a4). */
     .align 4
     .global rx_pass1_pie
     .type rx_pass1_pie, @function
@@ -21,6 +72,11 @@ rx_pass1_pie:
     entry a1, 32
     movi a10, rx_pie_consts
     movi a8, 23
+    mov a7, a4
+    movi a11, 23 * 64
+    add a11, a11, a5                         /* per-lane count of failed checks */
+    ee.zero.q q7
+    ee.vst.128.ip q7, a11, 0
     l16ui a9, a3, 0
     addi a3, a3, 2
     add a9, a9, a2
@@ -31,8 +87,8 @@ rx_pass1_pie:
     ee.vld.128.ip q1, a10, 0
     ee.zero.q q2
     ee.zero.q q3
-    loopnez a7, .Lp1_edges
-    ee.src.q.ld.ip q6, a4, 16, q5, q4        /* q5 = b, q6 = r */
+    loopnez a6, .Lp1_edges
+    ee.src.q.ld.ip q6, a4, 16, q5, q4        /* q5 = b, q6 = message */
     l16ui a9, a3, 0
     add a9, a9, a2
     ee.vsubs.s8 q7, q6, q5                   /* -q */
@@ -41,23 +97,28 @@ rx_pass1_pie:
     ee.ld.128.usar.ip q5, a9, 16             /* next window, low block */
     ee.vmax.s8 q7, q6, q7                    /* |q| */
     ee.xorq q2, q2, q6
-    ee.vmax.s8.st.incp q7, a5, q4, q0, q7    /* q4 = max(min1, |q|); store |q| */
-    ee.vmin.s8.st.incp q6, a5, q1, q1, q4    /* min2; store q */
+    ee.vmax.s8 q4, q0, q7                    /* max(min1, |q|) */
+    ee.vmin.s8.st.incp q6, a7, q1, q1, q4    /* min2; q replaces the message */
     ee.vmin.s8.ld.incp q4, a9, q0, q0, q7    /* min1; next window, high block */
     addi a3, a3, 2
 .Lp1_edges:
-    ee.vst.128.ip q0, a6, 16
-    ee.vst.128.ip q1, a6, 16
-    ee.vst.128.ip q2, a6, 16
-    ee.vst.128.ip q3, a6, 16
+    ee.vst.128.ip q0, a5, 16
+    ee.vst.128.ip q1, a5, 16
+    ee.vst.128.ip q2, a5, 16
+    ee.vst.128.ip q3, a5, 16
+    ee.zero.q q7
+    ee.vcmp.lt.s8 q6, q3, q7                 /* -1 where the check failed */
+    ee.vld.128.ip q7, a11, 0
+    ee.vsubs.s8 q7, q7, q6
+    ee.vst.128.ip q7, a11, 0
     addi a8, a8, -1
     bnez a8, .Lp1_vector
     retw
     .size rx_pass1_pie, . - rx_pass1_pie
 
-/* void rx_pass2_pie(belief a2, writes a3, r a4, qtmp a5, state a6, edges a7)
- * q0 zero, q1 min2, q2 n1 signed, q3 n1 ^ n2 signed; each edge starts with |q| in q5
- * and q in q4 and loads the next edge's. a10 = belief + 16 v. */
+/* void rx_pass2_pie(belief a2, writes a3, r a4, saved a5, state a6, edges a7)
+ * q0 zero, q1 min2, q2 n1 signed, q3 n1 ^ n2 signed; each edge starts with q in q4,
+ * the message replaces it (a4 trails the read pointer a2). a10 = belief + 16 v. */
     .align 4
     .global rx_pass2_pie
     .type rx_pass2_pie, @function
@@ -67,22 +128,22 @@ rx_pass2_pie:
     extui a12, a7, 8, 8
     movi a13, 7
     wsr.sar a13
-    movi a14, rx_pie_consts + 16             /* 112, then 47 */
+    movi a14, rx_pie_consts + 16             /* RX_SCALE, then RX_RMAX */
     mov a15, a3
     mov a10, a2
+    mov a2, a4
     movi a8, 23
     ee.zero.q q0
-    ee.vld.128.ip q5, a5, 16
-    ee.vld.128.ip q4, a5, 16
+    ee.vld.128.ip q4, a2, 16
 .Lp2_vector:
     ee.vld.128.ip q2, a6, 16                 /* min1 */
     ee.vld.128.ip q1, a6, 16                 /* min2 */
     ee.vld.128.ip q3, a6, 32                 /* q parity, skip b parity */
     ee.vld.128.ip q6, a14, 16
     ee.vld.128.ip q7, a14, -16
-    ee.vmul.s8 q2, q2, q6                    /* min * 112 >> 7 */
+    ee.vmul.s8 q2, q2, q6                    /* min * RX_SCALE >> 7 */
     ee.vmul.s8 q6, q1, q6
-    ee.vmin.s8 q2, q2, q7                    /* at most 47 */
+    ee.vmin.s8 q2, q2, q7                    /* at most RX_RMAX */
     ee.vmin.s8 q6, q6, q7
     ee.vcmp.lt.s8 q3, q3, q0
     ee.xorq q2, q2, q3
@@ -92,32 +153,36 @@ rx_pass2_pie:
     ee.xorq q3, q2, q6
     mov a3, a15
     loopnez a11, .Lp2_first
-    ee.vcmp.lt.s8 q6, q5, q1                 /* |q| < min2 */
+    ee.vsubs.s8 q5, q0, q4
     l16ui a9, a3, 0
-    ee.andq q6, q6, q3
+    ee.vmax.s8 q5, q5, q4                    /* |q| */
     add a9, a9, a10
+    ee.vcmp.lt.s8 q6, q5, q1                 /* |q| < min2 */
+    ee.andq q6, q6, q3
     ee.xorq q6, q6, q2                       /* s2 or s1 */
     ee.vcmp.lt.s8 q7, q4, q0
     ee.xorq q6, q6, q7
-    ee.vsubs.s8.ld.incp q5, a5, q6, q6, q7   /* message; next |q| */
-    ee.vadds.s8.st.incp q6, a4, q7, q4, q6   /* belief; store message */
+    ee.vsubs.s8 q6, q6, q7                   /* message */
+    ee.vadds.s8.st.incp q6, a4, q7, q4, q6   /* belief; message replaces q */
     ee.vst.128.ip q7, a9, 0
-    ee.vld.128.ip q4, a5, 16                 /* next q */
+    ee.vld.128.ip q4, a2, 16                 /* next q */
     addi a3, a3, 2
 .Lp2_first:
     loopnez a12, .Lp2_repeats
-    ee.vcmp.lt.s8 q6, q5, q1
+    ee.vsubs.s8 q5, q0, q4
     l16ui a9, a3, 0
-    ee.andq q6, q6, q3
+    ee.vmax.s8 q5, q5, q4
     add a9, a9, a10
+    ee.vcmp.lt.s8 q6, q5, q1
+    ee.andq q6, q6, q3
     ee.xorq q6, q6, q2
     ee.vcmp.lt.s8 q7, q4, q0
     ee.xorq q6, q6, q7
-    ee.vsubs.s8.ld.incp q5, a5, q6, q6, q7
-    ee.vld.128.ip q7, a4, 0                  /* old message */
-    ee.vsubs.s8.st.incp q6, a4, q7, q6, q7   /* change; store message */
+    ee.vsubs.s8 q6, q6, q7
+    ee.vld.128.ip q7, a5, 16                 /* old message */
+    ee.vsubs.s8.st.incp q6, a4, q7, q6, q7   /* change; message replaces q */
     ee.vst.128.ip q7, a9, 0
-    ee.vld.128.ip q4, a5, 16
+    ee.vld.128.ip q4, a2, 16
     addi a3, a3, 2
 .Lp2_repeats:
     addi a10, a10, 16
@@ -125,6 +190,93 @@ rx_pass2_pie:
     bnez a8, .Lp2_vector
     retw
     .size rx_pass2_pie, . - rx_pass2_pie
+
+/* void rx_compress_pie(r a2, state a3, packed a4, count a5)
+ * n1, n2 as in pass 2, then two sweeps over the row: argmin + 1 where |message| = n2
+ * (kept only if n1 != n2), and sign planes (message ^ q parity) < 0. Both sweeps load
+ * one edge ahead; the argmin sweep alternates registers over pairs of edges. */
+    .macro argmin msg, next, e, enext
+    ee.vsubs.s8.ld.incp \next, a10, q6, q0, \msg     /* -message; next message */
+    ee.vmax.s8.ld.incp \enext, a9, q6, q6, \msg      /* |message|; next j + 1 */
+    ee.vcmp.eq.s8 q6, q6, q2
+    ee.andq q6, q6, \e
+    ee.orq q4, q4, q6
+    .endm
+    .align 4
+    .global rx_compress_pie
+    .type rx_compress_pie, @function
+rx_compress_pie:
+    entry a1, 32
+    movi a14, rx_pie_consts + 16
+    srli a6, a5, 1                           /* pairs of edges */
+    extui a7, a5, 0, 1
+    movi a8, 23
+    ee.zero.q q0
+.Lco_vector:
+    movi a6, 7
+    wsr.sar a6
+    srli a6, a5, 1
+    ee.vld.128.ip q1, a3, 16                 /* min1 */
+    ee.vld.128.ip q2, a3, 16                 /* min2 */
+    ee.vld.128.ip q3, a3, 32                 /* q parity, skip b parity */
+    ee.vld.128.ip q6, a14, 16
+    ee.vld.128.ip q7, a14, -16
+    ee.vmul.s8 q1, q1, q6
+    ee.vmul.s8 q2, q2, q6
+    ee.vmin.s8 q1, q1, q7                    /* n1 */
+    ee.vmin.s8 q2, q2, q7                    /* n2 */
+    ee.vcmp.lt.s8 q6, q3, q0
+    ee.xorq q4, q1, q6
+    ee.vsubs.s8 q4, q4, q6
+    ee.vst.128.ip q4, a4, 16                 /* n1 signed */
+    ee.xorq q4, q2, q6
+    ee.vsubs.s8 q4, q4, q6
+    ee.vst.128.ip q4, a4, 16                 /* n2 signed */
+    ee.vcmp.eq.s8 q1, q1, q2
+    ee.notq q1, q1                           /* n1 != n2, kept in memory below */
+    ee.vst.128.ip q1, a4, 0
+    ee.zero.q q4                             /* argmin + 1 */
+    movi a9, rx_pie_index
+    mov a10, a2
+    ee.vld.128.ip q5, a10, 16
+    ee.vld.128.ip q7, a9, 16
+    loopnez a6, .Lco_pairs
+    argmin q5, q1, q7, q3
+    argmin q1, q5, q3, q7
+.Lco_pairs:
+    beqz a7, .Lco_even
+    argmin q5, q1, q7, q3
+.Lco_even:
+    ee.vld.128.ip q1, a4, 0
+    ee.andq q4, q4, q1
+    ee.vst.128.ip q4, a4, 16
+    addi a3, a3, -32
+    ee.vld.128.ip q3, a3, 32                 /* q parity again */
+    movi a9, rx_pie_bits
+    movi a6, 0
+    wsr.sar a6                               /* VMUL.S8 by -bit sets the bit of -1 lanes */
+    mov a10, a5
+    ee.vld.128.ip q5, a2, 16
+    ee.vld.128.ip q7, a9, 16
+.Lco_plane:
+    ee.zero.q q4
+    movi a11, 8
+    minu a11, a11, a10
+    sub a10, a10, a11
+    loopnez a11, .Lco_bits
+    ee.xorq q6, q5, q3
+    ee.vcmp.lt.s8 q6, q6, q0                 /* q < 0 */
+    ee.vmul.s8.ld.incp q5, a2, q6, q6, q7    /* its plane bit; next message */
+    ee.vld.128.ip q7, a9, 16                 /* next -bit */
+    ee.orq q4, q4, q6
+.Lco_bits:
+    ee.vst.128.ip q4, a4, 16
+    bnez a10, .Lco_plane
+    addi a2, a2, -16                         /* undo the read-ahead */
+    addi a8, a8, -1
+    bnez a8, .Lco_vector
+    retw
+    .size rx_compress_pie, . - rx_compress_pie
 
 /* void rx_tails_pie(belief a2, writes a3, count a4) */
     .align 4
@@ -221,7 +373,7 @@ rx_scale_pie:
     addi a6, a1, 17
     ee.vldbc.8 q5, a6                        /* gain */
     movi a6, rx_pie_consts + 48
-    ee.vld.128.ip q6, a6, 0                  /* 63 */
+    ee.vld.128.ip q6, a6, 0                  /* RX_LMAX */
     ee.zero.q q7
     movi a6, 4
     wsr.sar a6
@@ -384,14 +536,38 @@ rx_xor_pie:
     retw
     .size rx_xor_pie, . - rx_xor_pie
 
+/* Per edge j: j + 1 in every lane, then its bit in a sign plane; then the same split
+ * into two tables. In flash: the data cache holds them while a frame decodes. */
+    .section .rodata
+    .balign 16
+rx_pie_edges:
+    .set j, 0
+    .rept 32
+    .fill 16, 1, j + 1
+    .fill 16, 1, 1 << (j % 8)
+    .set j, j + 1
+    .endr
+rx_pie_index:                                /* j + 1 alone */
+    .set j, 0
+    .rept 33
+    .fill 16, 1, j + 1
+    .set j, j + 1
+    .endr
+rx_pie_bits:                                 /* minus the plane bit alone */
+    .set j, 0
+    .rept 33
+    .fill 16, 1, (256 - (1 << (j % 8))) & 255
+    .set j, j + 1
+    .endr
+
     .section .dram1, "aw", @progbits
     .balign 16
     .global rx_pie_consts
 rx_pie_consts:
     .fill 16, 1, 127
-    .fill 16, 1, 112
-    .fill 16, 1, 47
-    .fill 16, 1, 63
+    .fill 16, 1, RX_SCALE
+    .fill 16, 1, RX_RMAX
+    .fill 16, 1, RX_LMAX
     .fill 16, 1, 1
     .byte 128, 64, 32, 16, 8, 4, 2, 1, 128, 64, 32, 16, 8, 4, 2, 1
     .fill 8, 1, 1

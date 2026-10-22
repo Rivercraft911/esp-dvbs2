@@ -16,6 +16,13 @@
  * edge's frame, so loads may be unaligned but stores never are. All frames repeat
  * every iteration and are fixed at init.
  *
+ * Messages are kept packed between iterations (rx_compress), in the work area: per 16
+ * checks n1 and n2 signed by the q parity, the argmin edge, and a sign bit per edge,
+ * which rebuilds every int8 message exactly. A layer expands its own into a small
+ * internal scratch, pass 1 turns them into q in place, pass 2 turns q into the new
+ * messages, and they are packed again. So the work area streams one row group at a
+ * time and may sit in PSRAM; the scratch is the only internal RAM the decoder needs.
+ *
  * A group can appear up to three times in one row group (3/5, 5/6). Its first edge
  * writes the slot; each repeat stores its message change into a scratch slot, which
  * is then added to the slot read at the relative shift.
@@ -25,7 +32,13 @@
  *
  * Quantization (tests/test_rx_fec.py measures it): channel LLRs are rescaled per
  * frame to about RX_UNITS units per natural LLR and clipped at RX_LMAX; messages are
- * 112/128 of the minimum, at most RX_RMAX. */
+ * 112/128 of the minimum, at most RX_RMAX. The clip below RX_RMAX lets checks overturn
+ * confidently wrong bits, which a high-SNR frame hit by a glitch has; it costs nothing
+ * in AWGN.
+ *
+ * Stopping: after at most MAX_ITERATIONS, or from the third iteration when the checks
+ * failing on the beliefs pass 1 read are no fewer than two iterations before, or more
+ * than a sixth of all checks (hopeless frames stay near half). */
 #include "dvbs2rx.h"
 #include "dvbs2.h"
 #include "rx_fec_internal.h"
@@ -35,7 +48,7 @@
 
 #define FIRST_MODCOD 4
 #define LAST_MODCOD 10
-#define MAX_ITERATIONS 30
+#define MAX_ITERATIONS 8   /* a damaged frame on a good link needs 2 to 5 */
 
 /* Functions of the frame path keep their own sections, so linker.lf can place them in
  * IRAM by name. */
@@ -74,12 +87,25 @@ static unsigned count_edges(const uint16_t *e, unsigned q, unsigned *most, unsig
     return total;
 }
 
+/* Packed messages of all row groups: per vector, n1 and n2 signed by the q parity, the
+ * argmin edge + 1 (0 for none), then a sign bit per edge in planes of 8 edges. */
+static size_t packed_bytes(unsigned modcod, unsigned q)
+{
+    const uint16_t *e = rx_edges[modcod - FIRST_MODCOD];
+    size_t bytes = 0;
+    for (unsigned r = 0; r < q; ++r, e += 1 + e[0]) {
+        bytes += 16 * RX_VECTORS * (3 + (e[0] + 7) / 8);
+    }
+    return bytes;
+}
+
 /* Byte offsets of the two areas. The internal part holds what the clean path touches:
  * the header, the BB PRBS, the encoder context with its resident BCH table and the
  * encoder's 2 KB workspace. The work area holds the decoder. */
 typedef struct {
-    size_t prbs, encoder, table, tail, bits, total;
-    size_t belief, r, qtmp, reads, writes, checks, edges, state, work;
+    size_t prbs, encoder, tail, bits, total;
+    size_t r, saved, state, scratch;
+    size_t belief, packed, reads, writes, checks, edges, work;
 } layout_t;
 
 static layout_t layout(const dvbs2_mode *mode)
@@ -90,19 +116,23 @@ static layout_t layout(const dvbs2_mode *mode)
     layout_t l;
     l.prbs = round16(sizeof(rx_fec_t));
     l.encoder = l.prbs + round16(mode->kbch / 8);
-    l.table = l.encoder + round16(dvbs2_fast_mode_size(mode));
-    l.tail = l.table + DVBS2_BCH_CACHE_BYTES;
+    l.tail = l.encoder + round16(dvbs2_fast_mode_size(mode));
     l.bits = l.tail + RX_ENCODER_TAIL;
-    l.total = l.bits + DVBS2_SHORT_FAST_WORKSPACE_USED;
+    /* The decoder's per-layer scratch, internal too: messages expanded for the layer (one
+     * more vector read ahead), the old messages of its repeats, the check state. */
+    l.r = l.bits + DVBS2_SHORT_FAST_WORKSPACE_USED;
+    l.saved = l.r + (size_t)(most * RX_VECTORS + 1) * 16;
+    l.state = l.saved + (size_t)repeats * RX_VECTORS * 16;
+    l.total = l.state + RX_VECTORS * 64 + 16;
+    l.scratch = l.total - l.r;
+    /* The work area: slots, packed messages of all layers, tables. */
     l.belief = 0;
-    l.r = l.belief + (size_t)RX_SLOT * (RX_GROUPS + repeats);
-    l.qtmp = l.r + (size_t)(edges * RX_VECTORS + 1) * 16;
-    l.reads = l.qtmp + (size_t)(most * RX_VECTORS + 1) * 32;
+    l.packed = l.belief + (size_t)RX_SLOT * (RX_GROUPS + repeats);
+    l.reads = l.packed + packed_bytes(mode->modcod, mode->q);
     l.writes = l.reads + round16((size_t)(edges * RX_VECTORS + 1) * 2);
     l.checks = l.writes + round16(edges * 2);
     l.edges = l.checks + round16(edges * 4);
-    l.state = l.edges + round16(edges * sizeof(rx_edge_t));
-    l.work = l.state + RX_VECTORS * 64;
+    l.work = l.edges + round16(edges * sizeof(rx_edge_t));
     return l;
 }
 
@@ -174,11 +204,11 @@ int rx_fec_init(rx_fec_t *f, unsigned modcod, void *work)
     f->prbs = base + l.prbs;
     f->encoder = (dvbs2_fast *)(base + l.encoder);
     f->bits = (dvbs2_workspace *)(base + l.bits);
-    /* Every encoder table the check reads stays resident: the BCH bytes and the LDPC
-     * program, columns and CRC. */
+    /* The LDPC program, columns and CRC stay resident (1.6 KB); the 8 KB BCH table is
+     * read from flash: core 0 has the data cache to itself and keeps it warm (31.6k
+     * cycles a clean frame either way, 155k after a full cache flush). */
     if (dvbs2_fast_prepare(f->encoder, mode, 1, DVBS2_PIE_BCH | DVBS2_PIE_LDPC) ||
         dvbs2_fast_cache_tail_size(f->encoder) > RX_ENCODER_TAIL ||
-        dvbs2_fast_cache_bch(f->encoder, base + l.table) ||
         dvbs2_fast_cache_split(f->encoder, NULL, base + l.tail)) {
         return -1;
     }
@@ -203,21 +233,27 @@ int rx_fec_init(rx_fec_t *f, unsigned modcod, void *work)
     if (!work) {
         return 0;
     }
+    f->r = (int8_t *)(base + l.r);
+    f->saved = (int8_t *)(base + l.saved);
+    f->state = (int8_t *)(base + l.state);
     uint8_t *w = work;
     memset(w, 0, l.work);
     f->belief = (int8_t *)(w + l.belief);
-    f->r = (int8_t *)(w + l.r);
-    f->qtmp = (int8_t *)(w + l.qtmp);
+    f->packed = (int8_t *)(w + l.packed);
+    f->packed_bytes = packed_bytes(modcod, f->q);
     f->reads = (uint16_t *)(w + l.reads);
     f->writes = (uint16_t *)(w + l.writes);
     f->checks = (uint16_t *)(w + l.checks);
     f->edges = (rx_edge_t *)(w + l.edges);
-    f->state = (int8_t *)(w + l.state);
 #ifdef DVBS2RX_PIE
     f->pie = 1;
 #endif
     for (unsigned r = 0, n = 0; r < f->q; n += table[0], table += 1 + table[0], ++r) {
         order_edges(f, table, r, n);
+    }
+    for (unsigned r = 1; r < f->q; ++r) {
+        f->packed_offset[r] = f->packed_offset[r - 1] +
+            16 * RX_VECTORS * (3 + (f->layer_count[r - 1] + 7) / 8);
     }
     /* Frames: each group starts an iteration in the frame of its last edge, the last
      * repeat of the last row group that has it. */
@@ -366,17 +402,35 @@ static int sat8(int x) { return x < -128 ? -128 : x > 127 ? 127 : x; }
 static int abs8(int x) { return x < 0 ? (x == -128 ? 127 : -x) : x; }
 static int norm(int m) { const int n = (m * RX_SCALE) >> 7; return n > RX_RMAX ? RX_RMAX : n; }
 
-void rx_pass1(const int8_t *belief, const uint16_t *reads, const int8_t *r, int8_t *qtmp,
-              int8_t *state, unsigned count)
+void rx_expand(const int8_t *packed, int8_t *r, int8_t *saved, unsigned edges)
 {
+    const unsigned first = edges & 255, count = first + (edges >> 8), planes = (count + 7) / 8;
+    for (unsigned v = 0; v < RX_VECTORS; ++v, packed += 16 * (3 + planes), r += 16 * count) {
+        for (unsigned lane = 0; lane < 16; ++lane) {
+            for (unsigned j = 0; j < count; ++j) {
+                const int sel = packed[32 + lane] == (int)j + 1 ? packed[16 + lane] : packed[lane];
+                const int msg = (packed[16 * (3 + j / 8) + lane] >> (j % 8)) & 1 ? -sel : sel;
+                r[16 * j + lane] = (int8_t)msg;
+            }
+        }
+        for (unsigned j = first; j < count; ++j, saved += 16) {
+            memcpy(saved, r + 16 * j, 16);
+        }
+    }
+}
+
+void rx_pass1(const int8_t *belief, const uint16_t *reads, int8_t *r, int8_t *state,
+              unsigned count)
+{
+    int8_t *failed = state + 64 * RX_VECTORS;
+    memset(failed, 0, 16);
     for (unsigned v = 0; v < RX_VECTORS; ++v, reads += count, r += 16 * count, state += 64) {
         for (unsigned lane = 0; lane < 16; ++lane) {
             int m1 = 127, m2 = 127, s = 0, sb = 0;
             for (unsigned j = 0; j < count; ++j) {
                 const int b = belief[reads[j] + lane], q = sat8(b - r[16 * j + lane]);
                 const int a = abs8(q);
-                qtmp[32 * j + lane] = (int8_t)a;
-                qtmp[32 * j + 16 + lane] = (int8_t)q;
+                r[16 * j + lane] = (int8_t)q;
                 m2 = m2 < (m1 > a ? m1 : a) ? m2 : (m1 > a ? m1 : a);
                 m1 = m1 < a ? m1 : a;
                 s ^= q;
@@ -386,26 +440,51 @@ void rx_pass1(const int8_t *belief, const uint16_t *reads, const int8_t *r, int8
             state[16 + lane] = (int8_t)m2;
             state[32 + lane] = (int8_t)s;
             state[48 + lane] = (int8_t)sb;
+            failed[lane] = (int8_t)(failed[lane] + (sb < 0));
         }
-        qtmp += 32 * count;
     }
 }
 
-void rx_pass2(int8_t *belief, const uint16_t *writes, int8_t *r, const int8_t *qtmp,
+void rx_pass2(int8_t *belief, const uint16_t *writes, int8_t *r, const int8_t *saved,
               const int8_t *state, unsigned edges)
 {
     const unsigned first = edges & 255, count = first + (edges >> 8);
-    for (unsigned v = 0; v < RX_VECTORS; ++v, r += 16 * count, qtmp += 32 * count, state += 64) {
+    for (unsigned v = 0; v < RX_VECTORS; ++v, r += 16 * count, saved += 16 * (count - first),
+                  state += 64) {
         for (unsigned lane = 0; lane < 16; ++lane) {
             const int m2 = state[16 + lane], neg = state[32 + lane] < 0;
             const int n1 = norm(state[lane]), n2 = norm(m2);
             const int s1 = neg ? -n1 : n1, s2 = neg ? -n2 : n2;
             for (unsigned j = 0; j < count; ++j) {
-                const int a = qtmp[32 * j + lane], q = qtmp[32 * j + 16 + lane];
-                const int sel = a < m2 ? s2 : s1, msg = q < 0 ? -sel : sel;
-                belief[writes[j] + 16 * v + lane] =
-                    (int8_t)(j < first ? sat8(q + msg) : sat8(msg - r[16 * j + lane]));
+                const int q = r[16 * j + lane];
+                const int sel = abs8(q) < m2 ? s2 : s1, msg = q < 0 ? -sel : sel;
+                belief[writes[j] + 16 * v + lane] = (int8_t)(j < first ? sat8(q + msg)
+                    : sat8(msg - saved[16 * (j - first) + lane]));
                 r[16 * j + lane] = (int8_t)msg;
+            }
+        }
+    }
+}
+
+/* Inverse of expand. Every message of a check is +-n1 but at most one +-n2 (the
+ * argmin's, when n1 != n2), and its sign flips that of the q parity exactly when q < 0
+ * (a zero message has no sign to keep). */
+void rx_compress(const int8_t *r, const int8_t *state, int8_t *packed, unsigned count)
+{
+    const unsigned planes = (count + 7) / 8;
+    for (unsigned v = 0; v < RX_VECTORS; ++v, packed += 16 * (3 + planes), r += 16 * count,
+                  state += 64) {
+        memset(packed, 0, 16 * (3 + planes));
+        for (unsigned lane = 0; lane < 16; ++lane) {
+            const int n1 = norm(state[lane]), n2 = norm(state[16 + lane]), s = state[32 + lane];
+            packed[lane] = (int8_t)(s < 0 ? -n1 : n1);
+            packed[16 + lane] = (int8_t)(s < 0 ? -n2 : n2);
+            for (unsigned j = 0; j < count; ++j) {
+                const int msg = r[16 * j + lane];
+                if (n1 != n2 && abs8(msg) == n2) {
+                    packed[32 + lane] = (int8_t)(j + 1);
+                }
+                packed[16 * (3 + j / 8) + lane] |= (int8_t)(((msg ^ s) < 0) << (j % 8));
             }
         }
     }
@@ -483,43 +562,44 @@ void rx_hard(const int8_t *belief, const uint16_t *frames, unsigned groups, uint
 
 /* ---------------------------------------------------------------- decoder */
 
-/* One layer. Returns nonzero if a check of the layer failed on the beliefs that
- * pass 1 read (a cheap sign that more iterations are needed). */
-static HOT int layer(rx_fec_t *f, unsigned L)
+/* One layer. Returns how many of its checks failed on the beliefs that pass 1 read:
+ * zero over a whole iteration is a cheap sign of convergence, and the sum tracks progress. */
+static HOT unsigned layer(rx_fec_t *f, unsigned L)
 {
     const unsigned first = f->layer_first[L], count = f->layer_count[L];
     const unsigned repeats = f->layer_repeats[L], normal = count - repeats;
     const rx_edge_t *edges = f->edges + first;
     const uint16_t *writes = f->writes + first;
-    int8_t *r = f->r + 16 * first * RX_VECTORS, *missing = NULL, saved = 0;
+    int8_t *r = f->r, *missing = NULL, saved = 0;
+    KERNEL(f, rx_expand)(f->packed + f->packed_offset[L], r, f->saved, normal | repeats << 8);
     if (L == 0) {
         missing = f->belief + f->missing_read;
         saved = *missing;
         *missing = 127;
         r[16 * f->missing_edge] = 0;
     }
-    KERNEL(f, rx_pass1)(f->belief, f->reads + first * RX_VECTORS, r, f->qtmp, f->state, count);
+    KERNEL(f, rx_pass1)(f->belief, f->reads + first * RX_VECTORS, r, f->state, count);
     if (missing) {
         *missing = saved;
     }
-    /* Sign bits of the belief parity, lanes 0..359. */
-    uint32_t odd = 0;
-    for (unsigned v = 0; v < RX_VECTORS; ++v) {
-        const uint32_t *w = (const uint32_t *)(f->state + 64 * v + 48);
-        odd |= w[0] | w[1] | (v < RX_VECTORS - 1 ? w[2] | w[3] : 0);
+    /* Failed checks per lane from pass 1, less the padding lanes 360..367. */
+    unsigned odd = 0;
+    const int8_t *failed = f->state + 64 * RX_VECTORS, *last = f->state + 64 * (RX_VECTORS - 1) + 48;
+    for (unsigned lane = 0; lane < 16; ++lane) {
+        odd += (unsigned)failed[lane] - (lane >= 8 && last[lane] < 0);
     }
-    KERNEL(f, rx_pass2)(f->belief, writes, r, f->qtmp, f->state, normal | repeats << 8);
+    KERNEL(f, rx_pass2)(f->belief, writes, r, f->saved, f->state, normal | repeats << 8);
     if (missing) {
         /* Check 0's lane wrote p_(M-1) at position 0 of the new frame. */
         f->belief[writes[f->missing_edge]] = saved;
-        r[16 * f->missing_edge] = 0;
     }
+    KERNEL(f, rx_compress)(r, f->state, f->packed + f->packed_offset[L], count);
     KERNEL(f, rx_tails)(f->belief, writes, normal);
     for (unsigned j = normal; j < count; ++j) {
         KERNEL(f, rx_repeat)(f->belief + edges[j].home, f->belief + writes[j],
                              (edges[j].previous + 360 - edges[j].shift) % 360);
     }
-    return (odd & 0x80808080u) != 0;
+    return odd;
 }
 
 /* Every check satisfied by the signs of the current beliefs. Layer 0 sees +127 for
@@ -565,7 +645,7 @@ static HOT void load(rx_fec_t *f, const int8_t *llr)
     const uint64_t den = n * s2 - s1 * s1;
     const uint64_t gain = den ? (32u * RX_UNITS * s1 * n + den / 2) / den : 64;
     KERNEL(f, rx_scale)(f->belief, RX_GROUPS, gain < 1 ? 1 : gain > 64 ? 64 : (unsigned)gain);
-    memset(f->r, 0, 16 * f->edge_count * RX_VECTORS);
+    memset(f->packed, 0, f->packed_bytes);
 }
 
 /* ---------------------------------------------------------------- frame */
@@ -584,16 +664,24 @@ int rx_fec_frame(rx_fec_t *f, rx_frame_t *frame, const uint8_t **payload,
             goto out;
         }
         load(f, frame->llr);
+        unsigned before[2] = {~0u, ~0u};
         while (s.iterations < f->max_iterations) {
-            int odd = 0;
+            unsigned odd = 0;
             ++s.iterations;
             for (unsigned L = 0; L < f->q; ++L) {
-                odd |= layer(f, L);
+                odd += layer(f, L);
             }
+            s.unsatisfied = (uint16_t)odd;
+            const int stuck = s.iterations >= 3 && (odd >= before[1] || 6 * odd > 360 * f->q);
+            before[1] = before[0];
+            before[0] = odd;
             /* The layers saw satisfied checks, or this is the last chance. */
-            if ((!odd || s.iterations == f->max_iterations) && syndrome_ok(f)) {
+            if ((!odd || stuck || s.iterations == f->max_iterations) && syndrome_ok(f)) {
                 KERNEL(f, rx_hard)(f->belief, f->frame, f->groups, frame->hard);
                 s.ldpc_ok = 1;
+                break;
+            }
+            if (stuck) {
                 break;
             }
         }
