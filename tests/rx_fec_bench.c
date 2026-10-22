@@ -83,9 +83,10 @@ static void compare(const char *name, run_fn fn)
 /* Buffer layout for the kernel tests, all inside base. */
 #define B_BELIEF 0
 #define B_R (B_BELIEF + BELIEF)
-#define B_QTMP (B_R + 16 * (EDGES * RX_VECTORS + 1))
-#define B_STATE (B_QTMP + 32 * (EDGES * RX_VECTORS + 1))
-#define B_READS (B_STATE + 64 * RX_VECTORS + 16)
+#define B_SAVED (B_R + 16 * (EDGES * RX_VECTORS + 1))
+#define B_STATE (B_SAVED + 16 * 2 * RX_VECTORS)
+#define B_PACKED (B_STATE + 64 * RX_VECTORS + 16)
+#define B_READS (B_PACKED + 16 * RX_VECTORS * 5)
 #define B_WRITES (B_READS + 2 * (EDGES * RX_VECTORS + 8))
 #define B_LLR (B_WRITES + 64)
 #define B_HARD (B_LLR + 16224)
@@ -96,12 +97,20 @@ static void compare(const char *name, run_fn fn)
 static void run_pass1(int pie)
 {
     (pie ? rx_pass1_pie : rx_pass1)(P(int8_t, B_BELIEF), P(uint16_t, B_READS), P(int8_t, B_R),
-                                     P(int8_t, B_QTMP), P(int8_t, B_STATE), EDGES);
+                                     P(int8_t, B_STATE), EDGES);
 }
 static void run_pass2(int pie)
 {
     (pie ? rx_pass2_pie : rx_pass2)(P(int8_t, B_BELIEF), P(uint16_t, B_WRITES), P(int8_t, B_R),
-                                     P(int8_t, B_QTMP), P(int8_t, B_STATE), 11 | 2 << 8);
+                                     P(int8_t, B_SAVED), P(int8_t, B_STATE), 11 | 2 << 8);
+}
+static void run_compress(int pie)
+{
+    (pie ? rx_compress_pie : rx_compress)(P(int8_t, B_R), P(int8_t, B_STATE), P(int8_t, B_PACKED), EDGES);
+}
+static void run_expand(int pie)
+{
+    (pie ? rx_expand_pie : rx_expand)(P(int8_t, B_PACKED), P(int8_t, B_R), P(int8_t, B_SAVED), 11 | 2 << 8);
 }
 static void run_tails(int pie) { (pie ? rx_tails_pie : rx_tails)(P(int8_t, B_BELIEF), P(uint16_t, B_WRITES), 11); }
 static unsigned start;
@@ -121,7 +130,7 @@ static void run_parity(int pie)
 }
 static void run_xor(int pie)
 {
-    (pie ? rx_xor_pie : rx_xor)(P(uint8_t, B_BELIEF), P(uint8_t, B_QTMP), 91);
+    (pie ? rx_xor_pie : rx_xor)(P(uint8_t, B_BELIEF), P(uint8_t, B_R), 91);
 }
 static void run_hard(int pie)
 {
@@ -135,23 +144,25 @@ static void kernels(void)
     in_bytes = B_TOTAL;
     fill(in, B_TOTAL);
     for (unsigned i = 0; i < EDGES * RX_VECTORS + 8; ++i) I(uint16_t, B_READS)[i] = rnd() % (45 * RX_SLOT);
+    for (unsigned i = 0; i < 16 * (EDGES * RX_VECTORS + 1); ++i) in[B_R + i] = (uint8_t)((int)(rnd() % 95) - 47);
     compare("pass1", run_pass1);
-    /* pass 2: consistent |q| and q, min1 <= min2, 11 slots and 2 scratch slots. */
-    seed = 2;
-    fill(in, B_TOTAL);
-    int8_t *q = I(int8_t, B_QTMP), *state = I(int8_t, B_STATE);
-    for (unsigned i = 0; i < 16 * (EDGES * RX_VECTORS + 1); ++i) {
-        const int x = q[32 * (i / 16) + 16 + i % 16];
-        q[32 * (i / 16) + i % 16] = (int8_t)(x < 0 ? (x == -128 ? 127 : -x) : x);
-    }
-    for (unsigned i = 0; i < 16 * RX_VECTORS; ++i) {
-        int8_t *s = state + 64 * (i / 16) + i % 16;
-        const unsigned a = rnd() % 128, b = rnd() % 128;
-        s[0] = (int8_t)(a < b ? a : b);
-        s[16] = (int8_t)(a < b ? b : a);
-    }
+    /* pass 2 on what pass 1 left: 11 slots and 2 repeats into scratch slots. */
     for (unsigned j = 0; j < EDGES; ++j) I(uint16_t, B_WRITES)[j] = (uint16_t)(RX_SLOT * (3 * j + 1));
+    rx_pass1(I(int8_t, B_BELIEF), I(uint16_t, B_READS), I(int8_t, B_R), I(int8_t, B_STATE), EDGES);
     compare("pass2", run_pass2);
+    /* compress the messages pass 2 made (one argmin per check at most, as in a frame),
+     * then expand them back. */
+    rx_pass2(I(int8_t, B_BELIEF), I(uint16_t, B_WRITES), I(int8_t, B_R), I(int8_t, B_SAVED),
+             I(int8_t, B_STATE), 11 | 2 << 8);
+    compare("compress", run_compress);
+    rx_compress(I(int8_t, B_R), I(int8_t, B_STATE), I(int8_t, B_PACKED), EDGES);
+    memset(in + B_R, 0, 16 * (EDGES * RX_VECTORS + 1));
+    compare("expand", run_expand);
+    rx_expand(I(int8_t, B_PACKED), I(int8_t, B_R), I(int8_t, B_SAVED), 11 | 2 << 8);
+    rx_pass1(I(int8_t, B_BELIEF), I(uint16_t, B_READS), I(int8_t, B_R), I(int8_t, B_STATE), EDGES);
+    rx_pass2(I(int8_t, B_BELIEF), I(uint16_t, B_WRITES), I(int8_t, B_R), I(int8_t, B_SAVED),
+             I(int8_t, B_STATE), 11 | 2 << 8);
+    seed = 2;
     compare("tails", run_tails);
     for (unsigned k = 0; k < 6; ++k) {
         start = k < 4 ? (unsigned[]){0, 7, 8, 359}[k] : rnd() % 360;
@@ -444,21 +455,23 @@ static void bench(void)
             clean(f, x);
             frames(f, x, "internal", true);
             if (external && !rx_fec_init(f, MODCOD, external)) {
+                /* The work area in PSRAM, the per-layer scratch internal (the default);
+                 * then the scratch in PSRAM too; then the slots internal as well. */
                 frames(f, x, "psram", false);
-                /* Parts of the PSRAM work area moved to internal RAM (the internal work
-                 * area is free now): beliefs; beliefs, q and state; messages. */
-                int8_t *b = f->belief, *q = f->qtmp, *st = f->state, *r = f->r;
-                const size_t beliefs = (size_t)(r - b), qtmp = 32 * (f->most * RX_VECTORS + 1);
-                memcpy(work, b, beliefs);
+                int8_t *r = f->r, *saved = f->saved, *st = f->state, *b = f->belief;
+                const size_t scratch = rx_fec_size(MODCOD) - (size_t)((uint8_t *)r - (uint8_t *)f);
+                int8_t *ps = heap_caps_aligned_alloc(16, scratch, MALLOC_CAP_SPIRAM);
+                if (ps) {
+                    f->r = ps, f->saved = ps + (saved - r), f->state = ps + (st - r);
+                    frames(f, x, "psram_scratch_psram", false);
+                    f->r = r, f->saved = saved, f->state = st;
+                }
+                heap_caps_free(ps);
+                const size_t slots = (size_t)(f->packed - b);
+                memcpy(work, b, slots);
                 f->belief = (int8_t *)work;
-                frames(f, x, "psram_beliefs_internal", false);
-                f->qtmp = (int8_t *)work + beliefs;
-                f->state = (int8_t *)work + beliefs + qtmp;
-                frames(f, x, "psram_beliefs_q_state_internal", false);
-                f->belief = b, f->qtmp = q, f->state = st;
-                f->r = (int8_t *)work;
-                frames(f, x, "psram_messages_internal", false);
-                f->r = r;
+                frames(f, x, "psram_slots_internal", false);
+                f->belief = b;
             }
         }
     }

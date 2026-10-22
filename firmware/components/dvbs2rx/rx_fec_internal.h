@@ -34,7 +34,9 @@ typedef struct {
 struct rx_fec {
     unsigned modcod, kbch, nbch, q, groups, edge_count, most, max_iterations, pie;
     unsigned missing_edge, missing_read;
-    int8_t *belief, *r, *qtmp, *state;  /* work area; belief is NULL without one */
+    int8_t *r, *saved, *state;  /* per-layer scratch: messages, repeats' old ones, checks */
+    int8_t *belief, *packed;    /* work area; belief is NULL without one */
+    size_t packed_bytes;
     uint16_t *reads;    /* per layer, vector, edge: window start as a belief offset */
     uint16_t *writes;   /* per edge: where pass 2 writes (the slot, or scratch for repeats) */
     uint16_t *checks;   /* per edge: slot and window start at the start of an iteration */
@@ -43,6 +45,7 @@ struct rx_fec {
     dvbs2_fast *encoder;        /* clean check: the transmitter's fast BCH and LDPC */
     dvbs2_workspace *bits;      /* DVBS2_SHORT_FAST_WORKSPACE_USED bytes of it */
     uint16_t layer_first[RX_MAX_Q];
+    uint32_t packed_offset[RX_MAX_Q];
     uint8_t layer_count[RX_MAX_Q], layer_repeats[RX_MAX_Q];
     uint16_t frame[RX_GROUPS];  /* each slot's frame at the start of an iteration */
     uint8_t crc8[256];          /* BBHEADER CRC-8 by byte */
@@ -52,16 +55,19 @@ struct rx_fec {
  * the suffix _pie (rx_fec_pie.S) that gives identical bytes. Buffers are 16-byte
  * aligned unless noted.
  *
+ * expand: packed messages of a layer (rx_compress) to r[v][e]; edges = first |
+ *   repeats << 8; the repeats' messages are copied to saved[v][j] too.
  * pass1: for 23 vectors of 'count' edges, window b at belief + reads[v][e] (any
- *   alignment), q = sat(b - r[v][e]); qtmp[v][e] = |q| (at most 127), then q; state[v] =
- *   min1, min2 of |q|, XOR of q, XOR of b; then 16 bytes counting, per lane, the vectors
+ *   alignment), q = sat(b - r[v][e]) replaces r[v][e]; state[v] = min1, min2 of |q|
+ *   (at most 127), XOR of q, XOR of b; then 16 bytes counting, per lane, the vectors
  *   whose XOR of b is negative. Reads one more reads entry, r vector and window than it
  *   uses.
- * pass2: messages and beliefs. edges = first | repeats << 8. For each vector,
- *   n = min(m * RX_SCALE >> 7, RX_RMAX) of both minima, signed by the q parity;
- *   message = sign(q) * (|q| < min2 ? n2 : n1). r[v][e] = message; the belief at
- *   belief + writes[e] + 16 v is sat(q + message), or sat(message - old r) for repeats.
- *   Reads 32 bytes past qtmp.
+ * pass2: messages and beliefs. For each vector, n = min(m * RX_SCALE >> 7, RX_RMAX) of
+ *   both minima, signed by the q parity; message = sign(q) * (|q| < min2 ? n2 : n1)
+ *   replaces q in r[v][e]; the belief at belief + writes[e] + 16 v is sat(q + message),
+ *   or sat(message - saved[v][j]) for repeat j. Reads 16 bytes past r.
+ * compress: messages of a layer to packed form: per vector n1, n2 signed by the q
+ *   parity, argmin edge + 1 or 0, then planes of sign bits, 8 edges each.
  * tails: positions 360..375 of 'count' slots repeat 0..15 (slot offsets in writes).
  * repeat: scratch = sat(home window at start + scratch) over 23 vectors, then home =
  *   scratch, then its tail.
@@ -72,10 +78,12 @@ struct rx_fec {
  * hard: 'groups' slots, slot g read from position frames[g], to packed sign bits
  *   (45 bytes per group, one more byte scribbled after the last).
  * xor: x ^= prbs over 16 * vectors bytes. */
-void rx_pass1(const int8_t *belief, const uint16_t *reads, const int8_t *r, int8_t *qtmp,
-              int8_t *state, unsigned count);
-void rx_pass2(int8_t *belief, const uint16_t *writes, int8_t *r, const int8_t *qtmp,
+void rx_expand(const int8_t *packed, int8_t *r, int8_t *saved, unsigned edges);
+void rx_pass1(const int8_t *belief, const uint16_t *reads, int8_t *r, int8_t *state,
+              unsigned count);
+void rx_pass2(int8_t *belief, const uint16_t *writes, int8_t *r, const int8_t *saved,
               const int8_t *state, unsigned edges);
+void rx_compress(const int8_t *r, const int8_t *state, int8_t *packed, unsigned count);
 void rx_tails(int8_t *belief, const uint16_t *writes, unsigned count);
 void rx_repeat(int8_t *home, int8_t *scratch, unsigned start);
 void rx_scale(int8_t *belief, unsigned slots, unsigned gain);
@@ -83,10 +91,12 @@ void rx_moments(const int8_t *llr, unsigned vectors, uint32_t sums[2]);
 int rx_parity(const int8_t *belief, const uint16_t *checks, unsigned count);
 void rx_hard(const int8_t *belief, const uint16_t *frames, unsigned groups, uint8_t *hard);
 void rx_xor(uint8_t *x, const uint8_t *prbs, unsigned vectors);
-void rx_pass1_pie(const int8_t *belief, const uint16_t *reads, const int8_t *r, int8_t *qtmp,
-                  int8_t *state, unsigned count);
-void rx_pass2_pie(int8_t *belief, const uint16_t *writes, int8_t *r, const int8_t *qtmp,
+void rx_expand_pie(const int8_t *packed, int8_t *r, int8_t *saved, unsigned edges);
+void rx_pass1_pie(const int8_t *belief, const uint16_t *reads, int8_t *r, int8_t *state,
+                  unsigned count);
+void rx_pass2_pie(int8_t *belief, const uint16_t *writes, int8_t *r, const int8_t *saved,
                   const int8_t *state, unsigned edges);
+void rx_compress_pie(const int8_t *r, const int8_t *state, int8_t *packed, unsigned count);
 void rx_tails_pie(int8_t *belief, const uint16_t *writes, unsigned count);
 void rx_repeat_pie(int8_t *home, int8_t *scratch, unsigned start);
 void rx_scale_pie(int8_t *belief, unsigned slots, unsigned gain);
