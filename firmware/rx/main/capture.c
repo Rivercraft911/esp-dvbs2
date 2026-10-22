@@ -101,22 +101,35 @@ static void select_lo(bool divided)
 }
 
 /* Handoffs run in a timer interrupt on core 1, so the consumer may lag. The engine
- * re-owns a bank two handoffs after releasing it; the interrupt faults instead of
- * handing back a bank the task has not finished. */
+ * takes a bank the task has finished; if there is none, it takes the newest bank the
+ * task has not started, whose unit is then lost. The task sees that as a gap. */
 #define TIMER_HZ 10000000U
 #define EARLY_US 15U            /* alarm this far before a handoff, then spin */
 #define UNIT_TICKS ((uint64_t)CAPTURE_UNIT * TIMER_HZ / CAPTURE_RATE)
 #define EARLY_TICKS ((uint64_t)EARLY_US * (TIMER_HZ / 1000000U))
+#define RECORDS 8U              /* handoffs the task may trail by */
 typedef struct {
     gptimer_handle_t timer;
-    uint32_t owner, current, max_late, max_spin;
-    uint16_t index, before[4], after[4];
-    uint8_t bank[4];
-    uint64_t pairs, target;
-    volatile uint32_t posted, done;
+    uint32_t owner, current, max_late, max_spin, drops;
+    uint16_t index, before[RECORDS], after[RECORDS];
+    uint8_t bank[RECORDS], free[4], reowned[RECORDS], current_reowned;
+    volatile uint8_t dropped[RECORDS];
+    uint64_t pairs, target, at[RECORDS];
+    volatile uint32_t posted, done, working, free_head, free_tail;
     const char *volatile fault;
     TaskHandle_t task;
 } sched_t;
+
+/* Sentinels after where a taken-back bank's next unit will end, so the end-edge search
+ * works although the task never cleared it. Its start is the previous unit's end. */
+#define END_WINDOW 1024U
+static void IRAM_ATTR clear_end(uint32_t *b, unsigned start)
+{
+    unsigned at = (start + CAPTURE_UNIT - 2U * EDGE_GUARD) & RING_MASK;
+    for (unsigned k = 0; k < END_WINDOW; k += 4, at = (at + 4U) & RING_MASK)
+        b[at] = b[at + 1] = b[at + 2] = b[at + 3] = SENTINEL;   /* at stays a multiple of 4 */
+    __asm__ volatile ("memw" ::: "memory");
+}
 
 static bool IRAM_ATTR handoff(gptimer_handle_t timer, const gptimer_alarm_event_data_t *event,
                               void *arg)
@@ -132,13 +145,31 @@ static bool IRAM_ATTR handoff(gptimer_handle_t timer, const gptimer_alarm_event_
         now = esp_cpu_get_cycle_count();
         if (now - start > 4U * EARLY_US * 240U) { h->fault = "stalled"; goto wake; }
     }
-    if (h->posted - h->done >= 2) { h->fault = "consumer late"; goto wake; }
-    unsigned next = (h->current + 1U) % 3U, slot = h->posted & 3U;
+    if (h->posted - h->done >= RECORDS) { h->fault = "consumer stuck"; goto wake; }
+    unsigned next;
+    bool taken = false;
+    if (h->free_head != h->free_tail) {
+        next = h->free[h->free_head & 3U];
+        ++h->free_head;
+    } else {
+        uint32_t newest = h->posted - 1U;
+        if ((int32_t)(newest - h->working) <= 0) { h->fault = "no bank"; goto wake; }
+        h->dropped[newest % RECORDS] = 1;
+        next = h->bank[newest % RECORDS];
+        ++h->drops;
+        taken = true;
+        clear_end(bank(next), h->index & ~3U);
+    }
+    unsigned slot = h->posted % RECORDS;
     h->before[slot] = REG_READ(DUMP_INDEX) & RING_MASK;
     REG_WRITE(BANK_USAGE, h->owner | (1U << next));
     __asm__ volatile ("memw" ::: "memory");
     h->after[slot] = REG_READ(DUMP_INDEX) & RING_MASK;
     h->bank[slot] = h->current;
+    h->reowned[slot] = h->current_reowned;
+    h->current_reowned = taken;
+    h->dropped[slot] = 0;
+    h->at[slot] = h->pairs;
     uint32_t late = (uint32_t)(h->pairs - h->target) + ((h->after[slot] - h->index) & RING_MASK);
     if (late > h->max_late) h->max_late = late;
     if (late >= CAPTURE_LATE) { h->fault = "late"; goto wake; }
@@ -163,7 +194,7 @@ static const char *IRAM_ATTR stream(job_t *job)
     const capture_config_t *c = job->config;
     capture_stats_t *s = job->stats;
     sched_t h = {.owner = REG_READ(BANK_USAGE) & ~15U, .target = CAPTURE_UNIT,
-                 .task = xTaskGetCurrentTaskHandle()};
+                 .task = xTaskGetCurrentTaskHandle(), .free = {1, 2}, .free_tail = 2};
     gptimer_config_t tc = {.clk_src = GPTIMER_CLK_SRC_DEFAULT, .direction = GPTIMER_COUNT_UP,
                            .resolution_hz = TIMER_HZ, .intr_priority = 3};
     gptimer_event_callbacks_t callbacks = {.on_alarm = handoff};
@@ -189,6 +220,8 @@ static const char *IRAM_ATTR stream(job_t *job)
 
     const uint64_t total = (uint64_t)c->seconds * CAPTURE_RATE;
     unsigned before = 0, after = 0, expected = 0;
+    uint64_t end_pairs = 0;     /* engine count at the end of the last unit processed */
+    bool gap = false;
     while (s->samples < total && !h.fault) {
         if (h.done == h.posted) {
             if (!ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(20))) { fault = "no handoff"; break; }
@@ -196,14 +229,37 @@ static const char *IRAM_ATTR stream(job_t *job)
         }
         uint32_t lag = h.posted - h.done;
         if (lag > s->max_lag) s->max_lag = lag;
-        unsigned slot = h.done & 3U;
+        unsigned slot = h.done % RECORDS;
+        uint32_t irq2 = portSET_INTERRUPT_MASK_FROM_ISR();
+        h.working = h.done;
+        bool dropped = h.dropped[slot];
+        portCLEAR_INTERRUPT_MASK_FROM_ISR(irq2);
+        if (dropped) {
+            before = h.before[slot];
+            after = h.after[slot];
+            gap = true;
+            ++h.done;
+            continue;
+        }
         uint32_t start = esp_cpu_get_cycle_count();
         const uint32_t *b = bank(h.bank[slot]);
-        unsigned first, last;
-        if (!edge(b, before, after, true, &first) ||
+        unsigned first = gap ? after : expected, last;
+        /* A taken-back bank has no sentinels before its unit: it starts where the last unit
+         * ended, or, after a loss, at the handoff bracket (a sample or two of slack). */
+        if ((!h.reowned[slot] && !edge(b, before, after, true, &first)) ||
             !edge(b, h.before[slot], h.after[slot], false, &last)) { fault = "edge"; break; }
         size_t count = (last - first) & RING_MASK;
-        if (first != expected) { fault = "gap"; break; }
+        if (first != expected && !gap) { fault = "gap"; break; }
+        if (gap) {
+            /* Lost units: the engine count gives the length to within a bracket and the
+             * ring index makes it exact. */
+            uint64_t approx = h.at[(h.done - 1U) % RECORDS] - end_pairs;
+            uint64_t lost = approx + ((((first - expected - approx) & RING_MASK) + CAPTURE_RING / 2U)
+                                      & RING_MASK) - CAPTURE_RING / 2U;
+            s->samples += lost;
+            s->dropped += lost;
+            gap = false;
+        }
         if (count + CAPTURE_LATE < CAPTURE_UNIT || count > CAPTURE_UNIT + CAPTURE_LATE) {
             fault = "span";
             break;
@@ -222,11 +278,16 @@ static const char *IRAM_ATTR stream(job_t *job)
         s->samples += count;
         ++s->units;
         expected = last;
+        end_pairs = h.at[slot];
         before = h.before[slot];
         after = h.after[slot];
+        h.free[h.free_tail & 3U] = h.bank[slot];
+        __asm__ volatile ("memw" ::: "memory");
+        ++h.free_tail;
         ++h.done;
     }
     if (!fault) fault = h.fault;
+    s->drops = h.drops;
 
 done:
     REG_WRITE(DUMP_CTRL, 0);
