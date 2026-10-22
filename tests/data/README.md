@@ -40,3 +40,9 @@ not board timing measurements. Do not regenerate fixtures to accept an unexplain
 `tone_crcs.json` pins the retained test tones against `88f5a64`: 4,097 packed DAC words,
 starting at sample 2^32+17. Callback splits must preserve that sequence. Removed
 PRBS, sweep and gap probes are intentionally rejected.
+
+`rx_short7.sc8` is 18,240 samples (1.14 ms) of a real S3 dump: QPSK 3/4 short frames from
+the S3 transmitter at 2420 MHz through coax, RX gain 32, 2026-10-22 (notes capture
+short7-gain32, samples 38,280 to 56,519, from 150 symbols before a PLHEADER). Int8 I then Q
+per sample, floor(s10 / 4), exactly what rx_unpack produces. tests/test_rx_demod.py checks
+acquisition, timing and the carrier estimate on it.
