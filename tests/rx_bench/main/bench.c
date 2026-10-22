@@ -1,3 +1,4 @@
+extern _Bool mc6_first_bench(void);
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -488,14 +489,15 @@ void app_main(void)
                    esp_app_get_description()->version, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
                    (unsigned)esp_psram_get_size(), (unsigned)esp_clk_cpu_freq());
         } else if (!strcmp(line, "filter") || !strcmp(line, "fec") ||
-                   !strcmp(line, "fecfast") || !strcmp(line, "fecblocked") || !strcmp(line, "carrier")) {
-            bool ok = !strcmp(line, "filter") ? filter_bench() :
+                   !strcmp(line, "fecfirst") || !strcmp(line, "fecfast") || !strcmp(line, "fecblocked") || !strcmp(line, "carrier")) {
+            bool ok = !strcmp(line, "fecfirst") ? fec_controls() && fec_block_controls() && mc6_first_bench() :
+                      !strcmp(line, "filter") ? filter_bench() :
                       !strcmp(line, "fec") ? fec_bench() : !strcmp(line, "carrier") ? rx_carrier_bench() : fec_fast_bench(!strcmp(line, "fecblocked"));
             unsigned reserve = (unsigned)uxTaskGetStackHighWaterMark(NULL);
             ok = ok && reserve >= 512;
             printf("@{\"cmd\":\"summary\",\"passed\":%s,\"radio\":false,\"tx\":false,"
                    "\"stack_free\":%u}\n", ok ? "true" : "false", reserve);
-        } else printf("@{\"error\":\"use info, filter, fec, fecfast, fecblocked or carrier\"}\n");
+        } else printf("@{\"error\":\"use info, filter, fec, fecfast, fecblocked, fecfirst or carrier\"}\n");
         printf("@{\"done\":true}\n");
     }
 }

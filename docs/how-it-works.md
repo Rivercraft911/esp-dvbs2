@@ -256,6 +256,13 @@ asymmetric soft thresholds. Symbol spans stop at pilot and phase-model boundarie
 64-bit sample origins and fractional positions remain attached to each frame.
 Sparse timing derivatives are available, but closed-loop timing is not integrated.
 
+The one-sweep API in `rx_mc6_first.h` keeps only the 129,600-byte belief array.
+Old messages are zero on the first sweep, so it avoids the 86,400-byte check buffer
+and copies aligned, contiguous belief spans with fixed-size word transfers.
+Completion is permanent. It packs the resulting signs, then the same full parity,
+BCH and header validation decides whether to deliver payload. Frames needing more
+sweeps fail this milestone; the general decoder remains available separately.
+
 The parity checker transposes eight small groups at a time in 40 bytes of scratch.
 It checks the full natural-order word without allocating a parity plane. The public
 payload extraction API retains its full validation contract.
@@ -263,7 +270,8 @@ payload extraction API retains its full validation contract.
 `tests/test_rx_filter.py` and `tests/test_rx_mc6.py` check the portable implementations
 against independent arithmetic, graph and streaming oracles. `tests/rx_bench` builds
 a separate radio-off S3 app. `fecfast` checks the packed clean path; `fecblocked`
-compares grouped belief access and vector message reconstruction. `filter` and
+compares grouped belief access and vector message reconstruction. `fecfirst`
+compares the general first sweep with the bounded one-sweep API. `filter` and
 `fec` retain reference measurements. `carrier` checks phase arithmetic, complete
 MC6 words, packed signs and payload against independent controls. Commands check native PIE results, guards
 and reference CRCs and report work separately from deliberate task delays.

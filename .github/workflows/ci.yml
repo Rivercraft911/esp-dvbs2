@@ -38,6 +38,7 @@ jobs:
           python tests/test_rx_carrier.py
           python tests/test_rx_stream.py
           python tests/test_rx_mc6.py
+          python tests/test_rx_mc6_first.py
       - run: python tests/test_live_iio.py
       - run: python tests/test_ota.py
       - run: python tests/test_file_ota.py

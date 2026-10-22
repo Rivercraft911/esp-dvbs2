@@ -354,6 +354,15 @@ complete damaged-word path, including sign packing and validation, fell from
 reference/candidate trials passed. The 240-byte tile and 216,000-byte decoder
 workspace stayed fixed. Deliberate task delays are excluded from these times.
 
+A distinct one-sweep decoder then omitted the old check-message plane and used
+fixed-size copies for aligned belief spans. In a paired PSRAM test, the sweep
+fell from 38.216 to 31.520 ms; initialization, sweep, packing and full validation
+fell from 58.158 to 51.038 ms. All 18 whole-word comparisons and 72 full-range
+tile controls passed, with exact beliefs, codewords and payloads. The API saves
+86,400 bytes of check storage and uses 960 additional bytes of graph data in flash.
+These tests force one sweep even for the clean fixture; they do not measure the
+clean fast path. Noisy words requiring a later sweep remain failed at this cap.
+
 Eight-output PIE filter batching also passed its arithmetic and stream checks,
 but was about 0.44% slower with PSRAM I/O. It failed the 20% improvement gate and
 is not the default.
@@ -367,6 +376,12 @@ capture and acquisition are excluded. Adding the separately measured 30.18 ms
 filter gives roughly 55.1 ms; this sum is a budget estimate, not a measured pipeline.
 The initial carrier benchmark overflowed its 3,584-byte test stack after one frame.
 The corrected 8,192-byte benchmark retained at least 4,640 bytes free and passed both.
+
+A further fused emitter narrowed eight outputs inside the PIE leaf and published
+a contiguous Q6 tile. All 338 native leaf controls and eight complete filter runs
+passed, but PSRAM work fell only 15.19%, from 30.180 to 25.596 ms. It missed the
+fixed 20% gate and was not adopted. Its maximum interrupt-mask duration remains
+unmeasured; the component report retains the negative performance decision.
 
 These are radio-off tests with reused small buffers and synthetic inputs. The
 filter still takes about 30 ms before carrier processing or concurrent capture;
@@ -386,6 +401,14 @@ With Wi-Fi, collector buffers and workers allocated, free internal RAM was
 33,007 bytes and its largest block 17,408 bytes. The 129,600-byte belief array
 therefore cannot be assumed to fit internally in this layout. These runs do not
 include acquisition, carrier processing, FEC or continuous validated payload.
+
+Two bounded PHY investigations established no processing savings. The FE estimator
+completed three fresh OFF/ON/OFF transactions and responded to the independently
+measured tone, with exact control restoration. Its units, tap and usefulness for
+correction remain unqualified. The BB correction probe refused before mutation:
+a source-traced upper field expected 31, while hardware held 32. That guard was
+kept. The report preserves both the refusal and a separate host closing-parser
+failure; offline analysis recovered only the valid FE stimulus evidence.
 
 ## Recreate the figures
 

@@ -1,10 +1,7 @@
-"""Collector equations/queue/EOF controls; temporary host builds only.
+"""Host arithmetic, queue and DMA controls for the finite collector.
 
-Provenance: irq-worker-abi-owned source-pins eabaef4eed3bca20e8a848b483a5b755da042f59067f46aea262f4f2b94a8bc5;
-root quiet8192 qualification irq-worker-abi-owned-quiet-01. Public consolidation
-flattens paths and removes unused finite/ADC/memory branches. Its link layout
-requires a new native timing/context control; host models prove no S3 execution.
-HB is two11-tap stages (15/17 are shifts); RRC is65 real Q15 taps, fixed4:1.
+The halfband uses two 11-tap stages with shifts 15 and 17. The fixed RRC
+uses 65 Q15 taps at 4:1. Native results are recorded in docs/measurements.md.
 """
 from pathlib import Path
 import json

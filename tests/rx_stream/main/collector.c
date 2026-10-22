@@ -1,7 +1,6 @@
-/* Stream-only qualification app extracted from the measured8192-unit
- * collector. Three raw banks, one28512B workspace, fixed IRQ/EOF/deadline
- * ownership. No finite-capture,ADC-divider,memory-benchmark or TX entry point.
- * Consolidation changes link layout: root must rerun native timing gates. */
+/* Finite collector with three raw banks, one 28,512-byte workspace and
+ * bounded interrupt protection around shared PIE state. DMA completion
+ * transfers ownership; capture indices establish sample continuity. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
