@@ -218,8 +218,9 @@ def twin(link):
 
 def check(link, reference_frames=0):
     """Stream the twin through the C demodulator. Every emitted frame is matched to the
-    transmitted one by header time and compared bit for bit; the first reference_frames also
-    go through the float reference for the implementation loss."""
+    transmitted one by header time and compared bit for bit, and every frame after the first
+    decoded one must be there; the first reference_frames also go through the float reference
+    for the implementation loss."""
     import json
     import tempfile
     import rx_demod
@@ -247,10 +248,11 @@ def check(link, reference_frames=0):
             emitted += len(d.frames)
             d.frames = []
         stats = d.stats()
-    out = dict(frames=len(truth), emitted=emitted, matched=len(rows),
+    first = min(rows) if rows else len(truth)       # frames before the lock are not expected
+    out = dict(frames=len(truth), emitted=emitted, matched=len(rows), first=first,
                exact=sum(r["errors"] == 0 for r in rows.values()),
                bit_errors=sum(r["errors"] for r in rows.values()),
-               missing=[k for k in range(len(truth)) if k not in rows][:20],
+               missing=[k for k in range(first, len(truth)) if k not in rows][:20],
                pilot_mer_db=[round(min(r["mer"] for r in rows.values()), 2),
                              round(float(np.median([r["mer"] for r in rows.values()])), 2)],
                data_mer_db=[round(min(r["data_mer"] for r in rows.values()), 2),
@@ -285,7 +287,7 @@ def main():
                 short=not a.normal, gap=(int(a.gap[0]), a.gap[1]) if a.gap else None)
     if a.check:
         out = check(link, a.reference)
-        return 0 if out["exact"] == out["frames"] else 1
+        return 0 if out["exact"] == out["matched"] and not out["missing"] else 1
     words, truth = twin(link)
     if a.out:
         words.tofile(a.out)
