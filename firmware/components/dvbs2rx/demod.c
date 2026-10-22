@@ -282,7 +282,7 @@ static inline unsigned scr_at(const uint8_t *scr, unsigned i)
 /* ---------------------------------------------------------------- estimates */
 
 /* Samples per symbol, Q24. Both radios derive LO and sample clock from 40 MHz crystals, so
- * the clock offset is -CFO / f_c: step = 16 (1 - cfo / f_c), cfo = omega Rs / 2^32. */
+ * the clock offset is CFO / f_c: step = 16 (1 - cfo / f_c), cfo = omega Rs / 2^32. */
 static uint32_t base_step(const rx_demod_t *d)
 {
     /* omega 62.5 / f_kHz as a high multiply: kstep = 2^32 62.5 / f_kHz, set at init */
@@ -733,7 +733,7 @@ static void start_frame(rx_demod_t *d, const block_t *b, uint64_t t)
 
 /* Frequency: a quarter of the measured residual. Timing: half the error now (tau Q16 symbols
  * times 16 samples, Q24), and 1/256 of it per symbol of block spacing into the integrator,
- * which only has to absorb what -CFO / f_c misses. DC: a quarter of the mean residual since
+ * which only has to absorb what CFO / f_c misses. DC: a quarter of the mean residual since
  * the last block. Leak: an eighth of the block's residual. */
 static void update_loops(rx_demod_t *d, const block_t *b, uint32_t centre2, int32_t inc)
 {
