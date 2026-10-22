@@ -1056,14 +1056,48 @@ static void defer_lock(rx_demod_t *d)
     d->state = REFINE;
 }
 
+/* One timing phase's 32 new signs w (its first candidate in bit 31) against the header:
+ * candidate j's register is (r2:r1:r0:w) >> (31 - j). Every candidate whose 3 newest signs
+ * match is found at once from the shifted words; only those count misses, on the SOF's 25 and
+ * then all 89. Hits append to (k, m) in candidate order. */
+static unsigned match(rx_demod_t *d, unsigned x, uint32_t w, unsigned ph, uint32_t *hit_k,
+                      unsigned *hit_m, unsigned hits)
+{
+    uint32_t r0 = d->reg[x][0], r1 = d->reg[x][1], r2 = d->reg[x][2], fill = d->fill[x];
+    uint32_t p = d->pat[0];
+    if (fill + 31 >= HDR) {                      /* candidates from HDR - fill are complete */
+        uint32_t m = ~(w ^ (0u - (p & 1))) & ~((w >> 1 | r0 << 31) ^ (0u - (p >> 1 & 1))) &
+                     ~((w >> 2 | r0 << 30) ^ (0u - (p >> 2 & 1)));
+        m &= ~0u >> (fill >= HDR ? 0 : HDR - fill);
+        while (m) {
+            unsigned j = (unsigned)__builtin_clz(m), s = 31 - j;
+            m &= ~(1u << s);
+            uint32_t a2 = (uint32_t)(((uint64_t)r2 << 32 | r1) >> s);
+            unsigned miss = popcount((a2 ^ d->pat[2]) & 0x1ffffffu);
+            if (miss <= SOF_MISS) {
+                uint32_t a0 = (uint32_t)(((uint64_t)r0 << 32 | w) >> s);
+                uint32_t a1 = (uint32_t)(((uint64_t)r1 << 32 | r0) >> s);
+                miss += popcount(a0 ^ p) + popcount(a1 ^ d->pat[1]);
+                if (miss <= ALL_MISS && hits < 8) {
+                    hit_k[hits] = ph + 2 * j;
+                    hit_m[hits++] = miss;
+                }
+            }
+        }
+    }
+    d->reg[x][2] = r1;
+    d->reg[x][1] = r0;
+    d->reg[x][0] = w;
+    d->fill[x] = fill + 32 < HDR ? fill + 32 : HDR;
+    return hits;
+}
+
 /* The search over the block of SEARCH candidates from c. Candidate c sums the even samples
- * of [8c - 16, 8c), centred at 8c - 9; acquire_from starts c after the stream start and the
- * consumers run every CHUNK words, so every window is in the ring. Fixed blocks keep the
- * result independent of how the dump arrives. Pass 1 forms the half sums; pass 2 runs each
- * timing phase's sign register in locals. A candidate is examined only if its 3 newest signs
- * match, then on the SOF's 25 and all 89. Returns 1 when a detection is chosen (state REFINE):
- * the fewest misses within 3 candidates of the first. */
-#define SEARCH 64u
+ * of [8c - 16, 8c), centred at 8c - 9; acquire keeps c's window in the ring. Fixed blocks
+ * keep the result independent of how the dump arrives. Pass 1 forms the half sums; pass 2
+ * forms each timing phase's 32 signs, then matches them. Returns 1 when a detection is chosen
+ * (state REFINE): the fewest misses within 3 candidates of the first. */
+#define SEARCH 64u                /* two phases of 32 signs, a word each */
 static int search(rx_demod_t *d)
 {
     const uint32_t n = SEARCH;
@@ -1088,41 +1122,34 @@ static int search(rx_demod_t *d)
     }
     d->half[0] = hi[n];
     d->half[1] = hq[n];
-    uint32_t hit_k[8];
-    unsigned hit_m[8], hits = 0;
-    for (unsigned ph = 0; ph < 2; ++ph) {
-        unsigned x = ((unsigned)d->c ^ ph) & 1;        /* register of candidate c + ph */
-        int32_t p0 = d->prev[x][0], p1 = d->prev[x][1];
-        uint32_t r0 = d->reg[x][0], r1 = d->reg[x][1], r2 = d->reg[x][2], fill = d->fill[x];
-        for (uint32_t k = ph; k < n; k += 2) {
-            /* One sign bit per candidate: Im(a_c conj(a_{c-2})), the turn between symbols. */
-            int32_t ai = hi[k + 1] + hi[k], aq = hq[k + 1] + hq[k];
-            uint32_t neg = (uint32_t)(aq * p0 - ai * p1) >> 31;
-            p0 = ai;
-            p1 = aq;
-            r2 = r2 << 1 | r1 >> 31;
-            r1 = r1 << 1 | r0 >> 31;
-            r0 = r0 << 1 | neg;
-            if (fill < HDR) {
-                ++fill;
-            } else if (!((r0 ^ d->pat[0]) & 7)) {
-                unsigned miss = popcount((r2 ^ d->pat[2]) & 0x1ffffffu);
-                if (miss <= SOF_MISS) {
-                    miss += popcount(r0 ^ d->pat[0]) + popcount(r1 ^ d->pat[1]);
-                    if (miss <= ALL_MISS && hits < 8) {
-                        hit_k[hits] = k;
-                        hit_m[hits++] = miss;
-                    }
-                }
-            }
-        }
-        d->prev[x][0] = p0;
-        d->prev[x][1] = p1;
-        d->reg[x][0] = r0;
-        d->reg[x][1] = r1;
-        d->reg[x][2] = r2;
-        d->fill[x] = fill;
+    /* One sign per candidate: Im(a_c conj(a_{c-2})), the turn between symbols, for the two
+     * timing phases (registers x0 and x1) in turn. */
+    unsigned x0 = (unsigned)d->c & 1, x1 = x0 ^ 1;
+    int32_t i0 = d->prev[x0][0], q0 = d->prev[x0][1], i1 = d->prev[x1][0], q1 = d->prev[x1][1];
+    int32_t hik = hi[0], hqk = hq[0];
+    uint32_t w0 = 0, w1 = 0;
+    for (uint32_t k = 0; k < n; k += 2) {
+        int32_t h1i = hi[k + 1], h1q = hq[k + 1], h2i = hi[k + 2], h2q = hq[k + 2];
+        int32_t ai = h1i + hik, aq = h1q + hqk;
+        w0 = w0 << 1 | (uint32_t)(aq * i0 - ai * q0) >> 31;
+        i0 = ai;
+        q0 = aq;
+        ai = h2i + h1i;
+        aq = h2q + h1q;
+        w1 = w1 << 1 | (uint32_t)(aq * i1 - ai * q1) >> 31;
+        i1 = ai;
+        q1 = aq;
+        hik = h2i;
+        hqk = h2q;
     }
+    d->prev[x0][0] = i0;
+    d->prev[x0][1] = q0;
+    d->prev[x1][0] = i1;
+    d->prev[x1][1] = q1;
+    uint32_t hit_k[8];
+    unsigned hit_m[8];
+    unsigned hits = match(d, x0, w0, 0, hit_k, hit_m, 0);
+    hits = match(d, x1, w1, 1, hit_k, hit_m, hits);
     for (unsigned h = 0; h < hits; ++h) {
         uint64_t k = d->c + hit_k[h];
         if (!d->pending) {
@@ -1168,6 +1195,12 @@ static int acquire(rx_demod_t *d)
         }
         if (8 * (d->c + SEARCH - 1) > d->written) {
             break;                                   /* the block's last window is not here */
+        }
+        if (8 * d->c + RING < d->written + 16) {
+            acquire_from(d, d->written);             /* a failed deferred refine left c a frame
+                                                      * back: search the new samples, not the
+                                                      * ring's overwritten past */
+            continue;
         }
         search(d);
     }
