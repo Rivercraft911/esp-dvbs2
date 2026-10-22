@@ -236,7 +236,32 @@ def test_tones():
             assert not lib.radio_signal_init(ctx, name.encode()), name
 
 
+def test_short_decode():
+    """Short FECFRAME helpers: Kbch, payload size, symbol counts and the LeanDVB option."""
+    for mc in range(4, 11):
+        rate = dvbs2.RATES[mc-1]
+        c = dvbs2.code(rate, True)
+        assert decode.KBCH_SHORT[mc] == c.kbch
+        assert len(decode.payload(mc, 1, "N0CALL", short=True)) == (c.kbch-80)//8
+    assert len(decode.payload(7, 1, "N0CALL", short=True)) == 1454
+    # The PRNG continues across frames: two frames are the first 2 x 1454 bytes of one stream.
+    two = decode.payload(7, 2, "N0CALL", short=True)
+    assert two[:1454] == decode.payload(7, 1, "N0CALL", short=True) and two[1454:1494] == two[:40]
+    rejects(lambda: decode.payload(11, 1, "N0CALL", short=True))
+    # 8,370 symbols per frame: 16 nominal frames hold 16 data frames, 8,370 symbols fall short of a 17th.
+    assert decode.stream_layout(7, 16, short=True) == dict(
+        expected_payload_frames=16, expected_dummy_frames=0, partial_payload_symbols=0, partial_dummy_symbols=0)
+    assert decode.stream_layout(7, 1, (0,), short=True)["expected_dummy_frames"] == 1
+    rejects(decode.stream_layout, 11, 16, (), True)
+    normal = decode.receiver_command("rx", 4e6, 1e6, .35, 9)
+    short = decode.receiver_command("rx", 4e6, 1e6, .35, 9, short=True)
+    assert "--framesizes" not in normal and short[short.index("--framesizes")+1] == "2"
+    assert short[:short.index("--framesizes")] + short[short.index("--framesizes")+2:] == normal
+    print("short decode: Kbch, 1,454-byte QPSK 3/4 payload, 8,370-symbol layout, --framesizes 2")
+
+
 if __name__ == "__main__":
+    test_short_decode()
     test_decode()
     test_dummy_decode()
     test_pace_and_crc()

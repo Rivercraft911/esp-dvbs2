@@ -402,12 +402,15 @@ int main(int argc, char **argv)
     assert(argc == 7 || argc == 8);
     callsign = argv[4];
     const uint32_t rate = (uint32_t)atol(argv[5]);
-    const unsigned mc = (unsigned)atoi(argv[1]), sps = (unsigned)atoi(argv[2]), frames = (unsigned)atoi(argv[6]);
+    // MODCOD 100 + n selects the short-FECFRAME mode n (1 Msym/s QPSK only).
+    const bool short_frames = atoi(argv[1]) >= 100;
+    dvbtx_set_short(short_frames);
+    const unsigned mc = (unsigned)atoi(argv[1]) % 100, sps = (unsigned)atoi(argv[2]), frames = (unsigned)atoi(argv[6]);
     const bool moon = sps == DVB_SPS_12_5 || (mc >= 12 && sps == 3);
     const bool quads = mc < 12 && rate == 80000000, short_pulse = !moon && mc >= 12 && rate == 80000000;
     if (argc == 8) native_input = atoi(argv[7]);
     if (native_input > 2) { native_replay = true; native_input -= 2; }
-    const dvbs2_mode *mode = dvbs2_find_mode(mc);
+    const dvbs2_mode *mode = short_frames ? dvbs2_find_mode_short(mc) : dvbs2_find_mode(mc);
     const size_t length = dvbs2_frame_symbols(mode, 1), bytes = (mode->kbch - 80) / 8;
     phase_count = (frames + 2) * length;
     phases = malloc(phase_count);
