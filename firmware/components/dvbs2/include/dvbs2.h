@@ -4,9 +4,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Normal frames only. Bits are packed MSB first; phase k means exp(j*k*pi/4).
+/* Normal (64,800 bit) and short (16,200 bit) FECFRAMEs; short is QPSK MODCODs 4..10 only.
+ * Bits are packed MSB first; phase k means exp(j*k*pi/4).
  * SIS/CCM, roll-off 0.35, no ISSY/NPD, PL scrambling code 0.
- * Use mode pointers from dvbs2_find_mode or dvbs2_modes. Payload/input and
+ * Use mode pointers from dvbs2_find_mode (normal), dvbs2_find_mode_short or the
+ * tables; the frame size travels with the mode (short_frame). Payload/input and
  * phase output buffers must not overlap the workspace or TS state. */
 #define DVBS2_FEC_BYTES 8100
 #define DVBS2_MAX_SYMBOLS 33282
@@ -18,12 +20,23 @@ void dvbs2_dummy(uint8_t *output);
 typedef struct {
     const char *rate;
     uint16_t kbch, nbch;
-    uint8_t modcod, bits_per_symbol, q, t;
+    uint8_t modcod, bits_per_symbol, t;
+    /* q = 360-bit column height (Table 7), at most 90. short_frame = 1: 16,200-bit FECFRAME
+     * (Table 5b), t = 12 with 168 parity bits. Both fit the byte that keeps the struct 12 bytes. */
+    uint8_t q : 7, short_frame : 1;
 } dvbs2_mode;
 
 extern const dvbs2_mode dvbs2_modes[];
 extern const size_t dvbs2_mode_count;
 const dvbs2_mode *dvbs2_find_mode(unsigned modcod);
+/* Short FECFRAME modes: MODCOD 4..10 (QPSK 1/2 .. 8/9), else NULL. Short Kbch is 7,032
+ * (1/2) .. 14,232 (8/9) bits; 3/4 carries (11,712 - 80) / 8 = 1,454 payload bytes.
+ * A short QPSK PLFRAME has 8,370 symbols with pilots, 8,190 without. */
+extern const dvbs2_mode dvbs2_modes_short[];
+extern const size_t dvbs2_mode_short_count;
+const dvbs2_mode *dvbs2_find_mode_short(unsigned modcod);
+#define DVBS2_SHORT_FEC_BYTES 2025
+#define DVBS2_SHORT_MAX_SYMBOLS 8370
 size_t dvbs2_frame_symbols(const dvbs2_mode *mode, int pilots);
 
 typedef struct {
@@ -38,6 +51,9 @@ typedef struct {
  * Fast-only callers may allocate DVBS2_FAST_WORKSPACE_USED aligned bytes,
  * followed by any caller-owned window. Never pass that allocation to plain stages. */
 #define DVBS2_FAST_WORKSPACE_USED 8144
+/* Same rule for short frames: 2,025 bytes round up to 2,032, then 32 guard bytes. The first
+ * bytes of any dvbs2_workspace serve a short mode; plain stages still need all of it. */
+#define DVBS2_SHORT_FAST_WORKSPACE_USED 2064
 
 typedef struct {
     uint16_t packet_pos; /* raw TS byte offset, 0..187 */

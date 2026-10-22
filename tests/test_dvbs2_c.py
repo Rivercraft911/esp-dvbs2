@@ -18,6 +18,7 @@ import dvbs2 as d
 
 MODES = [(k, "qpsk", r) for k, r in enumerate(d.RATES[3:], 4)]
 MODES += [(k, "8psk", r) for k, r in enumerate(d.PSK8_RATES, 12)]
+SHORT_MODES = [(k, "qpsk", r) for k, r in enumerate(d.RATES[3:10], 4)]
 U8P = ct.POINTER(ct.c_uint8)
 
 
@@ -43,6 +44,7 @@ class NativeEncoder:
             "workspace_size": (ct.c_size_t, []),
             "state_size": (ct.c_size_t, []),
             "dvbs2_find_mode": (ct.c_void_p, [ct.c_uint]),
+            "dvbs2_find_mode_short": (ct.c_void_p, [ct.c_uint]),
             "dvbs2_frame_symbols": (ct.c_size_t, [ct.c_void_p, ct.c_int]),
             "dvbs2_bb_gcs": (ct.c_int, [ct.c_void_p, ct.c_void_p, U8P, ct.c_size_t]),
             "dvbs2_bb_gcs_ro": (ct.c_int, [ct.c_void_p, ct.c_void_p, U8P, ct.c_size_t, ct.c_uint]),
@@ -93,23 +95,23 @@ class NativeEncoder:
         packed = np.packbits(bits)
         ct.memmove(self.ws, packed.ctypes.data, len(packed))
 
-    def stages(self, bbf, mode, rate, modulation, pilots):
-        c = d.code(rate)
+    def stages(self, bbf, mode, rate, modulation, pilots, short=False):
+        c = d.code(rate, short)
         np.testing.assert_array_equal(self.bits(c.kbch), bbf, err_msg="BBFRAME")
         self.lib.dvbs2_bb_scramble(self.ws, mode)
         scr = d.bb_scramble(bbf)
         np.testing.assert_array_equal(self.bits(c.kbch), scr, err_msg="BB scrambling")
         self.lib.dvbs2_bch(self.ws, mode)
-        bch = d.bch_encode(scr, rate)
+        bch = d.bch_encode(scr, rate, short)
         np.testing.assert_array_equal(self.bits(c.nbch), bch, err_msg="BCH")
         self.lib.dvbs2_ldpc(self.ws, mode)
-        fec = d.ldpc_encode_groups(bch, rate)
+        fec = d.ldpc_encode_groups(bch, rate, short)
         np.testing.assert_array_equal(self.bits(c.n), fec, err_msg="LDPC")
-        self.phases(fec, mode, rate, modulation, pilots)
+        self.phases(fec, mode, rate, modulation, pilots, short)
 
-    def phases(self, fec, mode, rate, modulation, pilots):
+    def phases(self, fec, mode, rate, modulation, pilots, short=False):
         count = self.lib.dvbs2_frame_symbols(mode, pilots)
-        assert count == d.plframe_length(False, pilots, modulation)
+        assert count == d.plframe_length(short, pilots, modulation)
         # Guard both ends, including the exact no-pilot output allocation.
         raw = np.full(count + 32, 0xA5, np.uint8)
         output = raw[16:-16]
@@ -122,30 +124,30 @@ class NativeEncoder:
         np.testing.assert_array_equal(output[90:90 + len(mapped)], mapped,
                                       err_msg="interleaver / mapping")
         self.lib.dvbs2_plframe(mode, pilots, output.ctypes.data_as(U8P))
-        expected = d.plframe_phases(fec, rate, pilots=pilots, modulation=modulation)
+        expected = d.plframe_phases(fec, rate, short, pilots=pilots, modulation=modulation)
         np.testing.assert_array_equal(output, expected, err_msg="PLFRAME")
         assert np.all(raw[:16] == 0xA5) and np.all(raw[-16:] == 0xA5)
         return output.copy()
 
 
-    def fast_stages(self, bbf, mode, rate, modulation, pilots, offset=0):
+    def fast_stages(self, bbf, mode, rate, modulation, pilots, offset=0, short=False):
         """Fast path after fast_bb_*: every stage against the model and the
         PLFRAME written at an arbitrary output offset with guard bytes."""
-        c = d.code(rate)
+        c = d.code(rate, short)
         scr = d.bb_scramble(bbf)
         np.testing.assert_array_equal(self.bits(c.kbch), scr, err_msg="fast BB")
         self.lib.dvbs2_fast_bch(self.fast, self.ws)
-        bch = d.bch_encode(scr, rate)
+        bch = d.bch_encode(scr, rate, short)
         np.testing.assert_array_equal(self.bits(c.nbch), bch, err_msg="fast BCH")
         self.lib.dvbs2_fast_ldpc(self.fast, self.ws)
-        fec = d.ldpc_encode_groups(bch, rate)
+        fec = d.ldpc_encode_groups(bch, rate, short)
         np.testing.assert_array_equal(self.bits(c.n), fec, err_msg="fast LDPC")
         count = self.lib.dvbs2_frame_symbols(mode, pilots)
         raw = np.full(count + 64, 0xA5, np.uint8)
         output = raw[16 + offset:16 + offset + count]
         self.lib.dvbs2_fast_map(self.fast, self.ws, output.ctypes.data_as(U8P))
         self.lib.dvbs2_fast_pl(self.fast, output.ctypes.data_as(U8P))
-        expected = d.plframe_phases(fec, rate, pilots=pilots, modulation=modulation)
+        expected = d.plframe_phases(fec, rate, short, pilots=pilots, modulation=modulation)
         np.testing.assert_array_equal(output, expected, err_msg="fast PLFRAME")
         assert np.all(raw[:16 + offset] == 0xA5) and np.all(raw[16 + offset + count:] == 0xA5)
 
@@ -478,8 +480,113 @@ def test_bch_cache(native):
     print("resident BCH: every t=10/12 mode, canonical parity, guards, restore and invalid alignment")
 
 
+def test_short(native):
+    """Short FECFRAMEs, QPSK MODCOD 4..10: portable and fast stages against the model."""
+    lib, fast = native.lib, native.fast
+    rng, frames = np.random.default_rng(16200), 0
+    assert not lib.dvbs2_find_mode_short(3) and not lib.dvbs2_find_mode_short(11)
+    assert not lib.dvbs2_find_mode_short(12)
+    for modcod, modulation, rate in SHORT_MODES:
+        mode, c = lib.dvbs2_find_mode_short(modcod), d.code(rate, True)
+        assert mode and mode != lib.dvbs2_find_mode(modcod)
+        assert c.kbch % 8 == 0 and (c.nbch - c.kbch) == 168
+        capacity = c.kbch - 80
+        for pilots in (1, 0):
+            assert lib.dvbs2_frame_symbols(mode, pilots) == (8370 if pilots else 8190)
+            assert lib.dvbs2_fast_prepare(fast, mode, pilots, 0) == 0
+            for case, length in enumerate((capacity, 0, 13, capacity - 3, capacity, 1)):
+                bits = rng.integers(0, 2, length, dtype=np.uint8)
+                if case == 4:
+                    bits.fill(1)
+                packed = np.packbits(bits)
+                if length % 8:
+                    packed[-1] |= (1 << (8 - length % 8)) - 1
+                bbf = d.bbframe(bits, rate, True)
+                assert lib.dvbs2_bb_gcs(native.ws, mode, packed.ctypes.data_as(U8P), length) == 0
+                native.stages(bbf, mode, rate, modulation, pilots, True)
+                assert lib.dvbs2_fast_bb_gcs(fast, native.ws, packed.ctypes.data_as(U8P), length) == 0
+                native.fast_stages(bbf, mode, rate, modulation, pilots, (5 * frames) % 16, True)
+                frames += 1
+        # TS continuation, portable and fast.
+        size, count = (c.kbch - 80) // 8, 3
+        packets = rng.integers(0, 256, ((count * size + 187) // 188, 188), dtype=np.uint8)
+        packets[:, 0] = 0x47
+        expected = d.ts_bbframes(packets, rate, True)
+        stream = packets.ravel()
+        assert lib.dvbs2_fast_prepare(fast, mode, 1, 0) == 0
+        for use_fast in (0, 1):
+            state = ct.create_string_buffer(lib.state_size())
+            for k in range(count):
+                payload = stream[k * size:(k + 1) * size]
+                if use_fast:
+                    assert lib.dvbs2_fast_bb_ts(fast, native.ws, state, payload.ctypes.data_as(U8P), size) == 0
+                    native.fast_stages(expected[k], mode, rate, modulation, 1, k, True)
+                else:
+                    assert lib.dvbs2_bb_ts(native.ws, mode, state, payload.ctypes.data_as(U8P), size) == 0
+                    native.stages(expected[k], mode, rate, modulation, 1, True)
+                frames += 1
+        # LDPC impulses against the bit-address equations, plain and fast.
+        for bit in (0, 1, 7, 8, 31, 32, 351, 352, 359, 360, 361, c.nbch - 361, c.nbch - 1):
+            message = np.zeros(c.nbch, np.uint8)
+            message[bit] = 1
+            want = d.ldpc_encode(message, rate, True)
+            native.load(message)
+            lib.dvbs2_ldpc(native.ws, mode)
+            np.testing.assert_array_equal(native.bits(c.n), want, err_msg=f"LDPC {rate} impulse {bit}")
+            native.load(message)
+            lib.dvbs2_fast_ldpc(fast, native.ws)
+            np.testing.assert_array_equal(native.bits(c.n), want, err_msg=f"fast LDPC {rate} impulse {bit}")
+        # Complete and packed frames in an exactly sized context; fast stages touch only the
+        # advertised workspace prefix (garbage beyond it must survive).
+        n = (c.kbch - 80) // 8
+        payload = rng.integers(0, 256, n, dtype=np.uint8)
+        bits = np.unpackbits(payload)[:-3]
+        size = lib.dvbs2_fast_mode_size(mode)
+        assert 0 < size <= lib.dvbs2_fast_size()
+        for pilots in (0, 1):
+            raw = np.full(size + 64, 0xA5, np.uint8)
+            at = 16 + (-raw.ctypes.data % 16)
+            f = raw.ctypes.data + at
+            assert lib.dvbs2_fast_prepare(f, mode, pilots, 15) == 0
+            wraw = np.full(2064 + 64, 0x3C, np.uint8)
+            wat = 16 + (-wraw.ctypes.data % 16)
+            ws = wraw.ctypes.data + wat
+            count = lib.dvbs2_frame_symbols(mode, pilots)
+            expected = d.plframe_phases(d.fecframe(d.bbframe(bits, rate, True), rate, True), rate,
+                                        True, pilots=pilots, modulation=modulation)
+            out = np.full(count + 32, 0x5A, np.uint8)
+            assert lib.dvbs2_encode_frame(f, ws, None, payload.ctypes.data_as(U8P), len(bits),
+                                          out[16:-16].ctypes.data_as(U8P)) == 0
+            np.testing.assert_array_equal(out[16:-16], expected)
+            assert np.all(out[:16] == 0x5A) and np.all(out[-16:] == 0x5A)
+            assert np.all(raw[:at] == 0xA5) and np.all(raw[at + size:] == 0xA5)
+            assert np.all(wraw[wat + 2064:] == 0x3C) and np.all(wraw[:wat] == 0x3C)
+            for offset in (0, 3):
+                pk = np.full(count // 2 + 32, 0x5A, np.uint8)
+                assert lib.dvbs2_encode_frame_packed(f, ws, None, payload.ctypes.data_as(U8P), len(bits),
+                                                     pk[16 + offset:].ctypes.data_as(U8P)) == 0
+                np.testing.assert_array_equal(pk[16 + offset:16 + offset + count // 2], pack(expected))
+                assert np.all(pk[:16 + offset] == 0x5A), (pilots, offset, "head")
+                assert np.all(pk[16 + offset + count // 2:] == 0x5A), (pilots, offset, "tail")
+        # Resident byte BCH table.
+        data = rng.integers(0, 2, c.kbch, dtype=np.uint8)
+        cache = np.zeros(8192 + 16, np.uint8)
+        table = cache[(-cache.ctypes.data) % 16:][:8192]
+        assert lib.dvbs2_fast_prepare(fast, mode, 1, 15) == 0
+        assert lib.dvbs2_fast_cache_bch(fast, table.ctypes.data_as(U8P)) == 0
+        native.load(data)
+        lib.dvbs2_fast_bch(fast, native.ws)
+        np.testing.assert_array_equal(native.bits(c.nbch), d.bch_encode(data, rate, True))
+    # A short mode is not the normal mode of the same MODCOD: copies with the wrong size are refused.
+    assert lib.dvbs2_fast_mode_size(lib.dvbs2_find_mode_short(7)) < lib.dvbs2_fast_mode_size(lib.dvbs2_find_mode(7))
+    print(f"short frames: {frames} GCS/TS frames, QPSK MODCOD 4..10, pilots on/off, portable and "
+          "fast stages, PLFRAME at shifted addresses, LDPC impulses, packed/complete API in "
+          "exact-sized buffers")
+
+
 if __name__ == "__main__":
     with NativeEncoder() as native:
         for test in (test_modes, test_gcs, test_ts, test_ldpc_boundaries, test_invalid_inputs,
-                     test_rolloff, test_fast, test_complete_frame, test_packed, test_bch_cache):
+                     test_rolloff, test_fast, test_complete_frame, test_packed, test_bch_cache,
+                     test_short):
             test(native)
