@@ -69,7 +69,7 @@ static void dump(unsigned mhz, unsigned gain, unsigned pairs)
         return;
     }
     d.q = d.i + pairs;
-    capture_config_t c = {mhz, gain, 1 + pairs / CAPTURE_RATE, false};
+    capture_config_t c = {.mhz = mhz, .gain = gain, .seconds = 1 + pairs / CAPTURE_RATE};
     capture_stats_t s;
     capture_run(&c, dump_unit, &d, &s);
     printf("@{\"cmd\":\"dump\",\"mhz\":%u,\"gain\":%u,\"pairs\":%u,\"layout\":\"i plane, q plane\"",
@@ -173,12 +173,12 @@ void app_main(void)
                    (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                    (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
         } else if (fields >= 4 && !strcmp(cmd, "rxprobe") && (fields == 4 || !strcmp(mode, "promisc"))) {
-            capture_config_t c = {mhz, gain, seconds, fields == 5};
+            capture_config_t c = {.mhz = mhz, .gain = gain, .seconds = seconds, .promiscuous = fields == 5};
             rxprobe(&c);
         } else if (fields == 5 && !strcmp(cmd, "rx")) {
             unsigned modcod = 0;
             sscanf(mode, "%u", &modcod);
-            capture_config_t c = {mhz, gain, seconds, false};
+            capture_config_t c = {.mhz = mhz, .gain = gain, .seconds = seconds};
             receive_stats_t r;
             capture_stats_t s = {0};
             quiet = true;
@@ -223,7 +223,7 @@ void app_main(void)
         } else if (fields == 4 && !strcmp(cmd, "dump")) {
             dump(mhz, gain, seconds);
         } else if (fields >= 3 && !strcmp(cmd, "membench")) {
-            capture_config_t c = {mhz, gain, 1, false};
+            capture_config_t c = {.mhz = mhz, .gain = gain, .seconds = 1};
             uint32_t r[16];
             capture_stats_t s;
             capture_bench(&c, r, &s);

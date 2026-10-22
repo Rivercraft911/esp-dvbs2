@@ -16,16 +16,19 @@
 #include "capture.h"
 #include "dvbs2rx.h"
 
-#define SLOTS 6U
+#define SLOTS 4U
+#define DECODER_STACK 4096U
 #define STOP 0xffU
 
 typedef struct {
     rx_demod_t *demod;
     rx_fec_t *fec;
     void *fec_work;
+    rx_config_t config;
     rx_frame_t slot[SLOTS], *current;
     QueueHandle_t full, empty;
     SemaphoreHandle_t done;
+    TaskHandle_t task;
     receive_stats_t *stats;
 } receiver_t;
 
@@ -79,48 +82,55 @@ static void decoder(void *arg)
     vTaskDelete(NULL);
 }
 
+/* After Wi-Fi is up: every run allocation, the decoder task and the stream header. */
+static esp_err_t ready(void *ctx)
+{
+    receiver_t *r = ctx;
+    const unsigned internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    r->demod = heap_caps_aligned_alloc(16, rx_demod_size(), internal);
+    r->fec = heap_caps_aligned_alloc(16, rx_fec_size(r->config.modcod), internal);
+    /* The iterative decoder's work area only serves damaged frames; it lives in PSRAM. */
+    r->fec_work = heap_caps_aligned_alloc(16, rx_fec_work_size(r->config.modcod), MALLOC_CAP_SPIRAM);
+    r->full = xQueueCreate(SLOTS + 1, 1);
+    r->empty = xQueueCreate(SLOTS, 1);
+    r->done = xSemaphoreCreateBinary();
+    bool ok = r->demod && r->fec && r->fec_work && r->full && r->empty && r->done;
+    for (unsigned i = 0; ok && i < SLOTS; ++i) {
+        r->slot[i].hard = heap_caps_aligned_alloc(16, RX_HARD_BYTES, internal);
+        r->slot[i].llr = heap_caps_aligned_alloc(16, RX_SHORT_BITS, MALLOC_CAP_SPIRAM);
+        ok = r->slot[i].hard && r->slot[i].llr;
+        uint8_t n = i;
+        if (ok && i) xQueueSend(r->empty, &n, 0);
+    }
+    r->current = &r->slot[0];
+    if (!ok) return ESP_ERR_NO_MEM;
+    if (rx_demod_init(r->demod, &r->config) || rx_fec_init(r->fec, r->config.modcod, r->fec_work))
+        return ESP_ERR_INVALID_ARG;
+    if (xTaskCreatePinnedToCore(decoder, "decoder", DECODER_STACK, r, 10, &r->task, 0) != pdPASS)
+        return ESP_ERR_NO_MEM;
+    printf("@{\"cmd\":\"rx\",\"stream\":\"binary\",\"record_bytes\":%u}\n",
+           (unsigned)sizeof(receive_record_t));
+    fflush(stdout);
+    return ESP_OK;
+}
+
 esp_err_t receive_run(const capture_config_t *capture, unsigned modcod, receive_stats_t *s,
                       capture_stats_t *cs)
 {
     memset(s, 0, sizeof *s);
-    receiver_t r = {.stats = s};
-    rx_config_t config = {.modcod = modcod, .cfo_hint_hz = -10000, .cfo_span_hz = 30000,
-                          .carrier_khz = capture->mhz * 1000U};
-    const unsigned internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
-    esp_err_t error = ESP_ERR_NO_MEM;
-    r.demod = heap_caps_aligned_alloc(16, rx_demod_size(), internal);
-    r.fec = heap_caps_aligned_alloc(16, rx_fec_size(modcod), internal);
-    /* The iterative decoder's work area only serves damaged frames; it lives in PSRAM. */
-    r.fec_work = heap_caps_aligned_alloc(16, rx_fec_work_size(modcod), MALLOC_CAP_SPIRAM);
-    r.full = xQueueCreate(SLOTS + 1, 1);
-    r.empty = xQueueCreate(SLOTS, 1);
-    r.done = xSemaphoreCreateBinary();
-    bool ready = r.demod && r.fec && r.fec_work && r.full && r.empty && r.done;
-    for (unsigned i = 0; ready && i < SLOTS; ++i) {
-        r.slot[i].hard = heap_caps_aligned_alloc(16, RX_HARD_BYTES, internal);
-        r.slot[i].llr = heap_caps_aligned_alloc(16, RX_SHORT_BITS, MALLOC_CAP_SPIRAM);
-        ready = r.slot[i].hard && r.slot[i].llr;
-        uint8_t n = i;
-        if (ready && i) xQueueSend(r.empty, &n, 0);
+    receiver_t r = {.stats = s, .config = {.modcod = modcod, .cfo_hint_hz = -10000,
+                                          .cfo_span_hz = 30000, .carrier_khz = capture->mhz * 1000U}};
+    capture_config_t c = *capture;
+    c.ready = ready;
+    esp_err_t error = capture_run(&c, consume, &r, cs);
+    if (r.task) {
+        uint8_t stop = STOP;
+        xQueueSend(r.full, &stop, portMAX_DELAY);
+        xSemaphoreTake(r.done, portMAX_DELAY);
+        receive_record_t end = {RECEIVE_MAGIC, 0, 0, 0, RECEIVE_END, 0, 0};
+        usb_serial_jtag_write_bytes(&end, sizeof end, portMAX_DELAY);
+        rx_demod_stats(r.demod, &s->demod);
     }
-    r.current = &r.slot[0];
-    if (!ready) goto done;
-    error = ESP_ERR_INVALID_ARG;
-    if (rx_demod_init(r.demod, &config) || rx_fec_init(r.fec, modcod, r.fec_work)) goto done;
-    error = ESP_ERR_NO_MEM;
-    if (xTaskCreatePinnedToCore(decoder, "decoder", 8192, &r, 10, NULL, 0) != pdPASS) goto done;
-    printf("@{\"cmd\":\"rx\",\"stream\":\"binary\",\"record_bytes\":%u}\n",
-           (unsigned)sizeof(receive_record_t));
-    fflush(stdout);
-    error = capture_run(capture, consume, &r, cs);
-    uint8_t stop = STOP;
-    xQueueSend(r.full, &stop, portMAX_DELAY);
-    xSemaphoreTake(r.done, portMAX_DELAY);
-    receive_record_t end = {RECEIVE_MAGIC, 0, 0, 0, RECEIVE_END, 0, 0};
-    usb_serial_jtag_write_bytes(&end, sizeof end, portMAX_DELAY);
-    rx_demod_stats(r.demod, &s->demod);
-
-done:
     for (unsigned i = 0; i < SLOTS; ++i) {
         heap_caps_free(r.slot[i].hard);
         heap_caps_free(r.slot[i].llr);
