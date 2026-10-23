@@ -17,9 +17,11 @@
 
 #include "arena.h"
 #include "capture.h"
+#include "eth_egress.h"
 #include "receive.h"
 #include "replay.h"
 #include "kernels.h"
+#include "w5500_eth.h"
 
 // IDF's VFS drops characters after a 50 ms full-buffer timeout; block instead.
 static int console_put(char c, FILE *stream)
@@ -188,9 +190,10 @@ static unsigned symbol_rate(const char *token)
     return !*token || !strcmp(token, "1m") ? 1000000 : !strcmp(token, "5m") ? 5000000 : 0;
 }
 
-/* The words after a run's numbers: [1m|5m] [ts [pattern] [nonull]], and for a replay a skip
- * count. Returns false on anything else. */
-static bool run_options(char *rest, unsigned *rate, unsigned *skip, receive_options_t *o)
+/* The words after a run's numbers: [1m|5m] [ts [pattern] [nonull] [eth]], and for a replay a
+ * skip count. Returns false on anything else. */
+static bool run_options(char *rest, unsigned *rate, unsigned *skip, receive_options_t *o,
+                        bool *eth)
 {
     char *save, *t;
     for (t = strtok_r(rest, " ", &save); t; t = strtok_r(NULL, " ", &save)) {
@@ -198,10 +201,21 @@ static bool run_options(char *rest, unsigned *rate, unsigned *skip, receive_opti
         else if (!strcmp(t, "ts")) o->ts = true;
         else if (!strcmp(t, "pattern")) o->pattern = true;
         else if (!strcmp(t, "nonull")) o->drop_null = true;
+        else if (!strcmp(t, "eth")) *eth = true;
         else if (skip && *t >= '0' && *t <= '9') *skip = (unsigned)atoi(t);
         else return false;
     }
-    return o->ts || !(o->pattern || o->drop_null);
+    return o->ts || !(o->pattern || o->drop_null || *eth);
+}
+
+/* A run with `eth`: the W5500 egress from before the run to after it (eth_egress.h). */
+static eth_egress_stats_t eth;
+
+static esp_err_t eth_begin(bool on, receive_options_t *o)
+{
+    if (!on) return ESP_OK;
+    o->egress = eth_egress_begin(&eth);
+    return o->egress ? ESP_OK : ESP_ERR_INVALID_STATE;
 }
 
 /* TS mode's counters, inside a summary left open. */
@@ -267,6 +281,7 @@ void app_main(void)
     esp_log_set_vprintf(log_filter);
     receive_init();
     const esp_err_t radio = capture_init();
+    eth_egress_init();
     const int fits = !arena_check();
     arena_booted();
     char line[96];
@@ -297,16 +312,21 @@ void app_main(void)
             unsigned modcod = 0, rate = 1000000;
             int used = 0;
             receive_options_t o = {0};
+            bool on = false;
             bool ok = sscanf(line, "rx %*u %*u %*u %u %n", &modcod, &used) == 1 && used &&
-                      run_options(line + used, &rate, NULL, &o);
+                      run_options(line + used, &rate, NULL, &o, &on);
             capture_config_t c = {.mhz = mhz, .gain = gain, .seconds = seconds};
             capture_stats_t s = {0};
             memset(&run, 0, sizeof run);
+            on = on && ok;
+            esp_err_t e = ok ? eth_begin(on, &o) : ESP_ERR_INVALID_ARG;
             quiet = true;
-            esp_err_t e = ok ? receive_run(&c, modcod, rate, &o, &run, &s) : ESP_ERR_INVALID_ARG;
+            if (e == ESP_OK) e = receive_run(&c, modcod, rate, &o, &run, &s);
             quiet = false;
+            if (on) eth_egress_end(&eth);
             print_receive("rx", e, modcod, rate, &run);
             if (o.ts) print_ts(&run);
+            if (on) eth_egress_print(&eth);
             print_capture(&s);
             print_memory();
             printf("}\n");
@@ -316,20 +336,27 @@ void app_main(void)
             unsigned modcod = mhz, skip = 0, rate = 1000000;
             int used = 0;
             receive_options_t o = {0};
+            bool on = false;
             bool ok = sscanf(line, "replay %*u %n", &used) == 0 && used &&
-                      run_options(line + used, &rate, &skip, &o);
+                      run_options(line + used, &rate, &skip, &o, &on);
             capture_stats_t s = {0};
             memset(&run, 0, sizeof run);
+            on = on && ok;
+            esp_err_t e = ok ? eth_begin(on, &o) : ESP_ERR_INVALID_ARG;
             quiet = true;
-            esp_err_t e = ok ? replay_run(modcod, rate, skip, &o, &run, &s) : ESP_ERR_INVALID_ARG;
+            if (e == ESP_OK) e = replay_run(modcod, rate, skip, &o, &run, &s);
             quiet = false;
+            if (on) eth_egress_end(&eth);
             print_receive("replay", e, modcod, rate, &run);
             if (o.ts) print_ts(&run);
+            if (on) eth_egress_print(&eth);
             print_capture(&s);
             print_memory();
             printf(",\"push_words\":%u}\n@{\"cmd\":\"replay\",\"push_log\":[", CAPTURE_UNIT);
             for (unsigned k = 0; k < run.pushes && k < RECEIVE_LOG; ++k) printf("%s%lu", k ? "," : "", (unsigned long)run.log[k]);
             printf("]}\n");
+        } else if (fields >= 1 && !strcmp(cmd, "eth")) {
+            w5500_eth_command(line + 3);
         } else if (fields == 4 && !strcmp(cmd, "dump")) {
             dump(mhz, gain, seconds);
         } else if (fields >= 3 && !strcmp(cmd, "membench")) {
@@ -343,7 +370,7 @@ void app_main(void)
             print_capture(&s);
             printf("}\n");
         } else {
-            printf("@{\"error\":\"use info, rxprobe MHz gain seconds, rx MHz gain seconds MODCOD [5m] [ts [pattern] [nonull]], dump MHz gain pairs, upload bytes, replay MODCOD [skip] [5m] [ts [pattern] [nonull]], membench MHz gain\"}\n");
+            printf("@{\"error\":\"use info, rxprobe MHz gain seconds, rx MHz gain seconds MODCOD [5m] [ts [pattern] [nonull] [eth]], dump MHz gain pairs, upload bytes, replay MODCOD [skip] [5m] [ts [pattern] [nonull] [eth]], membench MHz gain, eth [...]\"}\n");
         }
         printf("@{\"done\":true}\n");
     }

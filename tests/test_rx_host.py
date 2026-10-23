@@ -98,6 +98,13 @@ def main():
     assert rx.ts_verdict([plain], True, ok, pattern=False)["passed"]
     assert not rx.ts_verdict([dict(plain, ts=dict(plain["ts"], cc_errors=5))], True, ok, pattern=False)["passed"]
     assert not rx.ts_verdict([plain], True, ok)["passed"]          # a pattern run must have checked
+    # `ts eth`: the egress must have sent every packet the deframer handed on, none dropped.
+    eth = dict(status="ok", datagrams=33, sent=33, packets=231, dropped=0, arp_dropped=0)
+    assert rx.eth_verdict([dict(good, eth=eth)])["passed"]
+    for change in (dict(status="chip"), dict(dropped=1, packets=230), dict(packets=230),
+                   dict(sent=32), dict(arp_dropped=1), dict(datagrams=0, sent=0)):
+        assert not rx.eth_verdict([dict(good, eth=eth | change)])["passed"], change
+    assert not rx.eth_verdict([good])["passed"]                     # no eth counters at all
     # Long runs (540 s): the stream comes from row jumps, not one step at a time, and must equal
     # xorshift32 stepped byte by byte; CRC keys stand for the payloads; the model covers the run.
     x, ref = 2026, bytearray()
