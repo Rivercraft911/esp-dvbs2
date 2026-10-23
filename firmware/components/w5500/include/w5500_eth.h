@@ -4,12 +4,12 @@
 /* ESP-IDF side of the W5500 driver (w5500.h): a GP-SPI2 master with DMA, the S3's Ethernet MAC
  * from efuse, settings in NVS and the `eth` console command. The SPI is ESP-IDF's spi_master
  * (w5500_spi_idf.c) unless CONFIG_W5500_DIRECT_SPI selects w5500_spi_direct.c, which programs
- * GP-SPI2 and a GDMA channel itself: a seventh to a quarter of the CPU per datagram (w5500.h), less
- * internal RAM. Measured in throwaway builds of the receiver (static internal RAM over today's
- * receiver): +5,220 B with spi_master, +3,092 B direct, +2,612 B direct with
+ * GP-SPI2 and a GDMA channel itself: a seventh to a quarter of the CPU per datagram (w5500.h),
+ * less internal RAM. Measured in throwaway builds of the receiver (static internal RAM over
+ * today's receiver): +5,220 B with spi_master, +3,236 B direct, +2,756 B direct with
  * CONFIG_SPI_MASTER_ISR_IN_IRAM=n and CONFIG_SPI_SLAVE_ISR_IN_IRAM=n (either one puts GDMA control
  * code in IRAM); about 2 KB of the rest is the NVS flash-write path, and adding
- * CONFIG_SPI_FLASH_ROM_IMPL=y brings the receiver 6,164 B below today. TX: +464 B and +528 B. An
+ * CONFIG_SPI_FLASH_ROM_IMPL=y brings the receiver 6,004 B below today. TX: +480 B and +544 B. An
  * app starts the chip in one role, then calls w5500_udp_send(w5500_eth(), 0, ...) or
  * w5500_udp_recv from one task; the SPI interrupt is allocated on that task's core.
  *
