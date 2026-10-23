@@ -281,7 +281,10 @@ static const char *IRAM_ATTR stream(job_t *job)
         clear((uint32_t *)b);
         uint32_t now = esp_cpu_get_cycle_count();
         if (now - cleared > s->max_clear) s->max_clear = now - cleared;
-        if (now - start > s->max_service) s->max_service = now - start;
+        if (now - start > s->max_service) {
+            s->max_service = now - start;
+            s->max_service_at = s->samples;
+        }
         s->samples += count;
         ++s->units;
         expected = last;
@@ -455,7 +458,10 @@ static void replayer(void *arg)
         uint32_t start = esp_cpu_get_cycle_count();
         if (job->fn(words, n, first, job->ctx) != ESP_OK) { s->fault = "consumer"; break; }
         uint32_t cycles = esp_cpu_get_cycle_count() - start;
-        if (cycles > s->max_service) s->max_service = cycles;
+        if (cycles > s->max_service) {
+            s->max_service = cycles;
+            s->max_service_at = first;
+        }
         s->samples = first + n;
         ++s->units;
     }

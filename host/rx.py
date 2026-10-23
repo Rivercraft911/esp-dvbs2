@@ -191,12 +191,14 @@ def check(frames, modcod: int, callsign: str, tx_frames: int, symbol_rate: float
     exact = sum(matches)
     span = good[-1]["sequence"] - s0 + 1
     period = frame_symbols(modcod) / symbol_rate
+    mers = sorted(f["mer_cdb"] for f in good if "mer_cdb" in f)     # pilot MER: lowest, median
     report.update(mislabelled=[dict(sequence=f["sequence"], model=index.get(key(f)), implied=implied(f))
                                for f, ok in zip(good, matches) if k0 is not None and not ok][:8],
                   valid=len(found), in_order=all(b > a for a, b in zip(found, found[1:])),
                   model_span=found[-1] - found[0] + 1 if found else 0,
                   lost=found[-1] - found[0] + 1 - len(found) if found else 0,
                   first_model_frame=k0, sequence_span=span, span_seconds=round(span * period, 3),
+                  mer_db=[mers[0] / 100, mers[len(mers) // 2] / 100] if mers else None,
                   exact=exact, missing=span - len(good), payload_mbps=round(8 * size / period / 1e6, 4),
                   exact_bytes=exact * size, passed=k0 is not None and exact == span == len(good))
     return report

@@ -29,6 +29,7 @@ typedef struct {
 
 typedef struct {
     uint64_t samples, dropped;  /* timeline position; samples lost to overload */
+    uint64_t max_service_at;    /* where the slowest unit started */
     uint32_t units, drops, max_late, max_service, max_clear, max_spin, max_lag;
     uint32_t free_before, free_wifi, free_ready, largest_ready, min_free, stack_free;  /* free_wifi: after Wi-Fi is gone */
     uint8_t gain_max;

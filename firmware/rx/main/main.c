@@ -36,14 +36,16 @@ static int log_filter(const char *format, va_list args)
 
 static void print_capture(const capture_stats_t *s)
 {
-    printf(",\"samples\":%llu,\"dropped\":%llu,\"drops\":%lu,\"units\":%lu,\"max_late\":%lu,\"max_service\":%lu,\"max_clear\":%lu,"
+    printf(",\"samples\":%llu,\"dropped\":%llu,\"drops\":%lu,\"units\":%lu,\"max_late\":%lu,\"max_service\":%lu,"
+           "\"max_service_at\":%llu,\"max_clear\":%lu,"
            "\"max_spin\":%lu,\"max_lag\":%lu,"
            "\"free_before\":%lu,\"free_wifi\":%lu,\"free_ready\":%lu,\"largest_ready\":%lu,"
            "\"min_free\":%lu,\"capture_stack_free\":%lu,"
            "\"gain_max\":%u,\"status\":\"%s\",\"cleanup\":\"%s\"",
            (unsigned long long)s->samples, (unsigned long long)s->dropped, (unsigned long)s->drops,
            (unsigned long)s->units, (unsigned long)s->max_late,
-           (unsigned long)s->max_service, (unsigned long)s->max_clear,
+           (unsigned long)s->max_service, (unsigned long long)s->max_service_at,
+           (unsigned long)s->max_clear,
            (unsigned long)s->max_spin, (unsigned long)s->max_lag,
            (unsigned long)s->free_before, (unsigned long)s->free_wifi,
            (unsigned long)s->free_ready, (unsigned long)s->largest_ready,
