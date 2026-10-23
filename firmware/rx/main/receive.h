@@ -52,6 +52,8 @@ typedef struct {
     receive_pattern_t pattern;
 } receive_stats_t;
 
+/* The receiver's queues and semaphores, once at boot. */
+void receive_init(void);
 /* All of count bytes to USB, blocking. */
 void receive_write(const void *data, size_t count);
 /* Live: capture at capture->mhz, rate 1,000,000 or 5,000,000 symbols/s. */

@@ -461,20 +461,29 @@ static inline unsigned mf_ready(const rx_demod_t *d, uint64_t t, uint32_t step, 
     return n < most ? (unsigned)n : most;
 }
 
+unsigned demod_mf5_plan(uint64_t t, uint32_t step, uint32_t c[5], uint64_t *b0)
+{
+    unsigned s = 0;
+    for (unsigned j = 0; j < 5; ++j) {
+        const uint64_t tq = (t + (uint64_t)j * step) >> (Q - 5), b = ((tq >> 5) - 8) & ~(uint64_t)15;
+        if (!j) {
+            *b0 = b;
+        }
+        s = !s && b != *b0 ? j : s;              /* the first centre past a window advance */
+        c[j] = (uint32_t)(tq - (b << 5));        /* centre in its window, 1/32 sample */
+    }
+    return s;
+}
+
 #if DVBS2RX_PIE
 void demod_mf5_run(const demod_mf_t *m, unsigned n, int16_t *oi, int16_t *oq, int8_t *sets,
                    uint32_t *key)
 {
     /* The five centres from t, mod 16 samples, pick five coefficient sets (kept while the
      * centres stay) in the order the aligned groups meet them; set 5 repeats set 0. */
-    uint64_t t = (uint64_t)m->t_hi << 32 | m->t_lo;
-    uint32_t c[5], b0 = 0, s = 0;
-    for (unsigned j = 0; j < 5; ++j) {
-        uint32_t tq = (uint32_t)((t + (uint64_t)j * m->step) >> (Q - 5)), b = ((tq >> 5) - 8) & ~15u;
-        b0 = j ? b0 : b;
-        s = !s && b != b0 ? j : s;               /* the first centre past a window advance */
-        c[j] = tq - (b << 5);                    /* centre in its window, 1/32 sample */
-    }
+    uint32_t c[5];
+    uint64_t b0;
+    const unsigned s = demod_mf5_plan((uint64_t)m->t_hi << 32 | m->t_lo, m->step, c, &b0);
     for (unsigned i = 0; i < 5; ++i) {
         unsigned j = (s + i) % 5;
         if (key[i] != c[j] + 1) {
@@ -489,7 +498,7 @@ void demod_mf5_run(const demod_mf_t *m, unsigned n, int16_t *oi, int16_t *oq, in
     /* The first group holds the symbols from s - 5 when the window advances at s. Groups
      * advance 16 samples; the ring wraps between calls. */
     int k = s ? (int)s - 5 : 0;
-    unsigned at = b0 & (RING - 16);
+    unsigned at = (unsigned)(b0 & (RING - 16));
     while (k < (int)n) {
         unsigned groups = (n - k + 4) / 5, room = (RING - at) / 16;
         groups = groups < room ? groups : room;

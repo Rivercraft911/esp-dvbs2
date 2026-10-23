@@ -109,6 +109,44 @@ def fast(so):
     return loss
 
 
+def mf5_plan(so):
+    """The 5 Msym/s batch plan (demod_mf5_plan, which the S3 build's demod_mf5_run uses) is the
+    same whatever multiple of 2^26 samples the time carries, also where the five centres straddle
+    2^27 samples, where 32-bit times in 1/32 sample wrap. The old 32-bit plan took that wrap for a
+    window advance: two frames lost a batch of symbols on the board (results/2026-10-23-rx-no-wifi-ab)."""
+    so.demod_mf5_plan.restype = R.ct.c_uint
+    so.demod_mf5_plan.argtypes = [R.ct.c_uint64, R.ct.c_uint32, R.ct.POINTER(R.ct.c_uint32 * 5),
+                                  R.ct.POINTER(R.ct.c_uint64)]
+
+    def plan(t, step):
+        c, b0 = (R.ct.c_uint32 * 5)(), R.ct.c_uint64()
+        s = so.demod_mf5_plan(t, step, R.ct.byref(c), R.ct.byref(b0))
+        return s, list(c), b0.value
+
+    def old(t, step):                        # the 32-bit arithmetic it replaced
+        c, b0, s = [], 0, 0
+        for j in range(5):
+            tq = ((t + j * step) >> 19) & 0xffffffff
+            b = (((tq >> 5) - 8) & 0xffffffff) & ~15 & 0xffffffff
+            b0 = b if j == 0 else b0
+            s = j if not s and b != b0 else s
+            c.append((tq - (b << 5)) & 0xffffffff)
+        return s, c
+
+    shift = (1 << 26) << 24                  # samples, Q24: a multiple of 16 and of the ring
+    old_wrong = 0
+    for step in (53687091, 53687091 + 160, 53687091 - 160):     # 3.2 samples, +-3 ppm
+        for wrap in (1 << 27, 1 << 28, 3 << 27):
+            for d in range(-14 << 24, 2 << 24, 1 << 21):      # first centre 14 samples before to 2 after
+                t = (wrap << 24) + d
+                s, c, b0 = plan(t, step)
+                s2, c2, b2 = plan(t - shift, step)
+                assert (s, c) == (s2, c2) and b0 - b2 == 1 << 26, (step, wrap, d)
+                old_wrong += old(t, step) != (s, c)
+    assert old_wrong > 0
+    return old_wrong
+
+
 def main():
     subprocess.run([sys.executable, str(ROOT / "host/rx_demod.py"), "tables", "--check"], check=True)
     with tempfile.TemporaryDirectory() as tmp:
@@ -199,9 +237,11 @@ def main():
         assert len(pairs) == 2 and all(np.array_equal(f["hard"], t["codeword"]) for f, t in pairs)
 
         loss5 = fast(so)
+        wrong = mf5_plan(so)
 
     print("rx demodulator passed: real excerpts locked, twin frames exact, "
-          f"implementation loss {loss:.2f} dB at 1 Msym/s QPSK, {loss5:.2f} dB at 5 Msym/s 8PSK")
+          f"implementation loss {loss:.2f} dB at 1 Msym/s QPSK, {loss5:.2f} dB at 5 Msym/s 8PSK, "
+          f"5 Msym/s plan unchanged across 2^27-sample wraps (the old one wrong at {wrong} times)")
 
 
 if __name__ == "__main__":
