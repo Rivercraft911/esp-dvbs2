@@ -11,6 +11,7 @@
 #include "esp_rom_sys.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "nvs.h"
 #include "nvs_flash.h"
@@ -32,6 +33,24 @@ static struct {
 } eth;
 
 static w5500 chip;
+
+/* One task owns the chip from w5500_eth_start to w5500_eth_stop; the driver and the shared
+ * transaction above are not reentrant. Others, such as the console, get W5500_ERR_BUSY. */
+static StaticSemaphore_t owner_mutex;
+static SemaphoreHandle_t owner_lock;
+static TaskHandle_t owner;
+static portMUX_TYPE owner_init = portMUX_INITIALIZER_UNLOCKED;
+
+static bool own(void)
+{
+    if (owner == xTaskGetCurrentTaskHandle()) return true;
+    taskENTER_CRITICAL(&owner_init);
+    if (!owner_lock) owner_lock = xSemaphoreCreateMutexStatic(&owner_mutex);
+    taskEXIT_CRITICAL(&owner_init);
+    if (xSemaphoreTake(owner_lock, 0) != pdTRUE) return false;
+    owner = xTaskGetCurrentTaskHandle();
+    return true;
+}
 
 /* One W5500 frame (DS 2.2) as one ESP-IDF half-duplex transaction: the 16-bit offset is the
  * command phase, the control byte the address phase, then the data phase. Short frames are polled
@@ -117,7 +136,7 @@ void w5500_eth_settings(w5500_settings *s)
     w5500_settings_default(s);
     if (open_store(NVS_READONLY, &h, &mounted) != ESP_OK) return;
     if (nvs_get_blob(h, "settings", &stored, &size) == ESP_OK && size == sizeof stored &&
-        stored.version == STORE_VERSION) *s = stored.s;
+        stored.version == STORE_VERSION && w5500_settings_valid(&stored.s)) *s = stored.s;
     close_store(h, mounted);
 }
 
@@ -137,7 +156,7 @@ static esp_err_t save(const w5500_settings *s)
     return err;
 }
 
-void w5500_eth_stop(void)
+static void release(void)
 {
     if (eth.acquired && chip.sock[0].open) w5500_udp_close(&chip, 0);
     if (eth.acquired) spi_device_release_bus(eth.dev);
@@ -147,11 +166,20 @@ void w5500_eth_stop(void)
     eth.bus = eth.acquired = false;
 }
 
+void w5500_eth_stop(void)
+{
+    if (owner != xTaskGetCurrentTaskHandle()) return;   /* only the owner stops the chip */
+    release();
+    owner = NULL;
+    xSemaphoreGive(owner_lock);
+}
+
 int w5500_eth_start(w5500_eth_role role)
 {
     w5500 *w = &chip;
     w5500_settings s;
-    w5500_eth_stop();
+    if (!own()) return W5500_ERR_BUSY;
+    release();
     w5500_eth_settings(&s);
     memset(w, 0, sizeof *w);
     const size_t free_before = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
@@ -216,7 +244,8 @@ static const char *name(int e)
     case W5500_ERR_ARG: return "argument";
     case W5500_ERR_BUS: return "spi";
     case W5500_ERR_CHIP: return "chip";
-    case W5500_ERR_SOCKET: return "socket closed";
+    case W5500_ERR_SOCKET: return "socket";
+    case W5500_ERR_BUSY: return "busy: another task owns the chip";
     default: return "?";
     }
 }
@@ -260,10 +289,23 @@ static void pattern(uint8_t *p, uint32_t seq)
     }
 }
 
+/* A diagnostic that could not start reports why and nothing else (the counters may belong to
+ * another owner's session). */
+static bool started(int e, uint8_t *buf, const char *what)
+{
+    if (e == W5500_OK) return true;
+    printf("@{\"cmd\":\"eth\",\"%s\":true,\"status\":\"%s\"", what, name(e));
+    if (e == W5500_ERR_BUS) printf(",\"esp_err\":\"%s\"", esp_err_to_name(eth.err));
+    printf("}\n");
+    heap_caps_free(buf);
+    return false;
+}
+
 static void diag_send(unsigned ms, double mbps)
 {
     uint8_t *buf = heap_caps_aligned_alloc(4, DATAGRAM, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
     int e = buf ? w5500_eth_start(W5500_ETH_SEND) : W5500_ERR_ARG;
+    if (!started(e, buf, "send")) return;
     uint32_t seq = 0, calls = 0;
     int64_t driver_us = 0;
     const int64_t t0 = esp_timer_get_time();
@@ -300,6 +342,7 @@ static void diag_recv(unsigned ms)
 {
     uint8_t *buf = heap_caps_aligned_alloc(4, W5500_UDP_MAX, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
     int e = buf ? w5500_eth_start(W5500_ETH_RECV) : W5500_ERR_ARG;
+    if (!started(e, buf, "recv")) return;
     uint32_t sync_errors = 0, not_ts = 0, calls = 0;
     int64_t driver_us = 0;
     w5500_peer peer = {{0}, 0};
@@ -343,9 +386,10 @@ static void status(void)
     esp_read_mac(mac, ESP_MAC_ETH);
     const int e = w5500_eth_start(W5500_ETH_RECV);
     const int phy = e ? e : w5500_phy(&chip);
+    const unsigned version = e == W5500_ERR_BUSY ? 0 : chip.version;
     printf("@{\"cmd\":\"eth\",%s,\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\",\"status\":\"%s\","
            "\"version\":%u,\"sck_khz_actual\":%d,\"heap_bytes\":%u", json, mac[0], mac[1], mac[2],
-           mac[3], mac[4], mac[5], name(phy < 0 ? phy : W5500_OK), chip.version, eth.khz,
+           mac[3], mac[4], mac[5], name(phy < 0 ? phy : W5500_OK), version, eth.khz,
            (unsigned)eth.heap_bytes);
     if (phy >= 0)
         printf(",\"link\":%s,\"link_mbps\":%d,\"duplex\":\"%s\"",

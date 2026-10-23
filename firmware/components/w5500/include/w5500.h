@@ -123,6 +123,7 @@ enum {
     W5500_ERR_BUS = -2,    /* the backend failed a frame */
     W5500_ERR_CHIP = -3,   /* wrong VERSIONR, reset or command not finishing, register write lost */
     W5500_ERR_SOCKET = -4, /* the socket did not open, or the chip closed it */
+    W5500_ERR_BUSY = -5,   /* w5500_eth: another task owns the chip */
 };
 
 typedef struct {
@@ -219,6 +220,8 @@ typedef struct {
 } w5500_settings;
 
 void w5500_settings_default(w5500_settings *s);
+/* Pins usable on these boards and distinct, ports nonzero, clock 10-40 MHz. */
+bool w5500_settings_valid(const w5500_settings *s);
 /* One `eth` setting: "ip A.B.C.D/N [gw A.B.C.D]", "dest A.B.C.D|broadcast[:PORT]",
  * "port PORT", "mhz F" (10..40), "pins SCLK MOSI MISO CS", "defaults".
  * Returns 1 if s changed, -1 on a syntax error (s unchanged). */

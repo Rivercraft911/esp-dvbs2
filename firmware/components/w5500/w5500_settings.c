@@ -17,6 +17,26 @@ void w5500_settings_default(w5500_settings *s)
     };
 }
 
+/* GPIOs the W5500 may use on these boards (ESP32-S3 with octal PSRAM, console on USB):
+ * 0-18, 21, 38-44, 47 and 48. Not 19-20 (USB D-/D+, the console), 22-25 (not bonded out,
+ * ESP32-S3 TRM v1.8 p.478), 26-37 (SPI flash and octal PSRAM), nor the strapping pins 45-46
+ * (TRM 8.1, p.534): GPIO45 is pulled down at reset to select 3.3 V flash, and the W5500's CS
+ * pull-up there could select 1.8 V. */
+static bool pin_ok(int p)
+{
+    return (p >= 0 && p <= 18) || p == 21 || (p >= 38 && p <= 44) || p == 47 || p == 48;
+}
+
+bool w5500_settings_valid(const w5500_settings *s)
+{
+    const int pin[4] = {s->sclk, s->mosi, s->miso, s->cs};
+    for (unsigned i = 0; i < 4; ++i) {
+        if (!pin_ok(pin[i])) return false;
+        for (unsigned j = 0; j < i; ++j) if (pin[j] == pin[i]) return false;
+    }
+    return s->port && s->dest_port && s->sck_khz >= 10000 && s->sck_khz <= 40000;
+}
+
 static const char *skip(const char *p)
 {
     while (*p == ' ' || *p == '\t') ++p;
@@ -103,10 +123,10 @@ int w5500_settings_parse(w5500_settings *s, const char *args)
     } else if (!strcmp(key, "pins")) {
         int8_t *pin[4] = {&n.sclk, &n.mosi, &n.miso, &n.cs};
         for (unsigned i = 0; i < 4; ++i) {
-            if (!word(&p, a, sizeof a) || !number(a, 48, &v)) return -1;   /* GPIO 0..48 */
+            if (!word(&p, a, sizeof a) || !number(a, 48, &v)) return -1;
             *pin[i] = (int8_t)v;
-            for (unsigned j = 0; j < i; ++j) if (*pin[j] == *pin[i]) return -1;
         }
+        if (!w5500_settings_valid(&n)) return -1;
     } else if (!strcmp(key, "defaults")) {
         w5500_settings_default(&n);
     } else {

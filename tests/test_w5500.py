@@ -743,9 +743,15 @@ def test_settings(native):
                 "ip 10.0.0.1/24 extra", "dest", "dest 10.0.0.1:0", "dest 10.0.0.1:70000",
                 "dest broadcastx", "dest 10.0.0.1/24", "port 0", "port 65536", "port -1",
                 "mhz 9.9", "mhz 40.1", "mhz x", "pins 1 2 3", "pins 1 2 3 3", "pins 1 2 3 49",
+                "pins 22 2 3 4", "pins 1 19 3 4", "pins 1 2 20 4", "pins 1 2 3 26",
+                "pins 33 2 3 4", "pins 37 2 3 4", "pins 45 2 3 4", "pins 1 46 3 4",
                 "defaults now", "speed 10"):
         check(parse(bad) == -1 and bytes(s) == before, f"rejects {bad!r}")
     check(parse("defaults") == 1 and s.port == 5004 and s.sck_khz == 26667, "defaults")
+    lib.w5500_settings_valid.restype, lib.w5500_settings_valid.argtypes = ct.c_bool, [ct.POINTER(Settings)]
+    check(lib.w5500_settings_valid(ct.byref(s)), "defaults are valid")
+    s.miso = 25
+    check(not lib.w5500_settings_valid(ct.byref(s)), "stored settings are checked too")
 
 
 def main():

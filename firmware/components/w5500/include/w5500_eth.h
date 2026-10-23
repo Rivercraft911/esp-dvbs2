@@ -36,10 +36,12 @@ typedef enum {
 /* The one chip on the bus. */
 w5500 *w5500_eth(void);
 /* Start SPI with the stored settings, reset and configure the chip with the S3's Ethernet MAC,
- * and open socket 0 on the stored port. W5500_OK or a w5500.h error; on W5500_ERR_BUS,
- * w5500_eth_error() is the ESP-IDF error behind it. */
+ * and open socket 0 on the stored port. The calling task owns the chip until it calls
+ * w5500_eth_stop; meanwhile only it may use the chip, and other tasks (the `eth` console too)
+ * get W5500_ERR_BUSY. W5500_OK or a w5500.h error; on W5500_ERR_BUS, w5500_eth_error() is the
+ * ESP-IDF error behind it. */
 int w5500_eth_start(w5500_eth_role role);
-/* Close socket 0 and free the SPI bus. */
+/* Owner only: close socket 0, free the SPI bus and give up ownership. */
 void w5500_eth_stop(void);
 esp_err_t w5500_eth_error(void);
 /* The stored settings, or the defaults. */
