@@ -15,7 +15,7 @@ static void ENCODER_TASK(void *arg)
 #endif
     if (spi_input_start() != ESP_OK) { e->failed = true; goto done; }
     e->input_started = true;
-    // The worker starts Wi-Fi before choosing an automatic queue. Sleep here,
+    // The radio worker fixes an automatic queue (radio_s3_stream_ready). Sleep here,
     // with no published pages or pending map, until its immutable layout exists.
     if (dvb.lofty && lofty_mux.queue_auto) {
         while (!e->stop && !__atomic_load_n(&lofty_mux.queue_ready,__ATOMIC_ACQUIRE))

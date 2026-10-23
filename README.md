@@ -60,36 +60,35 @@ real time with the DAC output going nowhere.
 
 | Mode | Symbol rate | Bandwidth | **Data rate** | Tested | RF decode |
 |---|---:|---:|---:|---|---|
-| 8PSK 9/10 | 26.67 Msym/s | 36 MHz | **69.8 Mb/s** | keyed | [decoded, prepared](results/2026-10-20-wide-filter/README.md) |
-| 8PSK 5/6 | 26.67 Msym/s | 36 MHz | **64.6 Mb/s** | keyed | decoded, prepared |
-| QPSK 9/10, roll-off 0.20 | 33.33 Msym/s | **40 MHz** | **58.2 Mb/s** | keyed | decoded, prepared |
-| 8PSK 2/3 | 26.67 Msym/s | 36 MHz | **51.6 Mb/s** | keyed | decoded, prepared |
-| 8PSK 5/6 | 20 Msym/s | 27 MHz | **48.4 Mb/s** | keyed* | decoded (B200) |
-| QPSK 9/10 | 26.67 Msym/s | 36 MHz | 46.6 Mb/s | keyed | [decoded (B200)](results/2026-10-20-qpsk-startup/README.md) |
-| 8PSK 2/3 | 20 Msym/s | 27 MHz | 38.7 Mb/s | keyed* | decoded, soft LDPC |
-| QPSK 9/10 | 20 Msym/s | 27 MHz | 34.9 Mb/s | keyed | decoded, peak 32–64; 48 best |
-| 8PSK 5/6 | 10 Msym/s | 13.5 MHz | 24.2 Mb/s | keyed | decoded, soft LDPC |
-| QPSK 9/10 | 10 Msym/s | 13.5 MHz | 17.5 Mb/s | radio off | decoded |
-| QPSK 3/4, video dry run | 10 Msym/s | 13.5 MHz | 14.5 Mb/s | host-model TS dry run | decoded (RF burst) |
-| 8PSK 9/10 | 5 Msym/s | 6.75 MHz | 13.1 Mb/s | radio off | [decoded (mixed VCM)](docs/vcm.md) |
-| 8PSK 2/3 | 5 Msym/s | 6.75 MHz | 9.68 Mb/s | keyed | [decoded (mixed VCM)](docs/vcm.md) |
-| QPSK 1/2 | 1 Msym/s | 1.35 MHz | 0.97 Mb/s | keyed | decoded |
+| 8PSK 9/10 | 26.67 Msym/s | 36 MHz | **69.8 Mb/s** | keyed | [exact, fresh payload](results/2026-10-23-tx-table/README.md) |
+| 8PSK 5/6 | 26.67 Msym/s | 36 MHz | **64.6 Mb/s** | keyed | exact, fresh payload |
+| QPSK 9/10, roll-off 0.20 | 33.33 Msym/s | **40 MHz** | **58.2 Mb/s** | keyed | exact, fresh payload |
+| 8PSK 2/3 | 26.67 Msym/s | 36 MHz | **51.6 Mb/s** | keyed | exact, fresh payload |
+| 8PSK 5/6 | 20 Msym/s | 27 MHz | **48.4 Mb/s** | keyed | exact, fresh payload |
+| QPSK 9/10 | 26.67 Msym/s | 36 MHz | 46.6 Mb/s | keyed | exact, fresh payload |
+| 8PSK 2/3 | 20 Msym/s | 27 MHz | 38.7 Mb/s | keyed | exact, fresh payload |
+| QPSK 9/10 | 20 Msym/s | 27 MHz | 34.9 Mb/s | keyed | exact, fresh payload |
+| 8PSK 5/6 | 10 Msym/s | 13.5 MHz | 24.2 Mb/s | keyed | exact, fresh payload |
+| QPSK 9/10 | 10 Msym/s | 13.5 MHz | 17.5 Mb/s | keyed | exact, fresh payload |
+| QPSK 3/4, video dry run | 10 Msym/s | 13.5 MHz | 14.5 Mb/s | keyed, TS input replayed | exact |
+| 8PSK 9/10 | 5 Msym/s | 6.75 MHz | 13.1 Mb/s | keyed | exact, fresh payload |
+| 8PSK 2/3 | 5 Msym/s | 6.75 MHz | 9.68 Mb/s | keyed | exact, fresh payload |
+| QPSK 1/2 | 1 Msym/s | 1.35 MHz | 0.97 Mb/s | keyed | exact, fresh payload |
 
 Roll-off is 0.35 unless noted. Rates use normal frames with pilots and exclude station-ID time.
-Every row has exact RF payload recovery in LeanDVB, an independent receiver. The four fastest
-modes used prepared, repeated payloads; the remaining modes include changing-payload tests.
-The E200 checks used a closed Faraday box; the wider B200 checks used coax and 40 dB attenuation.
+Every row was keyed for 30 s with a payload that never repeats and decoded by LeanDVB, an
+independent receiver, with every frame exact ([keyed table](results/2026-10-23-tx-table/README.md)). The E200 checks used a closed
+Faraday box; the B200 checks used coax with 40 dB marked attenuation into its TX/RX port.
 [RF records](docs/measurements.md#over-the-air).
 
 The wide modes needed a fix to restore the radio's filter after test-tone setup.
 QPSK at 26.67 Msym/s also needed a third frame buffer: three 20 s runs then had zero underruns,
 with 32/31/32 exact packets in the sampled RF. [Wide filter](results/2026-10-20-wide-filter/README.md),
 [startup fix](results/2026-10-20-qpsk-startup/README.md).
-\*The 30 s keyed timing used an earlier, longer pulse; the current pulse decoded in these 20 s RF tests.
-Margins, raw records and limits: [measurements](docs/measurements.md). With a prepared payload,
-30 s keyed tests of the 40 MHz mode left **37% mean encoder headroom and 16% bank-fill headroom**.
-At 36 MHz, keyed 8PSK 9/10 meets the 15% reserve on both cores; 2/3 and 5/6
-run at full rate with 14% and 12% mean encoder spare.
+Margins, raw records and limits: [measurements](docs/measurements.md) and the [keyed table](results/2026-10-23-tx-table/README.md).
+With a fresh payload the 40 MHz mode keeps **26% mean encoder headroom and 14% bank-fill
+headroom**. At 36 MHz, 8PSK 9/10, 2/3 and 5/6 run at full rate with 11%, 7% and 2% mean encoder
+spare; 5/6 sent 6 dummy frames in 20 s.
 
 ![36 MHz 8PSK spectrum and waterfall captured by a B200](docs/img/rf-36mhz.png)
 

@@ -974,8 +974,8 @@ static size_t start_encoder_options(const char *cmd, unsigned modcod, unsigned l
             }
         }
     }
-    // Fast QPSK keeps its workspace internal. The demo must retain byte BCH
-    // with input too: changing to nibble BCH is not an input-copy cost.
+    // Fast QPSK keeps its workspace internal. The queued modes keep their cached byte or pair
+    // BCH with payload input too: falling back to nibble BCH there cost 27k cycles a frame.
     const bool resident = enc.packed && (moon || mode->bits_per_symbol == 2 || sps == 4);
     const bool input_bch = mode->bits_per_symbol == 3 && sps == 4 &&
                            (short_pulse || modcod == 13) && mode->t > 8;
@@ -1023,7 +1023,7 @@ static size_t start_encoder_options(const char *cmd, unsigned modcod, unsigned l
             (!moon && quads && !enc.slot[nslots-1]) ||
             dvbs2_fast_prepare(enc.fast, mode, PILOTS,
                               15 | (fractional ? DVBS2_RO_20 : 0) | (quads ? DVBS2_MAP_QUADS : 0) |
-                              (input && !input_bch && !lofty && !input_byte_bch ? DVBS2_BCH_NIBBLE : 0) |
+                              (input && !input_bch && !moon && !input_byte_bch ? DVBS2_BCH_NIBBLE : 0) |
                               (!moon && mode->t == 8 && mode->bits_per_symbol == 2 && !quads ? DVBS2_BCH_NIBBLE : 0) |
                               (resident ? 0 : (mode->t == 8 && !input ? 0 : DVBS2_BCH_NIBBLE) | DVBS2_MAP_SPARSE)) ||
             (enc.bch && dvbs2_fast_cache_bch(enc.fast, enc.bch))) {

@@ -173,10 +173,19 @@ unsigned spi_input_type(void) { return native_input; }
 const char *spi_input_source(void) { return "spi"; }
 esp_err_t spi_input_start(void) {
     if (native_input) {
+        // Charge run memory as spi_input_start does on the board: the slot block unless the
+        // encoder lent slots, and the 4 KiB CRC table, both internal.
+        uint8_t *slots[INGRESS_SLOTS];
+        memcpy(slots, native_buffers, sizeof slots);
+        if (!slots[0]) {
+            uint8_t *block = run_take(INGRESS_SLOTS*INGRESS_SLOT_BYTES, 16, MALLOC_CAP_INTERNAL);
+            if (!block) return ESP_ERR_NO_MEM;
+            for (unsigned i = 0; i < INGRESS_SLOTS; ++i) slots[i] = block+i*INGRESS_SLOT_BYTES;
+        }
+        if (!run_take(4096, 16, MALLOC_CAP_INTERNAL)) return ESP_ERR_NO_MEM;
         input_sim = sim_new(); sim_ring(input_sim)->type = native_input;
         sim_ring(input_sim)->control=native_control;
-        if (native_buffers[0])
-            for (unsigned i = 0; i < INGRESS_SLOTS; ++i) sim_set_buffer(input_sim, i, native_buffers[i]);
+        for (unsigned i = 0; i < INGRESS_SLOTS; ++i) sim_set_buffer(input_sim, i, slots[i]);
         if (native_replay) sim_replay(input_sim, native_input);
         input_seq = input_reads = input_zero_reads = 0;
     }
@@ -469,7 +478,8 @@ int main(int argc, char **argv)
             assert(native_buffers[i]+INGRESS_SLOT_BYTES <= enc.bch ||
                    native_buffers[i] >= enc.bch+DVBS2_BCH_CACHE_BYTES);
     }
-    if (!moon) assert(allocations == (sps == 40 ? 7 : 4 + (mc >= 12 && !short_pulse) +
+    const int input_takes = native_input ? (native_buffers[0] ? 1 : 2) : 0; // CRC table, slot block
+    if (!moon) assert(allocations == input_takes + (sps == 40 ? 7 : 4 + (mc >= 12 && !short_pulse) +
                           (resident && mode->t > 8 && (!native_input || quads) && !borrowed_bch) + !resident));
     for (unsigned i = 0; i < 64; ++i) {
         if (native_blocks[i].p == enc.ws)
@@ -478,8 +488,9 @@ int main(int argc, char **argv)
             assert(native_blocks[i].n == DVBS2_BCH_CACHE_BYTES && (native_blocks[i].caps & MALLOC_CAP_INTERNAL));
     }
     if (native_input) {
-        // Match the input guide's requested SRAM for every supported mode.
-        // DMA/driver/task overhead is outside this host allocator, not measured here.
+        // Match the input guide's requested SRAM for every supported mode, including the
+        // input's own slot block (unless borrowed) and CRC table. Driver and task overhead
+        // is outside this host allocator.
         size_t internal = 0;
         for (unsigned i = 0; i < 64; ++i)
             if (native_blocks[i].p && (native_blocks[i].caps & MALLOC_CAP_INTERNAL))
@@ -490,10 +501,11 @@ int main(int argc, char **argv)
             fast+(quads && sps == 3 ? 8352 : 12420)+(mc >= 12 && !short_pulse ? 11120 : 0);
         // QPSK at 80 MS/s keeps its 8 KiB byte BCH table with input (t = 10/12).
         const size_t byte_bch = quads && !moon && mode->t > 8 ? DVBS2_BCH_CACHE_BYTES : 0;
-        assert(internal == expected+byte_bch+(sps == 40 ? 0 : CACHED_FOR(rate)*sizeof(uint32_t)));
         // Eight slots fit the slow QPSK tails and short-pulse 8PSK 8/9 or
-        // 9/10 tails. All other layouts fall back to the DMA heap block.
+        // 9/10 tails. All other layouts take the slot block from run memory.
         const bool borrowed = mc < 12 ? sps == 8 || sps == 40 : short_pulse && mc >= 16;
+        const size_t ingress = 4096+(borrowed ? 0 : INGRESS_SLOTS*INGRESS_SLOT_BYTES);
+        assert(internal == expected+byte_bch+ingress+(sps == 40 ? 0 : CACHED_FOR(rate)*sizeof(uint32_t)));
         assert((native_buffers[0] != NULL) == borrowed);
     }
     if (enc.packed && !resident) {

@@ -119,7 +119,8 @@ def row(mc, token):
                 late_fills=0, late_switches=0, fatal_late=0, min_fill_slack_cycles=1,
                 frames_played=1, encoder_pie=15, frames_encoded=20, prefill_frames=3,
                 encoder_stack_min_free=512, profile=dict(shaped_words=80, reused_words=20, fill_words=100),
-                min_free_internal=22351,
+                run_memory=dict(low=[30128, 37440, 38672], high=[0, 25920, 32768],
+                                psram=[1440, 291600, 393216]),
                 queue_empty=0, queue_low_pages=1, positions=0, max_fill_call_cycles=0)
 
 
@@ -143,34 +144,43 @@ def test_pace_and_crc():
 
 
 def test_8psk_gates():
-    records = ROOT/"docs/measurements"
-    pace = [json.loads(line) for line in
-            (records/"2026-10-18-8psk-26m667-pace.jsonl").read_text().splitlines()]
-    assert {r["modcod"] for r in pace} == {13, 15, 17}
+    # Current records: the 05510f7 keyed runs behind the ceilings, and the board self-check of
+    # the same firmware that these gates passed (results/2026-10-23-tx-self-check).
+    keyed_runs = [json.loads(line) for line in
+                  (ROOT/"results/2026-10-23-tx-table-8psk/runs.jsonl").read_text().splitlines()]
+    keyed = {}
+    for run in keyed_runs:
+        if run["set"] == "run" and not run["row"].endswith("-ts"):
+            rec = next(x for x in run["board"] if x.get("cmd") == "dvb" and "status" in x)
+            if rec["modcod"] >= 12:
+                keyed[rec["modcod"]] = rec
+    pace = [r for r in (json.loads(line) for line in
+            (ROOT/"results/2026-10-23-tx-self-check/runs.jsonl").read_text().splitlines())
+            if r.get("cmd") == "dvbpace" and "status" in r and r["modcod"] >= 12 and r["sps_num"] == 3]
+    assert {r["modcod"] for r in pace} == {13, 15, 17} == set(keyed)
     for r in pace:
         mc = r["modcod"]
-        keyed = next(json.loads(line) for line in
-            (records/"2026-10-18-8psk-26m667-keyed.jsonl").read_text().splitlines()
-            if json.loads(line)["modcod"] == mc)
-        assert check.PSK8_KEYED[mc] == tuple(keyed[k] for k in
+        assert check.PSK8_KEYED[mc] == tuple(keyed[mc][k] for k in
             ("max_fill_cycles", "encode_cycles_mean", "encode_cycles_live_max"))
-        check.check_pace([r], mc, "26m667", 20)
+        check.check_pace([r], mc, "26m667", 10)
         fill, mean, live = check.PSK8_KEYED[mc]
         for key, value in (("max_fill_cycles", fill + check.FILL_OVERHEAD + 1),
                            ("encode_cycles_mean", mean + check.ENCODER_OVERHEAD + 1),
                            ("encode_cycles_live_max", live + check.ENCODER_OVERHEAD + 1),
-                           ("dummy_steady", 20 * check.PSK8_DUMMIES_PER_SECOND[mc] + 1),
+                           ("dummy_steady", 10 * check.PSK8_DUMMIES_PER_SECOND[mc] + 1),
                            ("dummy_startup", 5), ("queue_stream_bound_misses", 2),
-                           ("frames_played", 10), ("queue_pages", 50),
-                           ("min_free_internal", 19999), ("queue_empty", 1),
+                           ("frames_played", 10), ("queue_pages", 50), ("queue_empty", 1),
+                           ("run_memory", dict(r["run_memory"], low=[40000, 40000, 38672])),
+                           ("run_memory", dict(r["run_memory"], psram=[0, 0, 262144])),
                            ("queue_sizing", dict(automatic=True, ready=False))):
-            rejects(check.check_pace, [dict(r, **{key: value})], mc, "26m667", 20)
-        # Ten-second self-check runs scale dummy and data limits, not timing ceilings.
-        short = dict(r, seconds=10, dummy_steady=r["dummy_steady"]//2,
-                     frames_played=r["frames_played"]//2)
-        check.check_pace([short], mc, "26m667", 10)
-        rejects(check.check_pace, [dict(short, dummy_steady=10*check.PSK8_DUMMIES_PER_SECOND[mc]+1)],
-                mc, "26m667", 10)
+            rejects(check.check_pace, [dict(r, **{key: value})], mc, "26m667", 10)
+    # Every pace of that self-check passes the public gates.
+    for r in (json.loads(line) for line in
+              (ROOT/"results/2026-10-23-tx-self-check/runs.jsonl").read_text().splitlines()):
+        if r.get("cmd") == "dvbpace" and "status" in r and not r.get("vcm"):
+            parts = r["command"].split()
+            token = parts[2] if len(parts) == 4 else ""
+            check.check_pace([r], r["modcod"], token, int(parts[-1]))
     assert "17/3/80/16" in check.DUMPS
     assert all((mc, "26m667", 10) in check.PACES for mc in (13, 15, 17))
 

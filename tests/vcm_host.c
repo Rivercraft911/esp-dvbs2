@@ -41,6 +41,10 @@ int main(int argc, char **argv)
     if (sps == 8 && initial == 12) {
         native_internal_limit=16384; native_internal_largest=12288;
     }
+    // GCS input takes its slot block and CRC table from internal run memory too.
+    const size_t ingress=control ? INGRESS_SLOTS*INGRESS_SLOT_BYTES+4096 : 0;
+    native_internal_limit+=ingress;
+    if (native_internal_largest < INGRESS_SLOTS*INGRESS_SLOT_BYTES) native_internal_largest=control ? INGRESS_SLOTS*INGRESS_SLOT_BYTES : native_internal_largest;
     const unsigned frames=control || ota ? 32 : 2*modes*hold;
     assert(!posix_memalign((void **)&banks,65536,2*sizeof *banks));
     bank_shift=37; // physical wrap and symbol cuts disagree at both 4/8 sps
@@ -84,8 +88,8 @@ int main(int argc, char **argv)
     size_t internal=0;
     for (unsigned i=0;i<64;++i)
         if (native_blocks[i].p && (native_blocks[i].caps&MALLOC_CAP_INTERNAL)) internal+=native_blocks[i].n;
-    if (!(sps == 8 && initial == 12)) assert(internal == 0);
-    printf("VCM n%u %s: internal heap %zu, store %zu, table %zu, context %zu, slots %u\n",sps,argv[6],internal,
+    if (!(sps == 8 && initial == 12)) assert(internal == ingress);
+    printf("VCM n%u %s: internal run memory %zu, store %zu, table %zu, context %zu, slots %u\n",sps,argv[6],internal,
            vcm_enc.vcm_store_bytes,vcm_enc.vcm_axes ? SHAPER_AXES_BYTES : 4*shaper_table_words(sps,dvb.table.bits),dvbs2_fast_size(),dvb.ring.nslots);
     stop_encoder(); printf("}\n"); assert(run_returned());
     if (control) { rewind(native_wire); }

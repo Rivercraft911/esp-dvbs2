@@ -21,17 +21,20 @@ PACES = ((4, "", 5), (11, "5m", 5), (11, "10m", 5),
          (17, "5m", 5), (13, "10m", 5), (15, "20m", 5),
          (13, "26m667", 10), (15, "26m667", 10), (17, "26m667", 10))
 
-# eee5153 keyed records: longest bank fill, encoder mean and live maximum.
-# Pace records with Wi-Fi up (before it was removed) added <=3894 fill and <=7023 encoder mean cycles.
-# Fixed allowances stay below a bank deadline / frame duration; no 15% claim.
-PSK8_KEYED = {13: (39419, 172076, 239463),
-              15: (38803, 176477, 251019),
-              17: (38963, 158719, 213647)}
+# 05510f7 keyed records with the real xorshift32 payload (results/2026-10-23-tx-table-8psk):
+# longest bank fill, encoder mean and live maximum. Profiled 10 s paces of the same firmware
+# came within 100 cycles of those means. Fixed allowances stay below a bank deadline / frame
+# duration; no 15% claim.
+PSK8_KEYED = {13: (37647, 159352, 206847),
+              15: (37857, 166803, 209898),
+              17: (37545, 156956, 199914)}
 FILL_OVERHEAD = 4500
 ENCODER_OVERHEAD = 10000
-# Steady dummies/s observed over 20 s: 173.6, 213.1, 5.0. Bound both their
-# count and the resulting data throughput; losing arbitrary airtime must fail.
-PSK8_DUMMIES_PER_SECOND = {13: 180, 15: 220, 17: 6}
+# Those runs sent no steady dummies. Bound both their count and the resulting data
+# throughput; losing arbitrary airtime must fail.
+PSK8_DUMMIES_PER_SECOND = {13: 6, 15: 6, 17: 6}
+# Run memory (firmware/tx/main/run_memory.c): low, high and PSRAM arenas in bytes.
+RUN_MEMORY = {"low": 38672, "high": 32768, "psram": 393216}
 
 
 def mode(token):
@@ -105,8 +108,11 @@ def check_pace(rows, mc, token, seconds):
     assert r["encoder_stack_min_free"] >= 512, r
     profile = r["profile"]
     assert profile["shaped_words"] + profile["reused_words"] == profile["fill_words"], r
+    # Run memory: every take fit its arena (the run would have failed otherwise) and the
+    # arenas are the documented ones. Heap use after boot is checked once, at the end.
+    memory = r["run_memory"]
+    assert all(memory[k][2] == RUN_MEMORY[k] and 0 <= memory[k][0] <= memory[k][2] for k in RUN_MEMORY), r
     if den == 5 or (mc >= 12 and num == 3):
-        assert r["min_free_internal"] >= 20000, r
         assert r["queue_empty"] == 0 and r["queue_low_pages"] > 0, r
     if mc >= 12 and num == 3:
         fill, mean, live = PSK8_KEYED[mc]
@@ -154,11 +160,11 @@ def main():
     print("  N is complete data frames in the pinned layout, excluding dummy airtime/partial frames.")
     print("  QPSK >=N-2; 8PSK <=1 leading and <=3 trailing acquisition/EOF data frames lost.")
     print("Paces: zero late fills/switches/fatal lateness, positive slack, PIE mask 15, stack >=512 B,")
-    print("  live encoder and conserved fill words. 33m333: queue never empty, minimum free internal RAM >=20000 B.")
+    print("  live encoder and conserved fill words, run memory within its arenas. 33m333: queue never empty.")
     for mc, token, seconds in PACES:
         command = f"dvbpace {mc} {token} {seconds}".replace("  ", " ")
         print(f"  {command}" + ("  # 1 Msym/s" if not token else ""))
-    print("8PSK 26m667: 54 ready pages; no empty queue; minimum free internal RAM >=20000 B;")
+    print("8PSK 26m667: 54 ready pages; no empty queue;")
     print("  <=4 startup dummies, <=1 cold bound miss; bounded steady dummies and data throughput.")
     for mc, (fill, mean, live) in PSK8_KEYED.items():
         dummy_limit = 10 * PSK8_DUMMIES_PER_SECOND[mc]
@@ -167,12 +173,12 @@ def main():
               f"{mean+ENCODER_OVERHEAD}/{live+ENCODER_OVERHEAD} cycles; "
               f"steady dummies <= {PSK8_DUMMIES_PER_SECOND[mc]}/s; "
               f">={minimum} data frames in 10 s.")
-    print("8PSK ceilings: eee5153 keyed +4500 fill / +10000 encoder cycles for profiling;")
+    print("8PSK ceilings: 05510f7 keyed (real payload) +4500 fill / +10000 encoder cycles for profiling;")
     print("  pace dummies are measured overhead, not evidence of full-rate keyed throughput.")
     print("Other modes enforce functional deadlines. These are not 15% reserve gates.")
     print("40 MHz met 15% reserve on both cores in one 30 s keyed run (e96795b); see docs/measurements.md.")
     print("VCM: vcm 1 4 11 13 17; dvbdump 4 5m 32 128 1; vcm off. Automatic axes;")
-    print("  dvbpace 4 5m 5: minimum free internal RAM >=20000 B, original functional deadline/stack gates.")
+    print("  dvbpace 4 5m 5: run memory within its arenas, original functional deadline/stack gates.")
     print("  CRC/geometry agree, >=30 exact contiguous BBFRAMEs, every MODCOD, clean FEC; no golden changes.")
     print("Heap: no heap call after boot by the end (info heap_after_boot).")
     print("Keep going after failures; save IQ, logs, revision and summary; any failure exits 1.", flush=True)
@@ -245,7 +251,7 @@ def main():
             pace = command("dvbpace 4 5m 5")
             check_pace(pace, 4, "5m", 5)
             r = stream(pace, 4, "5m")
-            assert r.get("vcm_axes") is True and r["min_free_internal"] >= 20000, r
+            assert r.get("vcm_axes") is True, r
         finally:
             assert command("vcm off")[-1].get("enabled") is False
 

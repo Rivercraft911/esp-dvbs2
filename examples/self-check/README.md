@@ -3,8 +3,7 @@
 Pass means the firmware revision matches the checkout, all seven fixed-mode dumps match their
 original CRCs, the VCM dump matches its host model, all decode as contiguous exact
 payloads in LeanDVB, every paced run keeps
-its bank deadlines, the queued modes keep their internal RAM floor, and nothing calls the heap
-after boot. A failure makes
+its bank deadlines within its run memory, and nothing calls the heap after boot. A failure makes
 the final exit status nonzero. The script prints the complete criteria before any command,
 keeps going after a failed dump/decode/pace, and writes each verdict to `summary.tsv`.
 
@@ -81,7 +80,7 @@ make up the rest. A failing or stalled device can take longer because each comma
 The VCM dump cycles 4/11/13/17 every frame at 5 Msym/s using automatic axes.
 It requires matching transport CRCs and sample geometry, at least 30 contiguous
 exact host-model BBFRAMEs covering every mode, and zero FEC corrections. A 5 s VCM pace also enforces deadlines
-and at least 20 KB minimum free internal RAM. VCM is turned off again even if the dump fails. [Scope and OTA reruns](../../docs/vcm.md).
+and its run memory. VCM is turned off again even if the dump fails. [Scope and OTA reruns](../../docs/vcm.md).
 
 The selected modes cover 1 Msym/s QPSK, 5 Msym/s 8PSK, 20 Msym/s QPSK/8PSK,
 26.67 Msym/s QPSK/8PSK and 33.33 Msym/s QPSK. The new 8PSK dump uses MODCOD 17;
@@ -103,21 +102,23 @@ goldens](../../tests/data/README.md) are checked against the independent host mo
 
 All paces require ESP_OK, zero underruns/late fills/late switches/fatal lateness, positive
 slack, a live encoder with all four PIE stages, at least 512 B encoder stack headroom,
-and `shaped_words + reused_words == fill_words`. The 36 MHz 8PSK and 40 MHz QPSK queues must not starve and
-must keep at least 20,000 B minimum free internal RAM.
+and `shaped_words + reused_words == fill_words`, with every run-memory arena at its documented
+size and within it. The 36 MHz 8PSK and 40 MHz QPSK queues must not starve. A final `info`
+must report no heap call after boot.
 
-8PSK `26m667` additionally checks the keyed eee5153 figures with explicit profiling
-allowances of 4,500 fill cycles and 10,000 encoder cycles:
+8PSK `26m667` additionally checks the keyed 05510f7 figures, taken with the real xorshift32
+payload ([keyed table, 8PSK](../../results/2026-10-23-tx-table-8psk/README.md)), with explicit
+profiling allowances of 4,500 fill cycles and 10,000 encoder cycles:
 
 | MODCOD | Max fill, cycles | Encoder mean / live max, cycles | Max steady dummies/s |
 |---|---:|---:|---:|
-| 13 | 43,919 | 182,076 / 249,463 | 180 |
-| 15 | 43,303 | 186,477 / 261,019 | 220 |
-| 17 | 43,463 | 168,719 / 223,647 | 6 |
+| 13 | 42,147 | 169,352 / 216,847 | 6 |
+| 15 | 42,357 | 176,803 / 219,898 | 6 |
+| 17 | 42,045 | 166,956 / 209,914 | 6 |
 
-The measured 20 s paces added up to 3,894 fill and 7,023 mean encoder cycles,
-with 173.6 / 213.1 / 5.0 steady dummies per second. These limits bound that cost;
-they do not assert zero dummies or full-rate payload in a profiled pace. At most
+Those keyed runs sent no steady dummies, and profiled 10 s paces of the same firmware came
+within 100 cycles of their encoder means. These limits bound the profiling cost; they do not
+assert zero dummies or full-rate payload in a profiled pace. At most
 four startup dummies and one cold production-bound miss are allowed. All 54 pages
 must be admitted automatically. For payload duration T and steady-dummy cap C,
 at least `floor((T*80e6/3 - (C+4)*3330)/22194)-1` data frames must play. The extra
