@@ -192,7 +192,7 @@ static void cmd_fecbench(char *args)
     char *save, *code = strtok_r(args, " \t", &save);
     uint32_t modcod;
     if (!short_ok || !number(code, 4, 17, &modcod) || strtok_r(NULL, " \t", &save)) {
-        printf("@{\"cmd\":\"fecbench\",\"error\":\"usage: fecbench <modcod 4..17> [--short (4..10)]\"}\n");
+        printf("@{\"cmd\":\"fecbench\",\"error\":\"usage: fecbench <modcod 4..17> [--short (4..10, 12..16)]\"}\n");
         return;
     }
     fecbench_command(modcod, short_frames);
