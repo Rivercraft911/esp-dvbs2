@@ -18,6 +18,7 @@
 #include "private.h"
 #include "fast_tables.h"
 
+#include <stdbool.h>
 #include <string.h>
 
 #ifdef DVBS2_IRAM
@@ -127,6 +128,7 @@ void dvbs2_pie_bswap(const uint32_t *src, uint8_t *block, unsigned vectors, unsi
                      uint8_t *tail);
 uint32_t dvbs2_pie_ldxq(const uint32_t *table);
 uint32_t dvbs2_pie_crc8(const uint8_t *p, unsigned quads, const uint8_t *tables, uint32_t crc);
+uint32_t dvbs2_pie_crc8_packet(const uint8_t *p, const uint8_t *cols); /* ts_pie.S */
 void dvbs2_pie_nibbles(const uint8_t *src, uint8_t *dst, unsigned vectors);
 #define PIE_MASK (DVBS2_PIE_BB | DVBS2_PIE_BCH | DVBS2_PIE_LDPC | DVBS2_PIE_MAP)
 #else
@@ -447,6 +449,27 @@ HOT int dvbs2_fast_bb_gcs(const dvbs2_fast *f, dvbs2_workspace *ws,
     return 0;
 }
 
+#ifdef DVBS2_PIE
+/* Column bytes for dvbs2_pie_crc8_packet: chunk c, bit k (top bit first), position 16c + j holds
+ * the CRC-8 of a 187-byte packet whose only set bit is bit k of byte 16c + j. Built once from
+ * the byte table: that bit gives t0[1 << k] at its own byte, then each later zero byte maps
+ * the CRC through t0 again. Positions 187..191 of the last chunk belong to the next packet and
+ * keep zero columns. */
+static uint8_t ts_cols[12 * 8 * 16 + 16] __attribute__((aligned(16)));
+static bool ts_cols_ready;
+
+static void ts_cols_build(const uint8_t *t0)
+{
+    uint8_t v[8];
+    for (unsigned k = 0; k < 8; ++k) v[k] = t0[1u << k];
+    for (int i = 186; i >= 0; --i) {
+        for (unsigned k = 0; k < 8; ++k) ts_cols[(i / 16) * 128 + (7 - k) * 16 + i % 16] = v[k];
+        for (unsigned k = 0; k < 8; ++k) v[k] = t0[v[k]];
+    }
+    ts_cols_ready = true;
+}
+#endif
+
 int dvbs2_fast_bb_ts(const dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_state *state,
                          const uint8_t *input, size_t input_bytes)
 {
@@ -461,11 +484,18 @@ int dvbs2_fast_bb_ts(const dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_state *s
         }
     }
     const unsigned syncd = ((188 - state->packet_pos) % 188) * 8;
-    /* LDPC parity scratch is idle until BB and BCH finish. Keep the four CRC-8
-     * tables here during TS adaptation, away from the flash mapper/PRBS lines.
-     * The borrowed payload occupies the start of scratch, before f->p. */
-    memcpy(f->p, fast_crc8, sizeof fast_crc8);
-    const uint8_t *crc8 = f->p;
+    /* Without PIE, the LDPC parity scratch (idle until BB and BCH finish) holds the four
+     * CRC-8 tables during TS adaptation, away from the flash mapper/PRBS lines. The
+     * borrowed payload occupies the start of scratch, before f->p. With PIE, whole packets
+     * use the resident columns and only the two partial packets of a frame read the tables. */
+#ifdef DVBS2_PIE
+    if ((f->pie & DVBS2_PIE_BB) && !ts_cols_ready) ts_cols_build(fast_crc8);
+    const bool cols = (f->pie & DVBS2_PIE_BB) != 0;
+#else
+    const bool cols = false;
+#endif
+    if (!cols) memcpy(f->p, fast_crc8, sizeof fast_crc8);
+    const uint8_t *crc8 = cols ? fast_crc8 : f->p;
     bb_header(ws->bits, crc8, 0xf0, (unsigned)(input_bytes * 8), 1504, 0x47, syncd);
     bb_fill(f, ws->bits, input, input_bytes);
     /* CRC-8 of each packet's 187 bytes after sync; the sync byte position
@@ -489,7 +519,10 @@ int dvbs2_fast_bb_ts(const dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_state *s
          * crc' = T3[crc ^ b0] ^ T2[b1] ^ T1[b2] ^ T0[b3], Tk = byte table^(k+1). */
         const uint8_t *t0 = crc8, *t1 = crc8 + 256, *t2 = crc8 + 512, *t3 = crc8 + 768;
 #ifdef DVBS2_PIE
-        if (f->pie & DVBS2_PIE_BB) {
+        if ((f->pie & DVBS2_PIE_BB) && state->packet_pos == 1 && run == 187) {
+            crc = (uint8_t)dvbs2_pie_crc8_packet(p, ts_cols); /* a whole packet by columns */
+            p = end;
+        } else if (f->pie & DVBS2_PIE_BB) {
             const unsigned quads = (unsigned)(end - p) / 4;
             crc = (uint8_t)dvbs2_pie_crc8(p, quads, t0, crc);
             p += 4 * quads;
