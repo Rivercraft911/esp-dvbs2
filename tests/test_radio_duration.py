@@ -415,7 +415,43 @@ int main(void) {
 '''
 
 
+def arguments(text, open_at):
+    """Top-level comma-separated arguments of the call whose '(' is at open_at."""
+    depth, start, out = 0, open_at + 1, []
+    for k in range(open_at, len(text)):
+        c = text[k]
+        depth += (c == "(") - (c == ")")
+        if depth == 1 and c == ",":
+            out.append(text[start:k].strip()); start = k + 1
+        elif depth == 0:
+            out.append(text[start:k].strip())
+            return out
+    raise ValueError("unbalanced call")
+
+
+def core1_reserved():
+    """radio_s3.c turns core 1's tick off during a run because core 1 then runs only the radio
+    worker: every transmitter task but the worker is pinned to core 0, and none is created
+    without a core. sdkconfig.defaults moves no IDF task to core 1; the unpinned IDF timer
+    task (priority 1) cannot preempt the worker (configMAX_PRIORITIES - 2), which never blocks
+    in a run."""
+    tasks = []
+    for path in sorted((ROOT / "firmware").rglob("*.c")):
+        if "build" in path.parts or path.is_relative_to(ROOT / "firmware/rx"):
+            continue
+        text = path.read_text()
+        for m in re.finditer(r"\bxTaskCreate\w*\s*\(", text):
+            args = arguments(text, m.end() - 1)
+            assert "PinnedToCore" in m.group(0), (path, m.group(0))
+            tasks.append((path.name, args[1], args[-1]))
+    assert {(name, core) for _, name, core in tasks} == {('"radio"', "1"), ('"encoder"', "0")}, tasks
+    defaults = (ROOT / "firmware/tx/sdkconfig.defaults").read_text()
+    assert "AFFINITY_CPU1=y" not in defaults
+    print("core 1: only the radio worker is pinned there; every other TX task is pinned to core 0")
+
+
 if __name__ == "__main__":
+    core1_reserved()
     radio = (RADIO / "radio_s3.c").read_text()
     console = (ROOT / "firmware/tx/main/main.c").read_text()
     geometry = radio[radio.index("typedef struct {"):radio.index("} geometry_t;")+len("} geometry_t;")]
