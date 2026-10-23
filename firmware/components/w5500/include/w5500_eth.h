@@ -61,6 +61,8 @@ esp_err_t w5500_eth_error(void);
 /* Payload writes whose DMA underran and were written again, since the port started (direct
  * backend; 0 with spi_master). */
 uint32_t w5500_eth_underflows(void);
+/* The wait that failed a frame, for a "spi" error (direct backend), or "". */
+const char *w5500_eth_why(void);
 /* A w5500.h result as a word for JSON: "ok", "full", "spi", "chip", ... */
 const char *w5500_eth_status(int e);
 /* The settings: the defaults with CONFIG_W5500_DEFAULTS over them, then what `eth` changed. */

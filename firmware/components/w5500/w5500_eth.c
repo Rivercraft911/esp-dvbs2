@@ -71,6 +71,11 @@ uint32_t w5500_eth_underflows(void)
     return w5500_port.underflows;
 }
 
+const char *w5500_eth_why(void)
+{
+    return w5500_port.why ? w5500_port.why : "";
+}
+
 /* The settings: the built-in defaults, then CONFIG_W5500_DEFAULTS (settings separated by ';'),
  * then with CONFIG_W5500_SETTINGS_NVS what `eth` saved; read once, then kept in RAM. */
 static w5500_settings settings;

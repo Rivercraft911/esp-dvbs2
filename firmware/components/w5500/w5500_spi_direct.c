@@ -133,6 +133,7 @@
 /* GDMA_OUT_CONF0_CHn: OUT_LOOP_TEST, OUT_AUTO_WRBACK, OUTDSCR_BURST_EN, OUT_DATA_BURST_EN */
 #define OUT_CONF0_OFF 0x36u
 #define OUT_EOF_MODE (1u << 3)            /* EOF once the last byte has left the GDMA */
+#define OUT_BURST (3u << 4)               /* GDMA_OUTDSCR_BURST_EN, GDMA_OUT_DATA_BURST_EN */
 #define LINK_ADDR 0xFFFFFu
 #define DMA_RAM_LOW 0x3FC88000u           /* internal RAM the GDMA reaches (TRM 3.4.8, p.364) */
 #define DMA_RAM_HIGH 0x3FD00000u
@@ -215,7 +216,9 @@ _Static_assert(GDMA_IN_CONF1_CH0_REG == GDMA_BASE + IN_CONF1 &&
                                 GDMA_IN_DATA_BURST_EN_CH0 | GDMA_MEM_TRANS_EN_CH0) &&
                OUT_CONF0_OFF == (GDMA_OUT_LOOP_TEST_CH0 | GDMA_OUT_AUTO_WRBACK_CH0 |
                                  GDMA_OUTDSCR_BURST_EN_CH0 | GDMA_OUT_DATA_BURST_EN_CH0) &&
-               GDMA_OUT_EOF_MODE_CH0 == OUT_EOF_MODE, "GDMA channel configuration");
+               GDMA_OUT_EOF_MODE_CH0 == OUT_EOF_MODE &&
+               OUT_BURST == (GDMA_OUTDSCR_BURST_EN_CH0 | GDMA_OUT_DATA_BURST_EN_CH0),
+               "GDMA channel configuration");
 _Static_assert(SYSTEM_PERIP_CLK_EN0_REG == PERIP_CLK_EN0 &&
                SYSTEM_PERIP_RST_EN0_REG == PERIP_RST_EN0 && SYSTEM_SPI2_CLK_EN == SYS_SPI2 &&
                SYSTEM_SPI2_RST == SYS_SPI2, "system registers");
@@ -338,10 +341,6 @@ static int fail(esp_err_t err)
     return 1;
 }
 
-/* End the transfer in flight: sleep if it has long to go, then spin on SPI_USR; a read also
- * waits for GDMA_IN_SUC_EOF (its data is in memory, TRM Table 30.10-2 note 1). False if a
- * deadline passed or the GDMA reported a descriptor error; d.busy stays set until the caller
- * aborts, so nothing reuses the descriptor or the buffer meanwhile. */
 static bool start_transfer(void);
 
 /* The payload write in flight again, from the same descriptor to the same W5500 offset (SPI_ADDR
@@ -357,18 +356,23 @@ static bool rewrite(void)
     return true;
 }
 
+/* End the transfer in flight: sleep if it has long to go, then spin on SPI_USR; a read also
+ * waits for GDMA_IN_SUC_EOF (its data is in memory, TRM Table 30.10-2 note 1). False if a
+ * deadline passed or the GDMA reported a descriptor error (w5500_port.why says which); d.busy
+ * stays set until the caller aborts, so nothing reuses the descriptor or the buffer meanwhile. */
 static bool finish(void)
 {
     if (!d.busy) return true;
     const int32_t left = (int32_t)(d.end - esp_cpu_get_cycle_count());
     if (left > (int32_t)(SLEEP_US * (uint32_t)CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ)) sleep_done();
-    if (!cleared(G_CMD, CMD_USR, DMA_FRAME_US)) return false;
+    if (!cleared(G_CMD, CMD_USR, DMA_FRAME_US)) return w5500_port.why = "dma frame", false;
     /* A write whose FIFO ran dry: the GDMA fell behind (internal RAM is busy while the receiver
      * captures), and the SPI shifted out zeros and then a repeated byte. Nothing has used those
      * bytes yet (a SEND comes only after this), so they are written again. */
     if (!d.reading && (get(G_INT_RAW) & OUTFIFO_EMPTY)) {
         w5500_port.underflows++;
-        if (++d.rewrites > REWRITES || !rewrite()) return false;
+        if (++d.rewrites > REWRITES) return w5500_port.why = "underflows", false;
+        if (!rewrite()) return w5500_port.why = "rewrite", false;
         return finish();
     }
     d.rewrites = 0;
@@ -378,8 +382,9 @@ static bool finish(void)
         uint32_t raw;
         while (!((raw = get(d.ch + IN_INT_RAW)) & (IN_SUC_EOF | IN_DSCR_ERR)))
             if (esp_cpu_get_cycle_count() - t0 > limit &&
-                !((raw = get(d.ch + IN_INT_RAW)) & (IN_SUC_EOF | IN_DSCR_ERR))) return false;
-        if (raw & IN_DSCR_ERR) return false;
+                !((raw = get(d.ch + IN_INT_RAW)) & (IN_SUC_EOF | IN_DSCR_ERR)))
+                return w5500_port.why = "read eof", false;
+        if (raw & IN_DSCR_ERR) return w5500_port.why = "descriptor", false;
     }
     d.busy = false;
     return true;
@@ -390,7 +395,7 @@ static bool start_transfer(void)
 {
     put(G_INT_CLR, TRANS_DONE | OUTFIFO_EMPTY);
     put(G_CMD, CMD_UPDATE);
-    if (!cleared(G_CMD, CMD_UPDATE, UPDATE_US)) return false;
+    if (!cleared(G_CMD, CMD_UPDATE, UPDATE_US)) return w5500_port.why = "update", false;
     put(G_CMD, CMD_USR);
     return true;
 }
@@ -410,8 +415,11 @@ static int frame(void *ctx, uint16_t offset, uint8_t control, const uint8_t *tx,
         put(G_DMA_CONF, 0);
         if (tx) w5500_gpspi_load((volatile uint32_t *)G_W0, tx, n);
         put(G_USER, user);
-        if (!start_transfer() || !cleared(G_CMD, CMD_USR, CPU_FRAME_US))
+        if (!start_transfer()) return fail(ESP_ERR_TIMEOUT);
+        if (!cleared(G_CMD, CMD_USR, CPU_FRAME_US)) {
+            w5500_port.why = "cpu frame";
             return fail(ESP_ERR_TIMEOUT);
+        }
         if (rx) w5500_gpspi_store(rx, (const volatile uint32_t *)G_W0, n);
         w5500_port.polled++;
         return 0;
@@ -429,6 +437,11 @@ static int frame(void *ctx, uint16_t offset, uint8_t control, const uint8_t *tx,
     d.busy = true;                          /* the GDMA may own the buffer from here */
     d.reading = rx != NULL;
     if (tx) {
+        /* Burst reads (as ESP-IDF's spi_master sets them) keep the FIFO fed while the capture
+         * loads internal RAM; they need a word-aligned buffer and length (TRM 3.4.x), which TS
+         * datagrams have (188 = 4 x 47). Others go a word at a time. */
+        const bool burst = !(((uintptr_t)buf | n) & 3u);
+        put(d.ch + OUT_CONF0, (get(d.ch + OUT_CONF0) & ~OUT_BURST) | (burst ? OUT_BURST : 0));
         dma_reset(OUT_CONF0);
         put(d.ch + OUT_LINK, ((uint32_t)&d.desc & LINK_ADDR) | OUTLINK_START);
     } else {
