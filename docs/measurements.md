@@ -62,6 +62,8 @@ taken at other gains and carriers.
 
 | Record | Headline |
 |---|---|
+| [2026-10-23-rx-ts-crc](../results/2026-10-23-rx-ts-crc/README.md) | The TS deframer's CRC-8 on the PIE column kernel: 38.1k to 28.4k cycles a frame at 8PSK 8/9 TS without the pattern check, core 0 from 78.0% to 74.5%; 47,742 frames and 449,231 packets exact. The low arena's peak is now 29,760 of 30,720 B. |
+| [2026-10-23-rx-ts-cost](../results/2026-10-23-rx-ts-cost/README.md) | The duplicate-packet fingerprint had doubled the deframer's cost; computed only when it can matter, 63.0k to 38.1k cycles a frame, core 0 from 87.5% to 78.0%, every frame exact. |
 | [2026-10-23-rx-long](../results/2026-10-23-rx-long/README.md) | Full-length 540 s keyed runs S3 to S3: 62,539 frames at QPSK 3/4 1 Msym/s, 467,539 at 8PSK 8/9 5 Msym/s and 467,527 with TS (4,399,229 packets) all exact, none lost, no relocks, no capture drops, heap counter 0; per-minute median MER moved by at most 0.1 dB. No USB record write took 1 ms or more; the about 1 s drop bursts did not recur. |
 | [2026-10-23-rx-no-wifi-ab](../results/2026-10-23-rx-no-wifi-ab/README.md) | Wi-Fi bring-up against none, 9 runs each: the radio registers match apart from one 16-byte table. The two failed frames without Wi-Fi were a matched-filter time wrap every 2^27 samples; with the fix, 441,550 frames, none failed. Unsettled: bursts of about 950 dropped frames in one session. |
 | [2026-10-23-rx-no-wifi](../results/2026-10-23-rx-no-wifi/README.md) | The receiver without Wi-Fi and without heap calls after boot: 102,983 GCS and 34,325 TS frames exact at 8PSK 8/9; image 854 to 432 KB; 51,482 B of heap free throughout. |

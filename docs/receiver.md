@@ -175,6 +175,14 @@ at 8PSK 8/9 on a busy core 0, 3.6% and 9.5% of the frame
 ([TS link](../results/2026-10-23-ts-link/README.md)). The egress had no sender in those runs;
 the packets were counted and checked, not forwarded.
 
+The deframer now checks each whole packet with the transmitter's PIE CRC-8 kernel
+(`dvbs2_pie_crc8_packet`) and keeps the byte table for packets at a frame's edges. Measured the
+same way at 8PSK 8/9, it costs 23.5k cycles a frame, against 25.6k in the TS link runs and 57.0k
+before the duplicate fingerprint was made lazy. In a 60 s run without the pattern check, core 0's
+counters summed to 74.5% of the frame period, with all 47,742 frames and 449,231 packets exact
+([TS cost](../results/2026-10-23-rx-ts-cost/README.md),
+[TS CRC-8](../results/2026-10-23-rx-ts-crc/README.md)).
+
 ## Memory
 
 Nothing the receiver runs touches the heap after boot. Each run takes its memory from regions
@@ -183,7 +191,7 @@ reserved when the firmware links and gives it back when the next run starts
 
 | Arena | Contents | Largest use / size |
 |---|---|---:|
-| Internal RAM below the capture banks | demodulator, clean-path FEC, TS deframer | 28,144 of 30,720 B |
+| Internal RAM below the capture banks | demodulator, clean-path FEC, TS deframer | 29,760 of 30,720 B |
 | Internal RAM just above the banks | symbol ring, three frame slots | 28,576 of 28,672 B |
 | Static PSRAM | LDPC decoder state and work, the decoder's frame, the CRC-32 table | 71,488 of 98,304 B |
 | Static PSRAM store | a replay's capture or a dump | 7 MB |
