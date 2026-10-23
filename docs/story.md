@@ -27,7 +27,7 @@ The history figures use [recorded points with per-point provenance](measurements
 DVB-S2 ([ETSI EN 302 307-1](https://www.etsi.org/deliver/etsi_en/302300_302399/30230701/01.04.01_60/en_30230701v010401p.pdf))
 is the standard behind most satellite TV. It cuts data into frames, protects them with two
 error-correcting codes, maps the bits onto QPSK or 8PSK symbols, and adds a header and pilot
-symbols so a receiver can find and follow the signal. Doing all of that on a $5 chip starts
+symbols so a receiver can find and follow the signal. Doing all of that on one microcontroller starts
 with one blunt question: can it even make samples fast enough?
 
 The S3's radio hides a test engine, which [esp-sdr-zephyr](prior-art.md) turned into a
@@ -247,7 +247,7 @@ over the air.
 
 ## The wide filter
 
-Somewhere along the way the $5 chip outgrew the SDR on the bench: the E200's AD9363 sees at most
+Somewhere along the way the chip outgrew the SDR on the bench: the E200's AD9363 sees at most
 20 MHz. A B200 joined the bench, fed by coax through 40 dB of attenuation.
 
 Experimental firmware restored the radio's wide analog-filter setting, PBUS(4,2)=32, after the
@@ -559,6 +559,7 @@ boards, the receiver at 2420 MHz and one gain setting, and no real input has yet
 transmit rates live; quad SPI was tested to 46.6 Mb/s.
 
 Next: live video from one S3 to the other, over Ethernet at both ends. The current
-[implementation](how-it-works.md) and [evidence](measurements.md) are the starting point. All
-development records remain in the
-[archive tag](https://github.com/Rivercraft911/esp-dvbs2/tree/archive/dev-2026-10-17).
+[implementation](how-it-works.md) and [evidence](measurements.md) are the starting point. The
+early development records remain in the
+[archive tag](https://github.com/Rivercraft911/esp-dvbs2/tree/archive/dev-2026-10-17); the later
+ones are in [`results/`](../results/) and [`docs/measurements/`](measurements/).
