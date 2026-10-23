@@ -146,8 +146,8 @@ preset; other builds start on the DevKit preset.
 Input selection applies to the next `dvbdump`, `dvbpace` or `dvb`; it does not start
 reception or the radio. It does claim the hardware, once: `spiinput on` installs ESP-IDF's SPI
 slave driver, `spiinput quad` claims the SPI bus and a GDMA channel, and both take the CRC-32
-table. Runs only start and stop them, so a run makes no heap calls. `spiinput off` frees all
-of it, and `spiinput usb` releases the SPI driver; USB input's wake timer is made at boot.
+table. Runs only start and stop them, so a run makes no heap calls. `spiinput off` and
+`spiinput usb` free all of it; USB input's wake timer is made at boot.
 Settings last until changed or reset.
 
 ## Diagnostics
