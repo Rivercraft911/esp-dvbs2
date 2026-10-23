@@ -359,7 +359,7 @@ bits and checks each frame.
 The check is the trick. Core 0 does not decode first. It re-encodes the hard decisions with the
 transmitter's own fast BCH and LDPC encoder and compares parity, 31.6k cycles at QPSK 3/4. Only
 frames that fail go to the full LDPC decoder, a layered normalized min-sum in int8 that handles
-16 parity checks per PIE vector. ([receiver chain](how-it-works.md#receiving))
+16 parity checks per PIE vector. ([receiver chain](receiver.md))
 
 ### The demodulator
 
@@ -368,7 +368,7 @@ The demodulator was built against real dumps first. On the S3's own short-frame 
 12,288-sample unit from 418,800 to 127,497 cycles. Two findings made it better than I expected:
 
 - The transmitter's carrier leak sits about 17 dB below its own signal. Removing it after
-  derotation raised MER from about 16 dB to about 29 dB ([receiving](how-it-works.md#receiving)).
+  derotation raised MER from about 16 dB to about 29 dB ([receiving](receiver.md)).
   On most unclipped captures the demodulator measured 26 to 31 dB, where LeanDVB, which does
   not remove the leak, reported 7 to 16 dB.
 - Both radios run from 40 MHz crystals, so the symbol clock offset equals the carrier offset
@@ -426,7 +426,7 @@ and calibrate the PHY. The receiver holds the PHY through the Bluetooth modem bi
 transmitter's PHY-solo mode does, deinitializes Wi-Fi and sets the bit again. Free internal RAM
 during a run went from 58 KB to 101 KB
 ([commit](https://github.com/Rivercraft911/esp-dvbs2/commit/82cf1ad8fec5c5dd78a43d6ea80d73b05a803900)),
-and no Wi-Fi interrupt runs during a capture. ([capture](how-it-works.md#receiving))
+and no Wi-Fi interrupt runs during a capture. ([capture](receiver.md))
 
 ### The rare bad frame
 

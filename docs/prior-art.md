@@ -65,7 +65,7 @@ stage digests, numerical symbol comparisons and file-loopback evidence are docum
   credits to upstream ESP-SDR
   ([hardware quirks, lines 138-144](https://github.com/cyber-murmel/esp-sdr-zephyr/blob/3214c16a7c9f136414cc5ae9d245ea290c98a6ce/doc/hardware-quirks.md#L138-L144)).
   This project adds the timer-driven bank handoff and the whole receiver after the samples
-  ([receiving](how-it-works.md#receiving)).
+  ([receiving](receiver.md)).
 - **Clock from carrier (esp-sdr-zephyr):** both boards' sample clocks differ by the same ratio
   as their carriers, and their QAM receiver derives one from the other
   ([hardware quirks, lines 91-99](https://github.com/cyber-murmel/esp-sdr-zephyr/blob/3214c16a7c9f136414cc5ae9d245ea290c98a6ce/doc/hardware-quirks.md#L91-L99)).
@@ -78,7 +78,7 @@ stage digests, numerical symbol comparisons and file-loopback evidence are docum
   Here, stopping Wi-Fi froze the dump at a constant until a register diff showed why: stopping
   Wi-Fi clears bit 1 of `SYSCON_WIFI_BB_CFG_REG`. The receiver holds the PHY through the
   Bluetooth modem bit, deinitializes Wi-Fi and sets that bit again
-  ([receiving](how-it-works.md#receiving)).
+  ([receiving](receiver.md)).
 - **Self capture:** one S3 measuring its own transmission is still untested. The
   [archived feasibility assessment](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/docs/wide-filter.md#can-the-s3-measure-itself)
   separates the controls found in ROM from a working spectrum self-test. The receiver above is a
@@ -105,7 +105,7 @@ The S3 receiver here measured a median pilot MER of 29.9 dB (lowest 26.8 dB) on 
 ([results](../results/2026-10-23-rx-5m-margin/README.md)). The two are close but not the same
 measurement. Mine comes from the DVB-S2 header and pilot symbols, after the demodulator removes
 the transmitter's carrier leak, about 17 dB below the signal; removing it raises MER from about
-16 dB to about 29 dB ([receiving](how-it-works.md#receiving)). On 1 Msym/s captures where my
+16 dB to about 29 dB ([receiving](receiver.md)). On 1 Msym/s captures where my
 demodulator measures 26 to 31 dB, LeanDVB, which does not remove the leak, reports 7 to 16 dB
 ([demodulator](../results/2026-10-22-rx-demod/README.md)).
 
