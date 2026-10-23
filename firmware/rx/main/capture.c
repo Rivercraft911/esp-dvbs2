@@ -6,6 +6,7 @@
 #include <string.h>
 #include "capture.h"
 #include "arena.h"
+#include "radio_power.h"
 
 #include "esp_attr.h"
 #include "esp_cpu.h"
@@ -483,12 +484,10 @@ esp_err_t capture_bench(const capture_config_t *config, uint32_t results[16],
     return launch(&job);
 }
 
-/* The radio, once at boot and for good, without Wi-Fi. esp_phy_enable() turns the Wi-Fi and BT
- * clocks on itself for the PHY's first, full calibration and its PLL tracking (ESP-IDF v6.1
- * phy_init.c, periph_ctrl.c phy_module_enable), as a BLE-only application relies on. The PHY is
- * held under the Bluetooth modem bit: with Bluetooth not built that bit asks for no PLL tracking,
- * the state Wi-Fi's stop used to leave behind. The dump engine lives in the Wi-Fi baseband, so its
- * clock domain stays referenced; the worker sets the baseband bit that Wi-Fi used to set. */
+/* The radio, once at boot and for good, without Wi-Fi (radio_power.h). The PHY is held under the
+ * Bluetooth modem bit, which asks for no PLL tracking: the state Wi-Fi's stop used to leave
+ * behind. The dump engine lives in the Wi-Fi baseband, so its clock domain stays referenced; the
+ * worker sets the baseband bit that Wi-Fi used to set. */
 static bool radio_up;
 
 /* On core 1, once: the handoff timer, its interrupt there, and the callback on the static state. */
@@ -520,11 +519,9 @@ esp_err_t capture_init(void)
     while (eTaskGetState(setup) != eSuspended) vTaskDelay(1);
     vTaskDelete(setup);
     if (e != ESP_OK) return e;
-    esp_wifi_bt_power_domain_on();
-    esp_phy_enable(PHY_MODEM_BT);
-    wifi_module_enable();
-    radio_up = phy_get_modem_flag() == PHY_MODEM_BT;
-    return radio_up ? ESP_OK : ESP_ERR_INVALID_STATE;
+    e = radio_power_up();
+    radio_up = e == ESP_OK;
+    return e;
 }
 
 static esp_err_t launch(job_t *job)

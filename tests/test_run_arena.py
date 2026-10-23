@@ -1,6 +1,6 @@
-"""The receiver's run-memory allocator (firmware/rx/main/arena.h arena_take) on the host: 16-byte
+"""The run-memory allocator (firmware/components/platform/include/run_arena.h arena_take) on the host: 16-byte
 alignment, filling exactly, and refusing sizes that would wrap or an arena already past its end.
-Run: python3 tests/test_rx_arena.py. No ESP-IDF, board or pytest needed.
+Run: python3 tests/test_run_arena.py. No ESP-IDF, board or pytest needed.
 """
 import os
 import pathlib
@@ -12,7 +12,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 PROGRAM = r"""
 #include <stdio.h>
-#include "arena.h"
+#include "run_arena.h"
 
 #define CHECK(x) do { if (!(x)) { printf("failed: %s (line %d)\n", #x, __LINE__); return 1; } } while (0)
 
@@ -42,11 +42,11 @@ def main():
         src, exe = pathlib.Path(tmp) / "arena_test.c", pathlib.Path(tmp) / "arena_test"
         src.write_text(PROGRAM)
         subprocess.run(shlex.split(os.environ.get("CC", "cc")) + [
-            "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-I", str(ROOT / "firmware/rx/main"),
+            "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-I", str(ROOT / "firmware/components/platform/include"),
             str(src), "-o", str(exe)], check=True)
         out = subprocess.run([str(exe)], capture_output=True, text=True)
         assert out.returncode == 0 and out.stdout.strip() == "ok", out.stdout
-    print("rx arena: alignment, exact fill, wrapping sizes and an overrun arena refused: ok")
+    print("run arena: alignment, exact fill, wrapping sizes and an overrun arena refused: ok")
 
 
 if __name__ == "__main__":

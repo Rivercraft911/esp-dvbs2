@@ -27,6 +27,7 @@
 #include <string.h>
 
 #include "radio_s3.h"
+#include "radio_power.h"
 #include "esp_timer.h"
 #include "esp_private/phy.h"
 #include "esp_private/periph_ctrl.h"
@@ -480,27 +481,16 @@ static void watch_end(bool watch_idle, bool watch_worker)
     }
 }
 
-/* The radio, once at boot and for good, without Wi-Fi: as a BLE-only application does,
- * esp_phy_enable() turns the Wi-Fi and BT clocks on for the PHY's first, full calibration
- * (ESP-IDF v6.1 phy_init.c, periph_ctrl.c phy_module_enable). The PHY is held under the BT
- * modem bit; with Bluetooth not built that bit asks for no PLL tracking. The DAC streams from
- * the Wi-Fi baseband, so its clock domain stays referenced. No Wi-Fi code is linked. */
+/* The radio, once at boot and for good, without Wi-Fi (radio_power.h). The DAC streams from the
+ * Wi-Fi baseband, so its clock domain stays referenced. */
 static bool phy_up;
 extern void phy_param_track_tot(bool en_wifi, bool en_ble_154); /* libphy */
 
 esp_err_t radio_s3_init(void)
 {
-#if CONFIG_BT_ENABLED || CONFIG_IEEE802154_ENABLED
-    return ESP_ERR_NOT_SUPPORTED;
-#else
-    if (phy_up) return ESP_OK;
-    if (phy_get_modem_flag() != 0) return ESP_ERR_INVALID_STATE;
-    esp_wifi_bt_power_domain_on();
-    esp_phy_enable(PHY_MODEM_BT);
-    wifi_module_enable();
-    phy_up = phy_get_modem_flag() == PHY_MODEM_BT;
-    return phy_up ? ESP_OK : ESP_ERR_INVALID_STATE;
-#endif
+    const esp_err_t e = radio_power_up();
+    phy_up = e == ESP_OK;
+    return e;
 }
 
 static void worker(void *arg)

@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.22)
-# Components shared with the receiver (dvbs2) and the transmitter's own (the rest).
+# Components shared with the receiver (dvbs2, platform) and the transmitter's own (the rest).
 set(EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/../components/dvbs2"
+                         "${CMAKE_CURRENT_LIST_DIR}/../components/platform"
                          "${CMAKE_CURRENT_LIST_DIR}/../components/shaper"
                          "${CMAKE_CURRENT_LIST_DIR}/../components/radio_s3"
                          "${CMAKE_CURRENT_LIST_DIR}/../components/station_id"
