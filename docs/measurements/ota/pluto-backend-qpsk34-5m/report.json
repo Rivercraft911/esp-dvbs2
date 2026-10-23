@@ -80,7 +80,7 @@
   "rolloff": 0.35,
   "rrc_rej_db": 20,
   "command": [
-    "/Users/river/Documents/stanford/SSI/esp-dvbs2/notes/leansdr/src/apps/leandvb",
+    "local LeanDVB build",
     "--standard",
     "DVB-S2",
     "--f32",

@@ -1,15 +1,20 @@
 # Contained RF check
 
 For a real file with erasure recovery, use the
-[file coordinator](../../docs/file-link.md#coordinator-only-keyed-closed-faraday-box).
+[file check](../../docs/file-link.md#keyed-closed-faraday-box), `file_check.py`.
 It wraps the USB FEC sender, this libiio RX worker, LeanDVB and two SHA-256-checked
 unpack runs, including deliberate receive-frame drops, in one command.
 
 Capture with UHD or a Pluto-firmware ADALM-Pluto / ANTSDR E200 (libiio), decode with
 LeanDVB, and compare every recovered payload byte against the synthetic source.
-Bench runs recovered exact payloads at 2.5 and 10 MS/s streaming, and at 20 MS/s
-with a single 16 M sample device buffer. The integrated libiio backend needs its
-first coordinator run; host tests use simulated devices only.
+E200 runs in a closed box recovered exact payloads streaming at 2.5 MS/s
+([QPSK 1/2, 1 Msym/s](../../docs/measurements/ota/ota1-qpsk12-1m/report.json)) and
+10 MS/s ([QPSK 3/4, 5 Msym/s](../../docs/measurements/ota/ota2-qpsk34-5m/report.json)),
+and at 20 MS/s from a single 16 M sample device buffer
+([QPSK 3/4, 10 Msym/s](../../docs/measurements/ota/ota4-qpsk34-10m-burst/report.json)).
+Through this script's libiio backend, 2,937 frames of QPSK 3/4 at 5 Msym/s came back exact
+([report](../../docs/measurements/ota/pluto-backend-qpsk34-5m/report.json)). Host tests use
+simulated devices only.
 
 Read [Transmitting](../../docs/transmitting.md). Use a **closed Faraday box with
 both devices inside**, or **coax with attenuators** (at least 30 dB initially).
@@ -25,6 +30,7 @@ it finishes: Ctrl-C stops host capture but **cannot stop already keyed firmware*
 No discovery, reset, firmware changes or callsign writes occur. The exact serial
 port is locked; `info` must return a valid stored callsign. `--callsign` optionally
 cross-checks it. The keyed seconds include both Morse IDs; short runs are refused.
+`--seconds` takes 1 to 60 here; the firmware itself allows up to 540 s.
 `spiinput off` selects synthetic input and disables USB ingress for this run.
 
 ## Pluto / E200 with Pluto firmware
@@ -97,7 +103,9 @@ is the tested allocation; transfer can take longer than the RF sample window.
 
 Default analog bandwidth is 1.15 times the nominal RRC bandwidth (roll-off 0.35).
 `--bandwidth HZ` overrides it. `20m`, `26m667` and `33m333` are experimental libiio
-burst choices, **not validated decodes**; native rates are capped at 61.44 MS/s.
+burst choices, **not validated decodes** on this path; native rates are capped at
+61.44 MS/s. Those rates have decoded from B200 captures taken another way
+([keyed table](../../results/2026-10-23-tx-table/README.md)).
 A stock AD9363's 20 MHz analog bandwidth cannot validate a 36 MHz `26m667` signal.
 The receiver must actually cover the full occupied bandwidth; no firmware unlock
 is performed. `--upsample 2` interpolates saved IQ offline before LeanDVB when
@@ -126,8 +134,12 @@ automatically; VCM at `10m` is refused before device access.
 
 ## Laptop-driven live VCM
 
-The **coordinator**, with both devices in the closed box and the assigned callsign
-already stored, runs from the repository root (new evidence directory each time):
+One keyed run of this demo switched QPSK 1/2 to 3/4 to 9/10 and back to 1/2, and LeanDVB
+recovered 938 frames in four segments (179, 124, 104 and 531), 4,355,900 bytes exact and
+contiguous across every switch ([report](../../docs/measurements/ota/live-vcm-5m/report.json)).
+
+With both devices in the closed box and your own callsign stored, run from the
+repository root (new evidence directory each time):
 
 ```sh
 python3 examples/over-the-air/live.py notes/live-vcm \
@@ -155,7 +167,7 @@ must follow its control within one old-mode frame of payload. Leading acquisitio
 and trailing partial-frame loss are allowed; interior loss, repeats, corruption,
 missing/reordered runs and rejected controls fail. USB-limited dummy frames are
 expected and reported separately from payload continuity. FEC checks reuse the
-pattern verifier. No live OTA result is claimed until the coordinator runs it.
+pattern verifier.
 
 `sender.json` retains confirmed writes and control logs; `input.bin` is the offered
 source, and `sent.bin` its confirmed sent prefix. Capture/readbacks, raw IQ,

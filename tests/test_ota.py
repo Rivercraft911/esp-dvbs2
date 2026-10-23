@@ -442,7 +442,8 @@ def test_upsample():
         z.tofile(source)
         ota.upsample(source, target, 2)
         actual = np.fromfile(target, dtype="<c8")
-        assert np.array_equal(actual, resample_poly(z, 2, 1))
+        # Chunked filtering may round differently from one whole-array call in some SciPy versions.
+        assert np.allclose(actual, resample_poly(z, 2, 1).astype('<c8'), rtol=1e-5, atol=1e-5)
         assert np.array_equal(np.fromfile(source, dtype="<c8"), z)
 
 

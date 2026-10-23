@@ -1,5 +1,6 @@
 {
   "archive": "archive/dev-2026-10-17",
+  "note": "Files under ota/ are copies of the archived evidence with machine-specific absolute paths replaced by repo-relative paths or short descriptions; their hashes pin the scrubbed copies, not the original archive bytes.",
   "records": [
     {
       "file": "2026-10-17-qpsk-reserve-keyed.jsonl",
@@ -69,7 +70,7 @@
     },
     {
       "file": "2026-10-18-8psk-26m667-pace.jsonl",
-      "source": "radio-off Wi-Fi-up board runs 2026-10-18, firmware eee5153 on exp/eight-lofty (notes/final/queue/runs.jsonl)",
+      "source": "radio-off Wi-Fi-up board runs 2026-10-18, firmware eee5153 on exp/eight-lofty (local run log)",
       "records": 3,
       "sha256": "79560656b5b4925fba9ff7e2cf15994bc98f21ad25228d303263945db665fa33"
     },
@@ -87,102 +88,87 @@
     },
     {
       "file": "ota/ota1-qpsk12-1m/report.json",
-      "source": "notes/ota-evidence/ota1-qpsk12-1m/report.json",
-      "sha256": "0daece685ba374623bea9a41698d4e1e7ae37d8af609c27ace8c3c5494a77626"
+      "source": "archived OTA evidence: ota1-qpsk12-1m/report.json",
+      "sha256": "ef6e6021d013412aa53ac96475bb6e7d18cc91b874030bb2a36cc23d4915dbac"
     },
     {
       "file": "ota/ota1-qpsk12-1m/board.jsonl",
-      "source": "notes/ota-evidence/ota1-qpsk12-1m/board.jsonl",
+      "source": "archived OTA evidence: ota1-qpsk12-1m/board.jsonl",
       "sha256": "60275387382a70c0154d9fdfb936987f50303272ddacf5fbb3c10848bb07d0da",
       "records": 1
     },
     {
       "file": "ota/ota2-qpsk34-5m/report.json",
-      "source": "notes/ota-evidence/ota2-qpsk34-5m/report.json",
-      "sha256": "2497fb664bd8dbd69b38b02e7506948977c4e8b3d0430e9daddbd8c86a651a16"
+      "source": "archived OTA evidence: ota2-qpsk34-5m/report.json",
+      "sha256": "778150a587f0d7dd7fb2cce88cb9294b8ff9e5db7274bb650b8c7569520f7620"
     },
     {
       "file": "ota/ota2-qpsk34-5m/board.jsonl",
-      "source": "notes/ota-evidence/ota2-qpsk34-5m/board.jsonl",
+      "source": "archived OTA evidence: ota2-qpsk34-5m/board.jsonl",
       "sha256": "a899d8b1b591293e522bc8412fe8cbc79b8906772ddc11455672f13415043ef4",
       "records": 1
     },
     {
       "file": "ota/ota4-qpsk34-10m-burst/report.json",
-      "source": "notes/ota-evidence/ota4-qpsk34-10m-burst/report.json",
-      "sha256": "b736b641179651d7bdf27bdf742c4e254ed6dd526ef3eec55a40adbc5928ea6d"
+      "source": "archived OTA evidence: ota4-qpsk34-10m-burst/report.json",
+      "sha256": "ee72956dd328f0bc117e0ef343b2923385c19ab9a62a12f332ae0ec75060b822"
     },
     {
       "file": "ota/ota4-qpsk34-10m-burst/board.jsonl",
-      "source": "notes/ota-evidence/ota4-qpsk34-10m-burst/board.jsonl",
+      "source": "archived OTA evidence: ota4-qpsk34-10m-burst/board.jsonl",
       "sha256": "6f92cc199682bdc3e4b1dac5c75e54be356591bfa0c994abf52110effe559904",
       "records": 1
     },
     {
       "file": "ota/ota5-qpsk910-20m/report.json",
-      "source": "notes/ota-evidence/ota5-qpsk910-20m/report.json",
-      "sha256": "173a4708c98458439f2caec14b94f8e95a262027b1e05dbac5b526cb6e49142a"
+      "source": "archived OTA evidence: ota5-qpsk910-20m/report.json",
+      "sha256": "ed8a05dd5bbc2bdbd1efa5508b5bb9c0e500ec04c1a28d53789cd55cd4b9bad8"
     },
     {
       "file": "ota/ota5-qpsk910-20m/board.jsonl",
-      "source": "notes/ota-evidence/ota5-qpsk910-20m/board.jsonl",
+      "source": "archived OTA evidence: ota5-qpsk910-20m/board.jsonl",
       "sha256": "07f3956ea8a27b1eabddeaa14159744eab1dea16b6ffe28349a7e5dacdfeb639",
       "records": 1
     },
     {
       "file": "ota/pluto-backend-qpsk34-5m/report.json",
-      "source": "notes/ota-evidence/pluto-backend-qpsk34-5m/report.json",
-      "sha256": "5f9b6d7b74dfac6ac8a62191453b382a0cf220ad4f5b8e2267c0941d742d0a26"
+      "source": "archived OTA evidence: pluto-backend-qpsk34-5m/report.json",
+      "sha256": "c88675cbcc09bcbb3396f8221b2bf695169bbfae1fb81b4f667d7354c7deb21d"
     },
     {
       "file": "ota/pluto-backend-qpsk34-5m/plan.json",
-      "source": "notes/ota-evidence/pluto-backend-qpsk34-5m/plan.json",
-      "sha256": "dcf46d212a8682f5e4f1b211fe7734c8d78b2a3c5a49769140a68214db804b1c"
+      "source": "archived OTA evidence: pluto-backend-qpsk34-5m/plan.json",
+      "sha256": "675cc91902a08567846f9ffaab8443a853e1297cda273bc287d5ab13a5112357"
     },
     {
       "file": "ota/pluto-backend-qpsk34-5m/settings.json",
-      "source": "notes/ota-evidence/pluto-backend-qpsk34-5m/settings.json",
+      "source": "archived OTA evidence: pluto-backend-qpsk34-5m/settings.json",
       "sha256": "712fbd057d9e44f509ecbd51e4793d3d3f072689fcd464e8d5f5752d63b2f098"
     },
     {
       "file": "ota/pluto-backend-qpsk34-5m/revision.json",
-      "source": "notes/ota-evidence/pluto-backend-qpsk34-5m/revision.json",
-      "sha256": "72d161cf5c3c5fb5df0921e28fcc8fd798636035794ac08e2509fb6276630a75"
+      "source": "archived OTA evidence: pluto-backend-qpsk34-5m/revision.json",
+      "sha256": "1e1ebbbdfc4c95ba259932d06ec968e0389a55c9213ca63e8f31d9f77fb9e19c"
     },
     {
       "file": "ota/vcm-qpsk-5m/report.json",
-      "source": "notes/ota-evidence/vcm-qpsk-5m/report.json",
-      "sha256": "e41be9e50276a7209df367bd8122d8c98e7374fa535304151b096aba10ca7cca"
+      "source": "archived OTA evidence: vcm-qpsk-5m/report.json",
+      "sha256": "1d03287a015cd01543ea99e77d52f4df9970e54f4c76d8fc23b93e5934a21641"
     },
     {
       "file": "ota/vcm-qpsk-5m/settings.json",
-      "source": "notes/ota-evidence/vcm-qpsk-5m/settings.json",
-      "sha256": "1fd6fb9db3fc549a65d980a3ce10238e92d8f6ae049f9330a9df81df12603030"
+      "source": "archived OTA evidence: vcm-qpsk-5m/settings.json",
+      "sha256": "a5a671e83cfaf435ae7beb4bae367480f136b3c725e1a63b285e144e4d56a959"
     },
     {
       "file": "ota/vcm-qpsk-5m/board.log",
-      "source": "notes/ota-evidence/vcm-qpsk-5m/board.log",
+      "source": "archived OTA evidence: vcm-qpsk-5m/board.log",
       "sha256": "fb129441b5345cbd14517abdaeb53a93cf45e28f1983c036b2990d9a0feb0be5"
-    },
-    {
-      "file": "qpsk34-5m-spectrum.png",
-      "source": "notes/ota-evidence/qpsk34-5m-spectrum.png",
-      "sha256": "b7a82a7f60d530567b15939ff96d19d556be9f346cb72ae6227f889f4f989e79"
-    },
-    {
-      "file": "stitch.png",
-      "source": "notes/ota-evidence/stitch.png",
-      "sha256": "113fe9363bc0f43f5e20e56e7abdc208b022ebfd2d23e85f845b09d5c257042b"
-    },
-    {
-      "file": "ht40-compare.png",
-      "source": "notes/ota-evidence/ht40-compare.png",
-      "sha256": "730f4401df83bc9b3c94d3430a2e4d13d350b80c3dec6f42ca0f9edf5fecfdc2"
     },
     {
       "file": "ota/operator-summary.json",
       "source": "Operator-provided OTA results in the documentation request, 2026-10-18; transcribed summary, not raw receiver output",
-      "sha256": "2d68ab11e1402ad8e363cb72fb564efdc81ef896b91b3fe0409010be0dd59479"
+      "sha256": "7a4ed7e7d888b023d2e4b4f748703fd28dd52a6af5eebd6c7db55623129c9ca8"
     }
   ]
 }
