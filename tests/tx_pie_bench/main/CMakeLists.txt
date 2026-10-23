@@ -16,7 +16,7 @@ idf_component_register(SRCS "../../tx_pie_bench.c" "../../qpsk_axes.c" "../../ps
                             "${fw}/tx/main/ring.c" "${fw}/tx/main/payload_pie.S"
                        INCLUDE_DIRS "." "${fw}/components/shaper/include" "${fw}/tx/main"
                        LDFRAGMENTS "bench.lf" "${fw}/components/shaper/shaper.lf"
-                       PRIV_REQUIRES dvbs2 esp_driver_usb_serial_jtag vfs esp_hw_support esp_rom
+                       PRIV_REQUIRES dvbs2 ingress esp_driver_usb_serial_jtag vfs esp_hw_support esp_rom
                                      esp_timer heap soc esp_app_format)
 # Host-only checks, compiled for the board: rename their entry points, and declare the machine
 # oracles that machine.c builds for the host only (tx_pie_bench.c defines them).

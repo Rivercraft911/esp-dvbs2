@@ -102,8 +102,9 @@ typedef struct {
     uint32_t head;              /* number of slots released so far; head % SLOTS is the oldest */
     const uint8_t *data;        /* unread payload of the message the consumer holds */
     uint32_t left;
-    uint64_t copy_cycles;       /* memcpy windows only; zero in the portable build */
+    uint64_t copy_cycles;       /* copy windows only; zero in the portable build */
     uint32_t copy_max;
+    uint64_t check_cycles;      /* pv_check windows (header, CRC-32, TS syncs), as copy_cycles */
     bool held;                  /* the slot at head is an accepted message not yet released */
     bool in_long;               /* the previous slot ended without end-of-frame */
     bool seq_known;

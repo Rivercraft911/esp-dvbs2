@@ -35,7 +35,7 @@ static ingress_stats saved;
 static ingress_spi_stats hw;
 static uint32_t wrong_type, read_bytes, read_calls, read_max;
 static uint16_t next_seq;
-static uint64_t read_cycles, copy_cycles;
+static uint64_t read_cycles, copy_cycles, check_cycles;
 static uint32_t copy_max;
 
 // spisend: the test sender on a second S3, SPI3 master.
@@ -197,7 +197,7 @@ esp_err_t spi_input_start(void)
     if (usb_mode) { borrowed_count=0; return usb_input_start(input_type); }
     memset(&saved, 0, sizeof saved); memset(&hw, 0, sizeof hw);
     saved_borrowed=borrowed_count;
-    read_bytes=read_calls=read_max=wrong_type=0; read_cycles=copy_cycles=copy_max=0; next_seq=0;
+    read_bytes=read_calls=read_max=wrong_type=0; read_cycles=copy_cycles=check_cycles=copy_max=0; next_seq=0;
     if (!input_type) { borrowed_count=0; return ESP_OK; }
     ingress_spi_config cfg=pins; cfg.replay=replay; cfg.pv=pv_mode;
     if (borrowed_count) memcpy(cfg.buffers,borrowed,sizeof borrowed);
@@ -234,7 +234,7 @@ void spi_input_stop(void)
     // Stop DMA/interrupts before taking the final counter snapshot.
     ingress_spi_stop(); ingress_spi_get_stats(&hw);
     borrowed_count=0;
-    copy_cycles=rx->copy_cycles; copy_max=rx->copy_max;
+    copy_cycles=rx->copy_cycles; copy_max=rx->copy_max; check_cycles=rx->check_cycles;
     saved=rx->st; wrong_type=rx->wrong_type; next_seq=rx->seq_next; rx=NULL;
 }
 
@@ -249,7 +249,8 @@ void spi_input_print(void)
     printf(",\"input_bytes\":%"PRIu32",\"input_calls\":%"PRIu32
            ",\"input_cycles\":%"PRIu64",\"input_call_max\":%"PRIu32,
            read_bytes, read_calls, read_cycles, read_max);
-    printf(",\"input_copy_cycles\":%"PRIu64",\"input_copy_max\":%"PRIu32,copy_cycles,copy_max);
+    printf(",\"input_copy_cycles\":%"PRIu64",\"input_copy_max\":%"PRIu32",\"input_check_cycles\":%"PRIu64,
+           copy_cycles,copy_max,check_cycles);
     printf(",\"spi\":{\"msgs\":%"PRIu32",\"bytes\":%"PRIu32",\"nops\":%"PRIu32
            ",\"short\":%"PRIu32",\"long\":%"PRIu32",\"header\":%"PRIu32
            ",\"crc\":%"PRIu32",\"sync\":%"PRIu32",\"lost\":%"PRIu32

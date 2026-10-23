@@ -10,6 +10,7 @@
 //   fills      shaper fill kernels against shaper_fill_c, the QPSK quad shaper against
 //              shaper_qpsk_c, shaper_copy_words against a word loop
 //   ring       ring.c's unpack and quad-copy kernels against scalar models
+//   ingress    the slot copy (ingress_pie.S) against memcpy, every source offset, reads watched
 //   qpsk_axes, shaper_axes, psk8_kernels: the host checks of those names, here on PIE code
 // A region monitor of the debug assistant (soc/esp32s3/register/soc/assist_debug_reg.h) flags any
 // core-0 read in the 256 bytes beyond either end of each BB input, rounded out to 16-byte blocks:
@@ -660,6 +661,37 @@ static void ring(void)
     end();
 }
 
+/* ------------------------------------------------------------ ingress */
+
+void ingress_copy_pie(uint8_t *dst, const uint8_t *src, unsigned blocks);
+
+// 16 * blocks bytes from every source offset to an aligned destination; the kernel may read only
+// the 16-byte blocks that hold source bytes.
+static void ingress(void)
+{
+    begin("ingress");
+    const size_t room = 2 * MARGIN + 16 + 84 * 16 + 16;
+    uint8_t *src = take(room, INTERNAL), *got = take(84 * 16 + 32, INTERNAL);
+    for (size_t i = 0; i < room; ++i) src[i] = (uint8_t)rnd();
+    static const unsigned block_counts[] = {1, 2, 3, 4, 7, 16, 82, 83};
+    for (unsigned b = 0; b < sizeof block_counts / sizeof *block_counts; ++b)
+        for (unsigned at = 0; at < 16; ++at) {
+            const unsigned blocks = block_counts[b];
+            const uint8_t *from = src + MARGIN + at;
+            memset(got, 0xa5, 84 * 16 + 32);
+            watch(src + MARGIN, (const void *)(((uintptr_t)from + 16 * blocks + 15) & ~(uintptr_t)15));
+            ingress_copy_pie(got + 16, from, blocks);
+            if (watched()) miss("read outside source", blocks, at, flagged_pc, 0);
+            if (!same(got + 16, from, 16 * blocks) || !filled(got, 0xa5, 16) ||
+                !filled(got + 16 + 16 * blocks, 0xa5, 16))
+                miss("copy or guards", blocks, at, 0, 0);
+            ++cases;
+        }
+    heap_caps_free(src);
+    heap_caps_free(got);
+    end();
+}
+
 /* ------------------------------------------------------------ reused host checks */
 
 // machine.c's host oracles (machine.h), for the reused checks.
@@ -734,6 +766,7 @@ void app_main(void)
         xorshift();
         fills();
         ring();
+        ingress();
         reused();
         printf("@{\"part\":\"all\",\"errors\":%u,\"firmware\":\"%s\"}\n@{\"done\":true}\n", total_errors,
                esp_app_get_description()->version);
