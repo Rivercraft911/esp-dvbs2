@@ -55,7 +55,7 @@ typedef void (*TaskFunction_t)(void *);
 typedef int SemaphoreHandle_t;
 typedef int BaseType_t;
 static int state_lock, done_storage;
-static bool running, lo_divided, profile_selected;
+static bool running, lo_divided;
 static int32_t lo_offset_khz;
 static unsigned pll_mhz, pll_khz, selector;
 static void phy_set_freq(uint16_t mhz, int16_t khz) { pll_mhz=mhz; pll_khz=khz; }
@@ -80,9 +80,6 @@ static int xTaskCreatePinnedToCore(TaskFunction_t task, const char *name, unsign
     ++tasks; task(arg); return pdPASS;
 }
 radio_filter_mode_t radio_filter_get(void) { return RADIO_FILTER_AUTO; }
-void radio_calibration_attempt(radio_calibration_stats_t *stats,bool keyed) {
-    memset(stats,0,sizeof *stats); stats->requested=keyed && profile_selected;
-}
 static uint64_t clock_cycles;
 static uint32_t cycles(void) { return (uint32_t)clock_cycles++; }
 static void wait_until(uint32_t deadline) {
@@ -269,14 +266,6 @@ int main(void) {
     command("2412 13 5m 530 18",false,false);
     command("2412 13 5m 530 0 509",false,false);
     radio_s3_stats_t stats;
-    profile_selected=true; radio_s3_lo_command("five-sixths");
-    unsigned before_profile=tasks;
-    assert(radio_s3_run_options(2420,0,30,RADIO_S3_DAC_RATE,6750000,payload,NULL,NULL,&stats)==ESP_ERR_NOT_SUPPORTED);
-    assert(tasks==before_profile && stats.calibration.requested);
-    radio_s3_lo_command("direct 1");
-    assert(radio_s3_run_options(2420,0,30,RADIO_S3_DAC_RATE,6750000,payload,NULL,NULL,&stats)==ESP_ERR_NOT_SUPPORTED);
-    assert(tasks==before_profile && stats.requested_rf_khz==2420001 && stats.lo_offset_khz==1);
-    profile_selected=false; radio_s3_lo_command("direct");
     unsigned before_offset=tasks;
     radio_s3_lo_command("direct -1");
     assert(radio_s3_run_options(2000,0,30,RADIO_S3_DAC_RATE,1350000,payload,NULL,NULL,&stats)==ESP_ERR_INVALID_ARG);
@@ -394,7 +383,7 @@ static void force_tx_gain(uint16_t code,uint16_t bb,uint8_t digital) {
 static void force_txon_mode(uint8_t enabled,uint8_t mode,uint8_t offset) {
     assert(enabled==1 && !mode && offset==(uint8_t)-37); check_tune(); regs[FE_CTRL]=37U<<18;
 }
-bool radio_calibration_filter(radio_filter_stats_t *s) {
+bool radio_filter_apply(radio_filter_stats_t *s) {
     check_tune(); s->selected=s->occupied_hz>20000000U?RADIO_FILTER_WIDE:RADIO_FILTER_NARROW; return true;
 }
 static uint32_t cycles(void) {return 123;}

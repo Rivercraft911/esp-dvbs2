@@ -25,7 +25,6 @@ jobs:
       - run: python tests/test_physolo.py
       - run: python tests/test_radio_duration.py
       - run: python tests/test_radio_filter.py
-      - run: python tests/test_radio_calibration.py
       - run: python tests/test_qpsk_axes.py
       - run: python tests/test_self_check.py
       - run: python tests/test_live_video.py

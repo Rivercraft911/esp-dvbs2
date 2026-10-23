@@ -29,7 +29,6 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "radio_s3.h"
-#include "radio_calibration.h"
 #include "ring.h"
 #include "vcm_sections.h"
 #include "station_id.h"
@@ -1470,7 +1469,6 @@ void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, 
     print_timing(&s);
     printf(",\"fe_gain_index\":%" PRIu32 ",\"chain\":\"cwgain\"", s.fe_gain_index);
     radio_filter_print(&s.filter);
-    radio_calibration_print(&s.calibration);
     radio_s3_tuning_print(&s);
     print_wifi(&s.wifi);
     print_session(phy_solo,&s);

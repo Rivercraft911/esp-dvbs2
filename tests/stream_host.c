@@ -341,7 +341,6 @@ esp_err_t radio_s3_paced_wifi_options(uint32_t sec, uint32_t rate, radio_s3_fill
 }
 void radio_filter_print(const radio_filter_stats_t *stats) { (void)stats; }
 void radio_s3_tuning_print(const radio_s3_stats_t *stats) { (void)stats; }
-void radio_calibration_print(const radio_calibration_stats_t *stats) { (void)stats; }
 static unsigned wifi_probes;
 static esp_err_t discard(const uint32_t *bank, uint64_t first, size_t count, void *ctx)
 { (void)bank; (void)first; (void)count; (void)ctx; return ESP_OK; }

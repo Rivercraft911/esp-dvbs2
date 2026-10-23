@@ -67,8 +67,7 @@ omit `flash`.
 select `rflo five-sixths`, which asks the PLL for six-fifths of the requested RF frequency
 and enables the radio's five-sixths divider. Either command accepts an optional signed
 offset in kHz, from −999 to 999; omitting it resets the offset to zero. The resulting
-RF request must stay within 2000..2450 MHz. Use `rfprofile off` with the divider or a
-nonzero offset: the stored calibration profile only supports direct tuning without an offset.
+RF request must stay within 2000..2450 MHz.
 Run records report `requested_rf_khz` and `requested_pll_khz`; measure the actual signal
 with a receiver. Tuning selections last until changed or the board restarts.
 

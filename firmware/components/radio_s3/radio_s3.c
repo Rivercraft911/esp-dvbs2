@@ -27,7 +27,6 @@
 #include <string.h>
 
 #include "radio_s3.h"
-#include "radio_calibration.h"
 #include "physolo.h"
 #include "esp_timer.h"
 #include "esp_private/phy.h"
@@ -411,7 +410,7 @@ static esp_err_t IRAM_ATTR __attribute__((noinline)) stream(run_t *run)
     if (stats->fe_gain_index != 0) {
         return ESP_ERR_INVALID_STATE;
     }
-    if (!radio_calibration_filter(&stats->filter)) {
+    if (!radio_filter_apply(&stats->filter)) {
         return ESP_ERR_INVALID_STATE;
     }
     REG_CLR_BIT(TONE_CTRL, 1U << 18);
@@ -504,10 +503,6 @@ static void worker(void *arg)
 #endif
     wifi_mode_t existing;
     esp_err_t error = ESP_OK;
-    if (!run->probe && !run->wifi_pace &&
-        (error = radio_calibration_begin(run->freq_mhz, run->gain, run->geo.rate,
-                                         &run->stats->calibration)) != ESP_OK)
-        goto cleanup;
     error = esp_wifi_get_mode(&existing);
     if (error != ESP_ERR_WIFI_NOT_INIT) {
         error = ESP_ERR_INVALID_STATE;
@@ -620,7 +615,6 @@ static void worker(void *arg)
 cleanup:
     if (rf_setup) {
         REG_WRITE(DAC_CTRL, 0);
-        if (!radio_calibration_restore() && error == ESP_OK) error = ESP_ERR_INVALID_STATE;
         if (run->stats->filter.applied && !radio_filter_finish(&run->stats->filter) && error == ESP_OK) {
             error = ESP_ERR_INVALID_STATE;
         }
@@ -633,7 +627,6 @@ cleanup:
         rom_pbus_xpd_rx_on(0);
         REG_WRITE(BANK_USAGE, REG_READ(BANK_USAGE) & ~0xfU);
     }
-    if (!run->probe && !run->wifi_pace) radio_calibration_end(&run->stats->calibration);
     if (started) {
         (void)esp_wifi_set_promiscuous(false);
     }
@@ -895,7 +888,6 @@ esp_err_t radio_s3_run_options(uint32_t freq_mhz, uint8_t gain, uint32_t seconds
     const int64_t rf = (int64_t)freq_mhz * 1000 + lo_offset_khz;
     if (stats) {
         memset(stats, 0, sizeof *stats);
-        radio_calibration_attempt(&stats->calibration, true);
         stats->requested_rf_khz = rf >= 0 && rf <= UINT32_MAX ? rf : 0;
         stats->lo_offset_khz = lo_offset_khz;
         stats->lo_divided = lo_divided;
@@ -909,7 +901,6 @@ esp_err_t radio_s3_run_options(uint32_t freq_mhz, uint8_t gain, uint32_t seconds
             (options && options->phy_solo && seconds > RADIO_S3_PHY_SOLO_MAX_SECONDS) || !known_rate(dac_rate)) {
         return ESP_ERR_INVALID_ARG;
     }
-    if ((lo_divided || lo_offset_khz) && stats->calibration.requested) return ESP_ERR_NOT_SUPPORTED;
     // Refuse before task creation, Wi-Fi init, calibration or any register access.
     if (!station_store_get()[0]) {
         return ESP_ERR_INVALID_STATE;
