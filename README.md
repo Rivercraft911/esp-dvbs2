@@ -68,20 +68,21 @@ transmitter's payload, station header included.
 
 Every row was keyed for 30 s with a payload that never repeats and decoded by LeanDVB, an
 independent receiver, from four short B200 captures per run: every recovered frame was exact
-([keyed table](results/2026-10-23-tx-table/README.md), [8PSK re-key](results/2026-10-23-tx-table-8psk-rekey/README.md)). Spare is the share of each core left
+([keyed table](results/2026-10-23-tx-table/README.md), [8PSK re-key](results/2026-10-23-tx-table-8psk-rekey/README.md),
+[80 MS/s fill confirmation](results/2026-10-23-tx-fill-keyed/README.md)). Spare is the share of each core left
 over: the encoder on core 0 against the frame period, the bank fill on core 1 against its
 deadline.
 
 | Mode | Symbol rate | Bandwidth | Payload | Exact frames | Spare, encoder / fill |
 |---|---:|---:|---:|---:|---:|
-| 8PSK 9/10 | 26.67 Msym/s | 36 MHz | **69.8 Mb/s** | 948 | 21.4% / 20.2% |
-| 8PSK 5/6 | 26.67 Msym/s | 36 MHz | **64.6 Mb/s** | 711 | 16.5% / 19.8% |
-| QPSK 9/10, roll-off 0.20 | 33.33 Msym/s | **40 MHz** | **58.2 Mb/s** | 587 | 26.1% / 14.2% |
-| 8PSK 9/10 | 20 Msym/s | 27 MHz | **52.4 Mb/s** | 707 | 53.7% / 15.7% |
-| 8PSK 2/3 | 26.67 Msym/s | 36 MHz | **51.6 Mb/s** | 943 | 20.2% / 20.4% |
-| 8PSK 5/6 | 20 Msym/s | 27 MHz | 48.4 Mb/s | 531 | 38.9% / 15.5% |
-| QPSK 9/10 | 26.67 Msym/s | 36 MHz | 46.6 Mb/s | 476 | 58.1% / 18.6% |
-| 8PSK 2/3 | 20 Msym/s | 27 MHz | 38.7 Mb/s | 506 | 47.5% / 15.5% |
+| 8PSK 9/10 | 26.67 Msym/s | 36 MHz | **69.8 Mb/s** | 947 | 21.5% / 22.7% |
+| 8PSK 5/6 | 26.67 Msym/s | 36 MHz | **64.6 Mb/s** | 947 | 16.8% / 21.8% |
+| QPSK 9/10, roll-off 0.20 | 33.33 Msym/s | **40 MHz** | **58.2 Mb/s** | 793 | 30.1% / 17.7% |
+| 8PSK 9/10 | 20 Msym/s | 27 MHz | **52.4 Mb/s** | 706 | 53.8% / 17.5% |
+| 8PSK 2/3 | 26.67 Msym/s | 36 MHz | **51.6 Mb/s** | 946 | 20.5% / 21.9% |
+| 8PSK 5/6 | 20 Msym/s | 27 MHz | 48.4 Mb/s | 706 | 40.2% / 17.4% |
+| QPSK 9/10 | 26.67 Msym/s | 36 MHz | 46.6 Mb/s | 632 | 59.3% / 20.7% |
+| 8PSK 2/3 | 20 Msym/s | 27 MHz | 38.7 Mb/s | 706 | 49.2% / 17.3% |
 | QPSK 9/10 | 20 Msym/s | 27 MHz | 34.9 Mb/s | 227 | 68.5% / 23.5% |
 | 8PSK 9/10 | 10 Msym/s | 13.5 MHz | 26.2 Mb/s | 529 | 77.0% / 50.0% |
 | 8PSK 5/6 | 10 Msym/s | 13.5 MHz | 24.2 Mb/s | 406 | 69.5% / 50.1% |
@@ -94,8 +95,8 @@ deadline.
 Roll-off is 0.35 unless noted. Rates use normal frames with pilots, except the short-frame row,
 and leave out the Morse ID. The B200 listened through coax and attenuation on its TX/RX port.
 The encoder also keeps up with payload arriving through the real SPI input code: QPSK 9/10 at
-40 MHz ran at full rate with TS input replayed on the chip, keeping 15.3% spare
-([TS input](results/2026-10-23-tx-ts-input/README.md)). That is a capacity test; the fastest live
+40 MHz ran at full rate with TS input replayed on the chip, keeping 15.5% encoder and 16.2% fill
+spare ([fill confirmation](results/2026-10-23-tx-fill-keyed/README.md)). That is a capacity test; the fastest live
 input so far is a CM5's 9 Mb/s camera mux.
 
 ![36 MHz 8PSK spectrum and spectrogram transmitted by an ESP32-S3](docs/img/rf-36mhz.png)
