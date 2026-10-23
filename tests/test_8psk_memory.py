@@ -50,6 +50,7 @@ static void dvbtx_pace_check(unsigned mc, uint32_t sec, unsigned peak, unsigned 
     assert(solo == expected_solo && fused == expected_fused); ++calls;
 }
 #define dvbtx_pace_options dvbtx_pace_check
+void dvbtx_set_short(bool enabled) { assert(!enabled); }
 '''+functions+'''
 int main(void) {
     const char *cases[] = {"17 26m667 10", "17 26m667 10 128 0",
