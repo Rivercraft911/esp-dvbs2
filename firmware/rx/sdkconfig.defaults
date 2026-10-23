@@ -16,6 +16,11 @@ CONFIG_ESP_PHY_CALIBRATION_AND_DATA_STORAGE=n
 # The PHY comes up without Wi-Fi (capture.c); heap code stays in flash to leave IRAM free.
 CONFIG_HEAP_PLACE_FUNCTION_INTO_FLASH=y
 
+# No allocation after boot: run memory comes from link-time arenas, PSRAM ones among them
+# (arena.c), and the heap hooks count any heap call after boot.
+CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
+CONFIG_HEAP_USE_HOOKS=y
+
 # Core 1 belongs to the capture loop for the whole run; its idle task never runs.
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
 

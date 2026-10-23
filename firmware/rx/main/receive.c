@@ -20,6 +20,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
+#include "arena.h"
 #include "capture.h"
 #include "dvbs2rx.h"
 #include "ingress_pattern.h"
@@ -252,31 +253,45 @@ static void decoder(void *arg)
     quit(r, &s->decode_stack_free);
 }
 
-/* Every run allocation (internal RAM for what core 1 and the release
- * touch), the core 0 tasks and the stream header. */
+/* The queues and semaphores, made once at boot from static storage (receive_init). */
+static QueueHandle_t full_q, empty_q;
+static SemaphoreHandle_t done_sem, usb_sem;
+
+void receive_init(void)
+{
+    static StaticQueue_t full_s, empty_s;
+    static StaticSemaphore_t done_s, usb_s;
+    static uint8_t full_items[SLOTS + 1], empty_items[SLOTS];
+    full_q = xQueueCreateStatic(SLOTS + 1, 1, full_items, &full_s);
+    empty_q = xQueueCreateStatic(SLOTS, 1, empty_items, &empty_s);
+    done_sem = xSemaphoreCreateCountingStatic(3, 0, &done_s);
+    usb_sem = xSemaphoreCreateMutexStatic(&usb_s);
+}
+
+/* Every run's memory, from the arenas (internal RAM for what core 1 and the release touch, PSRAM
+ * for the decoder), the core 0 tasks and the stream header. */
 static esp_err_t start(void *ctx)
 {
     receiver_t *r = ctx;
     const unsigned modcod = r->config.modcod;
-    r->demod = heap_caps_aligned_alloc(16, rx_demod_size(), INTERNAL);
-    r->ring = heap_caps_aligned_alloc(16, RX_DEMOD_RING_BYTES, INTERNAL);
-    r->check = heap_caps_aligned_alloc(16, rx_fec_check_size(modcod), INTERNAL);
-    r->decode = heap_caps_aligned_alloc(16, rx_fec_size(modcod), MALLOC_CAP_SPIRAM);
-    r->work = heap_caps_aligned_alloc(16, rx_fec_work_size(modcod), MALLOC_CAP_SPIRAM);
-    r->job.hard = heap_caps_aligned_alloc(16, RX_HARD_BYTES, MALLOC_CAP_SPIRAM);
-    r->job.weak = heap_caps_aligned_alloc(16, RX_HARD_BYTES, MALLOC_CAP_SPIRAM);
-    r->full = xQueueCreate(SLOTS + 1, 1);
-    r->empty = xQueueCreate(SLOTS, 1);
-    r->done = xSemaphoreCreateCounting(3, 0);
-    r->usb = xSemaphoreCreateMutex();
-    if (r->options.ts) r->ts = heap_caps_malloc(rx_ts_size(), INTERNAL);
-    if (r->crc) r->crc_table = heap_caps_malloc(1024, MALLOC_CAP_SPIRAM);
+    arena_reset();
+    r->demod = arena_take(&arena_low, rx_demod_size());
+    r->check = arena_take(&arena_low, rx_fec_check_size(modcod));
+    if (r->options.ts) r->ts = arena_take(&arena_low, rx_ts_size());
+    r->ring = arena_take(&arena_high, RX_DEMOD_RING_BYTES);
+    r->decode = arena_take(&arena_psram, rx_fec_size(modcod));
+    r->work = arena_take(&arena_psram, rx_fec_work_size(modcod));
+    r->job.hard = arena_take(&arena_psram, RX_HARD_BYTES);
+    r->job.weak = arena_take(&arena_psram, RX_HARD_BYTES);
+    if (r->crc) r->crc_table = arena_take(&arena_psram, 1024);
     bool ok = r->demod && r->ring && r->check && r->decode && r->work && r->job.hard &&
-              r->job.weak && r->full && r->empty && r->done && r->usb && (r->ts || !r->options.ts) &&
-              (r->crc_table || !r->crc);
+              r->job.weak && (r->ts || !r->options.ts) && (r->crc_table || !r->crc);
+    xQueueReset(full_q);
+    xQueueReset(empty_q);
+    xQueueReset(done_sem);
     for (unsigned i = 0; ok && i < SLOTS; ++i) {
-        r->slot[i].hard = heap_caps_aligned_alloc(16, RX_HARD_BYTES, INTERNAL);
-        r->slot[i].weak = heap_caps_aligned_alloc(16, RX_HARD_BYTES, INTERNAL);
+        r->slot[i].hard = arena_take(&arena_high, RX_HARD_BYTES);
+        r->slot[i].weak = arena_take(&arena_high, RX_HARD_BYTES);
         ok = r->slot[i].hard && r->slot[i].weak;
         uint8_t n = i;
         if (ok && i) xQueueSend(r->empty, &n, 0);   /* the release starts on slot 0 */
@@ -315,7 +330,8 @@ static void reap(TaskHandle_t task, bool finished)
     vTaskDelete(task);
 }
 
-/* Stop the core 0 tasks after the last frames, close the stream and free everything. */
+/* Stop the core 0 tasks after the last frames and close the stream. The memory goes back to the
+ * arenas when the next run resets them. */
 static void finish(receiver_t *r)
 {
     receive_stats_t *s = r->stats;
@@ -342,23 +358,6 @@ static void finish(receiver_t *r)
     reap(r->release, running);
     reap(r->checker, running);
     reap(r->decoder, running);
-    for (unsigned i = 0; i < SLOTS; ++i) {
-        heap_caps_free(r->slot[i].hard);
-        heap_caps_free(r->slot[i].weak);
-    }
-    if (r->usb) vSemaphoreDelete(r->usb);
-    if (r->done) vSemaphoreDelete(r->done);
-    if (r->empty) vQueueDelete(r->empty);
-    if (r->full) vQueueDelete(r->full);
-    heap_caps_free(r->job.hard);
-    heap_caps_free(r->job.weak);
-    heap_caps_free(r->work);
-    heap_caps_free(r->decode);
-    heap_caps_free(r->check);
-    heap_caps_free(r->ring);
-    heap_caps_free(r->demod);
-    heap_caps_free(r->ts);
-    heap_caps_free(r->crc_table);
 }
 
 static void setup(receiver_t *r, unsigned modcod, unsigned rate, unsigned mhz,
@@ -366,7 +365,7 @@ static void setup(receiver_t *r, unsigned modcod, unsigned rate, unsigned mhz,
 {
     memset(s, 0, sizeof *s);
     *r = (receiver_t){.stats = s, .crc = rate == 5000000, .options = *options,
-                      .last = -1,
+                      .last = -1, .full = full_q, .empty = empty_q, .done = done_sem, .usb = usb_sem,
                       .config = {.modcod = modcod, .symbol_rate = rate, .cfo_hint_hz = -10000,
                                  .cfo_span_hz = 30000, .carrier_khz = mhz * 1000U}};
 }

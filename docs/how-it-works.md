@@ -342,10 +342,21 @@ Frames the LDPC decoder repairs arrive too late for the stream and count as lost
 | Core 0 check per frame (wall clock) | 47.2k | 63.0k | 75.6k |
 | Pilot MER, median | 30.4 dB | 29.8 dB | 29.9 dB |
 
-The lock unit is absorbed by one unit of capture lag; no unit was dropped. With Wi-Fi gone,
-about 90 KB of internal RAM is free before a run. The demodulator (about 14 KB), symbol ring
-(16 KB), clean-path FEC (about 12 KB) and three frame slots (12 KB) leave 34 KB, and at
-least 24.8 KB stayed free during runs.
+The lock unit is absorbed by one unit of capture lag; no unit was dropped.
+
+**Memory.** Nothing the receiver runs allocates after boot. Each run takes its memory from three
+regions reserved when the firmware links and gives it back when the next run starts
+(`firmware/rx/main/arena.c`):
+- 30 KB of static internal RAM below the capture banks: the demodulator (15 KB), the clean-path
+  FEC (10 to 12 KB) and the TS deframer (0.8 KB).
+- 28 KB of internal RAM just above the banks: the symbol ring (16 KB) and three frame slots
+  (12 KB).
+- 96 KB of static PSRAM for the LDPC decoder, and a 7 MB PSRAM store for a replay's capture or a
+  dump.
+
+Queues, semaphores and the capture timer are made once at boot from static storage. ESP-IDF's
+heap hooks count every heap call after boot, and runs report the count: zero. About 51 KB of
+heap stays free for ESP-IDF.
 [5 Msym/s results](../results/2026-10-23-rx-5m-margin/README.md),
 [1 Msym/s qualification](../results/2026-10-22-rx-continuous/README.md),
 [demodulator measurements](../results/2026-10-22-rx-demod/README.md).

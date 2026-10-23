@@ -37,8 +37,8 @@ typedef struct {
     esp_err_t error, cleanup;
 } capture_stats_t;
 
-/* Power, calibrate and hold the PHY, once at boot; every capture needs it. */
-esp_err_t capture_radio_init(void);
+/* Once at boot: power, calibrate and hold the PHY, and make the handoff timer on core 1. */
+esp_err_t capture_init(void);
 esp_err_t capture_run(const capture_config_t *config, capture_fn fn, void *ctx,
                       capture_stats_t *stats);
 /* The radio off: pairs of int8 I, Q (.sc8) handed to fn as dump words, a unit at a time from

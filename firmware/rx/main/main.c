@@ -15,6 +15,7 @@
 #include "esp_psram.h"
 #include "freertos/FreeRTOS.h"
 
+#include "arena.h"
 #include "capture.h"
 #include "receive.h"
 #include "replay.h"
@@ -32,6 +33,22 @@ static volatile bool quiet;
 static int log_filter(const char *format, va_list args)
 {
     return quiet ? 0 : vprintf(format, args);
+}
+
+/* Memory since boot: the arenas' use and every heap call anyone made (there should be none). */
+static void print_memory(void)
+{
+    arena_heap_t h;
+    arena_heap(&h);
+    printf(",\"arena\":{\"low\":[%u,%u],\"high\":[%u,%u],\"psram\":[%u,%u]},"
+           "\"heap_after_boot\":{\"allocs\":%lu,\"frees\":%lu,\"bytes\":%u,\"last_size\":%lu,"
+           "\"last_caps\":%lu},\"min_free_internal\":%u,\"min_free_psram\":%u",
+           (unsigned)arena_low.peak, (unsigned)arena_low.size, (unsigned)arena_high.peak,
+           (unsigned)arena_high.size, (unsigned)arena_psram.peak, (unsigned)arena_psram.size,
+           (unsigned long)h.allocs, (unsigned long)h.frees, (unsigned)h.bytes,
+           (unsigned long)h.last_size, (unsigned long)h.last_caps,
+           (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+           (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM));
 }
 
 /* rx's and replay's results: one run at a time, and large (the push log), so one static copy. */
@@ -79,9 +96,9 @@ static esp_err_t IRAM_ATTR dump_unit(const uint32_t *w, size_t count, uint64_t f
 
 static void dump(unsigned mhz, unsigned gain, unsigned pairs)
 {
-    dump_t d = {.i = heap_caps_aligned_alloc(16, 2 * (size_t)pairs, MALLOC_CAP_SPIRAM), .n = pairs};
-    if (!d.i || !pairs) {
-        printf("@{\"cmd\":\"dump\",\"error\":\"no memory for %u pairs\"}\n", pairs);
+    dump_t d = {.i = arena_store, .n = pairs};
+    if (!pairs || 2 * (size_t)pairs > ARENA_STORE_BYTES) {
+        printf("@{\"cmd\":\"dump\",\"error\":\"pairs 1..%u\"}\n", (unsigned)(ARENA_STORE_BYTES / 2));
         return;
     }
     d.q = d.i + pairs;
@@ -105,7 +122,6 @@ static void dump(unsigned mhz, unsigned gain, unsigned pairs)
         fflush(stdout);
         receive_write(d.i, 2 * (size_t)pairs);
     }
-    heap_caps_free(d.i);
 }
 
 /* Level, DC, ADC clipping and the gain field (bits 27:20) on every 64th sample. */
@@ -247,7 +263,10 @@ void app_main(void)
     stdout = &output;
     setvbuf(stdin, NULL, _IONBF, 0);
     esp_log_set_vprintf(log_filter);
-    const esp_err_t radio = capture_radio_init();
+    receive_init();
+    const esp_err_t radio = capture_init();
+    const int fits = !arena_check();
+    arena_booted();
     char line[96];
     while (true) {
         if (!fgets(line, sizeof line, stdin)) { vTaskDelay(1); continue; }
@@ -260,12 +279,15 @@ void app_main(void)
             esp_read_mac(mac, ESP_MAC_WIFI_STA);
             printf("@{\"cmd\":\"info\",\"app\":\"esp_dvbs2_rx\",\"firmware\":\"%s\","
                    "\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\",\"psram_bytes\":%u,\"radio\":\"%s\","
-                   "\"free_internal\":%u,\"largest_internal\":%u,\"min_free_internal\":%u}\n",
+                   "\"arena_fits\":%s,\"free_internal\":%u,\"largest_internal\":%u,\"free_psram\":%u",
                    esp_app_get_description()->version, mac[0], mac[1], mac[2], mac[3], mac[4],
                    mac[5], (unsigned)esp_psram_get_size(), esp_err_to_name(radio),
+                   fits ? "true" : "false",
                    (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                    (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
-                   (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
+                   (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+            print_memory();
+            printf("}\n");
         } else if (fields >= 4 && !strcmp(cmd, "rxprobe") && fields == 4) {
             capture_config_t c = {.mhz = mhz, .gain = gain, .seconds = seconds};
             rxprobe(&c);
@@ -283,6 +305,7 @@ void app_main(void)
             print_receive("rx", e, modcod, rate, &run);
             if (o.ts) print_ts(&run);
             print_capture(&s);
+            print_memory();
             printf("}\n");
         } else if (fields == 2 && !strcmp(cmd, "upload")) {
             replay_upload(mhz);
@@ -299,6 +322,7 @@ void app_main(void)
             print_receive("replay", e, modcod, rate, &run);
             if (o.ts) print_ts(&run);
             print_capture(&s);
+            print_memory();
             printf(",\"push_words\":%u}\n@{\"cmd\":\"replay\",\"push_log\":[", CAPTURE_UNIT);
             for (unsigned k = 0; k < run.pushes && k < RECEIVE_LOG; ++k) printf("%s%lu", k ? "," : "", (unsigned long)run.log[k]);
             printf("]}\n");
@@ -309,9 +333,9 @@ void app_main(void)
             uint32_t r[16];
             capture_stats_t s;
             capture_bench(&c, r, &s);
-            printf("@{\"cmd\":\"membench\",\"words\":4096,\"running\":{\"bank\":[%lu,%lu,%lu,%lu],"
-                   "\"dram\":[%lu,%lu]},\"stopped\":{\"bank\":[%lu,%lu,%lu,%lu],\"dram\":[%lu,%lu]}",
-                   r[0], r[1], r[2], r[3], r[4], r[5], r[8], r[9], r[10], r[11], r[12], r[13]);
+            printf("@{\"cmd\":\"membench\",\"words\":4096,\"running\":{\"bank\":[%lu,%lu,%lu],"
+                   "\"dram\":[%lu,%lu]},\"stopped\":{\"bank\":[%lu,%lu,%lu],\"dram\":[%lu,%lu]}",
+                   r[0], r[1], r[2], r[4], r[5], r[8], r[9], r[10], r[12], r[13]);
             print_capture(&s);
             printf("}\n");
         } else {
