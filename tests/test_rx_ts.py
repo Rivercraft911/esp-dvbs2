@@ -288,30 +288,43 @@ def test_headers(so):
 
 
 def test_continuity(so):
-    """Duplicates, adaptation-only packets, the discontinuity indicator, null packets dropped on
+    """ISO/IEC 13818-1 2.4.3.3: one duplicate (same bytes, a new PCR allowed), adaptation-only
+    packets, the discontinuity indicator; repeats with other bytes, a third copy and a payload
+    packet reusing an adaptation-only packet's counter are errors. Null packets dropped on
     request, and PIDs past the tracked ones."""
-    def packet(pid, cc, control=1, discontinuity=False):
-        p = bytearray(188)
+    def packet(pid, cc, control=1, discontinuity=False, pcr=None, fill=0):
+        p = bytearray([fill]) * 188
         p[0], p[1], p[2], p[3] = 0x47, pid >> 8, pid & 255, control << 4 | cc
         if control & 2:
             p[4], p[5] = 1, 0x80 if discontinuity else 0
+        if pcr is not None:
+            p[4], p[5], p[6:12] = 7, 0x10, pcr.to_bytes(6, "big")
         return bytes(p)
-    seq = [packet(0x100, 0), packet(0x100, 1), packet(0x100, 1),       # one duplicate: fine
-           packet(0x100, 1),                                            # a second one: error
-           packet(0x100, 2), packet(0x100, 2, control=2),               # no payload: stays
-           packet(0x100, 5),                                            # jump: error
-           packet(0x100, 9, control=3, discontinuity=True),             # flagged jump: fine
-           packet(0x100, 10), packet(0x1fff, 0), packet(0x1fff, 7),
-           packet(0x101, 3), packet(0x101, 3, control=2), packet(0x101, 4)]
-    seq += [packet(0x200 + k, 0) for k in range(20)] + [packet(0x100, 11)]
-    frames = frames_for(seq + [packet(0x100, 12)], 188 * 3)
+    seq = [packet(0x100, 0), packet(0x100, 1, fill=1),
+           packet(0x100, 1, fill=1),                                  # a duplicate: fine
+           packet(0x100, 1, fill=1),                                  # a third copy: error
+           packet(0x100, 2, fill=2), packet(0x100, 2, fill=3),        # other bytes: error
+           packet(0x100, 3), packet(0x100, 3, control=2),             # no payload: stays
+           packet(0x100, 3),                                          # payload, same counter: error
+           packet(0x100, 4, control=3, pcr=1000, fill=4),
+           packet(0x100, 4, control=3, pcr=1300, fill=4),             # duplicate, new PCR: fine
+           packet(0x100, 5, control=3, pcr=1600, fill=5),
+           packet(0x100, 5, control=3, pcr=1600, fill=6),             # PCR the same, bytes not: error
+           packet(0x100, 8),                                          # jump: error
+           packet(0x100, 12, control=3, discontinuity=True),          # flagged jump: fine
+           packet(0x100, 13), packet(0x1fff, 0), packet(0x1fff, 7),
+           packet(0x101, 3), packet(0x101, 3, control=2), packet(0x101, 4), packet(0x101, 5),
+           packet(0x101, 6)]
+    seq += [packet(0x200 + k, 0) for k in range(20)] + [packet(0x100, 14)]   # 3 per field
+    frames = frames_for(seq + [packet(0x100, 15)], 188 * 3)
     for drop in (False, True):
         r = Deframer(so, drop_null=drop).run(frames)
         s = r.stats()
-        assert s["cc_errors"] == 2 and s["null_packets"] == 2 and s["untracked"] == 6, s
+        assert s["cc_errors"] == 5 and s["null_packets"] == 2 and s["untracked"] == 6, s
         assert r.out == [p for p in seq if not (drop and p[1] & 0x1f == 0x1f)], drop
-        assert r.pids()[0x100] == (10, 2) and r.pids()[0x101] == (3, 0) and len(r.pids()) == 16
-    print("continuity: duplicate, no payload, discontinuity indicator, nulls, 16 PIDs: ok")
+        assert r.pids()[0x100] == (17, 5) and r.pids()[0x101] == (5, 0) and len(r.pids()) == 16
+    print("continuity: duplicates checked by content (PCR aside), no payload, discontinuity "
+          "indicator, nulls, 16 PIDs: ok")
 
 
 def test_link(so, folder):

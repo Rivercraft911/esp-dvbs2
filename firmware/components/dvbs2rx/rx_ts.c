@@ -39,7 +39,8 @@
 
 typedef struct {
     uint16_t pid;
-    uint8_t cc, duplicate;
+    uint8_t cc, duplicate, payload;   /* payload: the last packet carried one */
+    uint32_t print;                   /* fingerprint of the last packet with payload */
     uint32_t packets, cc_errors;
 } tracked_t;
 
@@ -93,8 +94,25 @@ static HOT uint8_t crc8(const uint8_t *table, unsigned c, const uint8_t *p, unsi
     return (uint8_t)c;
 }
 
-/* ISO/IEC 13818-1 2.4.3.3: the counter steps by one per packet with payload, stays put without
- * one, may repeat once (a duplicate), and may jump where the adaptation field's
+/* FNV-1a over bytes 1..187 two at a time, the PCR left out: a duplicate packet repeats every
+ * byte of the original except that its PCR may be new (ISO/IEC 13818-1 2.4.3.3). The PCR is
+ * bytes 6..11 when the adaptation field (byte 4, its length; byte 5, its flags) has one. */
+static uint32_t fingerprint(const uint8_t *p)
+{
+    const int pcr = (p[3] & 0x20) && p[4] >= 7 && (p[5] & 0x10);
+    uint32_t h = (2166136261u ^ p[1]) * 16777619u;
+    for (unsigned k = 2; k < RX_TS_PACKET; k += 2) {
+        if (pcr && k == 6) {
+            k = 12;
+        }
+        h = (h ^ (p[k] | (uint32_t)p[k + 1] << 8)) * 16777619u;
+    }
+    return h;
+}
+
+/* ISO/IEC 13818-1 2.4.3.3: the counter steps by one per packet with payload and stays put on a
+ * packet without one. A packet with payload may be sent twice, never more, with the same counter
+ * and the same bytes (its PCR aside). The counter may jump where the adaptation field's
  * discontinuity_indicator is set. */
 static void continuity(rx_ts_t *t, const uint8_t *p, unsigned pid)
 {
@@ -110,19 +128,22 @@ static void continuity(rx_ts_t *t, const uint8_t *p, unsigned pid)
         ++t->pids;
         e->pid = (uint16_t)pid;
         e->cc = p[3] & 15;
+        e->payload = p[3] >> 4 & 1;
+        e->print = e->payload ? fingerprint(p) : 0;
         e->packets = 1;
         return;
     }
     ++e->packets;
-    const unsigned cc = p[3] & 15, control = p[3] >> 4 & 3;
-    const int discontinuity = (control & 2) && p[4] && (p[5] & 0x80);
+    const unsigned cc = p[3] & 15, payload = p[3] >> 4 & 1;
+    const int discontinuity = (p[3] & 0x20) && p[4] && (p[5] & 0x80);
+    const uint32_t print = payload ? fingerprint(p) : 0;
     int ok;
-    if (!(control & 1)) {
-        ok = cc == e->cc;                       /* no payload */
+    if (!payload) {
+        ok = cc == e->cc;
     } else if (cc == ((e->cc + 1u) & 15)) {
         ok = 1;
-    } else if (cc == e->cc && !e->duplicate) {
-        e->duplicate = 1;
+    } else if (cc == e->cc && e->payload && !e->duplicate && print == e->print) {
+        e->duplicate = 1;                       /* the one duplicate allowed */
         return;
     } else {
         ok = 0;
@@ -133,6 +154,10 @@ static void continuity(rx_ts_t *t, const uint8_t *p, unsigned pid)
     }
     e->cc = (uint8_t)cc;
     e->duplicate = 0;
+    e->payload = (uint8_t)payload;
+    if (payload) {
+        e->print = print;
+    }
 }
 
 /* A whole packet: restore its sync byte, mark it if its CRC-8 failed, check it and hand it on.
