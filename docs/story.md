@@ -1,9 +1,9 @@
 # How it got here
 
 The [README](../README.md) shows where the transceiver stands today: one ESP32-S3 transmits
-DVB-S2 at up to 69.8 Mb/s with a prepared payload, and a second one receives and decodes
-12.64 Mb/s entirely on the chip, both over coax. This page is the long way round. It is what I
-measured, in the order I measured it, and everything that broke along the way.
+DVB-S2 at up to 69.8 Mb/s with a payload that never repeats, and a second one receives and
+decodes 12.64 Mb/s entirely on the chip, both over coax. This page is the long way round. It is
+what I measured, in the order I measured it, and everything that broke along the way.
 
 Three words come up a lot:
 
@@ -502,15 +502,60 @@ takes about 30% and the re-encode check about 24%.
 The shares cover whole 45 s receive runs, including the time before keying and the Morse IDs.
 [Records](../results/2026-10-23-rx-5m-margin/README.md).
 
+## Fresh payloads, and no Wi-Fi
+
+The fastest transmit rates so far had a catch: they used a prepared payload. A budget of every
+mode on the board, with the real xorshift payload, made the catch plain. Copying a stored payload
+costs 3k to 6k cycles a frame, generating one 30k to 54k, and with the real payload 8PSK at
+26.67 Msym/s missed its frame budget by 1.8 to 10.1%
+([budget](../results/2026-10-23-tx-budget/README.md)).
+
+So the encoder got the receiver's treatment, measured stage by stage. xorshift went four lanes per
+PIE vector, the t = 10 BCH step dropped from 17 to 14 instructions per byte pair, the LDPC parity
+pack was unrolled, and the stage marks stopped copying 32-byte records through 39 ROM `memcpy`
+calls. 8PSK at 26.67 Msym/s went from 1.8 to 9.8% spare to 16.5 to 21.3%, radio off
+([8PSK](../results/2026-10-23-tx-8psk/README.md)). 8PSK 9/10 at 20 Msym/s turned out to be waiting
+on flash: its 8 KiB of BCH pair tables pushed the encoder's tables past the 32 KiB data cache, 310
+misses a frame. In internal RAM it went from 254k to 124k cycles a frame
+([20 Msym/s](../results/2026-10-23-tx-8psk-20m/README.md)).
+
+Then every transmitter mode went back on air with a payload that never repeats: 19 keyed runs
+into a B200, 10,219 frames, every one exact, 0.97 to 69.8 Mb/s. Along the way it turned out that
+that day's earlier B200 captures had used its RX2 port, which hears the signal only by leakage,
+about 19 dB down; the table moved the coax to TX/RX ([keyed table](../results/2026-10-23-tx-table/README.md),
+[8PSK re-key](../results/2026-10-23-tx-table-8psk-rekey/README.md)).
+
+Wi-Fi left both apps. Each now powers the PHY at boot under the Bluetooth modem bit, the way a
+Bluetooth-only app would, and links no Wi-Fi code: the transmitter image went from 939 to 544 KB
+and the receiver's from 854 to 447 KB. After boot neither touches the heap; every run takes its
+buffers from regions fixed at link or boot time and hands them to the next
+([transmitter](../results/2026-10-23-tx-run-memory/README.md),
+[receiver](../results/2026-10-23-rx-no-wifi/README.md)).
+
+Taking Wi-Fi out of the receiver turned up two failed frames, and for a moment Wi-Fi looked
+guilty. A diff of 3,039 radio registers said the radio was in the same state either way. The
+culprit was the receiver. At 5 Msym/s the matched filter plans each batch from times in
+1/32 sample held in 32 bits, which wrap every 2^27 samples, 8.39 s, and a batch that straddled a
+wrap used the wrong coefficients for about 252 symbols. With the plan in 64 bits, 441,550 frames
+decoded with none failed ([Wi-Fi A/B](../results/2026-10-23-rx-no-wifi-ab/README.md)).
+
+Meanwhile the receiver learned MPEG transport stream. It deframes the packets on the chip and
+checks every one: 1,738,344 packets crossed the S3 link exact, and with the transmitter starved
+of input it rode through 95,810 dummy frames without losing lock
+([TS link](../results/2026-10-23-ts-link/README.md)). A sweep of all 19 short-frame modes the
+transmitter sends then decoded 223,153 frames, every one exact
+([sweep](../results/2026-10-23-rx-sweep/README.md)).
+
 ## Now
 
-One S3 transmits 8PSK 9/10 at 69.8 Mb/s in 36 MHz and QPSK 9/10 at 58.2 Mb/s in 40 MHz, decoded
-from single B200 captures with prepared payloads. It carried a CM5's live camera mux at 9 Mb/s. A
-second S3 receives 12.64 Mb/s and decodes every frame itself. The limits are plain: conducted
-paths, one pair of boards, the receiver at 2420 MHz and one gain setting, and live input
-unqualified at the top transmit rates.
+One S3 transmits every mode keyed with a payload that never repeats, from 0.97 Mb/s to 69.8 Mb/s
+in 36 MHz and 58.2 Mb/s in 40 MHz, decoded exact from B200 captures. It carried a CM5's live
+camera mux at 9 Mb/s. A second S3 receives every short-frame mode the first one sends, up to
+12.64 Mb/s, and decodes every frame itself. The limits are plain: conducted paths, one pair of
+boards, the receiver at 2420 MHz and one gain setting, and no real input has yet fed the top
+transmit rates live; quad SPI was tested to 46.6 Mb/s.
 
-Next: a leaner, faster transmitter, measured stage by stage the way the receiver was, and live
-video from one S3 to another. The current [implementation](how-it-works.md) and
-[evidence](measurements.md) are the starting point. All development records remain in the
+Next: live video from one S3 to the other, over Ethernet at both ends. The current
+[implementation](how-it-works.md) and [evidence](measurements.md) are the starting point. All
+development records remain in the
 [archive tag](https://github.com/Rivercraft911/esp-dvbs2/tree/archive/dev-2026-10-17).
