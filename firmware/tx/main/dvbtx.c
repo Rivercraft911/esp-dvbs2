@@ -420,10 +420,11 @@ static bool lofty_dummy_init(void)
 #include "lofty_consumer.inc"
 
 // The synthetic payload is one xorshift32 byte stream. xorshift32 is linear over GF(2), so a
-// state K steps ahead is M^K x for the 32x32 matrix M^K, stored by columns. For one frame
-// length, eight PIE lanes then generate eight contiguous K-byte blocks at once
-// (payload_pie.S); the scalar loop keeps the remainder, other lengths and the host build.
-static struct { size_t bytes; unsigned k; uint32_t jump[32]; } xorshift;
+// state K steps ahead is M^K x for the 32x32 matrix M^K, stored as eight nibble tables
+// (eight lookups per jump). For one frame length, eight PIE lanes then generate eight
+// contiguous K-byte blocks at once (payload_pie.S); the scalar loop keeps the remainder,
+// other lengths and the host build.
+static struct { size_t bytes; unsigned k; uint32_t jump[8][16]; } xorshift;
 
 static uint32_t xorshift_step(uint32_t x)
 {
@@ -436,12 +437,14 @@ static uint32_t xorshift_step(uint32_t x)
 static void xorshift_prepare(size_t bytes)
 {
     xorshift.bytes = xorshift.k = 0;
+    memset(xorshift.jump,0,sizeof xorshift.jump);
     const unsigned k = (unsigned)(bytes/8) & ~3u;
     if (k < 64) return;
     for (unsigned i = 0; i < 32; ++i) {
         uint32_t v = 1u << i;
         for (unsigned s = 0; s < k; ++s) v = xorshift_step(v);
-        xorshift.jump[i] = v;
+        for (unsigned n = 0; n < 16; ++n)
+            if (n & (1u << (i&3))) xorshift.jump[i/4][n] ^= v;
     }
     xorshift.bytes = bytes;
     xorshift.k = k;
@@ -458,8 +461,9 @@ static __attribute__((noinline)) void payload_fill(uint8_t *dst, size_t n, uint3
         uint32_t lanes[8] __attribute__((aligned(16)));
         lanes[0] = *x;
         for (unsigned j = 1; j < 8; ++j) {
-            uint32_t y = 0, v = lanes[j-1];
-            for (unsigned i = 0; v; ++i, v >>= 1) if (v & 1) y ^= xorshift.jump[i];
+            const uint32_t v = lanes[j-1];
+            uint32_t y = 0;
+            for (unsigned i = 0; i < 8; ++i) y ^= xorshift.jump[i][(v>>(4*i))&15];
             lanes[j] = y;
         }
 #ifdef __XTENSA__
