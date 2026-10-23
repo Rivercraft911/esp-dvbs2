@@ -32,7 +32,7 @@ def codes(src):
 
 
 def taps(peak):
-    text = (ROOT/'firmware/main/machine.c').read_text().split('pulse[84] = {')[1].split('}')[0]
+    text = (ROOT/'firmware/components/shaper/machine.c').read_text().split('pulse[84] = {')[1].split('}')[0]
     # Same fixed pulse data; convolution, table formation and sign logic below
     # are independent of firmware. No floating sums or per-symbol rounding.
     return np.trunc(np.array([int(s) for s in re.findall(r'-?\d+',text)])*((peak-1)/508)).astype(np.int64)

@@ -229,7 +229,7 @@ def main():
         ingress=ROOT/'firmware/components/ingress'
         exe=folder/'sender'
         subprocess.run(['cc','-std=c11','-O2','-Wall','-Wextra','-Werror','-I'+tmp,
-                        '-I'+str(ROOT/'firmware/main'),'-I'+str(ingress/'include'),
+                        '-I'+str(ROOT/'firmware/tx/main'),'-I'+str(ingress/'include'),
                         str(folder/'app.c'),str(ingress/'ingress.c'),str(ingress/'ingress_pattern.c'),
                         '-o',str(exe)],check=True)
         subprocess.run([str(exe)],check=True,timeout=10)

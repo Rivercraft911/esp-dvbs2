@@ -415,7 +415,7 @@ int main(void) {
 
 if __name__ == "__main__":
     radio = (RADIO / "radio_s3.c").read_text()
-    console = (ROOT / "firmware/main/main.c").read_text()
+    console = (ROOT / "firmware/tx/main/main.c").read_text()
     geometry = radio[radio.index("typedef struct {"):radio.index("} geometry_t;")+len("} geometry_t;")]
     run_at = radio.index("typedef struct {\n    uint32_t freq_mhz;")
     run = radio[run_at:radio.index("} run_t;", run_at)+len("} run_t;")]
@@ -428,7 +428,7 @@ if __name__ == "__main__":
     for name in ("number","tx_mode","short_scope","take_option","cmd_dvb"):
         source += function(console,name)
     source += COUNTERS + MAIN
-    build = ROOT / "firmware/build"
+    build = ROOT / "firmware/tx/build"
     build.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="radio-duration-",dir=build) as temp:
         folder = Path(temp)
@@ -438,8 +438,9 @@ if __name__ == "__main__":
         exe = folder / "test"
         subprocess.run(["cc","-std=c11","-D_POSIX_C_SOURCE=200809L","-O2","-Wall","-Wextra","-Werror",
                         "-I"+str(folder),"-I"+str(RADIO / "include"),"-I"+str(STATION / "include"),
-                        "-I"+str(ROOT / "firmware/main"),"-I"+str(ROOT / "firmware/components/ingress/include"),
-                        str(folder / "test.c"),str(STATION / "station_id.c"),str(ROOT / "firmware/main/ring.c"),
+                        "-I"+str(ROOT / "firmware/tx/main"),"-I"+str(ROOT / "firmware/components/shaper/include"),
+                        "-I"+str(ROOT / "firmware/components/ingress/include"),
+                        str(folder / "test.c"),str(STATION / "station_id.c"),str(ROOT / "firmware/tx/main/ring.c"),
                         str(ROOT / "firmware/components/ingress/ingress.c"),
                         str(ROOT / "firmware/components/ingress/ingress_pattern.c"),"-lm","-o",str(exe)],check=True)
         result = subprocess.run([str(exe)],check=True,capture_output=True,text=True)

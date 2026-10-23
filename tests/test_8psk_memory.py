@@ -11,7 +11,7 @@ from test_stream import ROOT, compile_stream
 
 def check(out):
     out.mkdir(parents=True,exist_ok=True)
-    source = (ROOT/'firmware/main/main.c').read_text()
+    source = (ROOT/'firmware/tx/main/main.c').read_text()
     functions = '\n'.join(re.search(r'static (?:bool|void) '+name+r'\([^\n]*[\s\S]*?\n}',source).group()
                           for name in ('number','tx_mode','short_scope','take_option','cmd_dvb','cmd_dvbpace'))
     parser = out/'parser.c'
@@ -87,7 +87,7 @@ int main(void) {
 }
 ''')
     subprocess.run(['cc','-O2','-std=c11','-Wall','-Wextra','-Werror',
-                    '-I'+str(ROOT/'firmware/main'),str(parser),'-o',str(out/'parser')],check=True)
+                    '-I'+str(ROOT/'firmware/tx/main'),str(parser),'-o',str(out/'parser')],check=True)
     text = subprocess.check_output([str(out/'parser')],text=True)
     (out/'parser.log').write_text(text)
     print(text.splitlines()[-1])
@@ -150,6 +150,7 @@ def check_residency(current):
         out = Path(tmp)
         (out/'esp_attr.h').write_text('#define IRAM_ATTR\n')
         subprocess.run(['cc','-O2','-Wall','-Wextra','-Werror','-I'+tmp,
+                        '-I'+str(ROOT/'firmware/components/shaper/include'),
                         str(ROOT/'tests/psk8_resident.c'),'-o',str(out/'resident')],check=True)
         subprocess.run([str(out/'resident')],check=True)
     print('cache residency: dormant, timeout, ROM error, repeated setup and cleanup: ok')

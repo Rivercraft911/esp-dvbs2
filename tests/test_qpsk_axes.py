@@ -15,10 +15,10 @@ def test():
         exe = folder / "axes"
         subprocess.run(["cc", "-O2", "-std=c11", "-Wall", "-Wextra", "-Werror",
                         "-DQPSK_AXES_HOST", "-I" + tmp,
-                        "-I" + str(ROOT / "firmware/main"),
+                        "-I" + str(ROOT / "firmware/components/shaper/include"),
                         "-I" + str(ROOT / "firmware/components/dvbs2/include"),
                         str(ROOT / "tests/qpsk_axes.c"),
-                        str(ROOT / "firmware/main/machine.c"),
+                        str(ROOT / "firmware/components/shaper/machine.c"),
                         str(ROOT / "firmware/components/dvbs2/fast.c"),
                         str(ROOT / "firmware/components/dvbs2/dvbs2.c"),
                         "-o", str(exe)], check=True)

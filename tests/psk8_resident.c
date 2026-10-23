@@ -46,7 +46,7 @@ static int Cache_Unlock_Addr(uint32_t first, uint32_t bytes)
     if (unlock_error) return 1;
     locked = 0; return 0;
 }
-#include "../firmware/main/lofty.c"
+#include "../firmware/components/shaper/lofty.c"
 int main(void)
 {
     assert(!lofty_resident(0) && !calls && !resident && !lofty_resident_bytes());

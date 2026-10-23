@@ -31,12 +31,12 @@ Use ESP-IDF v6.1; [install it with Espressif's ESP32-S3 guide](https://docs.espr
 Apply the XIAO overlay to a fresh, separate configuration and build directory:
 
 ```sh
-(. ~/.espressif/tools/activate_idf_v6.1.sh && cd firmware && \
-  idf.py -B ../notes/build-xiao -D SDKCONFIG="$PWD/../notes/sdkconfig.xiao" \
+(. ~/.espressif/tools/activate_idf_v6.1.sh && cd firmware/tx && \
+  idf.py -B ../../notes/build-xiao -D SDKCONFIG="$PWD/../../notes/sdkconfig.xiao" \
   -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.xiao' build)
 ```
 
-Use new output paths for the first overlay build; this preserves an existing `firmware/sdkconfig`.
+Use new output paths for the first overlay build; this preserves an existing `firmware/tx/sdkconfig`.
 The activation path shown is the tested macOS EIM path; use your own activation/export script
 if installed elsewhere. The defaults already select `esp32s3`.
 
@@ -51,7 +51,7 @@ bootloader. `--reset` uses the bridge's EN reset, or esptool's watchdog reset wh
 is present, then opens native USB without a reset transition.
 
 ```sh
-(. ~/.espressif/tools/activate_idf_v6.1.sh && cd firmware && idf.py build flash)
+(. ~/.espressif/tools/activate_idf_v6.1.sh && cd firmware/tx && idf.py build flash)
 python3 host/board.py info --reset
 ```
 

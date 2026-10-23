@@ -7,7 +7,7 @@ sign. Twelve-bit extraction leaves four disposable address bits for VLD.
 import argparse
 import pathlib
 
-OUTPUT = pathlib.Path(__file__).resolve().parents[2] / "firmware/main/machine_axis_pie.S"
+OUTPUT = pathlib.Path(__file__).resolve().parents[2] / "firmware/components/shaper/machine_axis_pie.S"
 
 
 def generate():

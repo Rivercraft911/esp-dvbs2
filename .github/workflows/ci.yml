@@ -60,7 +60,7 @@ jobs:
         with:
           esp_idf_version: v6.1
           target: esp32s3
-          path: firmware
+          path: firmware/tx
       - uses: espressif/esp-idf-ci-action@v1
         with:
           esp_idf_version: v6.1

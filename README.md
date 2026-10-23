@@ -120,7 +120,7 @@ The optional 8 MB flash XIAO uses a [separate configuration](docs/transmitting.m
 Nothing below turns the radio on.
 
 ```sh
-(. ~/.espressif/tools/activate_idf_v6.1.sh && cd firmware && idf.py build flash)
+(. ~/.espressif/tools/activate_idf_v6.1.sh && cd firmware/tx && idf.py build flash)
 python3 host/board.py info --reset
 python3 host/board.py "callsign N0CALL"      # placeholder for radio-off tests only
 ```

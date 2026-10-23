@@ -384,7 +384,7 @@ can check deadlines and startup memory. RF decoding and spectral measurements re
 ```sh
 python3 -m pip install numpy scipy pyserial
 for test in tests/test_*.py; do python3 "$test" || exit 1; done
-(. ~/.espressif/tools/activate_idf_v6.1.sh && cd firmware && idf.py build)
+(. ~/.espressif/tools/activate_idf_v6.1.sh && cd firmware/tx && idf.py build)
 python3 examples/self-check/check.py --plan
 python3 examples/pi-sender/send.py --vector
 python3 examples/self-check/build_receiver.py

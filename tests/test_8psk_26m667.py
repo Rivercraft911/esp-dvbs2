@@ -50,9 +50,9 @@ def check(out, receiver=None):
     component = ROOT/'firmware/components/dvbs2'
     kernel = out/'kernels'
     subprocess.run(['cc','-O2','-Wall','-Wextra','-Werror',
-                    '-I'+str(out),'-I'+str(ROOT/'firmware/main'),'-I'+str(component/'include'),
+                    '-I'+str(out),'-I'+str(ROOT/'firmware/components/shaper/include'),'-I'+str(component/'include'),
                     str(ROOT/'tests/psk8_kernels.c'),
-                    str(ROOT/'firmware/main/machine.c'),str(ROOT/'firmware/main/lofty.c'),
+                    str(ROOT/'firmware/components/shaper/machine.c'),str(ROOT/'firmware/components/shaper/lofty.c'),
                     str(component/'fast.c'),str(component/'dvbs2.c'),'-o',str(kernel)],check=True)
     kernels(subprocess.check_output([str(kernel)],text=True))
     crcs = {}
