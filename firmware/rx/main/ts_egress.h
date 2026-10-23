@@ -17,8 +17,10 @@
  * packets/s): core 0 is about half idle, so the egress may use on average about 40 us per packet
  * (9,600 cycles). It may block, but the checker holds only three frames: a call that blocks for
  * more than about two frame periods (2 ms) makes the receiver drop frames (frames_dropped).
- * Internal RAM is short (about 24 KB free during a 5 Msym/s run): keep buffers small or in
- * PSRAM. */
+ * Internal RAM is short (about 33 KB free during a 5 Msym/s run): keep buffers small or in
+ * PSRAM. A packet inside a frame starts 2 bytes past a 4-byte boundary, so a sender that needs
+ * aligned DMA buffers (w5500_udp_send) copies it, typically into a datagram of 7 packets
+ * (1,316 bytes) that its own task sends. */
 typedef struct {
     void (*packet)(void *ctx, const uint8_t *packet);
     void (*flush)(void *ctx);
