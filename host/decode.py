@@ -253,11 +253,12 @@ def stop_decoder(process, timeout=3):
         process.wait()
 
 
-# Kbch (Tables 5a, 5b) by MODCOD; short frames exist for QPSK 4..10 only.
+# Kbch (Tables 5a, 5b) by MODCOD; short frames exist for QPSK 4..10 and 8PSK 12..16.
 KBCH = {4: 32208, 5: 38688, 6: 43040, 7: 48408, 8: 51648,
         9: 53840, 10: 57472, 11: 58192, 12: 38688, 13: 43040,
         14: 48408, 15: 53840, 16: 57472, 17: 58192}
-KBCH_SHORT = {4: 7032, 5: 9552, 6: 10632, 7: 11712, 8: 12432, 9: 13152, 10: 14232}
+KBCH_SHORT = {4: 7032, 5: 9552, 6: 10632, 7: 11712, 8: 12432, 9: 13152, 10: 14232,
+              12: 9552, 13: 10632, 14: 11712, 15: 13152, 16: 14232}
 
 
 def receiver_command(executable, fs, rs, alpha, bb_fd, *, tune=0.0, rrc_rej=20,
@@ -531,12 +532,12 @@ def stream_layout(modcod, frames, dummy_before=(), short=False):
     A physical dummy has 3,330 symbols and produces no BBFRAME or payload.
     The final partial frame cannot be expected from a receiver.
     """
-    if not 4 <= modcod <= (10 if short else 17) or frames < 1:
-        raise ValueError("need MODCOD 4..17 (short 4..10) and at least one nominal frame")
+    if not 4 <= modcod <= (16 if short else 17) or (short and modcod == 11) or frames < 1:
+        raise ValueError("need MODCOD 4..17 (short 4..10 and 12..16) and at least one nominal frame")
     if list(dummy_before) != sorted(dummy_before) or any(
             not isinstance(n, int) or not 0 <= n <= frames for n in dummy_before):
         raise ValueError("dummy positions must be ordered data-frame indices in 0..frames")
-    symbols = 8370 if short else 33282 if modcod < 12 else 22194
+    symbols = (8370 if modcod < 12 else 5598) if short else 33282 if modcod < 12 else 22194
     left, data, dummies, at = frames * symbols, 0, 0, 0
     while left:
         dummy = at < len(dummy_before) and dummy_before[at] == data
@@ -570,7 +571,7 @@ def main():
     p.add_argument("--dummy-before", type=lambda s: tuple(map(int, s.split(","))), default=(),
                    help="known dummy schedule: comma-separated data-frame indices, repeated for pairs")
     p.add_argument("--short", action="store_true",
-                   help="short FECFRAMEs (QPSK 4..10): LeanDVB --framesizes 2, Kbch and symbol counts of Table 5b")
+                   help="short FECFRAMEs (QPSK 4..10, 8PSK 12..16): LeanDVB --framesizes 2, Kbch and symbol counts of Table 5b")
     p.add_argument("--callsign", default="N0CALL", help="callsign in the dumped payload")
     p.add_argument("--receiver", type=Path, help="leandvb executable, or set LEANDVB")
     p.add_argument("--ldpc-helper", type=Path, help=HELPER_REQUIREMENT)
@@ -587,7 +588,7 @@ def main():
                           or not 1 <= a.hold <= 65535 or a.stream < 1 or a.dummy_before):
             raise ValueError("need 1..16 MODCODs in 4..17, positive stream, hold 1..65535, no dummy schedule")
         if a.short and (a.pattern or a.ldpc_helper is not None or a.modcod not in KBCH_SHORT):
-            raise ValueError("--short needs one QPSK MODCOD 4..10, no --pattern or helper")
+            raise ValueError("--short needs one MODCOD (QPSK 4..10, 8PSK 12..16), no --pattern or helper")
         expected = payload(a.modcod, a.stream, a.callsign, short=a.short) if not a.pattern else None
         layout = stream_layout(a.modcod, a.stream, a.dummy_before, a.short)
         with tempfile.TemporaryDirectory() as tmp:

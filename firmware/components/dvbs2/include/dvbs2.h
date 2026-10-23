@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Normal (64,800 bit) and short (16,200 bit) FECFRAMEs; short is QPSK MODCODs 4..10 only.
+/* Normal (64,800 bit) and short (16,200 bit) FECFRAMEs; short is QPSK MODCOD 4..10 and 8PSK MODCOD 12..16.
  * Bits are packed MSB first; phase k means exp(j*k*pi/4).
  * SIS/CCM, roll-off 0.35, no ISSY/NPD, PL scrambling code 0.
  * Use mode pointers from dvbs2_find_mode (normal), dvbs2_find_mode_short or the
@@ -29,9 +29,9 @@ typedef struct {
 extern const dvbs2_mode dvbs2_modes[];
 extern const size_t dvbs2_mode_count;
 const dvbs2_mode *dvbs2_find_mode(unsigned modcod);
-/* Short FECFRAME modes: MODCOD 4..10 (QPSK 1/2 .. 8/9), else NULL. Short Kbch is 7,032
+/* Short FECFRAME modes: MODCOD 4..10 (QPSK 1/2 .. 8/9) and 12..16 (8PSK 3/5 .. 8/9), else NULL. Short Kbch is 7,032
  * (1/2) .. 14,232 (8/9) bits; 3/4 carries (11,712 - 80) / 8 = 1,454 payload bytes.
- * A short QPSK PLFRAME has 8,370 symbols with pilots, 8,190 without. */
+ * A short QPSK PLFRAME has 8,370 symbols with pilots, 8,190 without; 8PSK 5,598 and 5,490. */
 extern const dvbs2_mode dvbs2_modes_short[];
 extern const size_t dvbs2_mode_short_count;
 const dvbs2_mode *dvbs2_find_mode_short(unsigned modcod);

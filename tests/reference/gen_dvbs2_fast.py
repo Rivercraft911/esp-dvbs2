@@ -148,8 +148,8 @@ def generate():
     # Header and pilot phases depend only on MODCOD/pilots and code 0.
     generators = (0x55555555, 0x33333333, 0x0f0f0f0f, 0x00ff00ff, 0x0000ffff)
     headers = []
-    # Normal frames for MODCOD 4..17, then short QPSK 4..10 (TYPE = 1 adds the all-ones row).
-    for short, modcods in ((0, range(4, 18)), (1, range(4, 11))):
+    # Normal frames for MODCOD 4..17, then short QPSK 4..10 and 8PSK 12..16 (TYPE = 1 adds the all-ones row).
+    for short, modcods in ((0, range(4, 18)), (1, (*range(4, 11), *range(12, 17)))):
         for modcod in modcods:
             y = 0xffffffff if short else 0
             for k, generator in enumerate(generators):

@@ -32,7 +32,8 @@ const dvbs2_mode dvbs2_modes[] = {
 };
 const size_t dvbs2_mode_count = sizeof dvbs2_modes / sizeof dvbs2_modes[0];
 
-/* Table 5b: short FECFRAMEs (16,200 bits), QPSK only, always t = 12 (168 parity bits). */
+/* Table 5b: short FECFRAMEs (16,200 bits), always t = 12 (168 parity bits). QPSK MODCOD 4..10,
+ * then 8PSK MODCOD 12..16 (3/5 .. 8/9) with the same code parameters as the QPSK row of that rate. */
 const dvbs2_mode dvbs2_modes_short[] = {
     {"1/2", 7032, 7200, 4, 2, 12, 25, 1},
     {"3/5", 9552, 9720, 5, 2, 12, 18, 1},
@@ -41,15 +42,20 @@ const dvbs2_mode dvbs2_modes_short[] = {
     {"4/5", 12432, 12600, 8, 2, 12, 10, 1},
     {"5/6", 13152, 13320, 9, 2, 12, 8, 1},
     {"8/9", 14232, 14400, 10, 2, 12, 5, 1},
+    {"3/5", 9552, 9720, 12, 3, 12, 18, 1},
+    {"2/3", 10632, 10800, 13, 3, 12, 15, 1},
+    {"3/4", 11712, 11880, 14, 3, 12, 12, 1},
+    {"5/6", 13152, 13320, 15, 3, 12, 8, 1},
+    {"8/9", 14232, 14400, 16, 3, 12, 5, 1},
 };
 const size_t dvbs2_mode_short_count = sizeof dvbs2_modes_short / sizeof dvbs2_modes_short[0];
 
 const dvbs2_mode *dvbs2_find_mode_short(unsigned modcod)
 {
-    if (modcod < 4 || modcod > 10) {
+    if (modcod < 4 || modcod > 16 || modcod == 11) {
         return NULL;
     }
-    return &dvbs2_modes_short[modcod - 4];
+    return &dvbs2_modes_short[modcod <= 10 ? modcod - 4 : modcod - 5];
 }
 
 const dvbs2_mode *dvbs2_canonical_mode(const dvbs2_mode *mode)
@@ -205,7 +211,7 @@ static inline const uint16_t *ldpc_rows(const dvbs2_mode *mode)
         ldpc_s0, ldpc_s1, ldpc_s2, ldpc_s3, ldpc_s4, ldpc_s5, ldpc_s6,
     };
     if (mode->short_frame) {
-        return short_tables[mode->modcod - 4];
+        return short_tables[dvbs2_short_rate(mode)];
     }
     static const uint16_t *const tables[] = {
         ldpc_0, ldpc_1, ldpc_2, ldpc_3, ldpc_4, ldpc_5, ldpc_6, ldpc_7,

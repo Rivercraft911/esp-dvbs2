@@ -253,6 +253,13 @@ int main(void) {
     command("2412 13 5m 540 0 128",true,false); assert(parsed_seconds == 540);
     command("2412 13 5m 61 17 508",true,false);
     command("2412 13 5m 541",false,false);
+    // --short: QPSK 4..10 at 1m or 5m, 8PSK 12..16 at 5m only; no 9/10, 10m, fixture or fused.
+    command("2412 7 5 --short",true,false); command("2412 7 5m 5 --short",true,false);
+    command("2412 10 5m 5 --short",true,false); command("2412 12 5m 5 --short",true,false);
+    command("2412 16 5m 5 --short",true,false);
+    command("2412 11 5 --short",false,false); command("2412 11 5m 5 --short",false,false);
+    command("2412 17 5m 5 --short",false,false); command("2412 13 10m 5 --short",false,false);
+    command("2412 7 10m 5 --short",false,false); command("2412 7 5m 5 --short --fixture",false,false);
     command("2412 13 5m 0",false,false);
     command("2412 13 5m 4294967295",false,false);
     command("2412 13 5m 60 --phy-solo",true,true);
@@ -429,7 +436,7 @@ if __name__ == "__main__":
         source += function(radio,name)
     for name in ("radio_s3_run_options","radio_s3_paced_run_rate","radio_s3_paced_wifi_options"):
         source += function(radio,name)
-    for name in ("number","tx_mode","take_option","cmd_dvb"):
+    for name in ("number","tx_mode","short_scope","take_option","cmd_dvb"):
         source += function(console,name)
     source += COUNTERS + MAIN
     build = ROOT / "firmware/build"
