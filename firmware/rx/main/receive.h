@@ -23,5 +23,7 @@ typedef struct {
     rx_demod_stats_t demod;
 } receive_stats_t;
 
+/* All of count bytes to USB, blocking. */
+void receive_write(const void *data, size_t count);
 esp_err_t receive_run(const capture_config_t *capture, unsigned modcod, receive_stats_t *stats,
                       capture_stats_t *capture_stats);
