@@ -76,16 +76,18 @@ with a receiver. Tuning selections last until changed or the board restarts.
 | `info` | Firmware revision, clocks, memory and stored callsign |
 | `callsign [CALL\|clear]` | Read, set or clear the station ID |
 | `dvbdump MODCOD [rate] frames [peak] [decimation] [stall_ms] [--short]` | Samples over USB, radio off |
-| `dvbpace MODCOD [rate] seconds [peak] [stall_ms] [--short]` | Live encoder and bank deadlines, no playback |
-| `spiinput on\|quad\|off [ts\|gcs]` | Select [SPI payload input](spi-input.md) for the next run |
+| `dvbpace MODCOD [rate] seconds [peak] [stall_ms] [--short] [--phy-solo]` | Live encoder and bank deadlines, no playback |
+| `fecbench MODCOD [--short]` | BCH and LDPC cycles on one frame, radio off |
+| `spiinput on\|quad\|off\|usb [ts\|gcs] [replay]` | Select [SPI or USB payload input](spi-input.md) for the next run |
 | `vcm off\|on\|mixed\|N MODCOD...` | Opt-in [GCS rate switching](vcm.md); repeat each mode for N frames |
 | `spipins devkit\|xiao` | Select the SPI pin preset |
 | `spirx ms on\|quad [ts\|gcs]` | Radio-off SPI receive diagnostic |
 | `spisend ms on\|quad [ts\|gcs] [MHz [Mb/s]]` | SPI test sender on a second S3; no RF |
 | `wifimem MODCOD [rate]` | Radio-off Wi-Fi startup and heap check |
 | `iddump [CALL] [40\|80]` | Morse ID samples at 10 kS/s, radio off |
+| `rflo direct\|five-sixths [kHz]` | Tuning path and offset for the next keyed run |
 | `tx MHz signal seconds [gain] [40\|80]` | Transmit a test tone |
-| `dvb MHz MODCOD [rate] seconds [gain] [peak] [--short]` | Transmit DVB-S2 |
+| `dvb MHz MODCOD [rate] seconds [gain] [peak] [--short] [--phy-solo] [--fixture]` | Transmit DVB-S2 |
 
 MODCOD selects modulation and code rate: QPSK 4..11, 8PSK 12..17. The
 [rate table](how-it-works.md#rates) gives the exact choices. QPSK defaults to 1 Msym/s.
@@ -129,8 +131,8 @@ python3 host/board.py "callsign KJ5SCH"
 ```
 
 Successful keyed runs include 20 WPM Morse at the start and end; the implementation also
-schedules ID every nine minutes. Console transmissions are limited to 60 s, including both
-IDs. Too-short requests fail before startup. A fatal fault stops immediately, so a closing
+schedules ID every nine minutes. `dvb` runs are limited to 540 s and `tx` to 60 s,
+including both IDs. Too-short requests fail before startup. A fatal fault stops immediately, so a closing
 ID cannot be guaranteed. The receiver must reacquire after Morse.
 
 The US identification rule requires identification at the end of a communication and at
