@@ -229,10 +229,12 @@ void app_main(void)
             while ((token = strtok_r(NULL, " ", &save)))    /* [skip] [5m] */
                 strchr(token, 'm') ? (void)(rate = symbol_rate(token)) : (void)(skip = (unsigned)atoi(token));
             static receive_stats_t r;
+            capture_stats_t s = {0};
             quiet = true;
-            esp_err_t e = rate ? replay_run(modcod, rate, skip, &r) : ESP_ERR_INVALID_ARG;
+            esp_err_t e = rate ? replay_run(modcod, rate, skip, &r, &s) : ESP_ERR_INVALID_ARG;
             quiet = false;
             print_receive("replay", e, modcod, rate, &r);
+            print_capture(&s);
             printf(",\"push_words\":%u}\n@{\"cmd\":\"replay\",\"push_log\":[", CAPTURE_UNIT);
             for (unsigned k = 0; k < r.pushes && k < RECEIVE_LOG; ++k) printf("%s%lu", k ? "," : "", (unsigned long)r.log[k]);
             printf("]}\n");

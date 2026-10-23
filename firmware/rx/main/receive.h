@@ -37,7 +37,6 @@ void receive_write(const void *data, size_t count);
 /* Live: capture at capture->mhz, rate 1,000,000 or 5,000,000 symbols/s. */
 esp_err_t receive_run(const capture_config_t *capture, unsigned modcod, unsigned rate,
                       receive_stats_t *stats, capture_stats_t *capture_stats);
-/* Radio off: pairs of int8 I, Q at 16 MS/s (.sc8) through the same receiver, pushed from
- * core 1 a capture unit at a time at the real-time pace, every skip-th unit left out. */
+/* Radio off: pairs of int8 I, Q at 16 MS/s (.sc8) through the same receiver (capture_replay). */
 esp_err_t receive_replay(const int8_t *sc8, size_t pairs, unsigned modcod, unsigned rate,
-                         unsigned skip, receive_stats_t *stats);
+                         unsigned skip, receive_stats_t *stats, capture_stats_t *capture_stats);

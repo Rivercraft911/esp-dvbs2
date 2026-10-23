@@ -3,7 +3,7 @@
 // bits (highest priority: it frees the ring core 1 writes); the checker runs each frame's
 // re-encode check and streams one binary record per frame over USB; the decoder runs the LDPC
 // decoder on frames that fail the check, one at a time, in PSRAM. A replay drives the same
-// receiver from a recorded capture instead of the radio.
+// receiver from a recorded capture instead of the radio (capture_replay).
 #include <stdio.h>
 #include <string.h>
 #include "receive.h"
@@ -23,9 +23,8 @@
 
 #define SLOTS 3U
 #define PIECE 3072U             /* words per push: the release starts within ~1,000 symbols */
-#define STACK 4096U
+#define STACK 2560U             /* the deepest task used about 1.2 KB */
 #define STOP 0xffU
-#define UNIT_CYCLES (CAPTURE_UNIT * 15U)   /* 240 MHz / 16 MS/s */
 #define INTERNAL (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)
 
 typedef struct {
@@ -41,9 +40,6 @@ typedef struct {
     SemaphoreHandle_t done, usb;
     TaskHandle_t release, checker, decoder;
     receive_stats_t *stats;
-    const int8_t *sc8;          /* replay */
-    size_t pairs;
-    unsigned skip;
 } receiver_t;
 
 /* The driver's transmit ring holds 8 KB: larger blocks go in pieces. */
@@ -299,48 +295,13 @@ esp_err_t receive_run(const capture_config_t *capture, unsigned modcod, unsigned
     return error;
 }
 
-/* Core 1: the capture as dump words in capture bank 0, a capture unit at a time, each pushed
- * when its samples would have arrived. */
-static void pusher(void *arg)
-{
-    receiver_t *r = arg;
-    uint32_t *words = CAPTURE_BANK(0), t0 = esp_cpu_get_cycle_count();
-    for (size_t first = 0, unit = 1; first < r->pairs; first += CAPTURE_UNIT, ++unit) {
-        size_t n = r->pairs - first < CAPTURE_UNIT ? r->pairs - first : CAPTURE_UNIT;
-        if (r->skip && unit % r->skip == 0) continue;
-        /* The dump word's I bits 19:12 and Q bits 9:2 are exactly what was recorded. */
-        for (size_t k = 0; k < n; ++k)
-            words[k] = (uint32_t)(uint8_t)r->sc8[2 * (first + k)] << 12 |
-                       (uint32_t)(uint8_t)r->sc8[2 * (first + k) + 1] << 2;
-        while ((int32_t)(esp_cpu_get_cycle_count() - t0 - (uint32_t)(unit * UNIT_CYCLES)) < 0) {
-        }
-        consume(words, n, first, r);
-    }
-    xSemaphoreGive(r->done);
-    vTaskSuspend(NULL);
-}
-
 esp_err_t receive_replay(const int8_t *sc8, size_t pairs, unsigned modcod, unsigned rate,
-                         unsigned skip, receive_stats_t *s)
+                         unsigned skip, receive_stats_t *s, capture_stats_t *cs)
 {
     receiver_t r;
     setup(&r, modcod, rate, 2420, s);
-    r.sc8 = sc8;
-    r.pairs = pairs;
-    r.skip = skip;
-    esp_err_t error = start(&r);
-    if (error == ESP_OK) {
-        static StackType_t stack[STACK / sizeof(StackType_t)];
-        static StaticTask_t task;
-        TaskHandle_t push = xTaskCreateStaticPinnedToCore(pusher, "replay", STACK, &r,
-                                                          configMAX_PRIORITIES - 1, stack, &task, 1);
-        if (push) {
-            xSemaphoreTake(r.done, portMAX_DELAY);
-            reap(push, true);
-        } else {
-            error = ESP_ERR_NO_MEM;
-        }
-    }
+    capture_config_t c = {.mhz = 2420, .ready = start};
+    esp_err_t error = capture_replay(&c, sc8, pairs, skip, consume, &r, cs);
     finish(&r);
     return error;
 }

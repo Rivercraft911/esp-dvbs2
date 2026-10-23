@@ -38,6 +38,10 @@ typedef struct {
 
 esp_err_t capture_run(const capture_config_t *config, capture_fn fn, void *ctx,
                       capture_stats_t *stats);
+/* The radio off: pairs of int8 I, Q (.sc8) handed to fn as dump words, a unit at a time from
+ * capture bank 0 on core 1, at the radio's pace; every skip-th unit is left out (a drop). */
+esp_err_t capture_replay(const capture_config_t *config, const int8_t *sc8, size_t pairs,
+                         unsigned skip, capture_fn fn, void *ctx, capture_stats_t *stats);
 /* Radio set up as for a run, then read timing: see capture.c bench(). */
 esp_err_t capture_bench(const capture_config_t *config, uint32_t results[16],
                         capture_stats_t *stats);
