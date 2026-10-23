@@ -4,13 +4,14 @@ import argparse
 from fractions import Fraction
 import hashlib
 import json
+import re
 from pathlib import Path
 import statistics
 import subprocess
 
 import numpy as np
 
-from plotstyle import BLUE, DARK, GREEN, INK, MID, RED, WIDTH, lollipop, plt, save_figure
+from plotstyle import BLUE, DARK, GREEN, INK, MID, ORANGE, RED, WIDTH, lollipop, plt, save_figure
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / 'docs/measurements'
@@ -54,9 +55,10 @@ def load_points():
                     value = value[part]
                 actual.append(value)
             assert actual == (expected if isinstance(expected, list) else [expected]*len(records)), (key, field)
-        # Explicitly exclude the still-unqualified 8PSK 26.67 Msym/s path.
+        # 8PSK at 26.67 Msym/s is keyed only with a prepared payload: its label must say so.
         row = point['values']
-        assert row['modcod'] < 12 or row.get('symbol_rate', 0) <= 20_000_000, key
+        assert row.get('modcod', 0) < 12 or row.get('symbol_rate', 0) <= 20_000_000 \
+            or 'prepared' in point['label'], key
     return table
 
 
@@ -71,11 +73,21 @@ def symbol_rate(row):
 
 def payload(point):
     row = point['values']
+    if 'check.payload_mbps' in row:                  # a receiver run: the checker's figure
+        return float(row['check.payload_mbps'])
     return float(8 * row['payload_bytes_per_frame'] * symbol_rate(row) / row['frame_symbols'] / 1_000_000)
 
 
 def appearance(point):
-    return (BLUE, 's') if point['values']['modcod'] < 12 else (GREEN, 'o')
+    """Blue for what an S3 transmitted, orange for what an S3 received; squares QPSK, circles 8PSK."""
+    color = ORANGE if point['test'] == 'received' else BLUE
+    return color, 'o' if point['mode'].startswith('8PSK') else 's'
+
+
+def when(table, point):
+    """The date in the point's source path, as 'Oct 16'."""
+    day = re.search(r'2026-10-(\d\d)', table['sources'][point['source']]['path']).group(1)
+    return f'Oct {int(day)}'
 
 
 def mode_label(point):
@@ -84,7 +96,11 @@ def mode_label(point):
 
 def selected_figures(table, out):
     rows = [table['points'][key] for key in table['figures']['fill']]
-    labels = [mode_label(p) + (' (older pulse)' if p['values']['modcod'] >= 12 else '') for p in rows]
+    def tag(p):
+        if p['values']['modcod'] < 12:
+            return ''
+        return ' (prepared payload)' if 'prepared' in p['label'] else ' (older pulse)'
+    labels = [mode_label(p) + tag(p) for p in rows]
     cpu_us = table['cpu_hz'] / 1e6
     for name in ('fill', 'payload'):
         fig, ax = plt.subplots(figsize=(WIDTH, 3.0))
@@ -99,12 +115,11 @@ def selected_figures(table, out):
         else:
             values = [payload(p) for p in rows]
             ax.set_xlabel('Calculated payload rate during data (Mb/s)')
-            ax.set_xlim(0, 67)
+            ax.set_xlim(0, 80)
             title = 'Payload rate, selected keyed records'
         for y, (value, point) in enumerate(zip(values, rows)):
             color, marker = appearance(point)
-            lollipop(ax, y, value, color, marker=marker,
-                     offset=-5 if name == 'fill' and value > 180 else 5)
+            lollipop(ax, y, value, color, marker=marker)
         ax.set(yticks=range(len(rows)), yticklabels=labels, ylim=(len(rows)-.4, -1))
         ax.grid(axis='x')
         ax.set_title(title)
@@ -115,19 +130,21 @@ def selected_figures(table, out):
 
 def rate_history(table, out):
     rows = [table['points'][key] for key in table['figures']['rate-history']]
-    fig, ax = plt.subplots(figsize=(WIDTH, 4.9))
+    fig, ax = plt.subplots(figsize=(WIDTH, 4.6))
     for y, point in enumerate(rows):
         color, marker = appearance(point)
         lollipop(ax, y, payload(point), color, marker=marker, fmt='{:.2f}')
-    ax.set(yticks=range(len(rows)),
-           yticklabels=[f"{p['label']} · {mode_label(p)}" for p in rows],
-           ylim=(len(rows)-.4, -.6), xlim=(0, 69),
-           xlabel='Calculated payload rate during data (Mb/s)',
-           title='From the first stream to 58.2 Mb/s')
-    ax.grid(axis='x')
+    ax.set(yticks=range(len(rows)), ylim=(len(rows) - .4, -.6), xlim=(0, 80),
+           yticklabels=[f"{when(table, p)}   {mode_label(p)}" + (f" ({p['note']})" if 'note' in p else '')
+                        for p in rows],
+           xlabel='Payload rate (Mb/s)', title='Payload rate at each milestone')
+    ax.grid(axis='y', visible=False)
+    ax.plot([], [], 's', color=BLUE, label='Transmitted by an S3')
+    ax.plot([], [], 's', color=ORANGE, label='Received by an S3')
+    ax.legend(loc='lower right')
     save_figure(fig, out/'rate-history.png',
-                'Development order, 16–17 Oct 2026; one recorded run per point. First row: radio off; others: keyed.\n'
-                'Normal frames with pilots; rates exclude Morse ID. Historical pulses and firmware differ.')
+                'First row radio off; transmit rows keyed; receive rows decoded on the receiving S3. '
+                'Normal frames for transmit, short frames for receive; rates exclude Morse ID.')
 
 
 def encoder_history(table, out):
@@ -158,7 +175,7 @@ def encoder_history(table, out):
     row = rows[-1]['values']
     budget = float(table['cpu_hz'] * row['frame_symbols'] / symbol_rate(row) / 1000)
     bx.axhline(budget, color=MID, linestyle='--', linewidth=.7)
-    bx.text(.5, budget+12, f'{budget:.1f}k frame budget', ha='center', color=DARK, fontsize=8)
+    bx.text(.5, budget+12, f'{budget:.1f}k frame budget', ha='center', color=MID, fontsize=8)
     bx.set(xticks=[0, 1], xticklabels=['First 40 MHz', '15% reserve'], xlim=(-.4, 1.4),
            ylim=(0, 300), ylabel='Mean cycles per frame (×10³)', title='(b) QPSK 9/10, keyed')
     bx.grid(axis='y')

@@ -79,20 +79,35 @@
       "ref": null,
       "path": "docs/measurements/2026-10-17-qpsk-reserve-keyed.jsonl",
       "sha256": "19d097e6ea8145e468a6b27782e98c3a1431e8abfffbd75446569a79935008ce"
+    },
+    "keyed_8psk_26m": {
+      "ref": null,
+      "path": "docs/measurements/2026-10-18-8psk-26m667-keyed.jsonl",
+      "sha256": "acf11c42b5a6b96edbd14120e6547ffc33fd5fd941c451a2c831e7d5b17e4155"
+    },
+    "rx_continuous": {
+      "ref": null,
+      "path": "results/2026-10-22-rx-continuous/runs.jsonl",
+      "sha256": "c688dd614ec0f51a3cbad293d141fb5fddeb96fc410b3eedbea2b2436e392fda"
+    },
+    "rx_5m": {
+      "ref": null,
+      "path": "results/2026-10-23-rx-5m-margin/runs.jsonl",
+      "sha256": "e2320db35002996189ee30985745f93ce99d37e04afdeca984f3fec8073e096d"
     }
   },
   "figures": {
     "rate-history": [
       "first_stream",
       "first_keyed",
-      "packed_5m",
-      "keyed_10m_23",
       "keyed_10m_56",
-      "keyed_20m_23",
       "keyed_20m_56",
       "keyed_qpsk_26m",
       "moonshot",
-      "reserve"
+      "keyed_8psk_26m_910",
+      "rx_1m",
+      "rx_5m_qpsk",
+      "rx_5m_8psk"
     ],
     "fill-history": [
       "first_stream",
@@ -120,6 +135,7 @@
     },
     "fill": [
       "reserve",
+      "keyed_8psk_26m_910",
       "keyed_qpsk_26m",
       "keyed_qpsk_20m",
       "keyed_20m_23",
@@ -127,6 +143,7 @@
     ],
     "payload": [
       "reserve",
+      "keyed_8psk_26m_910",
       "keyed_qpsk_26m",
       "keyed_qpsk_20m",
       "keyed_20m_23",
@@ -154,7 +171,8 @@
         "max_fill_cycles": 41723,
         "encode_cycles_mean": 2875083,
         "status": "ESP_OK"
-      }
+      },
+      "note": "first stream, radio off"
     },
     "first_keyed": {
       "label": "First keyed run",
@@ -176,7 +194,8 @@
         "max_fill_cycles": 78948,
         "encode_cycles_mean": 704720,
         "status": "ESP_OK"
-      }
+      },
+      "note": "first keyed run"
     },
     "packed_5m": {
       "label": "Packed ring",
@@ -338,7 +357,8 @@
         "max_fill_cycles": 41130,
         "encode_cycles_mean": 237370,
         "status": "ESP_OK"
-      }
+      },
+      "note": "40 MHz"
     },
     "reserve": {
       "label": "40 MHz + reserve",
@@ -502,6 +522,77 @@
         "max_fill_cycles": 36620,
         "encode_cycles_mean": 226682,
         "status": "ESP_OK"
+      }
+    },
+    "keyed_8psk_26m_910": {
+      "label": "36 MHz, prepared payload",
+      "mode": "8PSK 9/10",
+      "rate_label": "26.67",
+      "test": "keyed",
+      "source": "keyed_8psk_26m",
+      "lines": [
+        3
+      ],
+      "deadline": "fast",
+      "values": {
+        "cmd": "dvb",
+        "modcod": 17,
+        "symbol_rate": 26666666,
+        "frame_symbols": 22194,
+        "payload_bytes_per_frame": 7264,
+        "encode_cycles_mean": 158719,
+        "max_fill_cycles": 38963,
+        "status": "ESP_OK",
+        "dac_rate": 80000000,
+        "sps_num": 3,
+        "sps_den": 1
+      },
+      "note": "36 MHz, prepared payload"
+    },
+    "rx_1m": {
+      "label": "First S3 receiver",
+      "mode": "QPSK 3/4",
+      "rate_label": "1",
+      "test": "received",
+      "source": "rx_continuous",
+      "lines": [
+        1
+      ],
+      "values": {
+        "role": "rx",
+        "check.payload_mbps": 1.3897,
+        "check.passed": true
+      },
+      "note": "first S3 receiver"
+    },
+    "rx_5m_qpsk": {
+      "label": "S3 receiver at 5 Msym/s",
+      "mode": "QPSK 3/4",
+      "rate_label": "5",
+      "test": "received",
+      "source": "rx_5m",
+      "lines": [
+        7
+      ],
+      "values": {
+        "role": "rx",
+        "check.payload_mbps": 6.9486,
+        "check.passed": true
+      }
+    },
+    "rx_5m_8psk": {
+      "label": "S3 receiver, 8PSK",
+      "mode": "8PSK 8/9",
+      "rate_label": "5",
+      "test": "received",
+      "source": "rx_5m",
+      "lines": [
+        1
+      ],
+      "values": {
+        "role": "rx",
+        "check.payload_mbps": 12.6402,
+        "check.passed": true
       }
     }
   }
