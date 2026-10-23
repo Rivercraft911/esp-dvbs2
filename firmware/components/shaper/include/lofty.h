@@ -37,6 +37,7 @@ typedef struct {
 // Source has 16 readable guard bytes. Arbitrary destination word alignment.
 uint32_t lofty_prepare(uint32_t *, const uint16_t *, unsigned, uint32_t previous);
 uint32_t lofty_prepare_pie(uint32_t *, const uint16_t *, unsigned vectors, uint32_t);
+uint32_t lofty_prepare_16(uint32_t *, const uint16_t *, unsigned vectors, uint32_t); // aligned source
 int lofty_build(uint32_t *, unsigned peak);
 void lofty_render_pie(uint32_t *, const uint32_t *, unsigned, const uint32_t *);
 // Consecutive full queue pages. Release each page after its last descriptor.

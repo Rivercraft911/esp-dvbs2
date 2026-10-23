@@ -94,39 +94,19 @@ lofty_render_pie:
     .section .loft0,"ax"
     .space 0x720
 // Eight four-symbol words -> eight offsets. Output aligned; source has 16 guard bytes.
+// prepare_16 takes an aligned source (every full queue page) and sets SAR_BYTE once.
     .section .iram1.lofty_prepare,"ax"
-    .global lofty_prepare_pie
-    .type lofty_prepare_pie,@function
-    .align 4
-lofty_prepare_pie:
+    .macro prepare_setup
     entry a1,32
-    movi a8,0x01c001c0
-    ee.movi.32.q q5,a8,0
-    ee.movi.32.q q5,a8,1
-    ee.movi.32.q q5,a8,2
-    ee.movi.32.q q5,a8,3
-    movi a8,0xff80ff80
-    ee.movi.32.q q6,a8,0
-    ee.movi.32.q q6,a8,1
-    ee.movi.32.q q6,a8,2
-    ee.movi.32.q q6,a8,3
-    movi a8,0x003f003f
-    ee.movi.32.q q7,a8,0
-    ee.movi.32.q q7,a8,1
-    ee.movi.32.q q7,a8,2
-    ee.movi.32.q q7,a8,3
+    splat q5,0x01c001c0
+    splat q6,0xff80ff80
+    splat q7,0x003f003f
     ee.zero.q q4
     slli a5,a5,16
     ee.movi.32.q q4,a5,3
     movi a8,14
-    wur.sar_byte a8
-    loopnez a4,.Lprepare_end
-    ee.ld.128.usar.ip q0,a3,16
-    ssai 2
-    ee.vld.128.ip q1,a3,0
-    ee.src.q q0,q0,q1
-    wur.sar_byte a8
-    ee.src.q.qup q1,q4,q0
+    .endm
+    .macro prepare_body
     ssai 4
     ee.vsl.32 q2,q1
     ee.andq q2,q2,q6
@@ -152,8 +132,45 @@ lofty_prepare_pie:
     ee.orq q3,q3,q1
     ee.vst.128.ip q2,a2,16
     ee.vst.128.ip q3,a2,16
+    .endm
+    .macro splat q,value
+    movi a8,\value
+    ee.movi.32.q \q,a8,0
+    ee.movi.32.q \q,a8,1
+    ee.movi.32.q \q,a8,2
+    ee.movi.32.q \q,a8,3
+    .endm
+    .global lofty_prepare_pie
+    .type lofty_prepare_pie,@function
+    .align 4
+lofty_prepare_pie:
+    prepare_setup
+    wur.sar_byte a8
+    loopnez a4,.Lprepare_end
+    ee.ld.128.usar.ip q0,a3,16
+    ee.vld.128.ip q1,a3,0
+    ee.src.q q0,q0,q1
+    wur.sar_byte a8
+    ee.src.q.qup q1,q4,q0
+    prepare_body
 .Lprepare_end:
     addi a3,a3,-2
     l16ui a2,a3,0
     retw
     .size lofty_prepare_pie,.-lofty_prepare_pie
+
+    .global lofty_prepare_16
+    .type lofty_prepare_16,@function
+    .align 4
+lofty_prepare_16:
+    prepare_setup
+    wur.sar_byte a8
+    loopnez a4,.Lprepare_16_end
+    ee.vld.128.ip q0,a3,16
+    ee.src.q.qup q1,q4,q0
+    prepare_body
+.Lprepare_16_end:
+    addi a3,a3,-2
+    l16ui a2,a3,0
+    retw
+    .size lofty_prepare_16,.-lofty_prepare_16

@@ -73,7 +73,7 @@ IRAM_ATTR uint32_t lofty_prepare(uint32_t *dst, const uint16_t *src, unsigned n,
     }
 #ifdef __XTENSA__
     unsigned vectors = n/8;
-    if (vectors) previous = lofty_prepare_pie(dst,src,vectors,previous);
+    if (vectors) previous = ((uintptr_t)src&15 ? lofty_prepare_pie : lofty_prepare_16)(dst,src,vectors,previous);
     dst += 8*vectors; src += 8*vectors; n -= 8*vectors;
 #endif
     while (n--) {
