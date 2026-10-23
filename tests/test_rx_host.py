@@ -1,6 +1,7 @@
 """host/rx.py: the short-frame payload model and the stream verdict."""
 import pathlib
 import sys
+import zlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "host"))
 import decode  # noqa: E402
@@ -36,17 +37,14 @@ def main():
     failed[4] = dict(failed[4], length=-1, payload=b"")
     report = rx.check(failed, 7, "KJ5SCH", 40)
     assert not report["passed"] and report["failed"] == 1, report
-    # CRC-32 records instead of payloads, at 5 Msym/s 8PSK.
-    import zlib
-    size16 = rx.frame_bytes(16)
-    m16 = rx.model(size16, 30, "KJ5SCH")
-    crcs = [dict(sequence=50 + k, length=size16, payload=zlib.crc32(p).to_bytes(4, "little"))
-            for k, p in enumerate(m16[3:20])]
-    report = rx.check(crcs, 16, "KJ5SCH", 30, 5e6)
-    assert report["passed"] and report["compared"] == "crc32" and report["first_model_frame"] == 3, report
-    assert abs(report["payload_mbps"] - 12.6407) < 1e-3, report
-    crcs[5] = dict(crcs[5], payload=b"\0\0\0\0")
-    assert not rx.check(crcs, 16, "KJ5SCH", 30, 5e6)["passed"]
+    # 5 Msym/s records carry the payload's CRC-32: 8PSK 8/9 short frames, 12.64 Mb/s of payload.
+    size = rx.frame_bytes(16)
+    model = rx.model(size, 40, "KJ5SCH")
+    crcs = [dict(sequence=7 + k, length=size, payload=b"", crc=zlib.crc32(p)) for k, p in enumerate(model[3:30])]
+    ok = rx.check(crcs, 16, "KJ5SCH", 40, 5e6)
+    assert ok["passed"] and ok["first_model_frame"] == 3 and ok["payload_mbps"] == 12.6402, ok
+    crcs[5] = dict(crcs[5], crc=crcs[5]["crc"] ^ 1)
+    assert not rx.check(crcs, 16, "KJ5SCH", 40, 5e6)["passed"]
     print("rx host checks passed")
 
 

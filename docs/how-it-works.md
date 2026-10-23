@@ -223,14 +223,17 @@ live input throughput at this rate remains unqualified.
 
 ## Receiving
 
-A second S3 decodes short-frame QPSK at 1 Msym/s on its own (`firmware/rx`, with the
-`dvbs2rx` component). Core 1 turns radio samples into frames of soft bits; core 0 checks or
-decodes each frame and sends the payload over USB.
+A second S3 decodes short-frame QPSK (1 or 5 Msym/s) and 8PSK (5 Msym/s) on its own
+(`firmware/rx`, with the `dvbs2rx` component). The fastest measured mode is 8PSK 8/9 at
+5 Msym/s, 12.64 Mb/s of payload. Core 1 turns radio samples into raw symbols; core 0 turns
+them into frames of hard bits, checks or decodes each frame and sends a record over USB.
 
 ```
 core 1: dump banks, 16 MS/s -> int8 I/Q -> matched filter at each symbol time
-        -> carrier, leak and DC removal -> PL descrambling -> LLRs and hard bits -> frame ring
-core 0: re-encode check -> (if needed) layered min-sum LDPC -> BCH and BBHEADER -> USB
+        -> header and pilot blocks: timing, carrier, DC, leak -> raw data symbols -> symbol ring
+core 0: release: DC, derotation, leak, PL descrambling, demapping -> hard and weak bits
+        check: re-encode -> BCH and BBHEADER -> USB record
+        decode (frames that fail the check): layered min-sum LDPC, state in PSRAM
 ```
 
 **Capture.** The radio's dump engine writes 10-bit I/Q into a 16,384-word ring in whichever of
@@ -246,37 +249,83 @@ referenced and deinitializes Wi-Fi. Stopping Wi-Fi also clears bit 1 of
 `SYSCON_WIFI_BB_CFG_REG`, which the dump needs: without it the samples hold a constant.
 The receiver sets it again; a diff of the radio registers with Wi-Fi up and stopped found it.
 No Wi-Fi interrupt or periodic work runs during a capture. Run memory is allocated after
-the teardown, and both task stacks are static in internal RAM.
+the teardown, and every task stack is static in internal RAM.
 
 **Front end.** Each 10-bit word becomes int8 I and Q, floor(s10/4), at 1.55 cycles per
-sample. A 96-tap root-raised-cosine matched filter is evaluated only at symbol times, to 1/64
-symbol, from 64 coefficient sets of seven 16-byte vectors. On PIE that costs about 61 cycles
-per symbol including scheduling.
+sample. A root-raised-cosine matched filter is evaluated only at symbol times.
+- 1 Msym/s (16 samples per symbol): 96 taps to 1/64 symbol, from 64 coefficient sets of seven
+  16-byte vectors, about 61 cycles per symbol on PIE.
+- 5 Msym/s (3.2 samples per symbol): 32 taps (two aligned 16-byte vectors) to 1/32 sample.
+  Five symbols span 16 samples, so each group of five shares one window. 15.6 to 16.3 cycles
+  per symbol on PIE.
+
+At 5 Msym/s a 3-tap equalizer fitted to real symbols found -0.034 to -0.037 at ±1 symbol,
+stable across frames and captures (-0.004 at 1 Msym/s). The 5 Msym/s coefficients cancel
+0.035, at no cost per symbol: data MER on five recorded dumps rose from 23.2-24.3 dB to
+27.2-29.1 dB.
 
 **Synchronization.** Acquisition correlates the signs of matched-filter outputs against the
 start-of-frame and PLS code. It locks on the next PLHEADER one frame later, at the clock the
 carrier offset implies: both radios run from 40 MHz crystals, so the symbol clock offset equals
 the carrier offset divided by the carrier frequency, held to 0.01 ppm in every capture. Each
-header and pilot block then updates the timing, carrier, DC and leak estimates. The data
-between two blocks is derotated with a phase interpolated between them. Removing the
+header and pilot block then updates the timing, carrier, DC and leak estimates. Removing the
 transmitter's carrier leak, about -17 dB in its own frame, raises MER from about 16 dB to
 about 29 dB.
 
+At 5 Msym/s the search has a candidate every 1.6 samples, five times as many per sample as at
+1 Msym/s. It covers 4,096 of every 16,384 samples, at an offset that changes from block to
+block, which bounds its cost per unit. A candidate must first match the 8 newest differential
+signs of the header. With only 3, the transmitter's Morse ID tone (one differential sign
+throughout) passed every candidate at MODCOD 16 and cost 247k cycles per unit. On noise the
+search costs 59k cycles per unit on average and 110k at worst.
+
+**Two cores.** Core 1 keeps each data symbol's raw matched-filter output in a ring of 4,096
+symbols (16 KB, 0.82 ms at 5 Msym/s). It queues a run of data symbols once the known block
+after it is measured, so the carrier phase is known at both ends. On core 0, three tasks:
+- The release task (highest priority) takes off DC, derotates with the phase interpolated
+  between the blocks, takes off the leak, descrambles and demaps. For 8PSK it writes each
+  symbol's three bits to three bit planes, which undoes the column interleaver. If it falls
+  behind, core 1 drops a frame rather than wait.
+- The check task re-encodes each frame's hard bits.
+- The decode task (lowest priority) runs the LDPC decoder on frames that fail the check, one
+  at a time.
+
+Each code bit becomes a hard bit (its sign) and a weak bit, set when it lies less than half
+the noise-free distance from its decision boundary. The decoder builds two-level beliefs from
+them. In a host simulation (AWGN through the integer decoder), hard and weak bits cost about
+0.3 to 0.5 dB against full soft bits. A frame needs 4 KB instead of 16 KB, so frames stay in
+internal RAM.
+
 **FEC.** A clean frame is checked by re-encoding its hard bits with the transmitter's fast BCH
-and LDPC and comparing parity: 31.6k cycles. Other frames go to a layered normalized min-sum
-decoder in int8 that uses the code's 360-column structure, 16 checks per PIE vector. It runs
-393k cycles per iteration with its 48 KB work area in PSRAM, for at most 8 iterations with an
-early stop.
+and LDPC and comparing parity: 31.6k cycles for QPSK 3/4. Other frames go to a layered
+normalized min-sum decoder in int8 that uses the code's 360-column structure, 16 checks per
+PIE vector. It runs 393k cycles per iteration with its 48 KB work area in PSRAM, for at most
+8 iterations with an early stop. 8PSK MODCODs use the code of the QPSK MODCOD with the same
+rate.
 
-| Measured, 1 Msym/s QPSK 3/4 short | Cycles |
-|---|---:|
-| Capture service per 12,288-sample unit (edges, bank clear) | about 25k |
-| Demodulator per unit, mean / worst (lock) | about 85k / 124k |
-| FEC per 8.37 ms frame on core 0, mean | about 103k |
+**Records.** The receiver sends a 20-byte record per frame: sequence, CFO, MER, length, LDPC
+iterations and failing checks (`firmware/rx/main/receive.h`). At 1 Msym/s the payload follows.
+At 5 Msym/s, 12.64 Mb/s is more than the 12 Mb/s signalling rate of the S3's full-speed USB
+port, so the payload's CRC-32 follows instead, and `host/rx.py` compares it with the model
+frame the sequence implies. A failed frame carries its 8-byte header sample index, 2,025 bytes
+of hard bits and 2,025 of weak bits. The console takes `rx MHz gain seconds MODCOD [5m]`.
 
-With Wi-Fi gone, about 101 KB of internal RAM is free before a run; the demodulator takes
-25 KB, the FEC 18 KB and the frame ring 8 KB, leaving about 49 KB.
-[Results](../results/2026-10-22-rx-continuous/README.md),
+| Measured, e379dfb, 2420 MHz | QPSK 3/4, 1 Msym/s | QPSK 3/4, 5 Msym/s | 8PSK 8/9, 5 Msym/s |
+|---|---:|---:|---:|
+| Payload | 1.39 Mb/s | 6.95 Mb/s | 12.64 Mb/s |
+| Frame, cycles at 240 MHz | 2,008,800 | 401,760 | 268,704 |
+| Core 1 per 12,288-sample unit, mean (of 184,320) | 79.7k | 117.2k | 120.8k |
+| Core 1 worst unit with capture service (the lock) | 131.9k | 168.9k | 171.5k to 224.6k |
+| Core 0 release per frame | 109.9k | 105.6k | 94.3k |
+| Core 0 check per frame (wall clock) | 47.2k | 63.0k | 75.6k |
+| Pilot MER, median | 30.4 dB | 29.8 dB | 29.9 dB |
+
+The lock unit is absorbed by one unit of capture lag; no unit was dropped. With Wi-Fi gone,
+about 90 KB of internal RAM is free before a run. The demodulator (about 14 KB), symbol ring
+(16 KB), clean-path FEC (about 12 KB) and three frame slots (12 KB) leave 34 KB, and at
+least 24.8 KB stayed free during runs.
+[5 Msym/s results](../results/2026-10-23-rx-5m-margin/README.md),
+[1 Msym/s qualification](../results/2026-10-22-rx-continuous/README.md),
 [demodulator measurements](../results/2026-10-22-rx-demod/README.md).
 
 ## Rates

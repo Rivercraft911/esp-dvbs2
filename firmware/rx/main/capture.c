@@ -58,11 +58,14 @@ typedef struct {
     capture_stats_t *stats;
     uint32_t *bench;    /* membench results instead of a stream, or NULL */
     SemaphoreHandle_t done;
+    const int8_t *sc8;  /* replay: a recorded capture instead of the radio */
+    size_t pairs;
+    unsigned skip;
 } job_t;
 
 static inline uint32_t *bank(unsigned n)
 {
-    return (uint32_t *)(0x3fcb0000U + n * 65536U);
+    return CAPTURE_BANK(n);
 }
 
 static void IRAM_ATTR clear(uint32_t *p)
@@ -278,7 +281,10 @@ static const char *IRAM_ATTR stream(job_t *job)
         clear((uint32_t *)b);
         uint32_t now = esp_cpu_get_cycle_count();
         if (now - cleared > s->max_clear) s->max_clear = now - cleared;
-        if (now - start > s->max_service) s->max_service = now - start;
+        if (now - start > s->max_service) {
+            s->max_service = now - start;
+            s->max_service_at = s->samples;
+        }
         s->samples += count;
         ++s->units;
         expected = last;
@@ -427,6 +433,45 @@ static void worker(void *arg)
     vTaskSuspend(NULL);     /* the launcher deletes it, so its static buffers are free again */
 }
 
+/* The radio off: a recorded capture as dump words in bank 0, a unit at a time, each handed
+ * over when its samples would have arrived. */
+static void replayer(void *arg)
+{
+    job_t *job = arg;
+    capture_stats_t *s = job->stats;
+    s->free_ready = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    s->largest_ready = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    uint32_t *words = bank(0), t0 = esp_cpu_get_cycle_count();
+    for (size_t first = 0, unit = 1; first < job->pairs; first += CAPTURE_UNIT, ++unit) {
+        size_t n = job->pairs - first < CAPTURE_UNIT ? job->pairs - first : CAPTURE_UNIT;
+        if (job->skip && unit % job->skip == 0) {
+            s->dropped += n;
+            ++s->drops;
+            continue;
+        }
+        /* The dump word's I bits 19:12 and Q bits 9:2 are exactly what was recorded. */
+        for (size_t k = 0; k < n; ++k)
+            words[k] = (uint32_t)(uint8_t)job->sc8[2 * (first + k)] << 12 |
+                       (uint32_t)(uint8_t)job->sc8[2 * (first + k) + 1] << 2;
+        while ((int32_t)(esp_cpu_get_cycle_count() - t0 - (uint32_t)(unit * CAPTURE_UNIT * PAIR_CYCLES)) < 0) {
+        }
+        uint32_t start = esp_cpu_get_cycle_count();
+        if (job->fn(words, n, first, job->ctx) != ESP_OK) { s->fault = "consumer"; break; }
+        uint32_t cycles = esp_cpu_get_cycle_count() - start;
+        if (cycles > s->max_service) {
+            s->max_service = cycles;
+            s->max_service_at = first;
+        }
+        s->samples = first + n;
+        ++s->units;
+    }
+    if (s->fault) s->error = ESP_FAIL;
+    s->min_free = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+    s->stack_free = uxTaskGetStackHighWaterMark(NULL);
+    xSemaphoreGive(job->done);
+    vTaskSuspend(NULL);
+}
+
 static esp_err_t launch(job_t *job);
 
 esp_err_t capture_run(const capture_config_t *config, capture_fn fn, void *ctx,
@@ -435,7 +480,15 @@ esp_err_t capture_run(const capture_config_t *config, capture_fn fn, void *ctx,
     memset(stats, 0, sizeof *stats);
     if (config->mhz < 2000U || config->mhz > 2450U || !config->seconds || config->seconds > 600U)
         return stats->error = ESP_ERR_INVALID_ARG;
-    job_t job = {config, fn, ctx, stats, NULL, NULL};
+    job_t job = {config, fn, ctx, stats, NULL, NULL, NULL, 0, 0};
+    return launch(&job);
+}
+
+esp_err_t capture_replay(const capture_config_t *config, const int8_t *sc8, size_t pairs,
+                         unsigned skip, capture_fn fn, void *ctx, capture_stats_t *stats)
+{
+    memset(stats, 0, sizeof *stats);
+    job_t job = {config, fn, ctx, stats, NULL, NULL, sc8, pairs, skip};
     return launch(&job);
 }
 
@@ -444,7 +497,7 @@ esp_err_t capture_bench(const capture_config_t *config, uint32_t results[16],
 {
     memset(stats, 0, sizeof *stats);
     memset(results, 0, 16 * sizeof *results);
-    job_t job = {config, NULL, NULL, stats, results, NULL};
+    job_t job = {config, NULL, NULL, stats, results, NULL, NULL, 0, 0};
     return launch(&job);
 }
 
@@ -460,6 +513,7 @@ static esp_err_t launch(job_t *job)
     s->free_before = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     cfg.nvs_enable = 0;
+    if (job->sc8) goto replay;
     if ((s->error = esp_wifi_init(&cfg)) != ESP_OK) goto done;
     initialized = true;
     if ((s->error = esp_wifi_set_storage(WIFI_STORAGE_RAM)) != ESP_OK ||
@@ -473,6 +527,7 @@ static esp_err_t launch(job_t *job)
     held = true;
     if ((s->error = esp_wifi_stop()) != ESP_OK || (s->error = esp_wifi_deinit()) != ESP_OK) goto done;
     initialized = false;
+replay:
     s->free_wifi = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     if (job->config->ready && (s->error = job->config->ready(job->ctx)) != ESP_OK) goto done;
     if (!(job->done = xSemaphoreCreateBinary())) { s->error = ESP_ERR_NO_MEM; goto done; }
@@ -480,8 +535,9 @@ static esp_err_t launch(job_t *job)
      * memory, where the demodulator's stack traffic once ran 3.4 times slower. */
     static StackType_t stack[CAPTURE_STACK / sizeof(StackType_t)];
     static StaticTask_t task;
-    TaskHandle_t handle = xTaskCreateStaticPinnedToCore(worker, "capture", CAPTURE_STACK, job,
-                                                        configMAX_PRIORITIES - 1, stack, &task, 1);
+    TaskHandle_t handle = xTaskCreateStaticPinnedToCore(job->sc8 ? replayer : worker, "capture",
+                                                        CAPTURE_STACK, job, configMAX_PRIORITIES - 1,
+                                                        stack, &task, 1);
     if (!handle) {
         s->error = ESP_ERR_NO_MEM;
         goto done;

@@ -2,6 +2,7 @@
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "driver/usb_serial_jtag.h"
@@ -35,14 +36,16 @@ static int log_filter(const char *format, va_list args)
 
 static void print_capture(const capture_stats_t *s)
 {
-    printf(",\"samples\":%llu,\"dropped\":%llu,\"drops\":%lu,\"units\":%lu,\"max_late\":%lu,\"max_service\":%lu,\"max_clear\":%lu,"
+    printf(",\"samples\":%llu,\"dropped\":%llu,\"drops\":%lu,\"units\":%lu,\"max_late\":%lu,\"max_service\":%lu,"
+           "\"max_service_at\":%llu,\"max_clear\":%lu,"
            "\"max_spin\":%lu,\"max_lag\":%lu,"
            "\"free_before\":%lu,\"free_wifi\":%lu,\"free_ready\":%lu,\"largest_ready\":%lu,"
            "\"min_free\":%lu,\"capture_stack_free\":%lu,"
            "\"gain_max\":%u,\"status\":\"%s\",\"cleanup\":\"%s\"",
            (unsigned long long)s->samples, (unsigned long long)s->dropped, (unsigned long)s->drops,
            (unsigned long)s->units, (unsigned long)s->max_late,
-           (unsigned long)s->max_service, (unsigned long)s->max_clear,
+           (unsigned long)s->max_service, (unsigned long long)s->max_service_at,
+           (unsigned long)s->max_clear,
            (unsigned long)s->max_spin, (unsigned long)s->max_lag,
            (unsigned long)s->free_before, (unsigned long)s->free_wifi,
            (unsigned long)s->free_ready, (unsigned long)s->largest_ready,
@@ -159,6 +162,40 @@ static void rxprobe(const capture_config_t *c)
     printf("}\n");
 }
 
+/* "5m": 5 Msym/s; "" or "1m": 1 Msym/s; else 0. */
+static unsigned symbol_rate(const char *token)
+{
+    return !*token || !strcmp(token, "1m") ? 1000000 : !strcmp(token, "5m") ? 5000000 : 0;
+}
+
+/* A receive or replay summary, left open for more fields. */
+static void print_receive(const char *cmd, esp_err_t e, unsigned modcod, unsigned rate,
+                          const receive_stats_t *r)
+{
+    printf("@{\"cmd\":\"%s\",\"result\":\"%s\",\"modcod\":%u,\"symbol_rate\":%u,\"frames\":%lu,"
+           "\"good\":%lu,\"failed\":%lu,\"decoded\":%lu,\"frames_dropped\":%lu,\"max_iterations\":%lu,"
+           "\"pushes\":%lu,\"max_push_cycles\":%lu,\"max_push_at\":%llu,\"push_cycles\":%llu,"
+           "\"max_release_cycles\":%lu,\"release_cycles\":%llu,\"max_fec_cycles\":%lu,\"fec_cycles\":%llu,"
+           "\"stack_free\":[%lu,%lu,%lu],\"free_internal\":%lu,\"largest_internal\":%lu,"
+           "\"demod\":{\"words\":%llu,\"frames\":%lu,\"lost\":%lu,\"dropped\":%lu,\"relocks\":%lu,"
+           "\"rejects\":%lu,\"locked\":%u,\"cfo_hz\":%ld,\"clock_ppb\":%ld,\"acquire_cycles\":%lu,"
+           "\"dc\":[%d,%d]}",
+           cmd, esp_err_to_name(e), modcod, rate, (unsigned long)r->frames, (unsigned long)r->good,
+           (unsigned long)r->failed, (unsigned long)r->decoded, (unsigned long)r->dropped,
+           (unsigned long)r->max_iterations, (unsigned long)r->pushes,
+           (unsigned long)r->max_push_cycles, (unsigned long long)r->max_push_at,
+           (unsigned long long)r->push_cycles, (unsigned long)r->max_release_cycles,
+           (unsigned long long)r->release_cycles, (unsigned long)r->max_fec_cycles,
+           (unsigned long long)r->fec_cycles, (unsigned long)r->release_stack_free,
+           (unsigned long)r->check_stack_free, (unsigned long)r->decode_stack_free,
+           (unsigned long)r->free_internal, (unsigned long)r->largest_internal,
+           (unsigned long long)r->demod.words, (unsigned long)r->demod.frames,
+           (unsigned long)r->demod.lost, (unsigned long)r->demod.dropped,
+           (unsigned long)r->demod.relocks, (unsigned long)r->demod.rejects, r->demod.locked,
+           (long)r->demod.cfo_hz, (long)r->demod.clock_ppb, (unsigned long)r->demod.acquire_cycles,
+           r->demod.dc_i, r->demod.dc_q);
+}
+
 void app_main(void)
 {
     usb_serial_jtag_driver_config_t usb = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
@@ -189,50 +226,36 @@ void app_main(void)
         } else if (fields >= 4 && !strcmp(cmd, "rxprobe") && fields == 4) {
             capture_config_t c = {.mhz = mhz, .gain = gain, .seconds = seconds};
             rxprobe(&c);
-        } else if (fields == 5 && !strcmp(cmd, "rx")) {
-            unsigned modcod = 0;
-            sscanf(mode, "%u", &modcod);
+        } else if (fields >= 5 && !strcmp(cmd, "rx")) {
+            unsigned modcod = 0, rate = 1000000;
+            char token[8] = "";
+            if (sscanf(line, "rx %*u %*u %*u %u %7s", &modcod, token) == 2) rate = symbol_rate(token);
             capture_config_t c = {.mhz = mhz, .gain = gain, .seconds = seconds};
-            receive_stats_t r;
+            static receive_stats_t r;
             capture_stats_t s = {0};
             quiet = true;
-            esp_err_t e = receive_run(&c, modcod, &r, &s);
+            esp_err_t e = rate ? receive_run(&c, modcod, rate, &r, &s) : ESP_ERR_INVALID_ARG;
             quiet = false;
-            printf("@{\"cmd\":\"rx\",\"result\":\"%s\",\"modcod\":%u,\"frames\":%lu,\"good\":%lu,"
-                   "\"failed\":%lu,\"dropped\":%lu,\"max_iterations\":%lu,\"max_push_cycles\":%lu,"
-                   "\"push_cycles\":%llu,\"max_fec_cycles\":%lu,\"fec_cycles\":%llu,\"decoder_stack_free\":%lu,"
-                   "\"demod\":{\"words\":%llu,\"frames\":%lu,\"lost\":%lu,\"relocks\":%lu,"
-                   "\"acquire_cycles\":%lu,\"dc\":[%d,%d]}",
-                   esp_err_to_name(e), modcod, (unsigned long)r.frames, (unsigned long)r.good,
-                   (unsigned long)r.failed, (unsigned long)r.dropped, (unsigned long)r.max_iterations,
-                   (unsigned long)r.max_push_cycles, (unsigned long long)r.push_cycles,
-                   (unsigned long)r.max_fec_cycles, (unsigned long long)r.fec_cycles,
-                   (unsigned long)r.decoder_stack_free, (unsigned long long)r.demod.words, (unsigned long)r.demod.frames,
-                   (unsigned long)r.demod.lost, (unsigned long)r.demod.relocks,
-                   (unsigned long)r.demod.acquire_cycles, r.demod.dc_i, r.demod.dc_q);
+            print_receive("rx", e, modcod, rate, &r);
             print_capture(&s);
             printf("}\n");
         } else if (fields == 2 && !strcmp(cmd, "upload")) {
             replay_upload(mhz);
-        } else if ((fields == 2 || fields == 3) && !strcmp(cmd, "replay")) {
-            static replay_stats_t r;
+        } else if (fields >= 2 && !strcmp(cmd, "replay")) {
+            unsigned modcod = mhz, skip = 0, rate = 1000000;
+            char *save, *token = strtok_r(line, " ", &save);
+            strtok_r(NULL, " ", &save);
+            while ((token = strtok_r(NULL, " ", &save)))    /* [skip] [5m] */
+                strchr(token, 'm') ? (void)(rate = symbol_rate(token)) : (void)(skip = (unsigned)atoi(token));
+            static receive_stats_t r;
+            capture_stats_t s = {0};
             quiet = true;
-            esp_err_t e = replay_run(mhz, fields == 3 ? gain : 0, &r);
+            esp_err_t e = rate ? replay_run(modcod, rate, skip, &r, &s) : ESP_ERR_INVALID_ARG;
             quiet = false;
-            printf("@{\"cmd\":\"replay\",\"result\":\"%s\",\"pushes\":%lu,\"push_words\":6144,"
-                   "\"max_push_cycles\":%lu,\"max_push_at\":%llu,\"push_cycles\":%llu,\"frames\":%lu,"
-                   "\"good\":%lu,\"failed\":%lu,\"max_fec_cycles\":%lu,\"fec_cycles\":%llu,"
-                   "\"demod\":{\"frames\":%lu,\"lost\":%lu,\"relocks\":%lu,\"locked\":%u,"
-                   "\"cfo_hz\":%ld,\"clock_ppb\":%ld,\"rejects\":%lu}}\n",
-                   esp_err_to_name(e), (unsigned long)r.pushes, (unsigned long)r.max_push_cycles,
-                   (unsigned long long)r.max_push_at, (unsigned long long)r.push_cycles,
-                   (unsigned long)r.frames, (unsigned long)r.good, (unsigned long)r.failed,
-                   (unsigned long)r.max_fec_cycles, (unsigned long long)r.fec_cycles,
-                   (unsigned long)r.demod.frames, (unsigned long)r.demod.lost,
-                   (unsigned long)r.demod.relocks, r.demod.locked, (long)r.demod.cfo_hz,
-                   (long)r.demod.clock_ppb, (unsigned long)r.demod.rejects);
-            printf("@{\"cmd\":\"replay\",\"push_log\":[");
-            for (unsigned k = 0; k < r.pushes && k < REPLAY_LOG; ++k) printf("%s%lu", k ? "," : "", (unsigned long)r.log[k]);
+            print_receive("replay", e, modcod, rate, &r);
+            print_capture(&s);
+            printf(",\"push_words\":%u}\n@{\"cmd\":\"replay\",\"push_log\":[", CAPTURE_UNIT);
+            for (unsigned k = 0; k < r.pushes && k < RECEIVE_LOG; ++k) printf("%s%lu", k ? "," : "", (unsigned long)r.log[k]);
             printf("]}\n");
         } else if (fields == 4 && !strcmp(cmd, "dump")) {
             dump(mhz, gain, seconds);
@@ -247,7 +270,7 @@ void app_main(void)
             print_capture(&s);
             printf("}\n");
         } else {
-            printf("@{\"error\":\"use info, rxprobe MHz gain seconds, rx MHz gain seconds MODCOD, dump MHz gain pairs, upload bytes, replay MODCOD [skip], membench MHz gain\"}\n");
+            printf("@{\"error\":\"use info, rxprobe MHz gain seconds, rx MHz gain seconds MODCOD [5m], dump MHz gain pairs, upload bytes, replay MODCOD [skip] [5m], membench MHz gain\"}\n");
         }
         printf("@{\"done\":true}\n");
     }
