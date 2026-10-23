@@ -770,7 +770,7 @@ dvbs2_pie_run8:
     ee.srcq.128.st.incp q4, q1, a4
     ee.orq q4, q1, q1
 98:
-    /* All 8PSK runs are multiples of 32 symbols (1440 or 21600). */
+    /* Whole pairs only: callers finish runs that are not multiples of 32 symbols. */
     ee.srcq.128.st.incp q4, q1, a7
     retw
     .size dvbs2_pie_run8, . - dvbs2_pie_run8

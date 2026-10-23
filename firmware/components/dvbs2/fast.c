@@ -1036,15 +1036,21 @@ static HOT void map_pie(dvbs2_fast *f, const uint8_t *bits, uint8_t *output)
         uint8_t *dst = output + 90 + k + 36 * r;
         const uintptr_t at = (uintptr_t)dst;
         uint8_t *block = (uint8_t *)((at - 1) & ~(uintptr_t)15);
-        const unsigned vectors = length / 16;
+        /* run8 stores whole pairs of vectors. */
+        const unsigned vectors = f->mode->bits_per_symbol == 3 ? length / 32 * 2 : length / 16;
         (f->mode->bits_per_symbol == 3 ? dvbs2_pie_run8 : dvbs2_pie_run)(
             index + k / 4, table, block, vectors, (unsigned)(-at & 15), f->tail);
         /* The kernel leaves the final aligned block in f->tail: the run's
          * last (at & 15) bytes, or a whole vector when dst is aligned. */
         memcpy(block + 16 * vectors, f->tail, (at & 15) ? (at & 15) : 16);
-        /* Short QPSK runs end 4 or 8 symbols past a whole vector. */
+        /* Short QPSK runs end 4 or 8 symbols past a whole vector, short 8PSK runs
+         * (5400 or 1080 symbols) 8 or 24 past a pair. An 8PSK table entry holds two
+         * phases: index bits 3:2 of each nibble, then bits 1:0 (map_c_run). */
         for (unsigned j = 16 * vectors; j < length; j += 4) {
-            const uint32_t v = ((const uint32_t *)f->map)[index[(k + j) / 4]];
+            const unsigned idx = index[(k + j) / 4];
+            const uint32_t *map = (const uint32_t *)f->map;
+            const uint32_t v = f->mode->bits_per_symbol == 3 ?
+                map[(idx >> 2) & 0x333] | map[idx & 0x333] << 16 : map[idx];
             dst[j] = (uint8_t)v;
             dst[j + 1] = (uint8_t)(v >> 8);
             dst[j + 2] = (uint8_t)(v >> 16);
@@ -1568,9 +1574,13 @@ HOT int dvbs2_fast_map_packed(dvbs2_fast *f, const dvbs2_workspace *ws, uint8_t 
                                   index + k / 4, table, block, vectors,
                                   (unsigned)(-at & 15), f->tail);
             memcpy(block + 16 * vectors, f->tail, (at & 15) ? (at & 15) : 16);
-            // QPSK's last run has 720 symbols: 22 vectors and 16 symbols (8 bytes).
+            // QPSK's last run has 720 symbols: 22 vectors and 16 symbols (8 bytes); short 8PSK
+            // runs end 24 symbols past a vector. Index bit 11 toggles 8PSK output bit 1, as in
+            // dvbs2_pie_run8_packed.
             for (unsigned j = 32 * vectors; j < length; j += 4) {
-                const uint32_t v = map[index[(k + j) / 4]];
+                const unsigned idx = index[(k + j) / 4];
+                const uint32_t v = f->mode->bits_per_symbol == 3 ? map[idx & 0x7ff] ^ ((idx >> 10) & 2) :
+                                                                  map[idx];
                 dst[j / 2] = (uint8_t)v;
                 dst[j / 2 + 1] = (uint8_t)(v >> 8);
             }
