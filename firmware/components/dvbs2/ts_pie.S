@@ -8,8 +8,8 @@
  * Same semantics notes as pie.S (ESP32-S3 TRM v1.8 chapter 1).
  *
  * uint32_t dvbs2_pie_crc8_packet(const uint8_t *p, const uint8_t *cols)
- *   p: the packet's 187 data bytes, any alignment; reads the aligned blocks covering
- *   p .. p + 223.
+ *   p: the packet's 187 data bytes, any alignment; reads the 14 aligned blocks from
+ *   align_down(p, 16), through align_down(p, 16) + 223 (fast.c checks they are in the buffer).
  *   cols: 16-byte aligned, 12 chunks x 8 bits (top bit first) x 16 positions, then 16 spare
  *   bytes that the last iteration loads and ignores. */
 

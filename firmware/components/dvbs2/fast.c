@@ -483,7 +483,20 @@ HOT int dvbs2_fast_bb_gcs(const dvbs2_fast *f, dvbs2_workspace *ws,
     return 0;
 }
 
-#ifdef DVBS2_PIE
+#if defined(DVBS2_PIE) || defined(DVBS2_TS_COLUMN_MODEL)
+/* DVBS2_TS_COLUMN_MODEL: host tests supply a C dvbs2_pie_crc8_packet with the kernel's reads. */
+#ifndef DVBS2_PIE
+uint32_t dvbs2_pie_crc8_packet(const uint8_t *p, const uint8_t *cols);
+#endif
+/* ts_pie.S reads the 14 aligned blocks from align_down(p, 16). Use it only where all of them
+ * lie inside the caller's buffer; packets at its edges take the byte tables. */
+#define TS_KERNEL_SPAN 224u
+static inline bool ts_span_inside(const uint8_t *p, const uint8_t *buf, size_t n)
+{
+    const uintptr_t first = (uintptr_t)p & ~(uintptr_t)15;
+    return first >= (uintptr_t)buf && first + TS_KERNEL_SPAN <= (uintptr_t)(buf + n);
+}
+
 /* Column bytes for dvbs2_pie_crc8_packet: chunk c, bit k (top bit first), position 16c + j holds
  * the CRC-8 of a 187-byte packet whose only set bit is bit k of byte 16c + j. Built once from
  * the byte table: that bit gives t0[1 << k] at its own byte, then each later zero byte maps
@@ -522,11 +535,15 @@ int dvbs2_fast_bb_ts(const dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_state *s
      * CRC-8 tables during TS adaptation, away from the flash mapper/PRBS lines. The
      * borrowed payload occupies the start of scratch, before f->p. With PIE, whole packets
      * use the resident columns and only the two partial packets of a frame read the tables. */
-#ifdef DVBS2_PIE
-    if ((f->pie & DVBS2_PIE_BB) && !ts_cols_ready) ts_cols_build(fast_crc8);
+#if defined(DVBS2_PIE)
     const bool cols = (f->pie & DVBS2_PIE_BB) != 0;
+#elif defined(DVBS2_TS_COLUMN_MODEL)
+    const bool cols = true;
 #else
     const bool cols = false;
+#endif
+#if defined(DVBS2_PIE) || defined(DVBS2_TS_COLUMN_MODEL)
+    if (cols && !ts_cols_ready) ts_cols_build(fast_crc8);
 #endif
     if (!cols) memcpy(f->p, fast_crc8, sizeof fast_crc8);
     const uint8_t *crc8 = cols ? fast_crc8 : f->p;
@@ -552,11 +569,14 @@ int dvbs2_fast_bb_ts(const dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_state *s
         /* Four bytes per step: CRC-8 is linear, so
          * crc' = T3[crc ^ b0] ^ T2[b1] ^ T1[b2] ^ T0[b3], Tk = byte table^(k+1). */
         const uint8_t *t0 = crc8, *t1 = crc8 + 256, *t2 = crc8 + 512, *t3 = crc8 + 768;
-#ifdef DVBS2_PIE
-        if ((f->pie & DVBS2_PIE_BB) && state->packet_pos == 1 && run == 187) {
+#if defined(DVBS2_PIE) || defined(DVBS2_TS_COLUMN_MODEL)
+        if (cols && state->packet_pos == 1 && run == 187 && ts_span_inside(p, input, input_bytes)) {
             crc = (uint8_t)dvbs2_pie_crc8_packet(p, ts_cols); /* a whole packet by columns */
             p = end;
-        } else if (f->pie & DVBS2_PIE_BB) {
+        }
+#endif
+#ifdef DVBS2_PIE
+        if ((f->pie & DVBS2_PIE_BB) && p != end) {
             const unsigned quads = (unsigned)(end - p) / 4;
             crc = (uint8_t)dvbs2_pie_crc8(p, quads, t0, crc);
             p += 4 * quads;
