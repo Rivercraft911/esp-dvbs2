@@ -23,6 +23,7 @@ Words the records use:
 
 | Record | Headline |
 |---|---|
+| [2026-10-23-tx-fill-keyed](../results/2026-10-23-tx-fill-keyed/README.md) | Keyed confirmation of the core-1 fill work into the B200: every 80 MS/s row at least 16.2% fill spare, 8,961 frames exact, a 540 s run with no late fill; the core-1 tick catches up in 0.76 s after a 540 s run, with the transmitter already off. |
 | [2026-10-23-tx-ts-rolloff](../results/2026-10-23-tx-ts-rolloff/README.md) | QPSK at 33.33 Msym/s with TS input was shaped at roll-off 0.20 under BBHEADERs that said 0.35; the board's dumps matched the independent model with 0.35 headers sample for sample. Since bdf9cf6 they match the model with 0.20 headers. Also corrects the fill record's description of core 1's tick. |
 | [2026-10-23-tx-fill](../results/2026-10-23-tx-fill/README.md) | Every 80 MS/s mode keeps at least 17.2% of its 47,220-cycle bank deadline on core 1, radio off (was 12.9%): fill phases timed only in dumps, and core 1's FreeRTOS tick off during runs. Worst fill 39,098 cycles at QPSK 1/2, 33.33 Msym/s. |
 | [2026-10-23-tx-ts-input](../results/2026-10-23-tx-ts-input/README.md) | QPSK 9/10 at 33.33 Msym/s with TS input replayed: 15.3% encoder spare (was 14.1%), keyed 793 of 793 frames exact with 15.4% fill spare. The PV wire check costs 34.3k cycles a frame, 14.3%. 8PSK 9/10 at 26.67 Msym/s with TS replayed runs at full rate on 3.9% spare. A capacity test: no real wire has fed these rates. |
@@ -61,6 +62,7 @@ taken at other gains and carriers.
 
 | Record | Headline |
 |---|---|
+| [2026-10-23-rx-long](../results/2026-10-23-rx-long/README.md) | Full-length 540 s keyed runs S3 to S3: 62,539 frames at QPSK 3/4 1 Msym/s, 467,539 at 8PSK 8/9 5 Msym/s and 467,527 with TS (4,399,229 packets) all exact, none lost, no relocks, no capture drops, heap counter 0; per-minute median MER moved by at most 0.1 dB. No USB record write took 1 ms or more; the about 1 s drop bursts did not recur. |
 | [2026-10-23-rx-no-wifi-ab](../results/2026-10-23-rx-no-wifi-ab/README.md) | Wi-Fi bring-up against none, 9 runs each: the radio registers match apart from one 16-byte table. The two failed frames without Wi-Fi were a matched-filter time wrap every 2^27 samples; with the fix, 441,550 frames, none failed. Unsettled: bursts of about 950 dropped frames in one session. |
 | [2026-10-23-rx-no-wifi](../results/2026-10-23-rx-no-wifi/README.md) | The receiver without Wi-Fi and without heap calls after boot: 102,983 GCS and 34,325 TS frames exact at 8PSK 8/9; image 854 to 432 KB; 51,482 B of heap free throughout. |
 | [2026-10-23-rx-sweep](../results/2026-10-23-rx-sweep/README.md) | All 19 short-frame modes the transmitter sends, 30 s each: 223,153 frames exact, none lost or failed, no relocks, 0.83 to 12.64 Mb/s, median pilot MER 29.6 to 30.3 dB. |
