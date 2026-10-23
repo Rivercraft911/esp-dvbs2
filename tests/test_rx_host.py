@@ -76,6 +76,13 @@ def main():
         bad = dict(good, ts=dict(good["ts"], frames=taken, packets=packets,
                                  pattern=dict(good["ts"]["pattern"], checked=packets)))
         assert not rx.ts_verdict([bad], False, ok)["passed"], (taken, packets)
+    # Without the pattern check (`rx ... ts`) the replay's jumps come from the packet count: packets
+    # 39 to 269 cross the loop's start at 56, 112, 168 and 224.
+    assert rx.ts_wraps(5, 231, 1454) == 4 and rx.ts_wraps(0, 56, 188) == 0 and rx.ts_wraps(0, 57, 188) == 1
+    plain = dict(good, ts=dict(good["ts"], cc_errors=4, pattern=dict(checked=0, bad=0, jumps=0, wraps=0)))
+    assert rx.ts_verdict([plain], True, ok, pattern=False)["passed"]
+    assert not rx.ts_verdict([dict(plain, ts=dict(plain["ts"], cc_errors=5))], True, ok, pattern=False)["passed"]
+    assert not rx.ts_verdict([plain], True, ok)["passed"]          # a pattern run must have checked
     # Long runs (540 s): the stream comes from row jumps, not one step at a time, and must equal
     # xorshift32 stepped byte by byte; CRC keys stand for the payloads; the model covers the run.
     x, ref = 2026, bytearray()

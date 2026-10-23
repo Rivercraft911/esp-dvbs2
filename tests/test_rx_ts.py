@@ -71,7 +71,9 @@ class Deframer:
 
     def frame(self, bbframe, sequence):
         buf = ct.create_string_buffer(bytes(bbframe), len(bbframe))
-        return self.so.rx_ts_frame(self.mem, buf, len(bbframe) - 10, sequence)
+        n = self.so.rx_ts_frame(self.mem, buf, len(bbframe) - 10, sequence)
+        ct.memset(buf, 0xa5, len(bbframe))     # the receiver reuses the frame's slot at once
+        return n
 
     def run(self, frames, sequences=None):
         for k, f in enumerate(frames):
@@ -315,14 +317,21 @@ def test_continuity(so):
            packet(0x100, 13), packet(0x1fff, 0), packet(0x1fff, 7),
            packet(0x101, 3), packet(0x101, 3, control=2), packet(0x101, 4), packet(0x101, 5),
            packet(0x101, 6)]
-    seq += [packet(0x200 + k, 0) for k in range(20)] + [packet(0x100, 14)]   # 3 per field
-    frames = frames_for(seq + [packet(0x100, 15)], 188 * 3)
-    for drop in (False, True):
-        r = Deframer(so, drop_null=drop).run(frames)
-        s = r.stats()
-        assert s["cc_errors"] == 5 and s["null_packets"] == 2 and s["untracked"] == 6, s
-        assert r.out == [p for p in seq if not (drop and p[1] & 0x1f == 0x1f)], drop
-        assert r.pids()[0x100] == (17, 5) and r.pids()[0x101] == (5, 0) and len(r.pids()) == 16
+    seq += [packet(0x200 + k, 0) for k in range(20)] + [packet(0x100, 14)]
+    # Three whole packets per field, and fields that cut packets, so that an original and its
+    # duplicate fall in one field, in two, or one of them is the packet carried across.
+    # Packets after the last whole field are not sent: a run-out on PID 0x100 carries the rest.
+    for field in (188 * 3, 188 * 2 + 57, 250, 100):
+        tail = [packet(0x100, 15)] if field == 188 * 3 else [packet(0x100, k & 15) for k in range(15, 23)]
+        frames = frames_for(seq + tail, field)
+        for drop in (False, True):
+            r = Deframer(so, drop_null=drop).run(frames)
+            s = r.stats()
+            assert s["cc_errors"] == 5 and s["null_packets"] == 2 and s["untracked"] == 6, (field, s)
+            want = [p for p in seq if not (drop and p[1] & 0x1f == 0x1f)]
+            assert r.out[:len(want)] == want and len(r.out) < len(want) + len(tail), (field, drop)
+            assert r.pids()[0x100][1] == 5 and r.pids()[0x101] == (5, 0) and len(r.pids()) == 16
+            assert field != 188 * 3 or r.pids()[0x100] == (17, 5)
     print("continuity: duplicates checked by content (PCR aside), no payload, discontinuity "
           "indicator, nulls, 16 PIDs: ok")
 

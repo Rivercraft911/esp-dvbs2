@@ -41,6 +41,7 @@ typedef struct {
     uint16_t pid;
     uint8_t cc, duplicate, payload;   /* payload: the last packet carried one */
     uint32_t print;                   /* fingerprint of the last packet with payload */
+    const uint8_t *last;              /* that packet while its bytes are at hand, print not yet taken */
     uint32_t packets, cc_errors;
 } tracked_t;
 
@@ -110,6 +111,26 @@ static uint32_t fingerprint(const uint8_t *p)
     return h;
 }
 
+/* Only a repeated counter needs the last payload packet's fingerprint, so it is taken lazily:
+ * when a packet repeats the counter, or when that packet's bytes are about to go (its frame is
+ * done, or it is the carried packet). Taking it for every packet cost 3.1k cycles a packet. */
+static uint32_t print_of(tracked_t *e)
+{
+    if (e->last) {
+        e->print = fingerprint(e->last);
+        e->last = NULL;
+    }
+    return e->print;
+}
+
+/* Before the packets just handed on go: the frame returns to the receiver, or carry is reused. */
+static void settle(rx_ts_t *t)
+{
+    for (tracked_t *e = t->pid, *end = t->pid + t->pids; e != end; ++e) {
+        print_of(e);
+    }
+}
+
 /* ISO/IEC 13818-1 2.4.3.3: the counter steps by one per packet with payload and stays put on a
  * packet without one. A packet with payload may be sent twice, never more, with the same counter
  * and the same bytes (its PCR aside). The counter may jump where the adaptation field's
@@ -129,20 +150,19 @@ static void continuity(rx_ts_t *t, const uint8_t *p, unsigned pid)
         e->pid = (uint16_t)pid;
         e->cc = p[3] & 15;
         e->payload = p[3] >> 4 & 1;
-        e->print = e->payload ? fingerprint(p) : 0;
+        e->last = e->payload ? p : NULL;
         e->packets = 1;
         return;
     }
     ++e->packets;
     const unsigned cc = p[3] & 15, payload = p[3] >> 4 & 1;
     const int discontinuity = (p[3] & 0x20) && p[4] && (p[5] & 0x80);
-    const uint32_t print = payload ? fingerprint(p) : 0;
     int ok;
     if (!payload) {
         ok = cc == e->cc;
     } else if (cc == ((e->cc + 1u) & 15)) {
         ok = 1;
-    } else if (cc == e->cc && e->payload && !e->duplicate && print == e->print) {
+    } else if (cc == e->cc && e->payload && !e->duplicate && fingerprint(p) == print_of(e)) {
         e->duplicate = 1;                       /* the one duplicate allowed */
         return;
     } else {
@@ -155,9 +175,7 @@ static void continuity(rx_ts_t *t, const uint8_t *p, unsigned pid)
     e->cc = (uint8_t)cc;
     e->duplicate = 0;
     e->payload = (uint8_t)payload;
-    if (payload) {
-        e->print = print;
-    }
+    e->last = payload ? p : NULL;               /* without payload the old print is never asked */
 }
 
 /* A whole packet: restore its sync byte, mark it if its CRC-8 failed, check it and hand it on.
@@ -189,6 +207,7 @@ static void stop(rx_ts_t *t, int keep)
 {
     if (t->synced && t->have == RX_TS_PACKET && keep) {
         deliver(t, t->carry, -1);
+        settle(t);              /* carry is refilled before the next packet of its PID */
     } else {
         t->st.dropped_bytes += t->have;
     }
@@ -259,6 +278,7 @@ unsigned rx_ts_frame(rx_ts_t *t, uint8_t *bbframe, unsigned bytes, uint32_t sequ
         uint8_t *q = field + p;
         deliver(t, q, crc8(t->crc8, 0, q + 1, RX_TS_PACKET - 1) == q[RX_TS_PACKET]);
     }
+    settle(t);                  /* the frame goes back to the receiver, carry is refilled */
     t->have = bytes - p;
     memcpy(t->carry, field + p, t->have);
     t->crc = crc8(t->crc8, 0, t->carry + 1, t->have - 1);
