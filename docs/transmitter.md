@@ -264,7 +264,7 @@ everything at once ([run memory](../results/2026-10-23-tx-run-memory/README.md))
 | Region | Bytes | Largest use measured |
 |---|---:|---|
 | Internal, just above the DAC banks | 38,672 | 38,640 B ([run memory](../results/2026-10-23-tx-run-memory/README.md)) |
-| Internal, the DRAM half of the 32 KB data cache | 32,768 | 31,616 B (QPSK 1/4 at 20 Msym/s, TS replayed, [tx-8psk](../results/2026-10-23-tx-8psk/README.md)) |
+| Internal, the DRAM half of the 32 KB data cache | 32,768 | 31,616 B (QPSK 1/2 at 20 Msym/s, TS replayed, [tx-8psk](../results/2026-10-23-tx-8psk/README.md)) |
 | PSRAM, one block taken at boot | 393,216 | 294,848 B (QPSK 1 Msym/s dump, [run memory](../results/2026-10-23-tx-run-memory/README.md)) |
 
 The largest internal total recorded in one run is 67,936 B, a `dvbpace 4 20m` with TS input
