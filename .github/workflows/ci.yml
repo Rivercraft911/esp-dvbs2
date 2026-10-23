@@ -22,7 +22,6 @@ jobs:
       - run: python tests/test_8psk_26m667.py
       - run: python tests/test_8psk_queue.py
       - run: python tests/test_8psk_memory.py
-      - run: python tests/test_fused.py
       - run: python tests/test_physolo.py
       - run: python tests/test_radio_duration.py
       - run: python tests/test_radio_filter.py

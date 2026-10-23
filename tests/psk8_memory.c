@@ -99,7 +99,7 @@ static uint32_t queue_budget(unsigned mc, bool fixture, bool automatic, size_t a
     budget_active = false;
     warm_words = 0;
     const char *cmd = fixture ? "dvbpace" : "dvb";
-    assert(start_encoder_source(cmd,mc,128,0,3,80000000,automatic,false));
+    assert(start_encoder_options(cmd,mc,128,0,3,80000000,automatic,false));
     if (fixture) assert(enc.input && esp_ptr_external_ram(enc.input));
     else assert(!enc.input);
     if (automatic) {
@@ -168,17 +168,15 @@ static void fragmented_order(unsigned mc)
 static esp_err_t pace(bool wifi, uint32_t sec, uint32_t rate, radio_s3_fill_fn fn,
                        void *ctx, radio_s3_stats_t *stats)
 {
-    assert(wifi == expect_wifi && sec == 10 && rate == 80000000 && (fn == fill || fn == fill_fused));
+    assert(wifi == expect_wifi && sec == 10 && rate == 80000000 && fn == fill);
     if (wifi) assert(radio_s3_stream_ready() == ESP_OK);
-    fn = select_fill(fn);
     assert(dvb.queue_pages == expect_pages);
     if (dvb.lofty) {
         assert(enc.table_tail && esp_ptr_external_ram(enc.table_tail));
         assert(!enc.ws_borrowed && heap_caps_get_allocated_size(enc.ws) == DVBS2_FAST_WORKSPACE_USED);
-        assert(!!enc.block == enc.fused);
-        for (unsigned i = 1; i < expect_pages && i < (enc.fused ? LOFTY_FUSED_STORED : LOFTY_STORED); ++i)
-            assert((enc.fused ? lofty_fused_page_at(i) : lofty_page_at(i)) ==
-                   (enc.fused ? lofty_fused_page_at(i-1) : lofty_page_at(i-1))+1);
+        assert(!enc.block);
+        for (unsigned i = 1; i < expect_pages && i < LOFTY_STORED; ++i)
+            assert(lofty_page_at(i) == lofty_page_at(i-1)+1);
         assert(enc.prefill_frames == 1);
     }
     ++pace_calls;
@@ -208,11 +206,7 @@ esp_err_t radio_s3_paced_wifi_rate(uint32_t sec, uint32_t rate, radio_s3_fill_fn
                                    void *ctx, radio_s3_stats_t *stats)
 { return pace(true,sec,rate,fn,ctx,stats); }
 
-#ifdef FUSED_MEMORY_TEST
-int memory_checks_main(void)
-#else
 int main(void)
-#endif
 {
     callsign = "N0CALL";
     assert(!posix_memalign((void **)&banks,65536,2*sizeof *banks));
@@ -225,12 +219,12 @@ int main(void)
     assert(!live_allocations && pace_calls == 2);
     // Fail each setup allocation, including the dummy and PSRAM payload.
     allocation_count = 0;
-    assert(start_encoder_source("dvbpace",17,128,0,3,80000000,true,false));
+    assert(start_encoder_options("dvbpace",17,128,0,3,80000000,true,false));
     const int allocations = allocation_count;
     stop_encoder(); puts("}");
     for (int i = 0; i < allocations; ++i) {
         fail_after = i;
-        assert(!start_encoder_source("dvbpace",17,128,0,3,80000000,true,false));
+        assert(!start_encoder_options("dvbpace",17,128,0,3,80000000,true,false));
         assert(!live_allocations);
     }
     fail_after = -1;

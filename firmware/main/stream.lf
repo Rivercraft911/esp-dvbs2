@@ -37,22 +37,6 @@ entries:
     * (lofty_text);
         lofty_text -> flash_text ALIGN(32, pre, post) SURROUND(lofty_text)
 
-# The optional renderer locks its own region, never the default region too.
-[sections:lofty_fused_text]
-entries:
-    .lofty_fused.literal
-    .lofty_fused
-
-[scheme:lofty_fused_text]
-entries:
-    lofty_fused_text -> flash_text
-
-[mapping:lofty_fused_text]
-archive: libmain.a
-entries:
-    * (lofty_fused_text);
-        lofty_fused_text -> flash_text ALIGN(32, pre, post) SURROUND(lofty_fused_text)
-
 # Stream state shared by both cores; stream_assert.ld checks its placement.
 [sections:stream_bss]
 entries:

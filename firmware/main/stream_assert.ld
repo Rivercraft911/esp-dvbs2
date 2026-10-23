@@ -32,10 +32,6 @@ ASSERT((_lofty_text_start & 31) == 0 &&
 ASSERT(_lofty_text_start >= 0x42000000 && _lofty_text_end < 0x42800000,
        "lofty control code must have flash backing")
 
-ASSERT((_lofty_fused_text_start & 31) == 0 &&
-       ((_lofty_fused_text_end - _lofty_fused_text_start + 31) & ~31) <= 4096,
-       "fused control code must fit one instruction-cache way")
-
 ASSERT((_lofty_text_start & 4095) == 0x720,
        "lofty cache lock indices must match the measured 7391f86 layout")
 ASSERT((_stream_bss_start & 15) == 0 && _stream_bss_start >= 0x3fc88000 &&

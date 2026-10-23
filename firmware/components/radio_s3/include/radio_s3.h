@@ -88,8 +88,6 @@ typedef struct {
 
 typedef struct {
     bool phy_solo;
-    // Optional once-only selection after stream admission, before the first fill.
-    radio_s3_fill_fn (*select_fill)(radio_s3_fill_fn original);
     // Optional radio-off diagnostic. Collected on the existing worker stack;
     // copied here after playback, so this destination may live in PSRAM.
     radio_s3_startup_t *startup;

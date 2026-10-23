@@ -1,21 +1,17 @@
-// Shared queue algorithm; specialize descriptor/layout decisions before playback.
+// The 8PSK 26m667 producer: descriptor pages, EOF publication and admission.
 static uint32_t lofty_phases(uint32_t w)
 {
-#if LOFTY_STREAM_FUSED
-    return lofty_fused_phases(w);
-#else
     return (((w>>4)&511)<<15) | ((((w>>13)&2047)/3)<<6) | ((w>>24)&63);
-#endif
 }
 
 // Once two pages exist, bulk mapping is finished. Later publications contain
 // only descriptor preparation. Use twice their measured worst active gap;
 // full-queue sleep is covered separately by one complete bank of wake latency.
-// Use the selected renderer's conservative issue bound: 23 or 21 cycles/block.
+// Use the renderer's conservative issue bound: 23 cycles/block.
 // For missing page k: wake + k*W <= (P-reserve+k-1)*page_cycles.
 static unsigned lofty_admission(uint32_t gap, unsigned wake)
 {
-    const unsigned period = (LOFTY_STREAM_FUSED ? 21 : 23)*LOFTY_BLOCKS;
+    const unsigned period = 23*LOFTY_BLOCKS;
     const unsigned available = (LOFTY_FRAME_PAGES-1-LOFTY_RESERVE_PAGES)*period-wake;
     if (gap > available/2) return LOFTY_FRAME_PAGES;
     unsigned w = 2*gap;
@@ -96,7 +92,7 @@ static __attribute__((noinline)) int lofty_finish(void)
     return 0;
 }
 
-static LOFTY_MAP_TEXT __attribute__((noinline)) int moon_map(bool warmup)
+static IRAM_ATTR __attribute__((noinline)) int moon_map(bool warmup)
 {
     if (dvb.lofty) lofty_mux.skip = 3*dvb.mapper.pending;
     if ((dvb.lofty ? dvbs2_fast_lofty_start(enc.fast,enc.ws,&dvb.mapper) :

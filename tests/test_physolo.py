@@ -102,18 +102,6 @@ static unsigned calibration_begins, calibration_ends, calibration_restores;
 static int64_t now;
 int64_t esp_timer_get_time(void) { return ++now; }
 static int stream_error;
-static unsigned selection_calls;
-static int payload_fill(uint32_t *d, uint64_t at, size_t n, void *ctx) {
-    (void)d; (void)at; (void)n; (void)ctx; return ESP_OK;
-}
-static int selected_fill(uint32_t *d, uint64_t at, size_t n, void *ctx) {
-    return payload_fill(d,at,n,ctx);
-}
-static radio_s3_fill_fn select_payload(radio_s3_fill_fn original) {
-    assert(original==payload_fill && !selection_calls++);
-    assert(!REG_READ(DAC_CTRL) && !(REG_READ(FE_CTRL)&2));
-    return selected_fill;
-}
 static int vendor_call(void) { return ++calls == fail_at ? ESP_FAIL : ESP_OK; }
 unsigned phy_get_modem_flag(void) { return users; }
 void esp_wifi_bt_power_domain_on(void) { domains++; }
@@ -155,7 +143,6 @@ static int esp_wifi_deinit(void) {
 typedef struct {
     radio_s3_stats_t *stats;
     radio_s3_options_t options;
-    radio_s3_fill_fn *payload_fill;
     radio_s3_startup_t *startup;
     bool wifi_pace, probe;
     struct { uint32_t rate, lead, step; } geo;
@@ -232,10 +219,8 @@ MAIN = r'''
 int main(void) {
     for (unsigned solo=0; solo<2; ++solo) for (unsigned pace=0; pace<2; ++pace)
     for (unsigned failure=0; failure<11; ++failure) for (unsigned stream_fail=0; stream_fail<2; ++stream_fail)
-    for (unsigned ready_fail=0; ready_fail<2; ++ready_fail)
-    for (unsigned pick=0; pick<2; ++pick) {
+    for (unsigned ready_fail=0; ready_fail<2; ++ready_fail) {
         if (!solo && failure>7) continue;
-        selection_calls=0;
         calibration_begins=calibration_ends=calibration_restores=0;
         users=domains=backups=calls=0; core=1; fail_at=failure;
         initialized=started=played=false; memset(regs,0,sizeof regs);
@@ -245,9 +230,6 @@ int main(void) {
         radio_s3_stats_t stats={0};
         run_t run={.stats=&stats, .options={.phy_solo=solo}, .wifi_pace=pace,
                    .probe=pace, .freq_mhz=2412, .geo={.rate=80000000, .lead=128, .step=15740}, .samples=2400000000ULL};
-        radio_s3_fill_fn payload=payload_fill;
-        run.payload_fill=&payload;
-        run.options.select_fill=pick ? select_payload : NULL;
         radio_s3_startup_t trace={.count=99};
         run.options.startup=&trace;
         worker(&run);
@@ -256,8 +238,6 @@ int main(void) {
         assert(!run.startup);
         assert(trace.count==(pace ? (played ? 1u : 0u) : 99u));
         if (pace && played) assert(trace.first_sample==123 && trace.bank[0].cycles==456);
-        assert(selection_calls==(pick && played));
-        assert(payload==(pick && played ? selected_fill : payload_fill));
         assert(!initialized && !started && !users && !domains && !backups);
         assert(!REG_READ(DAC_CTRL) && !REG_READ(BANK_USAGE) && !(REG_READ(FE_CTRL)&2));
         if (solo) assert(!stats.after.wifi_initialized && !stats.after.phy_users);

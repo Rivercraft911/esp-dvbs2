@@ -32,10 +32,9 @@ static void advance(uint64_t time)
     dvb.producer_phase = blocked ? QUEUE_WAIT : page ? QUEUE_MAP : QUEUE_FEC;
 }
 
-static void envelope_one(bool fused)
+static void envelope(void)
 {
-    enc.fused = fused;
-    const unsigned period = (fused ? 21 : 23)*128;
+    const unsigned period = 23*128;
     for (unsigned wake = 0; wake <= 47220; wake += 47220)
         for (unsigned gap = 0; gap <= 100000; gap += 17) {
             unsigned brute = 44;
@@ -47,15 +46,15 @@ static void envelope_one(bool fused)
                 }
                 if (safe) { brute = q; break; }
             }
-            assert((fused ? lofty_admission_fused(gap,wake) : lofty_admission(gap,wake)) == brute);
+            assert(lofty_admission(gap,wake) == brute);
         }
-    assert((fused ? lofty_admission_fused(1000,0) : lofty_admission(1000,0)) == 10);
-    assert((fused ? lofty_admission_fused(1000,47220) : lofty_admission(1000,47220)) == (fused ? 28 : 26));
+    assert(lofty_admission(1000,0) == 10);
+    assert(lofty_admission(1000,47220) == 26);
     for (unsigned wake = 0; wake <= 47220; wake += 47220) {
         unsigned limit = (34*period-wake)/2;
-        assert((fused ? lofty_admission_fused(limit,wake) : lofty_admission(limit,wake)) == 43);
-        assert((fused ? lofty_admission_fused(limit+1,wake) : lofty_admission(limit+1,wake)) == 44);
-        assert((fused ? lofty_admission_fused(UINT32_MAX,wake) : lofty_admission(UINT32_MAX,wake)) == 44);
+        assert(lofty_admission(limit,wake) == 43);
+        assert(lofty_admission(limit+1,wake) == 44);
+        assert(lofty_admission(UINT32_MAX,wake) == 44);
     }
 }
 
@@ -63,7 +62,7 @@ int main(int argc, char **argv)
 {
     assert(argc == 3 || argc == 4);
     unsigned mc = atoi(argv[1]); slow = atoi(argv[2]);
-    envelope_one(false); envelope_one(true); enc.fused = false;
+    envelope();
     setenv("UNPACED_LOFTY","1",1);
     callsign = "N0CALL";
     assert(start_encoder("dvbpace",mc,128,0,3,80000000));

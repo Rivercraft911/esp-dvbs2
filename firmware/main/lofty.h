@@ -16,19 +16,8 @@ size_t lofty_resident_bytes(void);
 // until playback ends, and unlock before freeing.
 int lofty_dummy_resident(const uint32_t *, size_t bytes, int on);
 
-#ifndef LOFTY_FUSED
-#define LOFTY_FUSED 0
-#endif
-static inline uint32_t lofty_fused_descriptor(uint32_t h)
-{
-    return ((h&0xff8000)<<4) | ((h&63)<<13) | ((h&0x7fc0)>>2);
-}
-static inline uint32_t lofty_fused_phases(uint32_t w)
-{
-    w >>= 4;
-    return (w&0xff8000) | ((w&511)<<6) | ((w>>9)&63);
-}
-static inline uint32_t lofty_scaled_descriptor(uint32_t h)
+// Eight 3-bit phases (oldest first) -> table offsets for symbols 0-2, 3-5 and 6-7.
+static inline __attribute__((always_inline)) uint32_t lofty_descriptor(uint32_t h)
 {
     return (((h>>15)&511)<<4) | (((h>>6)&511)*3<<13) | ((h&63)<<24);
 }
@@ -68,23 +57,3 @@ void lofty_render(uint32_t *, const uint32_t *, unsigned, const uint32_t *);
 void lofty_render_pages(uint32_t *, const uint32_t *, unsigned, const uint32_t *, uint32_t *);
 #endif
 void lofty_samples(uint32_t *, const uint32_t *, unsigned skip, size_t, const uint32_t *);
-
-#define LOFTY_FUSED_TABLE_WORDS 12288
-// Displace 24 static pages, retaining the original common 64 KiB store.
-#define LOFTY_FUSED_STORED 30
-int lofty_fused_build(uint32_t *, unsigned);
-uint32_t lofty_fused_prepare(uint32_t *, const uint16_t *, unsigned, uint32_t);
-void lofty_fused_samples(uint32_t *, const uint32_t *, unsigned, size_t, const uint32_t *);
-#if defined(__XTENSA__) && !LOFTY_FUSED
-void lofty_fused_render_pages_pie(uint32_t *, const uint32_t *, unsigned, const uint32_t *, uint32_t *);
-static inline __attribute__((always_inline)) void lofty_fused_render_pages(uint32_t *dst,
-                 const uint32_t *src, unsigned pages, const uint32_t *table, uint32_t *consumed)
-{
-    lofty_fused_render_pages_pie(dst,src,pages,table,consumed);
-}
-#elif !LOFTY_FUSED
-void lofty_fused_render_pages(uint32_t *, const uint32_t *, unsigned, const uint32_t *, uint32_t *);
-#endif
-
-int lofty_fused_resident(int on);
-size_t lofty_fused_resident_bytes(void);

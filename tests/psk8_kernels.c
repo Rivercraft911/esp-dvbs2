@@ -119,51 +119,6 @@ static void kernels(void)
     puts("machine add: 4095 blocks equal the independent OR kernel");
 }
 
-static void fused_kernels(void)
-{
-    static uint32_t fused[LOFTY_FUSED_TABLE_WORDS] __attribute__((aligned(16)));
-    for (unsigned peak=16; peak<=508; peak += peak==16 ? 112 : 380) {
-        assert(!lofty_build(table,peak) && !lofty_fused_build(fused,peak));
-        uint32_t x=2026;
-        for (unsigned i=0; i<1380; ++i) {
-            x ^= x<<13; x ^= x>>17; x ^= x<<5; words[i]=x&4095;
-        }
-        reference(want,1367);
-        for (unsigned source=0; source<8; ++source) for (unsigned align=0; align<4; ++align) {
-            uint32_t old=source ? words[source-1] : 0;
-            memset(offsets,0xa5,sizeof offsets);
-            assert(lofty_fused_prepare(offsets+align,words+source,1367,old)==words[source+1366]);
-            for (unsigned j=0; j<1367; ++j) {
-                uint32_t h=old<<12 | words[source+j];
-                assert(offsets[align+j]==lofty_fused_descriptor(h));
-                assert(lofty_fused_phases(offsets[align+j])==(h&0xffffff));
-                old=words[source+j];
-            }
-            for (unsigned j=0; j<align; ++j) assert(offsets[j]==0xa5a5a5a5);
-            for (unsigned j=align+1367; j<1380; ++j) assert(offsets[j]==0xa5a5a5a5);
-        }
-        lofty_fused_prepare(offsets,words+1,1367,words[0]); offsets[1367]=0;
-        const unsigned lengths[]={0,1,11,12,13,47,48,49,15740,16380};
-        for (unsigned skip=0; skip<12; ++skip) for (unsigned align=0; align<4; ++align)
-            for (unsigned k=0; k<sizeof lengths/sizeof *lengths; ++k) {
-                unsigned n=lengths[k], first=4+align;
-                memset(got,0xa5,sizeof got);
-                lofty_fused_samples(got+first,offsets,skip,n,fused);
-                assert(!memcmp(got+first,want+skip,4*n));
-                for (unsigned i=0; i<first; ++i) assert(got[i]==0xa5a5a5a5);
-                for (unsigned i=first+n; i<16420; ++i) assert(got[i]==0xa5a5a5a5);
-            }
-        page_offsets();
-        for (unsigned pages=0; pages<=10; ++pages) {
-            uint32_t consumed=UINT32_MAX-4;
-            lofty_fused_render_pages(got,offsets,pages,fused,&consumed);
-            assert(consumed==UINT32_MAX-4+pages);
-            assert(!memcmp(got,want,pages*1536*sizeof *got));
-        }
-    }
-    puts("fused tails: three peaks, guarded descriptors/slices/pages equal independently rounded legacy samples");
-}
-
 static void encoder(void)
 {
     dvbs2_fast *f = aligned_alloc(16,(dvbs2_fast_size()+31)&~(size_t)15);
@@ -233,4 +188,4 @@ static void encoder(void)
     sign_mapper_check();
 }
 
-int main(void) { kernels(); fused_kernels(); encoder(); return 0; }
+int main(void) { kernels(); encoder(); return 0; }

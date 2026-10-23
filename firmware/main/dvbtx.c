@@ -144,8 +144,7 @@ typedef struct {
     unsigned resident_limit;
     uint32_t render_warm_cycles;
 } lofty_mux_t;
-// The default table, 54 pages and mux fill the existing store exactly. Fused
-// tables displace 24 pages into an admitted heap queue; the mux stays fixed.
+// The table, 54 pages and mux fill the existing store exactly.
 #define LOFTY_MUX_AT (4*LOFTY_TABLE_WORDS+LOFTY_STORED*sizeof(lofty_page))
 #define lofty_mux (*(lofty_mux_t *)((uint8_t *)shaper_store+LOFTY_MUX_AT))
 _Static_assert(LOFTY_MUX_AT+sizeof(lofty_mux_t) == sizeof shaper_store, "table, 54 pages and mux fill the store");
@@ -186,11 +185,7 @@ typedef struct {
     bool input_borrowed;
     union {
         uint8_t *slot[PACKED_SLOTS]; // legacy packed frames, internal
-        struct { // queued 26m667 uses pages instead of frame slots
-            bool fused_requested, fused, dummy_locked;
-            uint16_t peak, queue_split;
-            uint8_t *queue_extra;
-        };
+        bool dummy_locked;           // queued 26m667 uses pages instead of frame slots
     };
     uint8_t *block;                 // packed ring's heap part: slot 2 (4 sps) or everything (8 sps)
     uint8_t *slots, *filler;        // n8 8PSK dummy borrows PSRAM workspace tail
@@ -297,9 +292,6 @@ static inline __attribute__((always_inline)) lofty_page *lofty_page_at(unsigned 
 {
     return dvb.lofty_pages+i;
 }
-static inline lofty_page *lofty_fused_page_at(unsigned i);
-static int moon_map_fused(bool warmup);
-static esp_err_t fill_fused(uint32_t *, uint64_t, size_t, void *);
 
 static StaticSemaphore_t exited_storage;
 static uint32_t cache_ranges[4];
@@ -350,11 +342,7 @@ static void moon_wait(void)
     __atomic_store_n(&dvb.producer_phase,QUEUE_MAP,__ATOMIC_RELEASE);
 }
 
-#define LOFTY_STREAM_FUSED 0
-#define LOFTY_MAP_TEXT IRAM_ATTR
 #include "lofty_producer.inc"
-#undef LOFTY_MAP_TEXT
-#undef LOFTY_STREAM_FUSED
 
 static IRAM_ATTR void moon_wake(void)
 {
@@ -406,11 +394,6 @@ static IRAM_ATTR esp_err_t moon_shape(uint32_t *dst, uint64_t first, size_t coun
     return ESP_OK;
 }
 
-static inline __attribute__((always_inline)) uint32_t lofty_descriptor(uint32_t h)
-{
-    return (((h>>15)&511)<<4) | (((h>>6)&511)*3<<13) | ((h&63)<<24);
-}
-
 static bool lofty_dummy_init(void)
 {
     lofty_mux.dummy = heap_caps_aligned_alloc(32,2*LOFTY_DUMMY_STRIDE*4+sizeof(radio_s3_startup_t),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
@@ -440,9 +423,7 @@ static bool lofty_dummy_init(void)
     return true;
 }
 
-#define LOFTY_STREAM_FUSED 0
 #include "lofty_consumer.inc"
-#undef LOFTY_STREAM_FUSED
 
 // Amortize loop control across four bytes of the same synthetic reference stream.
 static __attribute__((noinline)) void payload_fill(uint8_t *dst, size_t n, uint32_t *x)
@@ -574,7 +555,7 @@ static void release(void)
             enc.dummy_locked = false;
         }
         heap_caps_free(lofty_mux.dummy); lofty_mux.dummy = NULL;
-        (enc.fused ? lofty_fused_resident : lofty_resident)(0);
+        lofty_resident(0);
     }
     heap_caps_free(enc.fast);
     if (!enc.input_borrowed) heap_caps_free(enc.input);
@@ -586,7 +567,6 @@ static void release(void)
     dvb.win = NULL;
     if (!enc.bch_borrowed) heap_caps_free(enc.bch);
     heap_caps_free(enc.block);
-    if (dvb.lofty) heap_caps_free(enc.queue_extra);
     if (!enc.packed) {
         heap_caps_free(enc.payload);
         heap_caps_free(enc.slots);
@@ -718,7 +698,7 @@ static __attribute__((noinline)) bool vcm_memory(const char *cmd, const dvbs2_mo
 // Build the scaled table and the dummy frame, start the encoder on core 0 and wait until it has
 // filled every slot. Returns the frame length in symbols, or 0 after printing an error for `cmd`.
 static size_t start_encoder_options(const char *cmd, unsigned modcod, unsigned level, unsigned stall_ms,
-                                   unsigned sps, uint32_t dac_rate, bool auto_pages, bool fixture, bool fused)
+                                   unsigned sps, uint32_t dac_rate, bool auto_pages, bool fixture)
 {
     const dvbs2_mode *mode = tx_find_mode(modcod);
     const bool fractional = sps == DVB_SPS_12_5;
@@ -755,10 +735,6 @@ static size_t start_encoder_options(const char *cmd, unsigned modcod, unsigned l
     }
     const size_t symbols = dvbs2_frame_symbols(mode, PILOTS);
     const bool input = spi_input_type() != 0;
-    if (fused && (!lofty || !auto_pages)) {
-        printf("@{\"cmd\":\"%s\",\"error\":\"fused needs timed 8PSK 26m667\"}\n",cmd);
-        return 0;
-    }
     if (fixture && (!moon || input)) {
         printf("@{\"cmd\":\"%s\",\"error\":\"fixture needs QPSK 33m333 or 8PSK 26m667 and payload input off\"}\n",cmd);
         return 0;
@@ -796,7 +772,6 @@ static size_t start_encoder_options(const char *cmd, unsigned modcod, unsigned l
     enc.mode = mode;
     memset(&vcm_enc,0,sizeof vcm_enc);
     spi_input_control(NULL);
-    if (lofty) { enc.fused_requested = fused; enc.peak = level; }
     memset(&dvb.copy, 0, sizeof dvb.copy);
     memset(&dvb.whole, 0, sizeof dvb.whole);
     memset(&dvb.partial, 0, sizeof dvb.partial);
@@ -1157,17 +1132,11 @@ static void print_profile(const char *name, const stream_profile_t *p)
            p->data_access, p->instruction_miss, p->prepare_cycles);
 }
 
-static size_t start_encoder_source(const char *cmd, unsigned modcod, unsigned level, unsigned stall_ms,
-                                   unsigned sps, uint32_t dac_rate, bool auto_pages, bool fixture)
-{
-    return start_encoder_options(cmd,modcod,level,stall_ms,sps,dac_rate,auto_pages,fixture,false);
-}
-
 static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, unsigned stall_ms,
                             unsigned sps, uint32_t dac_rate)
 {
-    return start_encoder_source(cmd,modcod,level,stall_ms,sps,dac_rate,
-                                !strcmp(cmd,"dvb") || !strcmp(cmd,"wifimem"),false);
+    return start_encoder_options(cmd,modcod,level,stall_ms,sps,dac_rate,
+                                 !strcmp(cmd,"dvb") || !strcmp(cmd,"wifimem"),false);
 }
 
 static void print_queue_region(unsigned first, unsigned pages, const lofty_page *p)
@@ -1197,68 +1166,19 @@ static void lofty_warm_renderer(void)
         const unsigned words = (2*DVBS2_DUMMY_SYMBOLS+2*variant+3)/4;
         for (unsigned at = 0; at < words;) {
             unsigned n = words-at < chunk ? words-at : chunk;
-            (enc.fused ? lofty_fused_samples : lofty_samples)(dvb.samples,src+at,0,12*n,shaper_store);
+            lofty_samples(dvb.samples,src+at,0,12*n,shaper_store);
             at += n;
         }
     }
-    (enc.fused ? lofty_fused_samples : lofty_samples)(dvb.samples+1,lofty_mux.dummy,1,11,shaper_store);
+    lofty_samples(dvb.samples+1,lofty_mux.dummy,1,11,shaper_store);
     lofty_mux.render_warm_cycles = esp_cpu_get_cycle_count()-before;
-}
-
-_Static_assert(4*LOFTY_FUSED_TABLE_WORDS+LOFTY_FUSED_STORED*sizeof(lofty_page) <= LOFTY_MUX_AT,
-               "fused table/pages must not overlap mux or enlarge the common store");
-
-static void lofty_queue_free(void)
-{
-    heap_caps_free(enc.block); enc.block = NULL;
-    heap_caps_free(enc.queue_extra); enc.queue_extra = NULL;
-    enc.queue_split = 0;
-}
-
-static bool lofty_queue_allocate(unsigned caps)
-{
-    const unsigned pages = LOFTY_MAX_PAGES-LOFTY_FUSED_STORED;
-    enc.block = heap_caps_aligned_alloc(16,pages*sizeof(lofty_page),caps);
-    if (enc.block) return true;
-    // Largest region first. Failed partial attempts release everything before
-    // retrying; no queue descriptor is visible until admission completes.
-    const size_t largest = heap_caps_get_largest_free_block(caps);
-    unsigned first = largest > 64 ? (largest-64)/sizeof(lofty_page) : 0;
-    if (first >= pages) first = pages-1;
-    for (; first; --first) {
-        enc.block = heap_caps_aligned_alloc(16,first*sizeof(lofty_page),caps);
-        if (!enc.block) continue;
-        enc.queue_extra = heap_caps_aligned_alloc(16,(pages-first)*sizeof(lofty_page),caps);
-        if (enc.queue_extra) {
-            enc.queue_split = LOFTY_FUSED_STORED+first;
-            return true;
-        }
-        lofty_queue_free();
-    }
-    return false;
-}
-
-static void lofty_try_fused(size_t reserve, unsigned caps)
-{
-    const size_t bytes = (LOFTY_MAX_PAGES-LOFTY_FUSED_STORED)*sizeof(lofty_page);
-    if (!enc.fused_requested || heap_caps_get_free_size(caps) < reserve+bytes+128) return;
-    if (!lofty_queue_allocate(caps)) return;
-    if (heap_caps_get_free_size(caps) < reserve) { lofty_queue_free(); return; }
-    // The producer is still asleep on queue_ready. Preserve the dummy stream's
-    // independently rounded terms when changing descriptor representation.
-    for (unsigned i = 0; i < 2*LOFTY_DUMMY_STRIDE; ++i)
-        lofty_mux.dummy[i] = lofty_fused_descriptor(lofty_phases(lofty_mux.dummy[i]));
-    lofty_fused_build(shaper_store,enc.peak);
-    dvb.lofty_pages = (lofty_page *)(shaper_store+LOFTY_FUSED_TABLE_WORDS);
-    enc.fused = true;
 }
 
 esp_err_t radio_s3_stream_ready(void)
 {
     if (!enc.task || !dvb.lofty) return ESP_OK;
     // Wi-Fi setup may have suspended/invalidated cache since prepare.
-    if (enc.fused ? (lofty_fused_resident(0) || lofty_fused_resident(1)) :
-                    (lofty_resident(0) || lofty_resident(1))) return ESP_FAIL;
+    if (lofty_resident(0) || lofty_resident(1)) return ESP_FAIL;
     if (!lofty_mux.queue_auto || lofty_mux.queue_ready) return ESP_OK;
     const TickType_t started = xTaskGetTickCount()+pdMS_TO_TICKS(100);
     while (!enc.input_started && !enc.failed && (int32_t)(xTaskGetTickCount()-started) < 0) vTaskDelay(1);
@@ -1268,16 +1188,12 @@ esp_err_t radio_s3_stream_ready(void)
     lofty_mux.queue_free_before = free;
     lofty_mux.queue_min_before = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
     if (lofty_mux.queue_min_before < LOFTY_HEAP_FLOOR) return ESP_ERR_NO_MEM;
-    // The default queue is static. Optional fused tables displace pages only
-    // after their replacement heap storage passes the same floor/guard.
-    const size_t reserve = LOFTY_HEAP_FLOOR+LOFTY_HEAP_GUARD;
-    if (free < reserve) return ESP_ERR_NO_MEM;
+    // The queue is static; keep the same floor and guard for Wi-Fi.
+    if (free < LOFTY_HEAP_FLOOR+LOFTY_HEAP_GUARD) return ESP_ERR_NO_MEM;
     const unsigned pages = LOFTY_MAX_PAGES;
-    lofty_try_fused(reserve,caps);
-    if (enc.fused && (lofty_resident(0) || lofty_fused_resident(1))) return ESP_FAIL;
     lofty_mux.queue_free_after = heap_caps_get_free_size(caps);
     dvb.queue_pages = dvb.queue_low = pages;
-    lofty_mux.resident_limit = enc.fused ? LOFTY_FUSED_STORED : pages;
+    lofty_mux.resident_limit = pages;
     __atomic_store_n(&lofty_mux.queue_ready,true,__ATOMIC_RELEASE);
     xTaskNotifyGive(enc.task);
     const TickType_t limit = xTaskGetTickCount()+pdMS_TO_TICKS(3*(enc.stall_ms+100));
@@ -1363,7 +1279,7 @@ static void stop_encoder(void)
                           LOFTY_STARTUP_FRAMES,(unsigned)lofty_mux.page_max,(unsigned)lofty_mux.rate_misses,(unsigned)lofty_mux.streaming,(unsigned)lofty_mux.admission_max);
     if (dvb.lofty) printf(",\"dummy_startup_frame\":%"PRIi32,(int32_t)lofty_mux.first_dummy_frame);
     if (dvb.lofty) printf(",\"render_warm_cycles\":%"PRIu32,lofty_mux.render_warm_cycles);
-    if (dvb.lofty) printf(",\"renderer_icache_bytes\":%u",(unsigned)(enc.fused ? lofty_fused_resident_bytes() : lofty_resident_bytes()));
+    if (dvb.lofty) printf(",\"renderer_icache_bytes\":%u",(unsigned)lofty_resident_bytes());
     if (dvb.lofty) printf(",\"dummy_dcache_bytes\":%u",enc.dummy_locked ? 2*LOFTY_DUMMY_STRIDE*4 : 0);
     if (dvb.moon && dvb.queue_empty) printf(",\"queue_fault\":{\"produced\":%"PRIu32",\"consumed\":%"PRIu32
         ",\"producer_phase\":%"PRIu32",\"last_wait_produced\":%"PRIu32",\"last_wait_consumed\":%"PRIu32"}",
@@ -1379,16 +1295,9 @@ static void stop_encoder(void)
                (unsigned)lofty_mux.queue_free_before,(unsigned)lofty_mux.queue_free_after,(unsigned)lofty_mux.queue_min_before,
                enc.input ? (unsigned)heap_caps_get_allocated_size(enc.input) : 0,
                enc.input ? (unsigned)LOFTY_INPUT_BYTES : 0);
-        printf(",\"fused_requested\":%s,\"fused_tails\":%s",enc.fused_requested ? "true" : "false",enc.fused ? "true" : "false");
-        const unsigned stored = enc.fused ? LOFTY_FUSED_STORED : LOFTY_STORED;
         printf(",\"queue_layout\":{\"contiguous\":%s,\"page_bytes\":%u,\"resident_pages\":%u,\"regions\":[",
-               dvb.queue_pages <= stored ? "true" : "false",(unsigned)sizeof(lofty_page),stored);
-        if (dvb.queue_pages) print_queue_region(0,dvb.queue_pages < stored ? dvb.queue_pages : stored,dvb.lofty_pages);
-        if (enc.block) {
-            const unsigned end = enc.queue_extra ? enc.queue_split : dvb.queue_pages;
-            printf(","); print_queue_region(stored,end-stored,(lofty_page *)enc.block);
-            if (enc.queue_extra) { printf(","); print_queue_region(end,dvb.queue_pages-end,(lofty_page *)enc.queue_extra); }
-        }
+               dvb.queue_pages <= LOFTY_STORED ? "true" : "false",(unsigned)sizeof(lofty_page),LOFTY_STORED);
+        if (dvb.queue_pages) print_queue_region(0,dvb.queue_pages < LOFTY_STORED ? dvb.queue_pages : LOFTY_STORED,dvb.lofty_pages);
         printf("]}");
         printf(",\"handoff\":[");
         for (unsigned i=0; i<2; ++i)
@@ -1407,7 +1316,7 @@ static void stop_encoder(void)
                          "\"prepare_max_cycles\":%u,\"prepare_tail_max_cycles\":%u,\"prepare_cycles\":%" PRIu64 ","
                          "\"table_bytes\":%u,\"table_heap_bytes\":0,\"encoder_cache_bytes\":%u",
                          dvb.queue_pages,(unsigned)dvb.queue_low,(unsigned)dvb.queue_empty,(unsigned)dvb.wake_max,(unsigned)dvb.queue_wakes,
-                         (unsigned)dvb.prepare_pages,(unsigned)dvb.prepare_max,(unsigned)dvb.prepare_tail_max,dvb.prepare_cycles,(dvb.lofty ? (enc.fused ? LOFTY_FUSED_TABLE_WORDS : LOFTY_TABLE_WORDS) : MACHINE_TABLE_WORDS)*4,
+                         (unsigned)dvb.prepare_pages,(unsigned)dvb.prepare_max,(unsigned)dvb.prepare_tail_max,dvb.prepare_cycles,(dvb.lofty ? LOFTY_TABLE_WORDS : MACHINE_TABLE_WORDS)*4,
                          (unsigned)(dvbs2_fast_cache_size(enc.fast)+(dvb.lofty ? DVBS2_LOFTY_CACHE_BYTES : 0)));
     if (dvb.moon) {
         const size_t heap = heap_caps_get_allocated_size(enc.tables);
@@ -1431,8 +1340,7 @@ static void stop_encoder(void)
     printf(",\"ring_memory\":\"%s\",\"ring_format\":\"%s\",\"ring_heap_bytes\":%u,"
            "\"payload_memory\":\"%s\",\"slot_waits\":%" PRIu32,
            (vcm_enc.vcm ? enc.packed && !enc.block : enc.packed) ? "internal" : "psram", dvb.lofty ? "words" : dvb.moon ? "signs" : enc.quads ? "quads" : enc.packed ? "packed" : "raw",
-           (enc.block ? (unsigned)heap_caps_get_allocated_size(enc.block) : 0)+
-           (dvb.lofty && enc.queue_extra ? (unsigned)heap_caps_get_allocated_size(enc.queue_extra) : 0),
+           enc.block ? (unsigned)heap_caps_get_allocated_size(enc.block) : 0,
            enc.packed && !vcm_enc.vcm ? "internal" : "psram", enc.slot_waits);
     printf(",\"layout\":{\"table\":\"0x%" PRIxPTR "\",\"fast\":\"0x%" PRIxPTR
            "\",\"workspace\":\"0x%" PRIxPTR "\",\"payload\":\"0x%" PRIxPTR
@@ -1540,35 +1448,30 @@ static void print_session(bool solo, const radio_s3_stats_t *s)
 void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, unsigned level,
                 unsigned sps, uint32_t dac_rate, bool fixture)
 {
-    dvbtx_run_options(freq,modcod,seconds,gain,level,sps,dac_rate,fixture,false,false);
+    dvbtx_run_options(freq,modcod,seconds,gain,level,sps,dac_rate,fixture,false);
 }
 
 void dvbtx_pace(unsigned modcod, uint32_t seconds, unsigned level, unsigned stall_ms,
                  unsigned sps, uint32_t dac_rate)
 {
-    dvbtx_pace_options(modcod,seconds,level,stall_ms,sps,dac_rate,false,false);
-}
-
-static radio_s3_fill_fn select_fill(radio_s3_fill_fn original)
-{
-    return original == fill && dvb.lofty && enc.fused ? fill_fused : original;
+    dvbtx_pace_options(modcod,seconds,level,stall_ms,sps,dac_rate,false);
 }
 
 void dvbtx_run_options(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, unsigned level,
-                unsigned sps, uint32_t dac_rate, bool fixture, bool phy_solo, bool fused)
+                unsigned sps, uint32_t dac_rate, bool fixture, bool phy_solo)
 {
     if (!station_require("dvb")) {
         return;
     }
-    const size_t symbols = start_encoder_options("dvb",modcod,level,0,sps,dac_rate,true,fixture,fused);
+    const size_t symbols = start_encoder_options("dvb",modcod,level,0,sps,dac_rate,true,fixture);
     if (!symbols) {
         return;
     }
     radio_s3_stats_t s = {0};
     // RRC support B = Rs * (1 + alpha), alpha = 0.20 or 0.35. Round upward in integer Hz.
     const uint32_t bandwidth = ((uint64_t)dac_rate * dvb.den * (dvb.den == 5 ? 120 : 135) + sps * 100 - 1) / (sps * 100);
-    const radio_s3_options_t options = {.phy_solo=phy_solo, .select_fill=fused ? select_fill : NULL};
-    const esp_err_t err = phy_solo || fused ?
+    const radio_s3_options_t options = {.phy_solo=phy_solo};
+    const esp_err_t err = phy_solo ?
         radio_s3_run_options(freq,(uint8_t)gain,seconds,dac_rate,bandwidth,encoder_fill(),NULL,&options,&s) :
         radio_s3_run_bandwidth(freq,(uint8_t)gain,seconds,dac_rate,bandwidth,encoder_fill(),NULL,&s);
     print_mode("dvb", modcod, symbols, level);
@@ -1590,15 +1493,14 @@ void dvbtx_run_options(uint32_t freq, unsigned modcod, uint32_t seconds, unsigne
 }
 
 void dvbtx_pace_options(unsigned modcod, uint32_t seconds, unsigned level, unsigned stall_ms,
-                 unsigned sps, uint32_t dac_rate, bool phy_solo, bool fused)
+                 unsigned sps, uint32_t dac_rate, bool phy_solo)
 {
-    const size_t symbols = start_encoder_options("dvbpace",modcod,level,stall_ms,sps,dac_rate,true,false,fused);
+    const size_t symbols = start_encoder_options("dvbpace",modcod,level,stall_ms,sps,dac_rate,true,false);
     if (!symbols) return;
     radio_s3_stats_t s;
     const bool wifi = dvb.moon || phy_solo || vcm_enc.vcm;
-    const radio_s3_options_t options = {.phy_solo=phy_solo, .select_fill=fused ? select_fill : NULL,
-                                      .startup=dvb.lofty ? lofty_startup() : NULL};
-    const esp_err_t err = phy_solo || fused || dvb.lofty ? radio_s3_paced_wifi_options(seconds,dac_rate,encoder_fill(),NULL,&options,&s) :
+    const radio_s3_options_t options = {.phy_solo=phy_solo, .startup=dvb.lofty ? lofty_startup() : NULL};
+    const esp_err_t err = phy_solo || dvb.lofty ? radio_s3_paced_wifi_options(seconds,dac_rate,encoder_fill(),NULL,&options,&s) :
         (wifi ? radio_s3_paced_wifi_rate : radio_s3_paced_run_rate)(seconds,dac_rate,encoder_fill(),NULL,&s);
     print_mode("dvbpace", modcod, symbols, level);
     printf(",\"paced_wifi_up\":%s",wifi ? "true" : "false");
@@ -1733,82 +1635,3 @@ void dvbtx_wifi(unsigned modcod, unsigned sps, uint32_t dac_rate)
     printf(",\"status\":\"%s\"%s}\n", esp_err_to_name(err),
            err != ESP_OK ? ",\"error\":\"wifi probe failed\"" : "");
 }
-
-// Fused-only implementations cannot change the default lock footprint or loops.
-#ifdef __XTENSA__
-#define LOFTY_FUSED_TEXT __attribute__((section(".lofty_fused"), noinline))
-#else
-#define LOFTY_FUSED_TEXT __attribute__((noinline))
-#endif
-static inline lofty_page *lofty_fused_page_at(unsigned i)
-{
-    if (i < LOFTY_FUSED_STORED) return dvb.lofty_pages+i;
-    if (enc.queue_extra && i >= enc.queue_split)
-        return (lofty_page *)enc.queue_extra+i-enc.queue_split;
-    return (lofty_page *)enc.block+i-LOFTY_FUSED_STORED;
-}
-static inline unsigned lofty_fused_region_end(unsigned i)
-{
-    if (i < LOFTY_FUSED_STORED) return LOFTY_FUSED_STORED;
-    return enc.queue_extra && i < enc.queue_split ? enc.queue_split : dvb.queue_pages;
-}
-#define LOFTY_STREAM_FUSED 1
-#define lofty_page_at lofty_fused_page_at
-#define lofty_phases lofty_phases_fused
-#define lofty_admission lofty_admission_fused
-#define lofty_publish lofty_publish_fused
-#define lofty_calibrate lofty_calibrate_fused
-#define lofty_finish lofty_finish_fused
-#define moon_map moon_map_fused
-#define lofty_prepare lofty_fused_prepare
-#define LOFTY_MAP_TEXT LOFTY_FUSED_TEXT
-#include "lofty_producer.inc"
-#undef LOFTY_MAP_TEXT
-#undef lofty_prepare
-#undef moon_map
-#undef lofty_finish
-#undef lofty_calibrate
-#undef lofty_publish
-#undef lofty_admission
-#undef lofty_phases
-#undef LOFTY_TEXT
-#define LOFTY_TEXT LOFTY_FUSED_TEXT
-#define lofty_descriptor lofty_fused_descriptor
-#define lofty_splice lofty_splice_fused
-#define lofty_boundary lofty_boundary_fused
-#define lofty_short lofty_short_fused
-#define lofty_fault lofty_fault_fused
-#define lofty_shape lofty_shape_fused
-#pragma push_macro("lofty_samples")
-#undef lofty_samples
-#define lofty_samples lofty_fused_samples
-#pragma push_macro("lofty_render_pages")
-#undef lofty_render_pages
-#define lofty_render_pages lofty_fused_render_pages
-#include "lofty_consumer.inc"
-#define FILL_VCM 0
-#define FILL_NAME fill_fused
-#define FILL_TEXT LOFTY_FUSED_TEXT
-#define FILL_LOFTY 1
-#define FILL_MOON 1
-#define FILL_PACKED 1
-#define FILL_QUADS 0
-#include "dvb_fill.inc"
-
-#pragma pop_macro("lofty_samples")
-#pragma pop_macro("lofty_render_pages")
-#undef lofty_shape
-#undef lofty_fault
-#undef lofty_short
-#undef lofty_boundary
-#undef lofty_splice
-#undef lofty_descriptor
-#undef lofty_page_at
-#undef LOFTY_TEXT
-#undef LOFTY_STREAM_FUSED
-#undef FILL_NAME
-#undef FILL_TEXT
-#undef FILL_LOFTY
-#undef FILL_MOON
-#undef FILL_PACKED
-#undef FILL_QUADS

@@ -37,9 +37,8 @@ void dvbtx_pace(unsigned modcod, uint32_t seconds, unsigned level, unsigned stal
 // The probe never plays samples.
 void dvbtx_wifi(unsigned modcod, unsigned sps, uint32_t dac_rate);
 
-// Timed experimental options. fused tries the larger table only with room for
-// all 54 pages and the existing floor/guard; otherwise keeps scaled rendering.
+// dvb and dvbpace with PHY-solo: Wi-Fi is deinitialized before playback (radio_s3.h).
 void dvbtx_run_options(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, unsigned level,
-                        unsigned sps, uint32_t dac_rate, bool fixture, bool phy_solo, bool fused);
+                        unsigned sps, uint32_t dac_rate, bool fixture, bool phy_solo);
 void dvbtx_pace_options(unsigned modcod, uint32_t seconds, unsigned level, unsigned stall_ms,
-                         unsigned sps, uint32_t dac_rate, bool phy_solo, bool fused);
+                         unsigned sps, uint32_t dac_rate, bool phy_solo);

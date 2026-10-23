@@ -32,22 +32,22 @@ def check(out):
 #define RADIO_S3_PHY_SOLO_MAX_SECONDS 60u
 static bool station_require(const char *cmd) { (void)cmd; return true; }
 static unsigned keyed_calls;
-static bool expected_solo, expected_fused;
+static bool expected_solo;
 static void dvbtx_run_check(uint32_t freq, unsigned mc, uint32_t sec, unsigned gain,
-    unsigned peak, unsigned sps, uint32_t rate, bool fixture, bool solo, bool fused)
+    unsigned peak, unsigned sps, uint32_t rate, bool fixture, bool solo)
 {
     assert(freq == 2412 && sec == 30 && !gain && peak == 128 && rate == 80000000);
     assert((mc == 11 && sps == DVB_SPS_12_5) || ((mc == 13 || mc == 15 || mc == 17) && sps == 3));
     assert(fixture == (keyed_calls < 4 || keyed_calls >= 5));
-    assert(solo == expected_solo && fused == expected_fused); ++keyed_calls;
+    assert(solo == expected_solo); ++keyed_calls;
 }
 #define dvbtx_run_options dvbtx_run_check
 static unsigned calls;
 static void dvbtx_pace_check(unsigned mc, uint32_t sec, unsigned peak, unsigned stall,
-    unsigned sps, uint32_t rate, bool solo, bool fused)
+    unsigned sps, uint32_t rate, bool solo)
 {
     assert(mc == 17 && sec == 10 && peak == 128 && !stall && sps == 3 && rate == 80000000);
-    assert(solo == expected_solo && fused == expected_fused); ++calls;
+    assert(solo == expected_solo); ++calls;
 }
 #define dvbtx_pace_options dvbtx_pace_check
 void dvbtx_set_short(bool enabled) { assert(!enabled); }
@@ -72,22 +72,17 @@ int main(void) {
         char text[128]; strcpy(text,keyed[i]); cmd_dvb(text);
         assert(keyed_calls == (i < 5 ? i+1 : 5));
     }
-    for (unsigned flags=1; flags<4; ++flags) {
-        expected_solo = flags&1; expected_fused = flags&2;
-        char keyed_option[128], pace_option[128];
-        snprintf(keyed_option,sizeof keyed_option,"--fixture 2412 13 26m667 30 %s %s",
-                 expected_solo ? "--phy-solo" : "",expected_fused ? "--fused" : "");
-        snprintf(pace_option,sizeof pace_option,"17 26m667 10 %s %s",
-                 expected_fused ? "--fused" : "",expected_solo ? "--phy-solo" : "");
-        cmd_dvb(keyed_option); cmd_dvbpace(pace_option);
-        assert(keyed_calls == 5+flags && calls == 2+flags);
-    }
-    char duplicate[]="2412 13 26m667 30 --fused --fused";
+    expected_solo = true;
+    char keyed_option[] = "--fixture 2412 13 26m667 30 --phy-solo";
+    char pace_option[] = "17 26m667 10 --phy-solo";
+    cmd_dvb(keyed_option); cmd_dvbpace(pace_option);
+    assert(keyed_calls == 6 && calls == 3);
+    char duplicate[]="2412 13 26m667 30 --phy-solo --phy-solo";
     char duplicate_solo[]="17 26m667 10 --phy-solo --phy-solo";
-    char wrong_rate[]="2412 13 20m 30 --fused";
+    char retired[]="2412 13 26m667 30 --fused";
     char too_long[]="17 26m667 61 --phy-solo";
-    cmd_dvb(duplicate); cmd_dvbpace(duplicate_solo); cmd_dvb(wrong_rate); cmd_dvbpace(too_long);
-    assert(keyed_calls == 8 && calls == 5);
+    cmd_dvb(duplicate); cmd_dvbpace(duplicate_solo); cmd_dvb(retired); cmd_dvbpace(too_long);
+    assert(keyed_calls == 6 && calls == 3);
     puts("keyed fixture: flag order, QPSK/8PSK rates, defaults, duplicates and unsupported options: ok");
 }
 ''')
@@ -171,15 +166,7 @@ def check_residency(current):
     assert 0x42000000 <= first < end < 0x42800000
     for name in ('lofty_shape','lofty_short','lofty_splice','lofty_samples'):
         assert first <= m[name] < end,(name,m[name])
-    fused_first, fused_end = m['_lofty_fused_text_start'],m['_lofty_fused_text_end']
-    assert fused_first%32 == 0 and 0 < fused_end-fused_first <= 4096
-    assert end <= fused_first
-    for name in ('lofty_shape_fused','lofty_short_fused','lofty_splice_fused','fill_fused',
-                 'moon_map_fused','lofty_fused_samples','lofty_fused_render_pie',
-                 'lofty_fused_render_pages_pie'):
-        assert fused_first <= m[name] < fused_end,(name,m[name])
-    for name in ('lofty_prepare_pie','lofty_fused_prepare_pie'):
-        assert 0x42000000 <= m[name] < 0x42800000
+    assert 0x42000000 <= m['lofty_prepare_pie'] < 0x42800000
     for name in ('lofty_render_pie','lofty_render_pages_pie','machine_axis_render_pie',
                  'machine_axis_samples','xTaskGenericNotify','shaper_copy_pie'):
         assert 0x40370000 <= m[name] < 0x403e0000,(name,m[name])

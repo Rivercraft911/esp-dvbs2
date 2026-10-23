@@ -101,9 +101,8 @@ static void cmd_dvb(char *args)
     if (!station_require("dvb")) {
         return;
     }
-    bool fixture, phy_solo, fused;
+    bool fixture, phy_solo;
     const bool options_ok = take_option(args,"--phy-solo",&phy_solo);
-    const bool fused_ok = take_option(args,"--fused",&fused);
     const bool source_ok = take_option(args,"--fixture",&fixture);
     bool short_frames;
     const bool short_ok = take_option(args,"--short",&short_frames);
@@ -116,21 +115,20 @@ static void cmd_dvb(char *args)
     char *peak = strtok_r(NULL, " \t", &save);
     char *extra = strtok_r(NULL, " \t", &save);
     uint32_t freq, seconds, gain = RADIO_S3_GAIN_DEFAULT, top = 128;
-    if (!source_ok || !options_ok || !fused_ok || !short_ok || (short_frames && (!short_scope(modcod, sps) || fixture || fused)) ||
+    if (!source_ok || !options_ok || !short_ok || (short_frames && (!short_scope(modcod, sps) || fixture)) ||
         !number(mhz, RADIO_S3_FREQ_MIN_MHZ, RADIO_S3_FREQ_MAX_MHZ, &freq) || !mode_ok ||
-        (fused && !(sps == 3 && modcod >= 12)) ||
         (fixture && !(sps == DVB_SPS_12_5 || (sps == 3 && modcod >= 12))) ||
         !number(duration, 1, phy_solo ? RADIO_S3_PHY_SOLO_MAX_SECONDS : RADIO_S3_MAX_SECONDS, &seconds) ||
         (level && !number(level, 0, RADIO_S3_GAIN_MAX, &gain)) ||
         (peak && !number(peak, 16, 508, &top)) || extra) {
         printf("@{\"cmd\":\"dvb\",\"error\":\"usage: dvb <%u..%u MHz> <modcod 4..17> [5m|10m|20m|26m667|33m333] "
-               "<1..%u seconds> [0..17 gain] [16..508 peak] [--fixture] [--phy-solo (<=%u s)] [--fused (8PSK 26m667)] [--short (QPSK 4..10 at 1m or 5m, 8PSK 12..16 at 5m)]\"}\n",
+               "<1..%u seconds> [0..17 gain] [16..508 peak] [--fixture] [--phy-solo (<=%u s)] [--short (QPSK 4..10 at 1m or 5m, 8PSK 12..16 at 5m)]\"}\n",
                RADIO_S3_FREQ_MIN_MHZ, RADIO_S3_FREQ_MAX_MHZ,
                RADIO_S3_MAX_SECONDS, RADIO_S3_PHY_SOLO_MAX_SECONDS);
         return;
     }
     dvbtx_set_short(short_frames);
-    dvbtx_run_options(freq,modcod,seconds,gain,top,sps,rate,fixture,phy_solo,fused);
+    dvbtx_run_options(freq,modcod,seconds,gain,top,sps,rate,fixture,phy_solo);
 }
 
 static void cmd_dvbdump(char *args)
@@ -160,9 +158,8 @@ static void cmd_dvbdump(char *args)
 
 static void cmd_dvbpace(char *args)
 {
-    bool phy_solo, fused;
+    bool phy_solo;
     const bool options_ok = take_option(args,"--phy-solo",&phy_solo);
-    const bool fused_ok = take_option(args,"--fused",&fused);
     bool short_frames;
     const bool short_ok = take_option(args,"--short",&short_frames);
     char *save, *code = strtok_r(args, " \t", &save);
@@ -173,16 +170,15 @@ static void cmd_dvbpace(char *args)
     char *pause = strtok_r(NULL, " \t", &save);
     char *extra = strtok_r(NULL, " \t", &save);
     uint32_t seconds, top = 128, stall = 0;
-    if (!options_ok || !fused_ok || !short_ok || !mode_ok || (short_frames && (!short_scope(modcod, sps) || fused)) || !number(duration, 1, phy_solo ? RADIO_S3_PHY_SOLO_MAX_SECONDS : 600, &seconds) ||
-        (fused && !(sps == 3 && modcod >= 12)) ||
+    if (!options_ok || !short_ok || !mode_ok || (short_frames && !short_scope(modcod, sps)) || !number(duration, 1, phy_solo ? RADIO_S3_PHY_SOLO_MAX_SECONDS : 600, &seconds) ||
         (peak && !number(peak, 16, 508, &top)) || (pause && !number(pause, 0, 2000, &stall)) ||
         extra) {
         printf("@{\"cmd\":\"dvbpace\",\"error\":\"usage: dvbpace <modcod 4..17> [5m|10m|20m|26m667|33m333] <1..600 seconds> "
-               "[16..508 peak] [0..2000 ms encoder stall] [--phy-solo (<=60 s)] [--fused (8PSK 26m667)] [--short (QPSK 4..10 at 1m or 5m, 8PSK 12..16 at 5m)]\"}\n");
+               "[16..508 peak] [0..2000 ms encoder stall] [--phy-solo (<=60 s)] [--short (QPSK 4..10 at 1m or 5m, 8PSK 12..16 at 5m)]\"}\n");
         return;
     }
     dvbtx_set_short(short_frames);
-    dvbtx_pace_options(modcod,seconds,top,stall,sps,rate,phy_solo,fused);
+    dvbtx_pace_options(modcod,seconds,top,stall,sps,rate,phy_solo);
 }
 
 void fecbench_command(unsigned modcod, bool short_frame);

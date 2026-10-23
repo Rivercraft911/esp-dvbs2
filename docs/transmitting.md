@@ -169,7 +169,7 @@ After setting your assigned callsign, the keyed syntax is:
 
 ```
 tx MHz signal seconds [gain] [40|80]
-dvb MHz MODCOD [5m|10m|20m|26m667|33m333] seconds [gain] [peak] [--fixture] [--phy-solo] [--fused]
+dvb MHz MODCOD [5m|10m|20m|26m667|33m333] seconds [gain] [peak] [--fixture] [--phy-solo]
 ```
 
 `tx` signals are `tone`, `tone1`..`tone511`, `two`, `neg`, `low`, `ionly`, `qonly`,
@@ -191,25 +191,11 @@ used by `dvbpace`, with the same payload copy. Payload ingress must be off.
 The record includes `prepared_fixture:true`. This separates encoder/copy time
 from generating the default contiguous xorshift stream.
 
-`dvb` and `dvbpace` accept two independent experimental options. Without them,
-the existing renderer, Wi-Fi lifetime, queue sizing and payload stream stay selected.
-`--phy-solo` starts and calibrates Wi-Fi, holds the PHY independently, then stops and
+`dvb` and `dvbpace` accept `--phy-solo`. It starts and calibrates Wi-Fi, holds the PHY independently, then stops and
 deinitializes Wi-Fi before playback. It releases that hold on every exit. Solo paces
 are limited to 60 seconds. Into the S3 receiver at 1 Msym/s, PHY-solo keying gave 0 failed
 frames in 103,453, against 2 in 51,791 with Wi-Fi up: Wi-Fi's activity caused rare short
 disturbances of the transmitted signal ([records](../results/2026-10-23-tx-phy-solo/README.md)).
-
-At 8PSK `26m667`, `--fused` automatically tries six table reads instead of eight.
-It preserves independent rounding and DAC words. The extra 12 KiB of tables displaces
-24 static queue pages; one or two internal heap regions restore the full **54 pages**.
-Admission happens after Wi-Fi setup or solo teardown, retaining the 20,000 B floor
-plus 2,048 B guard. Insufficient or fragmented RAM falls back to the original static
-queue, with `fused_tails:false`; no pages are dropped. `fused_requested`, `fused_tails`,
-`queue_sizing` and `queue_layout` record the decision. The common 64 KiB store and
-5 Msym/s self-check's 22,351 B heap floor are retained. The fused kernel has a separate
-instruction-cache lock region; playback locks only the selected region. Default playback
-retains main's 1,632-byte lock footprint, with no fused dispatch in its page loops.
-R&D timing is motivation; this port still needs coordinator timing and RF checks.
 
 The automatic transmit-filter selector is retained. Register readbacks do not establish
 filter flatness, radiated power or emission-mask compliance. Historical keyed records in

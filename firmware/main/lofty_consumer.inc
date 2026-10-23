@@ -1,4 +1,4 @@
-// Shared mux algorithm; default and fused loops have no renderer dispatch.
+// The 8PSK 26m667 bank mux: data pages, dummy frames and the splices between them.
 static LOFTY_TEXT void lofty_splice(uint32_t raw, unsigned skip)
 {
     unsigned bits = 12-skip; // skip is 0 or 6 samples, also 0 or 6 phase bits
@@ -105,12 +105,7 @@ static LOFTY_TEXT esp_err_t lofty_shape(uint32_t *dst, uint64_t first, size_t co
                 // Reuse vector setup across adjacent complete pages, retaining
                 // the reserve. Never cross EOF or the physical queue wrap.
                 unsigned pages = (count < left ? count : left)/MACHINE_PAGE_SAMPLES;
-                unsigned room =
-#if LOFTY_STREAM_FUSED
-                    lofty_fused_region_end(dvb.get_index)-dvb.get_index;
-#else
-                    dvb.queue_pages-dvb.get_index;
-#endif
+                unsigned room = dvb.queue_pages-dvb.get_index;
                 if (pages > room) pages = room;
                 unsigned available = put-get > LOFTY_RESERVE_PAGES ? put-get-LOFTY_RESERVE_PAGES : 1;
                 if (pages > available) pages = available;

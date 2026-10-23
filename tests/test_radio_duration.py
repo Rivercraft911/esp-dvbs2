@@ -143,8 +143,8 @@ static esp_err_t fill_bank(run_t *run, unsigned bank, uint64_t start) {
 static void dvbtx_set_short(bool enabled) { (void)enabled; }
 static void dvbtx_run_options(uint32_t f, unsigned m, uint32_t seconds, unsigned g,
                             unsigned p, unsigned sps, uint32_t rate, bool fixture,
-                            bool solo, bool fused) {
-    (void)m; (void)g; (void)p; (void)sps; (void)rate; (void)fixture; (void)fused;
+                            bool solo) {
+    (void)m; (void)g; (void)p; (void)sps; (void)rate; (void)fixture;
     ++commands; parsed_frequency = f; parsed_seconds = seconds; parsed_solo = solo;
 }
 '''
@@ -253,7 +253,7 @@ int main(void) {
     command("2412 13 5m 540 0 128",true,false); assert(parsed_seconds == 540);
     command("2412 13 5m 61 17 508",true,false);
     command("2412 13 5m 541",false,false);
-    // --short: QPSK 4..10 at 1m or 5m, 8PSK 12..16 at 5m only; no 9/10, 10m, fixture or fused.
+    // --short: QPSK 4..10 at 1m or 5m, 8PSK 12..16 at 5m only; no 9/10, 10m or fixture.
     command("2412 7 5 --short",true,false); command("2412 7 5m 5 --short",true,false);
     command("2412 10 5m 5 --short",true,false); command("2412 12 5m 5 --short",true,false);
     command("2412 16 5m 5 --short",true,false);
