@@ -141,6 +141,17 @@ int w5500_phy(w5500 *w)
     return e ? e : v;
 }
 
+int w5500_phy_config(w5500 *w, uint8_t mode)
+{
+    const uint8_t held = mode & 0x78, run = (uint8_t)(held | 0x80);
+    int e = wr(w, BSB_COMMON, PHYCFGR, &held, 1);
+    if (!e) {
+        w->bus.delay_us(w->bus.ctx, 1000);
+        e = wr(w, BSB_COMMON, PHYCFGR, &run, 1);
+    }
+    return e ? e : w5500_phy(w);
+}
+
 /* The chip clears Sn_CR once it has accepted a command (DS p.46); a command written before that
  * may be lost. Acceptance is not completion, which shows in Sn_SR or Sn_IR. Each command marks
  * the socket, and the next one first reads Sn_CR until it is 0 (usually once, as the data path

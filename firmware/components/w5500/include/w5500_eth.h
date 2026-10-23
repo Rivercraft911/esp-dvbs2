@@ -70,6 +70,10 @@ void w5500_eth_settings(w5500_settings *s);
  *   eth send MS [MB/S]  send numbered 7-packet TS datagrams (PID 0x100) for MS ms, paced at
  *                       MB/S or as fast as possible, and report rate and core load
  *   eth recv MS         receive for MS ms and report rate, TS sync errors and core load
+ *   eth phy MODE        auto (the PMODE pins), 100f, 100h, 10f or 10h (forced, no
+ *                       auto-negotiation), set after every start until reset; or reset: pulse
+ *                       the PHY's reset in its mode. Reports PHYCFGR read back
+ *   eth watch SECONDS   PHYCFGR every 10 ms: each link change with its time, then the totals
  * core_load is the share of the run this core was not idle, timed by an idle hook (w5500_eth.c),
  * and core_load_before the same over 20 ms just before with the console asleep. */
 void w5500_eth_command(const char *args);

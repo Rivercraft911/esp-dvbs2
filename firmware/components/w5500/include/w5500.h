@@ -126,6 +126,14 @@
 #define W5500_PHY_LINK 0x01
 #define W5500_PHY_100M 0x02
 #define W5500_PHY_FULL 0x04
+/* PHYCFGR OPMD and OPMDC (DS p.42) for w5500_phy_config. AUTO leaves the mode to the PMODE pins
+ * (OPMD 0) with OPMDC "all capable, auto-negotiation"; the others force one mode (OPMD 1) without
+ * auto-negotiation. */
+#define W5500_PHY_AUTO 0x38
+#define W5500_PHY_100F 0x58
+#define W5500_PHY_100H 0x50
+#define W5500_PHY_10F 0x48
+#define W5500_PHY_10H 0x40
 
 enum {
     W5500_OK = 0,
@@ -209,6 +217,9 @@ typedef struct {
 int w5500_init(w5500 *w, const w5500_bus *bus, const w5500_config *cfg);
 /* PHYCFGR (DS p.42), whose low bits are W5500_PHY_*, or a negative error. */
 int w5500_phy(w5500 *w);
+/* Put the PHY in a W5500_PHY_AUTO..10H mode: PHYCFGR written with RST low (the PHY held in reset),
+ * then 1 ms later with RST high. PHYCFGR read back, or a negative error. */
+int w5500_phy_config(w5500 *w, uint8_t mode);
 
 /* Open socket s in UDP mode on a local port (also the source port of sent datagrams). */
 int w5500_udp_open(w5500 *w, unsigned s, uint16_t port);

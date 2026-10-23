@@ -129,6 +129,7 @@ class Native:
             "fake_driver_counters": (None, [p, ct.POINTER(ct.c_uint32 * 3)]),
             "fake_driver_size": (ct.c_size_t, []),
             "w5500_phy": (ct.c_int, [p]),
+            "w5500_phy_config": (ct.c_int, [p, ct.c_uint8]),
             "w5500_udp_open": (ct.c_int, [p, ct.c_uint, u16]),
             "w5500_udp_close": (ct.c_int, [p, ct.c_uint]),
             "w5500_udp_dest": (None, [p, ct.c_uint, b, u16]),
@@ -394,6 +395,21 @@ def test_init(native):
     check(chip.init(rx0=16) == OK and chip.lib.w5500_phy(chip.w) == 0xB8, "link down, reset value")
     chip.set(phy=7)
     check(chip.lib.w5500_phy(chip.w) & 7 == 7, "link up, 100 Mb/s, full duplex")
+    chip.close()
+
+
+def test_phy(native):
+    """`eth phy`: OPMD/OPMDC written with RST low, then high (DS p.42); the status bits stay the
+    chip's."""
+    chip = sender(native)
+    chip.set(phy=0)                                   # link down
+    for mode, value in ((0x58, 0xD8), (0x50, 0xD0), (0x48, 0xC8), (0x40, 0xC0), (0x38, 0xB8)):
+        first = chip.mark()
+        check(chip.lib.w5500_phy_config(chip.w, mode) == value, f"mode {mode:#x}")
+        check(chip.trace(first) == [(0x2E, control(0, True), 1)] * 2 + [(0x2E, control(0, False), 1)],
+              "two PHYCFGR writes and a read")
+    chip.set(phy=7)
+    check(chip.lib.w5500_phy_config(chip.w, 0x58) == 0xDF, "link, 100 Mb/s, full duplex")
     chip.close()
 
 
@@ -1102,6 +1118,7 @@ def main():
         test_gpspi(native)
         test_frame_format(native)
         test_init(native)
+        test_phy(native)
         test_open(native)
         test_send(native)
         test_full(native)

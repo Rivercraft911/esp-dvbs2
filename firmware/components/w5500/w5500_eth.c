@@ -30,6 +30,7 @@ static bool port_up;          /* w5500_port_start has run and w5500_port_stop ha
 static bool reserved;         /* the port stays up between owners (w5500_eth_reserve) */
 static uint8_t *lent;         /* the app's two diagnostic buffers, or NULL for the heap */
 static w5500_settings port_settings;   /* what the port was started with */
+static uint8_t phy_mode;      /* `eth phy`: a W5500_PHY_* mode set after every start, or 0 */
 
 /* One task owns the chip from w5500_eth_start to w5500_eth_stop; the driver and the shared
  * transaction above are not reentrant. Others, such as the console, get W5500_ERR_BUSY. */
@@ -209,6 +210,10 @@ int w5500_eth_start(w5500_eth_role role)
     if (role == W5500_ETH_SEND) c.tx_kb[0] = 16;
     else c.rx_kb[0] = 16;
     int e = w5500_init(w, &bus, &c);
+    if (!e && phy_mode) {
+        const int phy = w5500_phy_config(w, phy_mode);
+        if (phy < 0) e = phy;
+    }
     if (!e) e = w5500_udp_open(w, 0, s.port);
     if (!e && role == W5500_ETH_SEND) w5500_udp_dest(w, 0, s.dest, s.dest_port);
     if (e) w5500_eth_stop();
@@ -413,6 +418,79 @@ static void status(void)
     w5500_eth_stop();
 }
 
+/* PHY modes by name (`eth phy`). */
+static const struct {
+    const char *name;
+    uint8_t mode;
+} phy_modes[] = {{"auto", W5500_PHY_AUTO}, {"100f", W5500_PHY_100F}, {"100h", W5500_PHY_100H},
+                 {"10f", W5500_PHY_10F}, {"10h", W5500_PHY_10H}};
+
+/* Set the PHY mode until reset, or with "reset" pulse the PHY's reset in its current mode. */
+static void phy_command(const char *word)
+{
+    int k = 0, n = sizeof phy_modes / sizeof phy_modes[0];
+    while (k < n && strcmp(word, phy_modes[k].name)) ++k;
+    const bool reset = !strcmp(word, "reset");
+    if (k < n) phy_mode = phy_modes[k].mode;
+    int e = w5500_eth_start(W5500_ETH_RECV);   /* sets phy_mode, if any, with a reset pulse */
+    if (!e && reset && !phy_mode) {
+        const int now = w5500_phy(&chip);
+        e = now < 0 ? now : w5500_phy_config(&chip, (uint8_t)now & 0x78);
+        e = e < 0 ? e : 0;
+    }
+    const int phy = e ? e : w5500_phy(&chip);
+    printf("@{\"cmd\":\"eth\",\"phy\":\"%s\",\"status\":\"%s\"", word,
+           w5500_eth_status(phy < 0 ? phy : W5500_OK));
+    if (phy >= 0) printf(",\"phycfgr\":\"0x%02x\"", phy);
+    printf("}\n");
+    if (e != W5500_ERR_BUSY) w5500_eth_stop();
+}
+
+/* PHYCFGR every 10 ms: each change of the link bit, then the totals. */
+static void watch(unsigned seconds)
+{
+    int e = w5500_eth_start(W5500_ETH_RECV);
+    int phy = e ? e : w5500_phy(&chip);
+    if (phy < 0) {
+        printf("@{\"cmd\":\"eth\",\"watch\":true,\"status\":\"%s\"}\n", w5500_eth_status(phy));
+        if (phy != W5500_ERR_BUSY) w5500_eth_stop();
+        return;
+    }
+    const int first = phy;
+    bool up = phy & W5500_PHY_LINK;
+    uint32_t samples = 0, errors = 0, transitions = 0;
+    const int64_t t0 = esp_timer_get_time(), end = t0 + seconds * 1000000LL;
+    int64_t since = t0, up_us = 0, longest[2] = {0, 0};   /* [down, up] */
+    int64_t now = t0;
+    while ((now = esp_timer_get_time()) < end) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+        now = esp_timer_get_time();
+        phy = w5500_phy(&chip);
+        samples++;
+        if (phy < 0) {
+            errors++;
+            continue;
+        }
+        const bool link = phy & W5500_PHY_LINK;
+        if (link == up) continue;
+        if (now - since > longest[up]) longest[up] = now - since;
+        if (up) up_us += now - since;
+        if (++transitions <= 200)
+            printf("@{\"cmd\":\"eth\",\"watch\":\"%s\",\"ms\":%.1f,\"phycfgr\":\"0x%02x\"}\n",
+                   link ? "up" : "down", (now - t0) / 1000.0, phy);
+        up = link;
+        since = now;
+    }
+    if (now - since > longest[up]) longest[up] = now - since;
+    if (up) up_us += now - since;
+    printf("@{\"cmd\":\"eth\",\"watch\":true,\"seconds\":%u,\"samples\":%" PRIu32
+           ",\"read_errors\":%" PRIu32 ",\"first\":\"0x%02x\",\"last\":\"0x%02x\",\"transitions\":%" PRIu32
+           ",\"up_pct\":%.1f,\"longest_up_ms\":%.1f,\"longest_down_ms\":%.1f}\n",
+           seconds, samples, errors, first, phy < 0 ? 0 : phy, transitions,
+           100.0 * up_us / (now - t0), longest[1] / 1000.0, longest[0] / 1000.0);
+    w5500_eth_stop();
+}
+
 void w5500_eth_command(const char *args)
 {
     unsigned ms;
@@ -430,6 +508,20 @@ void w5500_eth_command(const char *args)
             goto usage;
         if (ms < 1 || ms > 600000) goto usage;
         diag_send(ms, mbps);
+        return;
+    }
+    char word[8];
+    if (sscanf(args, "phy %7s %c", word, &extra) == 1) {
+        bool known = !strcmp(word, "reset");
+        for (unsigned k = 0; k < sizeof phy_modes / sizeof phy_modes[0]; ++k)
+            known |= !strcmp(word, phy_modes[k].name);
+        if (!known) goto usage;
+        phy_command(word);
+        return;
+    }
+    if (sscanf(args, "watch %u %c", &ms, &extra) == 1) {
+        if (ms < 1 || ms > 600) goto usage;
+        watch(ms);
         return;
     }
     if (sscanf(args, "recv %u %c", &ms, &extra) == 1) {
@@ -457,5 +549,6 @@ void w5500_eth_command(const char *args)
 usage:
     printf("@{\"cmd\":\"eth\",\"error\":\"usage: eth; eth ip A.B.C.D/N [gw A.B.C.D]; "
            "eth dest A.B.C.D|broadcast[:PORT]; eth port PORT; eth mhz 10..40; "
-           "eth pins SCLK MOSI MISO CS; eth defaults; eth send MS [Mb/s]; eth recv MS\"}\n");
+           "eth pins SCLK MOSI MISO CS; eth defaults; eth send MS [Mb/s]; eth recv MS; "
+           "eth phy auto|100f|100h|10f|10h|reset; eth watch SECONDS\"}\n");
 }
