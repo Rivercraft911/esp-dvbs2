@@ -45,6 +45,16 @@ filled word against the portable encoder and shaper; fractional samples are chec
 against independent Python convolution. These are software correctness checks,
 not board timing measurements. Do not regenerate fixtures to accept an unexplained waveform change.
 
+`ts_replay_crcs.json` pins QPSK 1/2 and 9/10 at 33m333 with TS replay input (`spiinput quad
+ts replay`, 16 frames), computed from the host model: `host/dvbs2.py ts_bbframes` with roll-off
+0.20, the independent convolution of `tests/reference/machine.py`, every sample compared by
+`tests/test_rational.py`. Until the fix, both TS paths wrote MATYPE-1 0xf0 (roll-off 0.35)
+while the pulse was 0.20: the board's earlier replay dumps of these modes, 649,464,914 (4) and
+2,939,266,175 (11) in `results/2026-10-23-tx-8psk/dumps.jsonl`, equal the host model with
+0.35 headers sample for sample, and differ from the 0.20 model in 359,787 and 89,782 of
+1,278,029 samples. The pinned 2,840,379,987 (4) and 1,374,526,537 (11) carry MATYPE-1 0xf2,
+as GCS input at this rate already did.
+
 `tone_crcs.json` pins the retained test tones against `88f5a64`: 4,097 packed DAC words,
 starting at sample 2^32+17. Callback splits must preserve that sequence. Removed
 PRBS, sweep and gap probes are intentionally rejected.

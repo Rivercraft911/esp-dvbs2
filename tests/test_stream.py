@@ -251,6 +251,7 @@ def test_stream(output=None, receiver=None, input_only=False):
         # repeated starts, every allocation failure, empty startup and resumed input.
         input_cases = [(mc,n,rate) for mc in range(4,18) for n,rate in ((8,40),(4,40),(4,80))]
         input_cases += [(mc,n,rate) for mc in range(4,12) for n,rate in ((40,40),(3,80))]
+        input_cases += [(mc,12,80) for mc in (4,7,11)]  # 100/3 Msym/s: roll-off 0.20 BBHEADERs
         for kind in (1, 2, 3, 4):
             for mc, sps, input_rate in input_cases:
                 iq = (output or folder)/f"input-{kind}-{mc}-n{sps}-{input_rate}m.iq"

@@ -547,7 +547,8 @@ int dvbs2_fast_bb_ts(const dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_state *s
 #endif
     if (!cols) memcpy(f->p, fast_crc8, sizeof fast_crc8);
     const uint8_t *crc8 = cols ? fast_crc8 : f->p;
-    bb_header(ws->bits, crc8, 0xf0, (unsigned)(input_bytes * 8), 1504, 0x47, syncd);
+    bb_header(ws->bits, crc8, 0xf0 | ((f->pie & DVBS2_RO_20) ? 2 : 0), (unsigned)(input_bytes * 8),
+              1504, 0x47, syncd);
     bb_fill(f, ws->bits, input, input_bytes);
     /* CRC-8 of each packet's 187 bytes after sync; the sync byte position
      * carries the previous packet's CRC. */

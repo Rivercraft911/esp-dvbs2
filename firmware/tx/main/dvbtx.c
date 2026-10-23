@@ -1,12 +1,14 @@
 // QPSK defaults to 1 Msym/s; both modulations accept 5m/10m at 40 MS/s and
-// 20m at 80 MS/s. Fast rates use packed internal rings and cached samples.
+// 20m/26m667 at 80 MS/s, QPSK also 33m333. Fast rates use packed internal rings or
+// page queues and cached samples.
 // Paired QPSK n4/n8 tables share the store with ring and payload. The block
 // kernels use four codes per byte; n3 shares with its ring, n4 with its workspace.
 // Payload: xorshift32 seed 2026, one contiguous byte stream across data frames.
 // On underrun the ring inserts a 3330-symbol dummy PLFRAME (EN 302 307-1 5.1.5,
 // 5.5.1), preserving each choice for overlapping bank reads. No payload is skipped.
-// Legacy RRC roll-off 0.35 and fractional 0.20 match the BBHEADER. Legacy scaling uses the
-// conservative bound sqrt(2)*508 LSB for every table (archived host/shaper.py Profile.taps).
+// RRC roll-off 0.35, or 0.20 at 33m333 (12/5 samples per symbol); the BBHEADER's RO field
+// matches for GCS and TS input. Legacy scaling uses the conservative bound sqrt(2)*508 LSB
+// for every table (archived host/shaper.py Profile.taps).
 // The taps divide out the DAC's sample hold (archived host/shaper.py corrected_rrc) because the
 // radio sends the held signal; a raw dvbdump has no hold and measures differently.
 

@@ -505,7 +505,7 @@ int main(int argc, char **argv)
             for (size_t i = 0; i < bytes; ++i) payload[i] = next_byte(&x);
             station_payload_header(payload, bytes, callsign);
         }
-        assert(!(native_input == PV_TS ? dvbs2_bb_ts(&ws, mode, &ts, payload, bytes) :
+        assert(!(native_input == PV_TS ? dvbs2_bb_ts_ro(&ws, mode, &ts, payload, bytes, sps == DVB_SPS_12_5 ? 2 : 0) :
                                         dvbs2_bb_gcs_ro(&ws, mode, payload, bytes * 8, sps == DVB_SPS_12_5 ? 2 : 0)));
         dvbs2_bb_scramble(&ws, mode); dvbs2_bch(&ws, mode); dvbs2_ldpc(&ws, mode);
         uint8_t *out = phases + f * length;
@@ -549,7 +549,10 @@ int main(int argc, char **argv)
             if (native_blocks[i].p && (native_blocks[i].caps & MALLOC_CAP_INTERNAL))
                 internal += native_blocks[i].n;
         const size_t fast = dvbs2_fast_mode_size(mode);
-        const size_t expected = mc >= 12 && sps == 8 ? 22240+2058 :
+        // 33.33 Msym/s (moon): the context and its resident encoder cache; the workspace
+        // lives in the renderer store.
+        const size_t expected = moon ? fast+dvbs2_fast_cache_size(enc.fast) :
+            mc >= 12 && sps == 8 ? 22240+2058 :
             sps == 40 ? fast+420 : quads && !moon && sps == 4 ? fast+25056 :
             fast+(quads && sps == 3 ? 8352 : 12420)+(mc >= 12 && !short_pulse ? 11120 : 0);
         // QPSK at 80 MS/s keeps its 8 KiB byte BCH table with input (t = 10/12).
@@ -657,9 +660,11 @@ int main(int argc, char **argv)
         input_empty = true;
         assert(start_encoder("dvbdump", mc, 128, 0, sps, rate));
         assert(enc.frames == 0 && !enc.failed);
-        uint8_t window[64];
-        assert(ring_window(&dvb.ring, window, sizeof window, 0, 12, sps, 0, RADIO_S3_BANK_WORDS) >= 0);
-        assert(dvb.ring.underruns > 0);
+        if (!moon) { // the page queue (moon) has no ring to underrun
+            uint8_t window[64];
+            assert(ring_window(&dvb.ring, window, sizeof window, 0, 12, sps, 0, RADIO_S3_BANK_WORDS) >= 0);
+            assert(dvb.ring.underruns > 0);
+        }
         input_empty = false;
         unsigned tries=0;
         while (!enc.frames) { assert(++tries < 5000); vTaskDelay(1); }
