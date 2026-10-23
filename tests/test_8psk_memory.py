@@ -164,7 +164,8 @@ def check_residency(current):
     assert 0x42000000 <= first < end < 0x42800000
     for name in ('lofty_shape','lofty_short','lofty_splice','lofty_samples'):
         assert first <= m[name] < end,(name,m[name])
-    assert 0x42000000 <= m['lofty_prepare_pie'] < 0x42800000
+    for name in ('lofty_prepare_pie','lofty_prepare_16','lofty_prepare'):
+        assert 0x40370000 <= m[name] < 0x403e0000,(name,m[name])
     for name in ('lofty_render_pie','lofty_render_pages_pie','machine_axis_render_pie',
                  'machine_axis_samples','xTaskGenericNotify','shaper_copy_pie'):
         assert 0x40370000 <= m[name] < 0x403e0000,(name,m[name])

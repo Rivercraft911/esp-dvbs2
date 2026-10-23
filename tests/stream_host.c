@@ -107,6 +107,9 @@ static int checked_task(void (*fn)(void *), const char *name, unsigned stack, vo
     // page cursors and the 64-bit symbol timeline must remain continuous.
     if (dvb.lofty) {
         assert(priority == MOON_PRIORITY);
+        // Forced not-ready admissions replay the dummy path inside a dump.
+        if (getenv("FORCE_DUMMIES") || getenv("FORCE_DUMMY_FRAME") || getenv("DUMMY_FROM_FRAME"))
+            lofty_mux.whole_frames = false;
 #ifdef QUEUE_TEST_PAGES
         assert(QUEUE_TEST_PAGES <= dvb.queue_pages);
         dvb.queue_pages = QUEUE_TEST_PAGES;
@@ -467,7 +470,7 @@ int main(int argc, char **argv)
                    native_buffers[i] >= enc.bch+DVBS2_BCH_CACHE_BYTES);
     }
     if (!moon) assert(allocations == (sps == 40 ? 7 : 4 + (mc >= 12 && !short_pulse) +
-                          (resident && mode->t > 8 && !native_input && !borrowed_bch) + !resident));
+                          (resident && mode->t > 8 && (!native_input || quads) && !borrowed_bch) + !resident));
     for (unsigned i = 0; i < 64; ++i) {
         if (native_blocks[i].p == enc.ws)
             assert(!(native_blocks[i].caps & MALLOC_CAP_SPIRAM) == resident);
@@ -485,7 +488,9 @@ int main(int argc, char **argv)
         const size_t expected = mc >= 12 && sps == 8 ? 22240+2058 :
             sps == 40 ? fast+420 : quads && !moon && sps == 4 ? fast+25056 :
             fast+(quads && sps == 3 ? 8352 : 12420)+(mc >= 12 && !short_pulse ? 11120 : 0);
-        assert(internal == expected+(sps == 40 ? 0 : CACHED_FOR(rate)*sizeof(uint32_t)));
+        // QPSK at 80 MS/s keeps its 8 KiB byte BCH table with input (t = 10/12).
+        const size_t byte_bch = quads && !moon && mode->t > 8 ? DVBS2_BCH_CACHE_BYTES : 0;
+        assert(internal == expected+byte_bch+(sps == 40 ? 0 : CACHED_FOR(rate)*sizeof(uint32_t)));
         // Eight slots fit the slow QPSK tails and short-pulse 8PSK 8/9 or
         // 9/10 tails. All other layouts fall back to the DMA heap block.
         const bool borrowed = mc < 12 ? sps == 8 || sps == 40 : short_pulse && mc >= 16;

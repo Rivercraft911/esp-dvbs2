@@ -37,6 +37,7 @@ typedef struct {
 // Source has 16 readable guard bytes. Arbitrary destination word alignment.
 uint32_t lofty_prepare(uint32_t *, const uint16_t *, unsigned, uint32_t previous);
 uint32_t lofty_prepare_pie(uint32_t *, const uint16_t *, unsigned vectors, uint32_t);
+uint32_t lofty_prepare_16(uint32_t *, const uint16_t *, unsigned vectors, uint32_t); // aligned source
 int lofty_build(uint32_t *, unsigned peak);
 void lofty_render_pie(uint32_t *, const uint32_t *, unsigned, const uint32_t *);
 // Consecutive full queue pages. Release each page after its last descriptor.
@@ -57,3 +58,13 @@ void lofty_render(uint32_t *, const uint32_t *, unsigned, const uint32_t *);
 void lofty_render_pages(uint32_t *, const uint32_t *, unsigned, const uint32_t *, uint32_t *);
 #endif
 void lofty_samples(uint32_t *, const uint32_t *, unsigned skip, size_t, const uint32_t *);
+// One whole queue page (LOFTY_BLOCKS words). Every full page's framed words are 16-byte
+// aligned, so the S3 calls the aligned kernel directly.
+static inline __attribute__((always_inline)) uint32_t lofty_prepare_page(uint32_t *dst, const uint16_t *src,
+                                                                       uint32_t previous)
+{
+#ifdef __XTENSA__
+    if (!((uintptr_t)src&15)) return lofty_prepare_16(dst,src,LOFTY_BLOCKS/8,previous);
+#endif
+    return lofty_prepare(dst,src,LOFTY_BLOCKS,previous);
+}

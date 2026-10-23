@@ -91,11 +91,11 @@ and 8PSK at 10 Msym/s. CI checks every supported modulation/rate combination on 
 N is the number of complete data frames in the pinned dump layout, excluding
 standard dummy PLFRAMEs and any final partial frame. LeanDVB must return at least
 N-2 contiguous QPSK frames. 8PSK permits at most one leading acquisition frame
-and three trailing data frames lost at EOF. The 17/3/80/16 dump spans 16 nominal
-frame lengths but contains 12 complete data frames, 22 dummies and part of the
-next data frame. Its 11 decoded payload frames meet the existing EOF allowance.
-`decode.py --dummy-before` supplies this known schedule; it counts nonempty
-decoded BBFRAMEs separately from nominal duration and expected complete data frames.
+and three trailing data frames lost at EOF. A dump waits for every whole frame, so the
+8PSK 26m667 dumps hold 16 complete data frames and no dummies
+([tests/data](../../tests/data/README.md)). `decode.py --dummy-before` still accepts a
+known dummy schedule; it counts nonempty decoded BBFRAMEs separately from nominal
+duration and expected complete data frames.
 There is no tolerance for payload errors, LDPC flips or BCH corrections. The decoder adds
 4,096 zero samples only to receiver input for pipeline lookahead, outside the dump CRC.
 CRC fixtures use peak 128, pilots on and callsign N0CALL. The [frame layouts and

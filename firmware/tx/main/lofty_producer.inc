@@ -1,9 +1,4 @@
 // The 8PSK 26m667 producer: descriptor pages, EOF publication and admission.
-static uint32_t lofty_phases(uint32_t w)
-{
-    return (((w>>4)&511)<<15) | ((((w>>13)&2047)/3)<<6) | ((w>>24)&63);
-}
-
 // Once two pages exist, bulk mapping is finished. Later publications contain
 // only descriptor preparation. Use twice their measured worst active gap;
 // full-queue sleep is covered separately by one complete bank of wake latency.
@@ -22,16 +17,15 @@ static unsigned lofty_admission(uint32_t gap, unsigned wake)
     return p < LOFTY_FRAME_PAGES ? p : LOFTY_FRAME_PAGES;
 }
 
-static __attribute__((noinline)) void lofty_publish(unsigned end)
+// Publish the page at put_index: end samples, of which the first skip repeat
+// the previous frame's last two symbols. The caller has stored its raw head.
+static inline __attribute__((always_inline)) void lofty_publish(unsigned end)
 {
     lofty_page *p = lofty_page_at(dvb.put_index);
     p->words[LOFTY_BLOCKS] = 0;
     p->words[LOFTY_PAGE_META] = end | (lofty_mux.skip<<16);
     lofty_mux.samples += end-lofty_mux.skip;
     p->words[LOFTY_PAGE_META+1] = lofty_mux.samples;
-    if (end == MACHINE_PAGE_SAMPLES)
-        p->words[LOFTY_PAGE_META+2] = ((lofty_phases(p->words[0])&4095)<<12) |
-                                    (lofty_phases(p->words[1])&4095);
     lofty_mux.skip = 0;
     const uint32_t tail = esp_cpu_get_cycle_count();
     dvb.page_blocks = 0;
@@ -100,32 +94,61 @@ static inline int moon_start(void)
                        dvbs2_fast_axis_start(enc.fast,enc.ws,&dvb.mapper);
 }
 
+// The 8PSK page loop. Every read but a frame's last returns one whole page of
+// framed words; prepare turns them into the page's descriptors and publish hands
+// the page to the renderer. Sums are kept per frame, maxima per page.
+static IRAM_ATTR __attribute__((noinline)) int lofty_pages(bool warmup)
+{
+    uint32_t read_sum = 0, prepare_sum = 0;
+    while (!enc.stop && dvb.mapper.at < dvb.ring.frame_symbols) {
+        while (!warmup && !enc.stop && dvb.produced-__atomic_load_n(&dvb.consumed,__ATOMIC_ACQUIRE) == dvb.queue_pages)
+            moon_wait();
+        if (enc.stop) break;
+        lofty_page *lp = lofty_page_at(dvb.put_index);
+        const TickType_t tick = xTaskGetTickCount();
+        const uint32_t before = esp_cpu_get_cycle_count();
+        unsigned n = LOFTY_BLOCKS;
+        const uint16_t *words = dvbs2_fast_lofty_read(enc.fast,&dvb.mapper,&n);
+        const uint32_t read = esp_cpu_get_cycle_count();
+        if (!n) break;
+        dvb.last_word = n == LOFTY_BLOCKS ? lofty_prepare_page(lp->words,words,dvb.last_word) :
+                                            lofty_prepare(lp->words,words,n,dvb.last_word);
+        if (warmup) continue;
+        const uint32_t cycles = esp_cpu_get_cycle_count()-before;
+        read_sum += read-before;
+        prepare_sum += cycles;
+        if (cycles > dvb.prepare_max) {
+            dvb.prepare_max = cycles;
+            dvb.prepare_ticks = xTaskGetTickCount()-tick;
+        }
+        if (n < LOFTY_BLOCKS) { dvb.page_blocks = n; break; } // EOF: lofty_finish publishes
+        // The renderer splices from a page's first two raw words after a dummy.
+        lp->words[LOFTY_PAGE_META+2] = ((uint32_t)(words[0]&4095)<<12) | (words[1]&4095);
+        lofty_publish(MACHINE_PAGE_SAMPLES);
+    }
+    dvb.read_cycles += read_sum;
+    dvb.prepare_cycles += prepare_sum;
+    if (!warmup && !enc.stop) return lofty_finish();
+    return enc.stop ? -1 : 0;
+}
+
 // The page loop: read framed words (8PSK frames the rest on its second read), prepare, publish.
 static IRAM_ATTR __attribute__((noinline)) int moon_map(bool warmup)
 {
+    if (dvb.lofty) return lofty_pages(warmup);
     while (!enc.stop && dvb.mapper.at < dvb.ring.frame_symbols) {
         while (!warmup && !enc.stop && dvb.produced-__atomic_load_n(&dvb.consumed,__ATOMIC_ACQUIRE) == dvb.queue_pages)
             moon_wait();
         if (enc.stop) return -1;
-        machine_page *page = dvb.pages ? dvb.pages+dvb.put_index : NULL;
-        lofty_page *lp = dvb.lofty ? lofty_page_at(dvb.put_index) : NULL;
+        machine_page *page = dvb.pages+dvb.put_index;
         const TickType_t tick = xTaskGetTickCount();
         const uint32_t before = esp_cpu_get_cycle_count();
-        const unsigned room = MACHINE_PAGE_BLOCKS-dvb.page_blocks;
-        unsigned n = room;
-        uint32_t read;
-        if (lp) {
-            const uint16_t *words = dvbs2_fast_lofty_read(enc.fast,&dvb.mapper,&n);
-            read = esp_cpu_get_cycle_count();
-            if (n) dvb.last_word = lofty_prepare(lp->words+dvb.page_blocks,words,n,dvb.last_word);
-        } else {
-            n = dvbs2_fast_axis_read(enc.fast,&dvb.mapper,page->axes+dvb.page_words,
-                                     MACHINE_PAGE_AXIS_WORDS-dvb.page_words);
-            read = esp_cpu_get_cycle_count();
-        }
-        // Warm the same mapper/prepare kernels without publishing or advancing
+        unsigned n = dvbs2_fast_axis_read(enc.fast,&dvb.mapper,page->axes+dvb.page_words,
+                                          MACHINE_PAGE_AXIS_WORDS-dvb.page_words);
+        const uint32_t read = esp_cpu_get_cycle_count();
+        // Warm the same mapper kernels without publishing or advancing
         // the stream. One owned queue page is enough for every discarded chunk.
-        if (warmup) { dvb.page_blocks = dvb.page_words = 0; continue; }
+        if (warmup) { dvb.page_words = 0; continue; }
         const uint32_t cycles = esp_cpu_get_cycle_count()-before;
         dvb.read_cycles += read-before;
         if (cycles > dvb.prepare_max) {
@@ -133,10 +156,8 @@ static IRAM_ATTR __attribute__((noinline)) int moon_map(bool warmup)
             dvb.prepare_ticks = xTaskGetTickCount()-tick;
         }
         dvb.prepare_cycles += cycles;
-        if (lp) dvb.page_blocks += n;
-        else dvb.page_words += n;
-        if (lp ? dvb.page_blocks == LOFTY_BLOCKS : dvb.page_words == MACHINE_PAGE_AXIS_WORDS) {
-            if (lp) { lofty_publish(MACHINE_PAGE_SAMPLES); continue; }
+        dvb.page_words += n;
+        if (dvb.page_words == MACHINE_PAGE_AXIS_WORDS) {
             const uint32_t tail = esp_cpu_get_cycle_count();
             if (dvb.prepare_pages) {
                 const uint32_t gap = tail-dvb.page_clock-(uint32_t)(dvb.queue_wait_cycles-dvb.page_wait);
@@ -152,6 +173,5 @@ static IRAM_ATTR __attribute__((noinline)) int moon_map(bool warmup)
             ++dvb.prepare_pages;
         }
     }
-    if (dvb.lofty && !warmup && !enc.stop) return lofty_finish();
     return enc.stop ? -1 : 0;
 }

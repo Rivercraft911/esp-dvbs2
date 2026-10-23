@@ -14,6 +14,15 @@ static LOFTY_TEXT void lofty_splice(uint32_t raw, unsigned skip)
 static inline __attribute__((always_inline)) void lofty_boundary(uint32_t ready)
 {
     bool odd = (lofty_mux.startup+lofty_mux.steady)&1;
+    // A dump is not real time: its fill waits for the whole next frame, so the bytes
+    // never depend on how far the producer got. The queue holds more than a frame,
+    // and every page of the previous one is free, so the producer cannot be blocked
+    // except asleep from an earlier full queue: wake it.
+    if (lofty_mux.whole_frames && !odd)
+        while ((int32_t)(ready-lofty_mux.frames) <= 0) {
+            moon_wake();
+            ready = __atomic_load_n(&lofty_mux.published,__ATOMIC_ACQUIRE);
+        }
     unsigned queued = __atomic_load_n(&dvb.produced,__ATOMIC_ACQUIRE)-dvb.consumed;
     bool complete = (int32_t)(ready-lofty_mux.frames) > 0;
     // The producer owns phase until it has actually resumed. waiting alone

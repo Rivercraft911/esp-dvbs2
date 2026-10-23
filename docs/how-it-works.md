@@ -198,7 +198,7 @@ frame is fully published. Acquire/release counters transfer page ownership;
 the producer arms its wait before rechecking space, and the consumer notifies
 it once per completed bank. Physical cursors survive 32-bit counter wrap.
 
-The fill never waits. At each PLFRAME boundary it admits a complete frame, or
+A keyed or paced fill never waits. At each PLFRAME boundary it admits a complete frame, or
 a partial frame covered by a measured production bound. Let G be the largest
 recurring page-publication gap after bulk mapping, excluding full-queue sleep,
 W = 2G cycles/page, P the ready pages, and R = 9 reserve pages. Wake allowance
@@ -216,7 +216,9 @@ it cannot cover arbitrary CPU starvation. Records expose bound misses and dummie
 If admission fails, a standard 3,330-symbol DVB-S2 dummy PLFRAME preserves framing
 (EN 302 307-1 §5.5.1). Dummy pairs retain four-symbol rounding and vector alignment;
 boundary history is spliced into the same renderer. No data frame or input byte
-is skipped. Startup and steady dummies are counted separately.
+is skipped. Startup and steady dummies are counted separately. A radio-off dump is not real
+time, so its fill waits at each boundary for the whole next frame and never inserts a dummy:
+its bytes cannot depend on how far the encoder got ([fixtures](../tests/data/README.md)).
 
 The [self-check](../examples/self-check/README.md) checks a golden dump and all
 three paced code rates. Profiling adds bounded work and can insert steady dummies;

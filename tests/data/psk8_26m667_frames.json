@@ -4,7 +4,9 @@
     "data_only_crc32": 2061900610
   },
   "15/3/80/16": {
-    "dummy_before": [
+    "dummy_before": [],
+    "data_only_crc32": 1873478180,
+    "forced_dummy_before": [
       4,
       4,
       7,
@@ -14,10 +16,12 @@
       13,
       13
     ],
-    "data_only_crc32": 1873478180
+    "forced_crc32": 3631096604
   },
   "17/3/80/16": {
-    "dummy_before": [
+    "dummy_before": [],
+    "data_only_crc32": 233370528,
+    "forced_dummy_before": [
       2,
       2,
       3,
@@ -41,6 +45,6 @@
       12,
       12
     ],
-    "data_only_crc32": 233370528
+    "forced_crc32": 1787558147
   }
 }

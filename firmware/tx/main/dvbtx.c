@@ -140,6 +140,7 @@ typedef struct {
     struct { uint32_t words, cycles; } handoff[2];
     uint32_t queue_ready;
     bool queue_auto;
+    bool whole_frames;             // dumps: wait for each whole frame, never a timing dummy
     uint32_t first_dummy_frame;
     unsigned resident_limit;
     uint32_t render_warm_cycles;
@@ -429,10 +430,11 @@ static bool lofty_dummy_init(void)
 #include "lofty_consumer.inc"
 
 // The synthetic payload is one xorshift32 byte stream. xorshift32 is linear over GF(2), so a
-// state K steps ahead is M^K x for the 32x32 matrix M^K, stored by columns. For one frame
-// length, eight PIE lanes then generate eight contiguous K-byte blocks at once
-// (payload_pie.S); the scalar loop keeps the remainder, other lengths and the host build.
-static struct { size_t bytes; unsigned k; uint32_t jump[32]; } xorshift;
+// state K steps ahead is M^K x for the 32x32 matrix M^K, stored as eight nibble tables
+// (eight lookups per jump). For one frame length, eight PIE lanes then generate eight
+// contiguous K-byte blocks at once (payload_pie.S); the scalar loop keeps the remainder,
+// other lengths and the host build.
+static struct { size_t bytes; unsigned k; uint32_t jump[8][16]; } xorshift;
 
 static uint32_t xorshift_step(uint32_t x)
 {
@@ -445,12 +447,14 @@ static uint32_t xorshift_step(uint32_t x)
 static void xorshift_prepare(size_t bytes)
 {
     xorshift.bytes = xorshift.k = 0;
+    memset(xorshift.jump,0,sizeof xorshift.jump);
     const unsigned k = (unsigned)(bytes/8) & ~3u;
     if (k < 64) return;
     for (unsigned i = 0; i < 32; ++i) {
         uint32_t v = 1u << i;
         for (unsigned s = 0; s < k; ++s) v = xorshift_step(v);
-        xorshift.jump[i] = v;
+        for (unsigned n = 0; n < 16; ++n)
+            if (n & (1u << (i&3))) xorshift.jump[i/4][n] ^= v;
     }
     xorshift.bytes = bytes;
     xorshift.k = k;
@@ -467,8 +471,9 @@ static __attribute__((noinline)) void payload_fill(uint8_t *dst, size_t n, uint3
         uint32_t lanes[8] __attribute__((aligned(16)));
         lanes[0] = *x;
         for (unsigned j = 1; j < 8; ++j) {
-            uint32_t y = 0, v = lanes[j-1];
-            for (unsigned i = 0; v; ++i, v >>= 1) if (v & 1) y ^= xorshift.jump[i];
+            const uint32_t v = lanes[j-1];
+            uint32_t y = 0;
+            for (unsigned i = 0; i < 8; ++i) y ^= xorshift.jump[i][(v>>(4*i))&15];
             lanes[j] = y;
         }
 #ifdef __XTENSA__
@@ -547,25 +552,36 @@ static void synthetic_payload(encoder_t *e, size_t bytes, uint32_t *seed)
 static radio_s3_fill_fn encoder_fill(void) { return vcm_enc.vcm ? fill_vcm : fill; }
 
 // Core 0: frame after frame into the ring, waiting while every slot is still needed.
+// Marks change in place: by-value 32-byte marks cost four ROM memcpy calls per stage.
 typedef struct {
     stream_mark_t clock;
-    uint64_t wait;
+    uint32_t wait;                 // low word of queue_wait_cycles; only differences are used
 } encoder_mark_t;
 
-static inline __attribute__((always_inline)) encoder_mark_t encoder_mark(void)
+static inline __attribute__((always_inline)) void encoder_mark_at(encoder_mark_t *m)
 {
-    encoder_mark_t m = {.clock=dvb.profile ? stream_mark() : stream_mark_cycles()};
-    m.wait = dvb.queue_wait_cycles;
-    return m;
+    m->wait = (uint32_t)dvb.queue_wait_cycles;
+    stream_mark_at(&m->clock,dvb.profile);
 }
 
-static inline __attribute__((always_inline)) encoder_mark_t encoder_record(stream_profile_t *p, encoder_mark_t before)
+static inline __attribute__((always_inline)) void encoder_mark_copy(encoder_mark_t *to, const encoder_mark_t *from)
 {
-    const encoder_mark_t after = encoder_mark();
-    stream_mark_t active = before.clock;
-    active.cycles += (uint32_t)(after.wait-before.wait);
-    stream_record(p,active,after.clock);
-    return after;
+    to->clock.cycles = from->clock.cycles;
+    to->clock.flash_miss = from->clock.flash_miss;
+    to->clock.psram_miss = from->clock.psram_miss;
+    to->clock.data_access = from->clock.data_access;
+    to->clock.instruction_miss = from->clock.instruction_miss;
+    to->wait = from->wait;
+}
+
+// Record the stage since *before, less full-queue waits, and start the next one.
+static inline __attribute__((always_inline)) void encoder_record(stream_profile_t *p, encoder_mark_t *before)
+{
+    encoder_mark_t after;
+    encoder_mark_at(&after);
+    before->clock.cycles += after.wait-before->wait;
+    stream_record_at(p,&before->clock,&after.clock);
+    encoder_mark_copy(before,&after);
 }
 
 #define ENCODER_TASK encoder_task
@@ -765,6 +781,7 @@ static size_t start_encoder_options(const char *cmd, unsigned modcod, unsigned l
         lofty_mux.admission_gap = UINT32_MAX;
         lofty_mux.admission_pages = LOFTY_FRAME_PAGES | (LOFTY_FRAME_PAGES<<8);
         lofty_mux.queue_auto = auto_pages;
+        lofty_mux.whole_frames = !strcmp(cmd,"dvbdump");
     }
     dvb.queue_pages = lofty ? (modcod == 17 ? 46 : modcod == 13 ? LOFTY_MAX_PAGES : LOFTY_PAGES) : MACHINE_PAGES;
     if (lofty && lofty_mux.queue_auto) dvb.queue_pages = 0; // fixed in radio_s3_stream_ready
@@ -984,7 +1001,10 @@ static size_t start_encoder_options(const char *cmd, unsigned modcod, unsigned l
     if (enc.packed) enc.payload = dvbs2_fast_payload(enc.fast);
     if (!moon) dvb.win = enc.ws_borrowed && sps == 3 ? (uint8_t *)enc.ws+DVBS2_FAST_WORKSPACE_USED : resident ? (enc.ws ? (uint8_t *)enc.ws + DVBS2_FAST_WORKSPACE_USED : NULL) :
                         run_take(dvb.win_bytes, 16, internal);
-    if (!moon && resident && mode->t > 8 && !input && !input_bch)
+    // QPSK at 80 MS/s keeps byte/pair BCH with input too: nibble BCH cost QPSK 9/10 at
+    // 33.33 Msym/s 27k cycles a frame. 33m333 caches its tables with the rest.
+    const bool input_byte_bch = input && quads;
+    if (!moon && resident && mode->t > 8 && (!input || input_byte_bch) && !input_bch)
         enc.bch = run_take(DVBS2_BCH_CACHE_BYTES, 16, internal);
     if (!enc.packed) {
         // QPSK: main's order and sizes, so the PSRAM addresses, and with them the data cache
@@ -999,11 +1019,11 @@ static size_t start_encoder_options(const char *cmd, unsigned modcod, unsigned l
     // At 8-sps 8PSK the PSRAM workspace needs the sparse mapper's smaller
     // cache footprint. Its temporary phases reuse the existing context scratch.
     if ((!moon && (!dvb.win || !enc.filler)) || !enc.fast || !enc.ws || !enc.payload || !taps ||
-            (!moon && resident && mode->t > 8 && !input && !enc.bch) || (!enc.packed && !enc.slots) ||
+            (!moon && resident && mode->t > 8 && (!input || input_byte_bch) && !enc.bch) || (!enc.packed && !enc.slots) ||
             (!moon && quads && !enc.slot[nslots-1]) ||
             dvbs2_fast_prepare(enc.fast, mode, PILOTS,
                               15 | (fractional ? DVBS2_RO_20 : 0) | (quads ? DVBS2_MAP_QUADS : 0) |
-                              (input && !input_bch && !moon ? DVBS2_BCH_NIBBLE : 0) |
+                              (input && !input_bch && !moon && !input_byte_bch ? DVBS2_BCH_NIBBLE : 0) |
                               (!moon && mode->t == 8 && mode->bits_per_symbol == 2 && !quads ? DVBS2_BCH_NIBBLE : 0) |
                               (resident ? 0 : (mode->t == 8 && !input ? 0 : DVBS2_BCH_NIBBLE) | DVBS2_MAP_SPARSE)) ||
             (enc.bch && dvbs2_fast_cache_bch(enc.fast, enc.bch))) {
@@ -1022,8 +1042,9 @@ static size_t start_encoder_options(const char *cmd, unsigned modcod, unsigned l
             return 0;
         }
     }
+    if (lofty) (void)dvbs2_fast_cache_pack(enc.fast); // unrolled LDPC pack at 2/3, 5/6, 9/10
     if (lofty && mode->t > 8) {
-        // T1's low halves are read every two bytes: keep them internal, beside T0.
+        // T1 is read every two bytes: keep it internal, beside T0.
         enc.pair_bch = run_take(DVBS2_BCH_PAIR_BYTES,16,internal);
         if (!enc.pair_bch || dvbs2_fast_cache_bch_pair(enc.fast,enc.pair_bch)) {
             printf("@{\"cmd\":\"%s\",\"error\":\"BCH pair allocation failed\"}\n",cmd);

@@ -50,9 +50,9 @@ static void ENCODER_TASK(void *arg)
             ulTaskNotifyTake(pdTRUE, e->packed ? portMAX_DELAY : 1);
             if (e->failed) goto done;
         }
-        encoder_mark_t before = encoder_mark();
-        const uint32_t start = before.clock.cycles;
-        const encoder_mark_t frame_start = before;
+        encoder_mark_t before;
+        encoder_mark_at(&before);
+        const uint32_t start = before.clock.cycles, start_wait = before.wait;
         uint32_t input_cycles = 0, mode_cycles = 0;
         if (ENCODER_VCM) {
             const uint32_t t0=esp_cpu_get_cycle_count();
@@ -83,43 +83,47 @@ static void ENCODER_TASK(void *arg)
             if (e->stop) goto done;
             if (input_cycles > e->input_frame_cycles_max) e->input_frame_cycles_max = input_cycles;
         } else synthetic_payload(e,bytes,&x);
+        uint32_t kernel_start, kernel_wait;
         if (dvb.profile) {
-            const encoder_mark_t after = encoder_mark();
-            encoder_mark_t active = before;
-            if (input) active.clock.cycles = after.clock.cycles-input_cycles;
-            stream_record(&e->stage[0],active.clock,after.clock);
+            encoder_mark_t after;
+            encoder_mark_at(&after);
+            if (input) before.clock.cycles = after.clock.cycles-input_cycles;
+            stream_record_at(&e->stage[0],&before.clock,&after.clock);
             // RX sleeps are excluded from input_cycles.
-            before = after;
+            encoder_mark_copy(&before,&after);
+            kernel_start = before.clock.cycles, kernel_wait = before.wait;
+        } else {
+            kernel_start = esp_cpu_get_cycle_count();
+            kernel_wait = (uint32_t)dvb.queue_wait_cycles;
         }
-        const encoder_mark_t kernel_start = dvb.profile ? before : encoder_mark();
         int rc;
         if (dvb.profile || dvb.moon) {
             rc = input == PV_TS ? dvbs2_fast_bb_ts(e->fast, e->ws, &ts, payload, bytes) :
                                   dvbs2_fast_bb_gcs(e->fast, e->ws, payload, bytes * 8);
-            before = encoder_record(&e->stage[1],before);
+            encoder_record(&e->stage[1],&before);
             if (!rc) {
                 dvbs2_fast_bch(e->fast, e->ws);
-                before = encoder_record(&e->stage[2],before);
+                encoder_record(&e->stage[2],&before);
                 dvbs2_fast_ldpc(e->fast, e->ws);
-                before = encoder_record(&e->stage[3],before);
+                encoder_record(&e->stage[3],&before);
                 if (dvb.moon) {
                     __atomic_store_n(&dvb.producer_phase,QUEUE_MAP,__ATOMIC_RELEASE);
                     rc = moon_start();
-                    before = encoder_record(&e->stage[4],before);
+                    encoder_record(&e->stage[4],&before);
                     if (!rc) rc = moon_map(false);
-                    before = encoder_record(&e->stage[6],before);
+                    encoder_record(&e->stage[6],&before);
                 } else if (e->packed) {
                     dvbs2_fast_map_packed(e->fast, e->ws, out);
                 } else {
                     dvbs2_fast_map(e->fast, e->ws, out);
                 }
-                before = encoder_record(&e->stage[4],before);
+                encoder_record(&e->stage[4],&before);
                 __atomic_store_n(&dvb.producer_phase,QUEUE_PL,__ATOMIC_RELEASE);
                 if (!dvb.moon) {
                     if (e->packed) dvbs2_fast_pl_packed(e->fast,out);
                     else dvbs2_fast_pl(e->fast,out);
                 }
-                before = encoder_record(&e->stage[5],before);
+                encoder_record(&e->stage[5],&before);
             }
         } else if (e->packed) {
             rc = dvbs2_encode_frame_packed(e->fast, e->ws, input == PV_TS ? &ts : NULL, payload, bytes * 8, out);
@@ -131,13 +135,12 @@ static void ENCODER_TASK(void *arg)
             e->failed = true;
             goto done;
         }
-        const encoder_mark_t end = encoder_mark();
+        const uint32_t end_wait = (uint32_t)dvb.queue_wait_cycles, end = esp_cpu_get_cycle_count();
         // As with waiting for a legacy frame slot, full-queue backpressure is
         // outside encoder work. Interrupts and runnable-task delays stay timed.
-        const uint32_t kernel_spent = end.clock.cycles-kernel_start.clock.cycles-
-                                      (uint32_t)(end.wait-kernel_start.wait);
+        const uint32_t kernel_spent = end-kernel_start-(end_wait-kernel_wait);
         const uint32_t spent = input ? mode_cycles+input_cycles+kernel_spent :
-            end.clock.cycles-start-(uint32_t)(end.wait-frame_start.wait);
+            end-start-(end_wait-start_wait);
         const uint32_t work = kernel_spent;
         const uint32_t frame_work = spent;
         e->frame_work_cycles += frame_work;
