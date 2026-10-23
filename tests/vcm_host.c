@@ -41,8 +41,8 @@ int main(int argc, char **argv)
     if (sps == 8 && initial == 12) {
         native_internal_limit=16384; native_internal_largest=12288;
     }
-    // GCS input takes its slot block and CRC table from internal run memory too.
-    const size_t ingress=control ? INGRESS_SLOTS*INGRESS_SLOT_BYTES+4096 : 0;
+    // GCS input takes its slot block from internal run memory too (the CRC table came with spiinput).
+    const size_t ingress=control ? INGRESS_SLOTS*INGRESS_SLOT_BYTES : 0;
     native_internal_limit+=ingress;
     if (native_internal_largest < INGRESS_SLOTS*INGRESS_SLOT_BYTES) native_internal_largest=control ? INGRESS_SLOTS*INGRESS_SLOT_BYTES : native_internal_largest;
     const unsigned frames=control || ota ? 32 : 2*modes*hold;

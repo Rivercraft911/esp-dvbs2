@@ -177,7 +177,7 @@ const char *spi_input_source(void) { return "spi"; }
 esp_err_t spi_input_start(void) {
     if (native_input) {
         // Charge run memory as spi_input_start does on the board: the slot block unless the
-        // encoder lent slots, and the 4 KiB CRC table, both internal.
+        // encoder lent slots. The 4 KiB CRC table came from the heap with spiinput.
         uint8_t *slots[INGRESS_SLOTS];
         memcpy(slots, native_buffers, sizeof slots);
         if (!slots[0]) {
@@ -185,7 +185,6 @@ esp_err_t spi_input_start(void) {
             if (!block) return ESP_ERR_NO_MEM;
             for (unsigned i = 0; i < INGRESS_SLOTS; ++i) slots[i] = block+i*INGRESS_SLOT_BYTES;
         }
-        if (!run_take(4096, 16, MALLOC_CAP_INTERNAL)) return ESP_ERR_NO_MEM;
         input_sim = sim_new(); sim_ring(input_sim)->type = native_input;
         sim_ring(input_sim)->control=native_control;
         for (unsigned i = 0; i < INGRESS_SLOTS; ++i) sim_set_buffer(input_sim, i, slots[i]);
@@ -532,7 +531,7 @@ int main(int argc, char **argv)
             assert(native_buffers[i]+INGRESS_SLOT_BYTES <= enc.bch ||
                    native_buffers[i] >= enc.bch+DVBS2_BCH_CACHE_BYTES);
     }
-    const int input_takes = native_input ? (native_buffers[0] ? 1 : 2) : 0; // CRC table, slot block
+    const int input_takes = native_input && !native_buffers[0]; // the slot block
     if (!moon) assert(allocations == input_takes + (sps == 40 ? 7 : 4 + (mc >= 12 && !short_pulse) +
                           (resident && (mode->t > 8 || mc >= 12) && (!native_input || quads) && !borrowed_bch) + !resident));
     for (unsigned i = 0; i < 64; ++i) {
@@ -543,8 +542,8 @@ int main(int argc, char **argv)
     }
     if (native_input) {
         // Match the input guide's requested SRAM for every supported mode, including the
-        // input's own slot block (unless borrowed) and CRC table. Driver and task overhead
-        // is outside this host allocator.
+        // input's own slot block (unless borrowed). The CRC table, driver and task overhead
+        // are outside this host allocator.
         size_t internal = 0;
         for (unsigned i = 0; i < 64; ++i)
             if (native_blocks[i].p && (native_blocks[i].caps & MALLOC_CAP_INTERNAL))
@@ -558,7 +557,7 @@ int main(int argc, char **argv)
         // Eight slots fit the slow QPSK tails and short-pulse 8PSK 8/9 or
         // 9/10 tails. All other layouts take the slot block from run memory.
         const bool borrowed = mc < 12 ? sps == 8 || sps == 40 : short_pulse && mc >= 16;
-        const size_t ingress = 4096+(borrowed ? 0 : INGRESS_SLOTS*INGRESS_SLOT_BYTES);
+        const size_t ingress = borrowed ? 0 : INGRESS_SLOTS*INGRESS_SLOT_BYTES;
         assert(internal == expected+byte_bch+ingress+(sps == 40 ? 0 : CACHED_FOR(rate)*sizeof(uint32_t)));
         assert((native_buffers[0] != NULL) == borrowed);
     }

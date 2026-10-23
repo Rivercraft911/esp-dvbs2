@@ -29,6 +29,9 @@ static bool replay, pv_mode, usb_mode;
 static uint8_t *borrowed[INGRESS_SLOTS];
 static unsigned borrowed_count, saved_borrowed;
 static ingress_ring *rx;
+// The CRC-32 tables come with the wire from spiinput, in internal heap, so 8PSK 5/6 at
+// 26.67 Msym/s still finds run memory for its pair BCH table and the slots.
+static uint32_t *crc_table;
 static bool (*control_handler)(unsigned);
 void spi_input_control(bool (*control)(unsigned)) { control_handler=control; usb_input_control(control); }
 static ingress_stats saved;
@@ -206,7 +209,7 @@ esp_err_t spi_input_start(void)
         if (!slots) return ESP_ERR_NO_MEM;
         for (unsigned i=0; i<INGRESS_SLOTS; ++i) cfg.buffers[i]=slots+i*INGRESS_SLOT_BYTES;
     }
-    cfg.crc=run_take(4096, 16, MALLOC_CAP_INTERNAL);
+    cfg.crc=crc_table ? crc_table : run_take(4096, 16, MALLOC_CAP_INTERNAL);
     if (!cfg.crc) return ESP_ERR_NO_MEM;
     cfg.received=received; cfg.ctx=xTaskGetCurrentTaskHandle();
     const esp_err_t err=ingress_spi_start(&cfg, &rx);
@@ -361,7 +364,11 @@ void spi_input_command(const char *cmd, const char *args)
         // them back. Commands run on core 0, the encoder's core, where the interrupt belongs.
         esp_err_t err=ESP_OK;
         if (type) err=ingress_spi_provision(raw);
-        else ingress_spi_release();
+        else { ingress_spi_release(); heap_caps_free(crc_table); crc_table=NULL; }
+        if (err==ESP_OK && type && !crc_table) {
+            crc_table=heap_caps_malloc(4096, MALLOC_CAP_INTERNAL);
+            if (!crc_table) err=ESP_ERR_NO_MEM;
+        }
         printf("@{\"cmd\":\"spiinput\",\"input\":\"%s\",\"wire\":\"%s\",\"replay\":%s,\"status\":\"%s\"}\n",
                type==PV_TS?"ts":type==PV_GCS?"gcs":"off",type?(raw?"raw":"quad"):"off",replay?"true":"false",
                esp_err_to_name(err)); return;
