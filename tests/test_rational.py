@@ -102,6 +102,45 @@ def test(output=None, receiver=None):
         golden = ROOT/'tests/data/moon_stream_crcs.json'
         assert crcs == json.loads(golden.read_text())
         if output: (output/'crcs.json').write_text(json.dumps(crcs,indent=2)+'\n')
+        ts_replay(exe,out)
+
+
+def ts_replay(exe, out):
+    """TS replay input at 100/3 Msym/s: every sample against the independent Python encoder,
+    whose TS BBHEADERs carry the 0.20 roll-off the pulse uses (MATYPE-1 0xf2)."""
+    import dvbs2
+    from rx import ts_messages
+    num, den, frames = 12, 5, 16
+    cycle = np.frombuffer(b''.join(ts_messages(0, 8, True)), np.uint8)   # spiinput ... replay
+    crcs = {}
+    for mc in (4, 11):
+        iq = out/f'ts-{mc}-{num}-{den}.iq'
+        result = subprocess.run([str(exe),str(mc),str(num),str(iq),'N0CALL','80000000',str(frames),'3'],
+                                capture_output=True,text=True,timeout=90)
+        assert result.returncode == 0, (result.stdout,result.stderr)
+        dumps = [json.loads(l[1:]) for l in result.stdout.splitlines() if l.startswith('@') and 'crc32' in l]
+        assert dumps and all(r['input'] == 'ts' and r['rolloff'] == .2 for r in dumps)
+        rate, modulation = onair.mode(mc)
+        size = (dvbs2.code(rate).kbch-80)//8
+        stream = np.tile(cycle, (frames+2)*size//len(cycle)+2)
+        stream = stream[:len(stream)//188*188]
+        bbs = dvbs2.ts_bbframes(stream, rate, ro=.20)[:frames+2]
+        phases = np.concatenate([dvbs2.plframe_phases(dvbs2.fecframe(b, rate), rate, modulation=modulation)
+                                 for b in bbs])
+        actual = np.fromfile(iq, dtype='<i2').reshape(-1,2)
+        count = (frames*onair.frame_symbols(mc)*num+den-1)//den
+        assert len(actual) == count
+        c = np.r_[np.zeros(6,np.uint8),phases//2,np.zeros((-len(phases))%5+8,np.uint8)]
+        c = np.pad(c,(0,(-len(c))%4))
+        packed = np.sum(c.reshape(-1,4) << np.array([6,4,2,0]),axis=1).astype(np.uint8)
+        expected = moon.shape(packed.tobytes(),0,(count+11)//12)[:count]
+        i = ((expected & 1023).astype(np.int16) ^ 512) - 512
+        q = (((expected >> 10) & 1023).astype(np.int16) ^ 512) - 512
+        np.testing.assert_array_equal(actual, np.column_stack((i, q)))
+        crcs[f'{mc}/{num}/80/{frames}'] = zlib.crc32(iq.read_bytes())
+        assert all(r['crc32'] == crcs[f'{mc}/{num}/80/{frames}'] for r in dumps)
+    assert crcs == json.loads((ROOT/'tests/data/ts_replay_crcs.json').read_text())
+    print('TS replay 100/3 Msym/s: every sample equals Python with roll-off 0.20 BBHEADERs, CRCs',crcs)
 
 
 if __name__ == '__main__':

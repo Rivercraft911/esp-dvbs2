@@ -53,6 +53,8 @@ class NativeEncoder:
             "dvbs2_bb_gcs_ro": (ct.c_int, [ct.c_void_p, ct.c_void_p, U8P, ct.c_size_t, ct.c_uint]),
             "dvbs2_bb_ts": (ct.c_int, [ct.c_void_p, ct.c_void_p, ct.c_void_p,
                                       U8P, ct.c_size_t]),
+            "dvbs2_bb_ts_ro": (ct.c_int, [ct.c_void_p, ct.c_void_p, ct.c_void_p,
+                                         U8P, ct.c_size_t, ct.c_uint]),
             "dvbs2_bb_scramble": (None, [ct.c_void_p, ct.c_void_p]),
             "dvbs2_bch": (None, [ct.c_void_p, ct.c_void_p]),
             "dvbs2_ldpc": (None, [ct.c_void_p, ct.c_void_p]),
@@ -204,7 +206,30 @@ def test_rolloff(native):
         before = bytes(native.ws)
         assert native.lib.dvbs2_bb_gcs_ro(native.ws, mode, packed.ctypes.data_as(U8P), len(bits), 3) == -1
         assert bytes(native.ws) == before
-    print("roll-off: plain .35/.25/.20 and fast .20, every stage against Python, invalid code leaves workspace untouched")
+        # TS carries the same RO field (MATYPE-1 0xf0 | RO), plain and fast with RO_20.
+        size = (c.kbch - 80) // 8
+        packets = np.random.default_rng(mc+100).integers(0, 256, (-(-2*size // 188), 188), dtype=np.uint8)
+        packets[:, 0] = 0x47
+        stream = packets.ravel()
+        for ro, alpha in enumerate((.35, .25, .20)):
+            expected = d.ts_bbframes(packets, rate, ro=alpha)
+            state = ct.create_string_buffer(native.lib.state_size())
+            for k in range(2):
+                payload = stream[k*size:(k+1)*size]
+                assert native.lib.dvbs2_bb_ts_ro(native.ws, mode, state, payload.ctypes.data_as(U8P), size, ro) == 0
+                native.stages(expected[k], mode, rate, modulation, 1)
+        expected = d.ts_bbframes(packets, rate, ro=.20)
+        state = ct.create_string_buffer(native.lib.state_size())
+        for k in range(2):
+            payload = stream[k*size:(k+1)*size]
+            assert native.lib.dvbs2_fast_bb_ts(native.fast, native.ws, state, payload.ctypes.data_as(U8P), size) == 0
+            native.fast_stages(expected[k], mode, rate, modulation, 1, offset=k)
+        state = ct.create_string_buffer(native.lib.state_size())
+        before = bytes(native.ws) + bytes(state)
+        assert native.lib.dvbs2_bb_ts_ro(native.ws, mode, state, stream.ctypes.data_as(U8P), size, 3) == -1
+        assert bytes(native.ws) + bytes(state) == before
+    print("roll-off: GCS and TS plain .35/.25/.20 and fast .20, every stage against Python, "
+          "invalid code leaves workspace and TS state untouched")
 
 
 def test_ts(native):
