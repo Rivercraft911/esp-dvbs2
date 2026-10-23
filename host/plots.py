@@ -236,53 +236,181 @@ def rf_figures(out, *, iq_dir=None, check=False):
         assert waterfall.shape == (256, 1024) and np.isfinite(waterfall).all()
         if check:
             continue
-        style = {'font.family': 'DejaVu Sans', 'text.color': '#dce5ee',
-                 'axes.labelcolor': '#a1b0c2', 'axes.edgecolor': '#40516a',
-                 'xtick.color': '#a1b0c2', 'ytick.color': '#a1b0c2',
-                 'figure.facecolor': '#080e19', 'axes.facecolor': '#080e19',
-                 'xtick.top': False, 'ytick.right': False, 'xtick.direction': 'out',
-                 'ytick.direction': 'out', 'savefig.facecolor': '#080e19'}
-        with plt.rc_context(style):
-            fig, (ax, bx) = plt.subplots(2, 1, figsize=(11, 6.6), sharex=True,
-                                        gridspec_kw={'height_ratios': [1.25, 1]})
-            mode = 'QPSK 9/10' if row['modcod'] == 11 else '8PSK 9/10'
-            fig.text(.085, .94, f"{row['bandwidth_mhz']:g} MHz", fontsize=25)
-            fig.text(.085, .893, f"{mode}  /  {row['symbol_rate_hz']/1e6:.2f} Msym/s  /  "
-                     f"{row['payload_mbps']:g} Mb/s", fontsize=11, color='#a1b0c2')
-            fig.text(.965, .94, 'esp-dvbs2', ha='right', fontsize=12, color='#a1b0c2')
-            ax.plot(frequency, psd, color='#50deef', linewidth=1)
-            ax.fill_between(frequency, -135, psd, color='#50deef', alpha=.08)
-            ax.set(ylim=(-135, -80), ylabel='PSD (dBFS/Hz)')
-            ax.set_yticks([-130, -110, -90])
-            ax.grid(alpha=.18)
-            span = row['sample_rate_hz']/2e6
-            bx.imshow(waterfall, origin='lower', aspect='auto',
-                              extent=(row['center_mhz']-span, row['center_mhz']+span,
-                                      0, row['seconds']*1000),
-                              cmap='magma', vmin=-130, vmax=-85, interpolation='nearest')
-            bx.set(xlabel='Frequency (MHz)', ylabel='Time (ms)',
-                   xlim=(row['center_mhz']-span, row['center_mhz']+span))
-            bx.set_yticks([0, 10, 20, 30, 40])
-            for axis in (ax, bx):
-                axis.spines[['top', 'right']].set_visible(False)
-                axis.ticklabel_format(axis='x', style='plain', useOffset=False)
-            fig.subplots_adjust(left=.085, right=.965, top=.85, bottom=.095, hspace=.1)
-            out.mkdir(parents=True, exist_ok=True)
-            target = out/('rf-40mhz.png' if row['modcod'] == 11 else 'rf-36mhz.png')
-            fig.savefig(target, dpi=170, bbox_inches=None,
-                        metadata={'Software': 'esp-dvbs2 / Matplotlib'})
-            plt.close(fig)
-            print(target)
+        fig, (ax, bx) = plt.subplots(2, 1, figsize=(11, 6.2), sharex=True,
+                                    gridspec_kw={'height_ratios': [1, 1.15], 'hspace': 0.22})
+        mode = 'QPSK 9/10' if row['modcod'] == 11 else '8PSK 9/10'
+        ax.plot(frequency, psd, color=BLUE, linewidth=0.9)
+        ax.set(ylim=(-135, -80), ylabel='PSD (dBFS/Hz)',
+               title=f"Transmitted by an ESP32-S3, {mode} at {row['symbol_rate_hz']/1e6:.2f} Msym/s "
+                     f"({row['bandwidth_mhz']:g} MHz, {row['payload_mbps']:g} Mb/s)")
+        ax.set_yticks([-130, -120, -110, -100, -90, -80])
+        span = row['sample_rate_hz']/2e6
+        bx.imshow(waterfall, origin='lower', aspect='auto', vmin=-130, vmax=-85, interpolation='nearest',
+                  extent=(row['center_mhz']-span, row['center_mhz']+span, 0, row['seconds']*1000))
+        bx.grid(False)
+        bx.set(xlabel='Frequency (MHz)', ylabel='Time (ms)', title='Spectrogram, B200 at 50 MS/s',
+               xlim=(row['center_mhz']-span, row['center_mhz']+span))
+        bx.set_yticks([0, 10, 20, 30, 40])
+        bx.ticklabel_format(axis='x', style='plain', useOffset=False)
+        save_figure(fig, out/('rf-40mhz.png' if row['modcod'] == 11 else 'rf-36mhz.png'))
 
+
+def rx_summary(row, capture):
+    """Spectrum, spectrogram and constellation of one receiver capture (.sc8: int8 I, Q pairs,
+    floor(s10 / 4), what the receiver's rx_unpack produces). The constellation comes from the
+    receiver's own demodulator (firmware/components/dvbs2rx) built for the host."""
+    import tempfile
+    import rx_demod
+    pairs = np.fromfile(capture, np.int8).reshape(-1, 2).astype(np.float32) + 0.5
+    x = (pairs[:, 0] + 1j*pairs[:, 1]) / 128          # full scale: 128 int8 LSB
+    n, rate = row['fft'], row['sample_rate_hz']
+    ta, fa = row['time_average'], row['frequency_average']
+    rows = len(x) // (n*ta) * ta
+    window = np.hanning(n)
+    power = np.abs(np.fft.fftshift(np.fft.fft(x[:rows*n].reshape(rows, n)*window, axis=1), axes=1))**2
+    power /= rate * np.sum(window**2)
+    psd = power.mean(axis=0).reshape(n//fa, fa).mean(axis=1)
+    waterfall = power.reshape(rows//ta, ta, n//fa, fa).mean(axis=(1, 3))
+    freq = np.fft.fftshift(np.fft.fftfreq(n, 1/rate)).reshape(n//fa, fa).mean(axis=1)
+    keep = np.abs(freq) <= row['waterfall_span_mhz']*1e6
+    with tempfile.TemporaryDirectory() as tmp:
+        demod = rx_demod.Demod(rx_demod.build(tmp), row['modcod'], quick_lock=True,
+                               rate=row['symbol_rate_hz'])
+        demod.feed(rx_demod.sc8_words(capture))
+    checks = rx_demod.check(demod.frames, row['modcod'], False, row['callsign'], limit=20000)
+    assert len(checks) == row['frames'] and all(c['bit_errors'] == 0 for c in checks), capture
+    points = []
+    for frame in demod.frames:
+        soft = frame['llr'].astype(float)
+        if row['modcod'] >= 12:     # bits 2 and 3 are the point's axes after -pi/8 (dvbs2rx.h)
+            planes = soft.reshape(3, -1)[::-1] if row['modcod'] == 12 else soft.reshape(3, -1)
+            points.append((planes[1] + 1j*planes[2]) * np.sin(np.pi/8)/32 * np.exp(1j*np.pi/8))
+        else:                       # 32 per nominal axis a / sqrt(2)
+            points.append((soft[0::2] + 1j*soft[1::2]) / 32 / np.sqrt(2))
+    z = np.concatenate(points)
+    span = row['constellation_span']
+    hist = np.histogram2d(z.real, z.imag, bins=row['constellation_bins'],
+                          range=[[-span, span], [-span, span]])[0].T.astype('<u4')
+    return dict(frequency_hz=freq.astype('<f4'), psd=psd.astype('<f4'),
+                waterfall_frequency_hz=freq[keep].astype('<f4'),
+                waterfall_db=(10*np.log10(waterfall[:, keep])).astype('<f2'), constellation=hist)
+
+
+def rx_figures(out, *, iq_dir=None, check=False):
+    """Plot what the receiving S3 saw: its own 16 MS/s capture and its demodulator's symbols."""
+    from matplotlib.colors import LinearSegmentedColormap
+    from scipy.ndimage import gaussian_filter
+    from plotstyle import AXES
+    folder = ROOT / 'results/2026-10-23-rx-figures'
+    for row in [json.loads(s) for s in (folder/'runs.jsonl').read_text().splitlines()]:
+        path = folder/row['file']
+        if iq_dir is not None:
+            capture = iq_dir/row['id']/'capture.sc8'
+            assert hashlib.sha256(capture.read_bytes()).hexdigest() == row['capture_sha256']
+            fresh = rx_summary(row, capture)
+            if path.exists():
+                with np.load(path) as data:
+                    assert all(np.array_equal(data[k], v) for k, v in fresh.items()), path
+            else:
+                np.savez_compressed(path, **fresh)
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == row['sha256'], path
+        with np.load(path) as data:
+            frequency = data['frequency_hz']/1e6 + row['center_mhz']
+            psd = 10*np.log10(data['psd'])
+            waterfall = data['waterfall_db'].astype(float)
+            columns = data['waterfall_frequency_hz']/1e6 + row['center_mhz']
+            hist = data['constellation'].astype(float)
+        assert np.isfinite(waterfall).all() and hist.sum() > 0
+        if check:
+            continue
+        fig = plt.figure(figsize=(11, 5.1))
+        grid = fig.add_gridspec(2, 2, width_ratios=[1.75, 1], height_ratios=[1, 1.15],
+                                wspace=0.16, hspace=0.34)
+        ax, bx, cx = fig.add_subplot(grid[0, 0]), fig.add_subplot(grid[1, 0]), fig.add_subplot(grid[:, 1])
+        half = min(row['sample_rate_hz']/2e6, 1.6*row['bandwidth_mhz'])
+        lim = (row['center_mhz']-half, row['center_mhz']+half)
+        ax.plot(frequency, psd, color=BLUE, linewidth=0.9)
+        inside = (frequency >= lim[0]) & (frequency <= lim[1])
+        ax.set(xlim=lim, ylim=(np.floor(psd[inside].min()/5)*5 - 3, np.ceil(psd.max()/5)*5 + 3),
+               ylabel='PSD (dBFS/Hz)',
+               title=f"Received on an ESP32-S3, {row['mode']} at {row['symbol_rate_hz']/1e6:g} Msym/s")
+        seconds = waterfall.shape[0] * row['fft'] * row['time_average'] / row['sample_rate_hz']
+        step = columns[1] - columns[0]
+        low, high = np.percentile(waterfall, [2, 99.7])
+        bx.imshow(waterfall, origin='lower', aspect='auto', vmin=low, vmax=high, interpolation='nearest',
+                  extent=(columns[0]-step/2, columns[-1]+step/2, 0, seconds*1000))
+        bx.grid(False)
+        bx.set(xlim=lim, xlabel='Frequency (MHz)', ylabel='Time (ms)', title='Spectrogram')
+        for axis in (ax, bx):
+            axis.ticklabel_format(axis='x', style='plain', useOffset=False)
+        # Soft bits are integers, so points sit on a lattice (1/32 of the nominal axis amplitude);
+        # smooth over about half a lattice step so the density shows the noise, not the lattice.
+        span = row['constellation_span']
+        lattice = np.sin(np.pi/8)/32 if row['modcod'] >= 12 else 1/32/np.sqrt(2)
+        density = np.log10(gaussian_filter(hist, 0.6*lattice*row['constellation_bins']/(2*span)) + 0.05)
+        cmap = LinearSegmentedColormap.from_list(
+            'constellation', [AXES, '#0b2f57', '#1565c0', BLUE, '#a8dcff', '#ffffff'])
+        cx.imshow(density, origin='lower', extent=(-span, span, -span, span), cmap=cmap,
+                  interpolation='bicubic', vmin=np.log10(0.05))
+        circle = np.linspace(0, 2*np.pi, 400)
+        cx.plot(np.cos(circle), np.sin(circle), color='#ffffff', alpha=0.25, linewidth=0.6,
+                linestyle='--', zorder=0)
+        cx.set(xlim=(-span, span), ylim=(-span, span), aspect='equal', xlabel='In-phase',
+               ylabel='Quadrature', title=f"Constellation, MER {row['data_mer_db_median']:.1f} dB")
+        cx.set_xticks([-1, -0.5, 0, 0.5, 1])
+        cx.set_yticks([-1, -0.5, 0, 0.5, 1])
+        save_figure(fig, out/f"rx-{row['id'].split('-')[-1]}.png")
+
+
+
+def rx_budget(out):
+    """How busy each receiver core was in the live runs of results/2026-10-23-rx-5m-margin."""
+    from plotstyle import ORANGE, YELLOW
+    runs = {}
+    for line in (ROOT/'results/2026-10-23-rx-5m-margin/runs.jsonl').read_text().splitlines():
+        row = json.loads(line)
+        if row.get('role') != 'rx':
+            continue
+        board = row['board'][-1]
+        assert board['status'] == 'ESP_OK' and row['check']['passed']
+        cycles = board['samples'] * 15                  # 240 MHz / 16 MS/s, the run's length
+        key = (board['modcod'], board['symbol_rate'])
+        runs.setdefault(key, []).append([100*board[k]/cycles for k in
+                                         ('push_cycles', 'release_cycles', 'fec_cycles')]
+                                        + [row['check']['payload_mbps']])
+    names = {(7, 1000000): 'QPSK 3/4, 1 Msym/s', (7, 5000000): 'QPSK 3/4, 5 Msym/s',
+             (16, 5000000): '8PSK 8/9, 5 Msym/s'}
+    keys = [k for k in names if k in runs]
+    mean = {k: np.mean(runs[k], axis=0) for k in keys}
+    fig, ax = plt.subplots(figsize=(WIDTH, 3.0))
+    height = 0.34
+    for y, key in enumerate(keys):
+        demod, release, check, mbps = mean[key]
+        ax.barh(y - height/2 - 0.02, demod, height, color=BLUE, label='Core 1: capture to symbols' if y == 0 else None)
+        ax.barh(y + height/2 + 0.02, release, height, color=ORANGE, label='Core 0: symbols to bits' if y == 0 else None)
+        ax.barh(y + height/2 + 0.02, check, height, left=release, color=YELLOW,
+                label='Core 0: re-encode check' if y == 0 else None)
+        ax.text(demod + 1, y - height/2 - 0.02, f'{demod:.0f}%', va='center', fontsize=8)
+        ax.text(release + check + 1, y + height/2 + 0.02, f'{release + check:.0f}%', va='center', fontsize=8)
+    ax.set(yticks=range(len(keys)), xlim=(0, 100), ylim=(len(keys) - 0.45, -0.75),
+           xlabel='Share of the core during a 45 s run (%)', title='Receiver load per core, measured on the board')
+    ax.set_yticklabels([f"{names[k]}\n{mean[k][3]:.2f} Mb/s" for k in keys])
+    ax.grid(axis='y', visible=False)
+    ax.legend(loc='upper right', ncol=1)
+    save_figure(fig, out/'rx-load.png')
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--out', type=Path, default=ROOT/'docs/img')
     parser.add_argument('--check', action='store_true', help='validate all point provenance without drawing')
-    parser.add_argument('--rf-only', action='store_true', help='only the 36/40 MHz RF figures')
+    parser.add_argument('--rf-only', action='store_true', help='only the capture figures (RF and receiver)')
     parser.add_argument('--rf-iq-dir', type=Path, help='rebuild RF summaries from original capture folders')
+    parser.add_argument('--rx-iq-dir', type=Path, help='rebuild receiver summaries from original captures')
     args = parser.parse_args()
     rf_figures(args.out, iq_dir=args.rf_iq_dir, check=args.check)
+    rx_figures(args.out, iq_dir=args.rx_iq_dir, check=args.check)
+    if not args.check:
+        rx_budget(args.out)
     if args.rf_only:
         return
     table = load_points()
