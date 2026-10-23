@@ -60,6 +60,26 @@ class Settings(ct.Structure):
                 ("miso", ct.c_int8), ("cs", ct.c_int8)]
 
 
+class TsQueue(ct.Structure):
+    _fields_ = [("slots", ct.c_void_p), ("size", ct.c_uint32), ("head", ct.c_uint32),
+                ("tail", ct.c_uint32), ("dropped", ct.c_uint32), ("peak", ct.c_uint32)]
+
+
+class TsStats(ct.Structure):
+    _fields_ = [("datagrams", ct.c_uint32), ("packets", ct.c_uint32), ("partial", ct.c_uint32),
+                ("full", ct.c_uint32), ("max_send_cycles", ct.c_uint32),
+                ("send_cycles", ct.c_uint64), ("error", ct.c_int)]
+
+
+class TsSender(ct.Structure):
+    _fields_ = [("chip", ct.c_void_p), ("sock", ct.c_uint), ("q", ct.POINTER(TsQueue)),
+                ("buf", ct.c_void_p * 2), ("clock", ct.c_void_p), ("next", ct.c_uint),
+                ("held", ct.c_uint16), ("st", TsStats)]
+
+
+CLOCK = ct.CFUNCTYPE(ct.c_uint32)
+
+
 def check(condition, message):
     if not condition:
         raise AssertionError(message)
@@ -83,7 +103,7 @@ class Native:
             "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-fPIC", "-shared",
             "-I", str(COMPONENT / "include"), str(COMPONENT / "w5500.c"),
             str(COMPONENT / "w5500_settings.c"), str(COMPONENT / "w5500_diag.c"),
-            str(COMPONENT / "w5500_gpspi.c"),
+            str(COMPONENT / "w5500_gpspi.c"), str(COMPONENT / "w5500_ts.c"),
             str(ROOT / "tests/w5500_fake.c"),
             "-o", str(library)], check=True)
         lib = self.lib = ct.CDLL(str(library))
@@ -127,6 +147,12 @@ class Native:
             "w5500_settings_default": (None, [ct.POINTER(Settings)]),
             "w5500_settings_parse": (ct.c_int, [ct.POINTER(Settings), b]),
             "w5500_settings_json": (ct.c_int, [ct.POINTER(Settings), b, ct.c_size_t]),
+            "w5500_ts_queue_init": (None, [ct.POINTER(TsQueue), p, ct.c_uint32]),
+            "w5500_ts_push": (ct.c_bool, [ct.POINTER(TsQueue), b]),
+            "w5500_ts_waiting": (ct.c_uint32, [ct.POINTER(TsQueue)]),
+            "w5500_ts_sender_init": (None, [ct.POINTER(TsSender), p, ct.c_uint,
+                                            ct.POINTER(TsQueue), ct.POINTER(ct.c_void_p), p]),
+            "w5500_ts_send": (ct.c_int, [ct.POINTER(TsSender), ct.c_bool]),
         }
         for name, (result, arguments) in api.items():
             fn = getattr(lib, name)
@@ -817,6 +843,111 @@ def test_diag(native):
     check(run(False) == 0, "one buffer is fine without posting")
 
 
+class TsLink:
+    """A TS queue of `size` packets and a datagram sender on socket 0 of `chip`."""
+
+    def __init__(self, native, chip, size, clock=None):
+        self.lib, self.chip = native.lib, chip
+        self.slots = ct.create_string_buffer(188 * size)
+        self.bufs = [ct.create_string_buffer(TS_DATAGRAM) for _ in range(2)]
+        self.q, self.t = TsQueue(), TsSender()
+        self.lib.w5500_ts_queue_init(ct.byref(self.q), self.slots, size)
+        pair = (ct.c_void_p * 2)(*(ct.addressof(b) for b in self.bufs))
+        self.clock = clock
+        self.lib.w5500_ts_sender_init(ct.byref(self.t), chip.w, 0, ct.byref(self.q), pair,
+                                      ct.cast(clock, ct.c_void_p) if clock else None)
+
+    def push(self, packet):
+        return self.lib.w5500_ts_push(ct.byref(self.q), packet)
+
+    def send(self, partial=False):
+        return self.lib.w5500_ts_send(ct.byref(self.t), partial)
+
+    def waiting(self):
+        return self.lib.w5500_ts_waiting(ct.byref(self.q))
+
+
+def ts_packet(n):
+    return bytes([0x47, n >> 8 & 0x1F, n & 0xFF, 0x10 | n & 15]) + bytes(
+        (n * 7 + i) & 0xFF for i in range(184))
+
+
+def test_ts(native):
+    """The receiver's Ethernet egress: packets in order, in datagrams of seven, nothing waits."""
+    for mode in ({}, DIRECT):
+        rng = random.Random(10)
+        chip = sender(native, **mode)
+        link = TsLink(native, chip, 64)
+        packets, n = [], 0
+        for _ in range(60):                     # frames of 1 to 12 packets, 1.4 ms apart
+            for _ in range(rng.randint(1, 12)):
+                packets.append(ts_packet(n))
+                check(link.push(packets[-1]), "room")
+                n += 1
+            check(link.send() == OK and link.waiting() < 7, "full datagrams leave at once")
+            chip.lib.fake_advance(chip.f, 1400.0)
+        rest = link.waiting()
+        check(link.send(partial=True) == OK and link.waiting() == 0, "the rest as one datagram")
+        out = [d[3] for d in chip.drain(0)]
+        check(b"".join(out) == b"".join(packets), "every packet, in order, unchanged")
+        check(all(len(d) == TS_DATAGRAM for d in out[:-1]) and len(out[-1]) == 188 * rest,
+              "1,316-byte datagrams, then the partial one")
+        st = link.t.st
+        check(st.datagrams == len(out) and st.packets == len(packets) and st.partial == 1 and
+              st.full == 0 and st.error == 0, "sender counters")
+        check(link.q.dropped == 0 and 7 <= link.q.peak <= 18, f"peak {link.q.peak}")
+        chip.close()
+
+    # The queue is bounded: the producer drops and counts, and never overwrites a waiting packet.
+    chip = sender(native)
+    link = TsLink(native, chip, 16)
+    link.q.head = link.q.tail = 0xFFFFFFF8     # the free-running counters wrap mid-test
+    pushed = [link.push(ts_packet(k)) for k in range(20)]
+    check(pushed == [True] * 16 + [False] * 4 and link.q.dropped == 4 and link.q.peak == 16,
+          "16 queued, 4 dropped")
+    check(link.send() == OK and link.waiting() == 2, "two full datagrams")
+    check(link.push(ts_packet(20)), "room again")
+    check(link.send(partial=True) == OK, "partial")
+    out = [d[3] for d in chip.drain(0)]
+    check(b"".join(out) == b"".join(ts_packet(k) for k in list(range(16)) + [20]),
+          "the first 16 and the one after the drops")
+    chip.close()
+
+    # The chip has no room: the datagram is held, nothing is lost or reordered, and the clock
+    # times only the sends that took a datagram.
+    for mode in ({}, DIRECT):
+        ticks = iter(range(0, 10 ** 6, 50))
+        clock = CLOCK(lambda: next(ticks))
+        chip = sender(native, tx_kb=2, wire_bps=10e6, **mode)
+        link = TsLink(native, chip, 64, clock)
+        for k in range(21):
+            link.push(ts_packet(k))
+        check(link.send() == FULL and link.t.held == TS_DATAGRAM and link.waiting() == 7,
+              "second datagram refused and held")
+        check(link.send() == FULL and link.t.st.full == 2, "still no room")
+        chip.lib.fake_advance(chip.f, 2000.0)
+        check(link.send() == OK or link.t.held, "held datagram goes first")
+        for _ in range(10):
+            chip.lib.fake_advance(chip.f, 2000.0)
+            link.send()
+        out = [d[3] for d in chip.drain(0)]
+        check(b"".join(out) == b"".join(ts_packet(k) for k in range(21)), "order kept")
+        st = link.t.st
+        check(st.datagrams == 3 and st.max_send_cycles == 50 and st.send_cycles == 150,
+              f"send times: {st.max_send_cycles} {st.send_cycles}")
+        chip.close()
+
+    chip = sender(native)
+    link = TsLink(native, chip, 16)
+    for k in range(14):
+        link.push(ts_packet(k))
+    chip.set(fail_in=0)
+    check(link.send() == ERR_BUS and link.t.st.error == ERR_BUS, "a bus error stops the sender")
+    frames = chip.fake()["frames"]
+    check(link.send() == ERR_BUS and chip.fake()["frames"] == frames, "and it stays stopped")
+    chip.lib.fake_free(chip.f)
+
+
 def test_direct_model(native):
     """Per-datagram frames, bus time and CPU of the direct backend under the w5500.h estimates."""
     table = {}
@@ -982,10 +1113,11 @@ def main():
         test_publication(native)
         test_direct(native)
         test_diag(native)
+        test_ts(native)
         direct = test_direct_model(native)
         test_settings(native)
     print("w5500: fake checks, frames, init, open, send, full, ARP timeout, receive, malformed, "
-          f"command handshake, partial publication, posted writes, diagnostic buffers, "
+          f"command handshake, partial publication, posted writes, diagnostic buffers, TS egress, "
           f"GP-SPI2 encodings, "
           f"settings: ok "
           f"(driver state {size} bytes)")
