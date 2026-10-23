@@ -1,4 +1,4 @@
-"""C demodulator (firmware/components/dvbs2rx/demod.c) on a real excerpt and on the twin.
+"""C demodulator (firmware/components/dvbs2rx/demod.c) on real excerpts and on the twin.
 
 Run: python3 tests/test_rx_demod.py. No board, ESP-IDF or pytest needed. The full captures are
 not in the repository; host/rx_demod.py run reproduces those results.
@@ -28,10 +28,73 @@ def matched(demod, truth):
 
 def run_twin(so, link, chunk=R.UNIT):
     words, truth = T.twin(link)
-    d = R.Demod(so, link.modcod, not link.short, int(link.carrier_hz) // 1000)
+    d = R.Demod(so, link.modcod, not link.short, int(link.carrier_hz) // 1000, rate=link.rate,
+                cfo_hint=-16600 if link.rate > 1e6 else -10000, cfo_span=40000 if link.rate > 1e6 else 30000)
     for k in range(0, len(words), chunk):
         d.feed(words[k:k + chunk])
     return d, words, truth
+
+
+def fast(so):
+    """5 Msym/s: a real 8PSK excerpt, QPSK and 8PSK short frames on the twin, the release."""
+    # Real dump (normal13-5m-peak128: 8PSK 2/3 normal frames, 2420 MHz, 2026-10-22), 2,000
+    # symbols from 150 before a PLHEADER, through the first pilot block. Fed from sample 0, the
+    # first searched span; the whole capture gives 40 of 40 frames exact at CFO -13.6 kHz.
+    d = R.Demod(so, 13, True, 2420000, quick_lock=True, rate=5e6)
+    d.feed(R.sc8_words(ROOT / "tests/data/rx_5m13.sc8"), first=0)
+    s = d.stats()
+    assert s["locked"] and s["rejects"] == 0 and not d.frames, s
+    assert abs(s["cfo_hz"] + 13597) < 100 and abs(s["clock_ppb"] + 5606) < 100, s
+
+    # QPSK 3/4 with a 4 ms keyed tone after frame 6: every frame from the first lock to the
+    # tone and from the relock on is exact, except the last symbols before the tone, which at
+    # 5 Msym/s falls inside the matched filter's passband. The search covers a quarter of the
+    # samples, so the relock may take a few frames.
+    link = T.Link(rate=5e6, frames=24, gap=(6, 0.004))
+    d, _, truth = run_twin(so, link)
+    pairs = matched(d, truth)
+    k = [truth.index(t) for _, t in pairs]
+    assert k[:5] == list(range(1, 6)) and k[5:] == list(range(k[5], 24)) and k[5] <= 12, k
+    errors = [np.flatnonzero(f["hard"] != t["codeword"]) for f, t in pairs]
+    assert all(not len(e) for e in errors[:4] + errors[5:]) and all(errors[4] >= 16200 - 8), errors[4]
+    assert d.stats()["relocks"] == 1 and d.stats()["dropped"] == 0
+
+    # 8PSK 8/9 and 3/5 (its interleaver reads the columns in reverse) at 24 dB: exact, soft
+    # bits agree with hard bits, few weak bits.
+    for modcod in (16, 12):
+        link = T.Link(rate=5e6, modcod=modcod, frames=8, mer_db=24, seed=modcod)
+        d, words, truth = run_twin(so, link)
+        pairs = matched(d, truth)
+        assert len(pairs) == 7 and all(np.array_equal(f["hard"], t["codeword"]) for f, t in pairs)
+        assert all(np.array_equal((f["llr"] < 0).astype(np.uint8), f["hard"]) for f, _ in pairs)
+        assert all(f["weak"].mean() < 0.001 for f, _ in pairs)
+        assert all(f["modcod"] == modcod and f["type"] == 3 for f, _ in pairs)
+
+    # Implementation loss against the float reference receiver at 18 dB, 8PSK 8/9 (the raw
+    # hard bits then have errors for the LDPC code to correct).
+    link = T.Link(rate=5e6, modcod=16, frames=8, seed=6)
+    d, words, truth = run_twin(so, link)
+    pairs = matched(d, truth)
+    ref = T.reference(words, truth[:7], link)
+    loss = np.mean(ref[2:]) - np.mean([R.data_mer(f, t["codeword"], 16) for f, t in pairs[1:6]])
+    assert loss < 0.5, loss
+
+    # Push boundaries do not change the output while the release keeps up.
+    d2, _, _ = run_twin(so, link, chunk=3001)
+    assert len(d2.frames) == len(d.frames)
+    assert all(np.array_equal(a["llr"], b["llr"]) for a, b in zip(d.frames, d2.frames))
+
+    # A release that falls behind loses frames, never corrupts them: push 12,288-word units
+    # with no release in between, as a stalled core 0 would.
+    words, truth = T.twin(T.Link(rate=5e6, modcod=16, frames=8, mer_db=24, seed=4))
+    d = R.Demod(so, 16, rate=5e6, cfo_hint=-16600, cfo_span=40000)
+    for k in range(0, len(words), R.UNIT):
+        d.so.rx_demod_push(R.ct.c_void_p(d.ptr), words[k:k + R.UNIT].ctypes.data, k, len(words[k:k + R.UNIT]))
+        if k // R.UNIT % 3 == 2:
+            d.release()
+    pairs = matched(d, truth)
+    assert d.stats()["dropped"] > 0 and all(np.array_equal(f["hard"], t["codeword"]) for f, t in pairs)
+    return loss
 
 
 def main():
@@ -102,8 +165,10 @@ def main():
         pairs = matched(d, truth)
         assert len(pairs) == 2 and all(np.array_equal(f["hard"], t["codeword"]) for f, t in pairs)
 
-    print("rx demodulator passed: real excerpt locked, twin frames exact, "
-          f"implementation loss {loss:.2f} dB")
+        loss5 = fast(so)
+
+    print("rx demodulator passed: real excerpts locked, twin frames exact, "
+          f"implementation loss {loss:.2f} dB at 1 Msym/s QPSK, {loss5:.2f} dB at 5 Msym/s 8PSK")
 
 
 if __name__ == "__main__":

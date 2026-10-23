@@ -4,14 +4,15 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* DVB-S2 receiver for the S3's own radio. Short FECFRAMEs (16,200 bits), QPSK,
- * pilots on, roll-off 0.35, PL scrambling code 0, GCS input, one MODCOD per run.
+/* DVB-S2 receiver for the S3's own radio. Short FECFRAMEs (16,200 bits), QPSK or 8PSK at
+ * 1 or 5 Msym/s, pilots on, roll-off 0.35, PL scrambling code 0, GCS input, one MODCOD per run.
  * Portable C builds on the host; S3 PIE kernels must give identical integers.
  *
  * Input is the radio's dump stream: 16e6 complex samples/s, one 32-bit word each,
  * I in bits 19:10 and Q in bits 9:0, signed 10-bit (upper bits are not samples).
- * Core 1 pushes consecutive words into the demodulator, which emits frames.
- * Core 0 checks or decodes each frame and extracts its payload. */
+ * Core 1 pushes consecutive words into the demodulator: matched filter, synchronization and
+ * a ring of raw symbols. Core 0 releases the ring's data runs into frames of hard bits (carrier
+ * removal, descrambling, demapping), then checks or decodes each frame. */
 #define RX_DUMP_RATE 16000000u
 #define RX_SHORT_BITS 16200u
 #define RX_HARD_BYTES 2032u          /* 2025 bytes of hard bits, padded for vector stores */
@@ -22,14 +23,16 @@
 static inline int rx_word_i(uint32_t w) { return (int32_t)(w << 12) >> 22; }
 static inline int rx_word_q(uint32_t w) { return (int32_t)(w << 22) >> 22; }
 
-/* One demodulated frame. Buffers belong to the frame ring; their memory is the
- * caller's choice (hard bits internal, LLRs may live in PSRAM: the clean path
- * never reads them). */
+/* One demodulated frame. Buffers are the caller's; hard bits are what the clean path reads.
+ * Soft bits are 32 d / d0 for each bit: d is the received point's signed distance to that
+ * bit's decision boundary, d0 the noise-free point's nearest one (a / sqrt(2) for QPSK,
+ * a sin(pi/8) for 8PSK, a the constellation radius). */
 typedef struct {
-    int8_t *llr;            /* RX_SHORT_BITS, codeword order, > 0 favours bit 0. Soft bits
-                             * 32 x / a, clipped to +-127: a is the noise-free axis amplitude,
-                             * so the true LLR is about llr * 10^(MER/10) / 16. */
-    uint8_t *hard;          /* RX_HARD_BYTES, MSB first, bit = llr < 0 */
+    int8_t *llr;            /* optional (NULL on the board): RX_SHORT_BITS soft bits clipped to
+                             * +-127, codeword order, > 0 favours bit 0; for QPSK the true LLR
+                             * is about llr * 10^(MER/10) / 16 */
+    uint8_t *hard;          /* RX_HARD_BYTES, codeword order, MSB first, bit = soft bit < 0 */
+    uint8_t *weak;          /* optional: RX_HARD_BYTES, as hard, set where |soft bit| < 16 */
     uint64_t header_sample; /* dump index of the PLHEADER's first symbol centre */
     uint32_t sequence;      /* frames since lock; a jump means frames were lost */
     int32_t cfo_hz;         /* carrier offset estimate */
@@ -39,15 +42,16 @@ typedef struct {
     uint8_t type;           /* PLS TYPE: bit 1 short frame, bit 0 pilots */
 } rx_frame_t;
 
-/* Demodulator: matched filter, timing, carrier, descrambling, LLRs. */
+/* Demodulator: matched filter, timing, carrier, descrambling, demapping. */
 typedef struct {
-    uint8_t modcod;         /* expected MODCOD, QPSK 4..10 */
+    uint8_t modcod;         /* expected MODCOD: QPSK 4..11, 8PSK 12..17 */
+    uint32_t symbol_rate;   /* 1,000,000 (or 0) or 5,000,000 symbols/s */
     int32_t cfo_hint_hz;    /* centre of the acquisition search */
     uint32_t cfo_span_hz;   /* half-width of the search (0: 50 kHz) */
     uint32_t carrier_khz;   /* RF carrier: both radios run from 40 MHz crystals, so the symbol
                              * clock offset is CFO / carrier (0: track it from timing alone) */
     uint8_t normal;         /* 64,800-bit frames (host tests on the normal-frame corpus): llr
-                             * then holds 64,800 and hard 8,100 bytes */
+                             * then holds 64,800, hard and weak 8,100 bytes */
     uint8_t quick_lock;     /* lock on the PLHEADER found rather than the next one: one more
                              * frame per acquisition, but the search and the lock then share
                              * a call (for recorded captures) */
@@ -55,32 +59,37 @@ typedef struct {
 
 typedef struct {
     uint64_t words;         /* consumed */
-    uint32_t frames, lost, relocks;
+    uint32_t frames, lost, relocks;  /* frames released; lost on either core */
     uint32_t acquire_cycles;
     int16_t dc_i, dc_q;     /* current DC estimate, 10-bit LSB */
     uint8_t locked;
     int32_t cfo_hz, clock_ppb;  /* current estimates, as in rx_frame_t */
     uint32_t rejects;       /* acquisition detections that failed the header checks */
+    uint32_t dropped;       /* frames lost because the release fell behind */
 } rx_demod_stats_t;
 
 typedef struct rx_demod rx_demod_t;
 size_t rx_demod_size(void);
 int rx_demod_init(rx_demod_t *d, const rx_config_t *config);
-/* Consume count consecutive words starting at dump index first (a gap in first
- * forces a relock). LLRs and hard bits are written progressively, in order, into
- * out[0] while a frame is in progress, so keep out[0]'s llr/hard pointers stable
- * across calls until push returns a frame, then set fresh buffers. Returns the
- * number of complete frames in out (at most max; one per call when count is at
- * most 12,288 words). Real-time safe: bounded work per word, no allocation, no
- * blocking. Acquisition runs inline and is cheaper per word than tracking. */
-size_t rx_demod_push(rx_demod_t *d, const uint32_t *words, uint64_t first, size_t count,
-                     rx_frame_t *out, size_t max);
+/* Core 1. Consume count consecutive words starting at dump index first (a gap in first
+ * forces a relock). Matched-filter outputs of data symbols go to a ring, and each data run
+ * is queued for rx_demod_release once the known block after it has fixed its carrier.
+ * Returns the number of runs queued. Real-time safe: bounded work per word, no allocation,
+ * no blocking; if the release falls behind, frames are dropped. Acquisition runs inline. */
+size_t rx_demod_push(rx_demod_t *d, const uint32_t *words, uint64_t first, size_t count);
+/* Core 0, concurrently with push (one thread each). Releases queued runs into frame: hard
+ * bits (and weak bits, soft bits where the pointers are set) written in place as runs
+ * arrive, so keep frame's buffers until it returns 1 with a complete frame, then set fresh
+ * ones. Returns 0 when the queue is empty. */
+int rx_demod_release(rx_demod_t *d, rx_frame_t *frame);
 void rx_demod_stats(const rx_demod_t *d, rx_demod_stats_t *stats);
 
 /* FEC: re-encode check first (clean frames end here), then layered min-sum.
  * rx_fec_size bytes in internal RAM hold everything the clean path touches; the
  * decoder's rx_fec_work_size bytes may live anywhere, PSRAM included. Both 16-byte
- * aligned. With work NULL, frames that fail the check return -1 undecoded. */
+ * aligned. With work NULL, frames that fail the check return -1 undecoded. The decoder
+ * reads the frame's soft bits, or without them two levels from its hard and weak bits.
+ * 8PSK MODCODs use the code of the QPSK MODCOD with the same rate. */
 typedef struct {
     uint16_t iterations;    /* 0: the received hard bits were already a codeword */
     uint16_t failed_checks; /* parity checks failing on the received hard bits */

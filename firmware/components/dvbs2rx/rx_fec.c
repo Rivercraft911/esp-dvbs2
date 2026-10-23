@@ -49,6 +49,7 @@
 #define FIRST_MODCOD 4
 #define LAST_MODCOD 10
 #define MAX_ITERATIONS 8   /* a damaged frame on a good link needs 2 to 5 */
+#define WEAK 8             /* two-level beliefs from hard and weak bits: RX_LMAX or WEAK */
 
 /* Functions of the frame path keep their own sections, so linker.lf can place them in
  * IRAM by name. */
@@ -60,8 +61,16 @@
 
 static size_t round16(size_t n) { return (n + 15) & ~(size_t)15; }
 
+/* The QPSK MODCOD with the code of an 8PSK one (Table 12): 3/5, 2/3, 3/4, 5/6, 8/9. */
+static unsigned code_modcod(unsigned modcod)
+{
+    static const uint8_t qpsk[5] = {5, 6, 7, 9, 10};
+    return modcod >= 12 && modcod <= 16 ? qpsk[modcod - 12] : modcod;
+}
+
 static const dvbs2_mode *short_mode(unsigned modcod)
 {
+    modcod = code_modcod(modcod);
     return modcod >= FIRST_MODCOD && modcod <= LAST_MODCOD ? dvbs2_find_mode_short(modcod) : NULL;
 }
 
@@ -192,7 +201,7 @@ int rx_fec_init(rx_fec_t *f, unsigned modcod, void *work)
     const layout_t l = layout(mode);
     memset(f, 0, l.total);
     uint8_t *base = (uint8_t *)f;
-    const uint16_t *table = rx_edges[modcod - FIRST_MODCOD];
+    const uint16_t *table = rx_edges[mode->modcod - FIRST_MODCOD];
     unsigned repeats;
     f->modcod = modcod;
     f->kbch = mode->kbch;
@@ -240,7 +249,7 @@ int rx_fec_init(rx_fec_t *f, unsigned modcod, void *work)
     memset(w, 0, l.work);
     f->belief = (int8_t *)(w + l.belief);
     f->packed = (int8_t *)(w + l.packed);
-    f->packed_bytes = packed_bytes(modcod, f->q);
+    f->packed_bytes = packed_bytes(mode->modcod, f->q);
     f->reads = (uint16_t *)(w + l.reads);
     f->writes = (uint16_t *)(w + l.writes);
     f->checks = (uint16_t *)(w + l.checks);
@@ -617,27 +626,41 @@ static HOT int syndrome_ok(rx_fec_t *f)
     return !odd;
 }
 
+/* Codeword bit i as a two-level belief: RX_LMAX, or WEAK where the demodulator found the
+ * received point less than half its nominal distance from the bit's boundary. */
+static int8_t two_level(const rx_frame_t *frame, unsigned i)
+{
+    const unsigned bit = 7 - (i & 7);
+    const int v = (frame->weak[i >> 3] >> bit & 1) ? WEAK : RX_LMAX;
+    return (int8_t)((frame->hard[i >> 3] >> bit & 1) ? -v : v);
+}
+
 /* Channel LLRs into the slots, each in its starting frame. Then a gain in sixteenths
  * that aims at RX_UNITS integer units per natural LLR whatever the demodulator's scale
  * K: if x / K ~ N(+-1, s^2), the natural LLR is 2 x / (K s^2) = 2 m x / v with m and v
  * the mean and variance of |x| (|x| rarely folds over zero above about 1 dB Es/N0).
- * The gain is at most 4. */
-static HOT void load(rx_fec_t *f, const int8_t *llr)
+ * The gain is at most 4. Without soft bits the two levels are already at that scale. */
+static HOT void load(rx_fec_t *f, const rx_frame_t *in)
 {
     const unsigned groups = f->groups, q = f->q;
+    const int8_t *llr = in->llr;
     for (unsigned g = 0; g < RX_GROUPS; ++g) {
         int8_t *slot = f->belief + RX_SLOT * g;
         const unsigned frame = f->frame[g];
-        if (g < groups) {
+        if (g < groups && llr) {
             memcpy(slot + frame, llr + 360 * g, 360 - frame);
             memcpy(slot, llr + 360 * g + 360 - frame, frame);
         } else {
-            const int8_t *p = llr + f->nbch + (g - groups);
-            for (unsigned t = 0, at = frame; t < 360; ++t, p += q, at = at == 359 ? 0 : at + 1) {
-                slot[at] = *p;
+            const unsigned first = g < groups ? 360 * g : f->nbch + (g - groups), stride = g < groups ? 1 : q;
+            for (unsigned t = 0, i = first, at = frame; t < 360; ++t, i += stride, at = at == 359 ? 0 : at + 1) {
+                slot[at] = llr ? llr[i] : two_level(in, i);
             }
         }
         memcpy(slot + 360, slot, 16);
+    }
+    memset(f->packed, 0, f->packed_bytes);
+    if (!llr) {
+        return;
     }
     uint32_t sums[2];
     KERNEL(f, rx_moments)(llr, RX_STAT_VECTORS, sums);
@@ -645,7 +668,6 @@ static HOT void load(rx_fec_t *f, const int8_t *llr)
     const uint64_t den = n * s2 - s1 * s1;
     const uint64_t gain = den ? (32u * RX_UNITS * s1 * n + den / 2) / den : 64;
     KERNEL(f, rx_scale)(f->belief, RX_GROUPS, gain < 1 ? 1 : gain > 64 ? 64 : (unsigned)gain);
-    memset(f->packed, 0, f->packed_bytes);
 }
 
 /* ---------------------------------------------------------------- frame */
@@ -660,10 +682,10 @@ int rx_fec_frame(rx_fec_t *f, rx_frame_t *frame, const uint8_t **payload,
     }
     s.failed_checks = (uint16_t)ldpc_failed(f, frame->hard);
     if (s.failed_checks) {
-        if (!f->belief) {
+        if (!f->belief || (!frame->llr && !frame->weak)) {
             goto out;
         }
-        load(f, frame->llr);
+        load(f, frame);
         unsigned before[2] = {~0u, ~0u};
         while (s.iterations < f->max_iterations) {
             unsigned odd = 0;
