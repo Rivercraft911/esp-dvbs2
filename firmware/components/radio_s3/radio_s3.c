@@ -27,6 +27,7 @@
 #include <string.h>
 
 #include "radio_s3.h"
+#include "radio_power.h"
 #include "esp_timer.h"
 #include "esp_private/phy.h"
 #include "esp_private/periph_ctrl.h"
@@ -184,6 +185,20 @@ static uint32_t cw_backoff(unsigned gain)
     return (RADIO_S3_GAIN_MAX - gain) * 8;
 }
 static StaticSemaphore_t done_storage;
+/* One radio worker on core 1 for the life of the firmware, created at boot with a static stack
+ * in internal SRAM (a heap stack could land in slow RTC FAST memory). It holds core 1's
+ * task-watchdog subscription; core 1's idle task is not checked, since a run never lets it in.
+ * Between runs the worker feeds the watchdog once a second; during one, every bank switch does,
+ * so a stuck fill or switch still trips it. Nothing is allocated per run. */
+static StackType_t worker_stack[6144 / sizeof(StackType_t)];
+static StaticTask_t worker_tcb;
+static TaskHandle_t worker_task;
+static StaticSemaphore_t job_storage;
+static SemaphoreHandle_t job_ready;
+static TaskFunction_t job_task;
+static void *job_arg;
+static bool watched;
+static station_id_t worker_id;
 
 // Final stream preparation after the worker exists, before either paced deadlines or the
 // first keyed register access.
@@ -446,61 +461,36 @@ static void heap_now(uint32_t *free_bytes, uint32_t *largest)
     *largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 }
 
-/* Streaming occupies core 1 without an idle tick. Transfer that core's watchdog
- * subscription to the running task; watch_end restores it on every exit. A stuck
- * fill or switch still trips the task watchdog.
- */
-static esp_err_t watch_begin(run_t *run, bool *watch_idle, bool *watch_worker)
-{
-    TaskHandle_t idle = xTaskGetIdleTaskHandleForCore(1);
-    if (esp_task_wdt_status(idle) == ESP_OK) {
-        esp_err_t error = esp_task_wdt_delete(idle);
-        if (error != ESP_OK) {
-            return error;
-        }
-        *watch_idle = true;
-    }
-    esp_err_t error = esp_task_wdt_add(NULL);
-    if (error == ESP_OK) {
-        *watch_worker = true;
-        run->watch_worker = true;
-    } else if (error != ESP_ERR_INVALID_STATE) {
-        return error;
-    }
-    return ESP_OK;
-}
-
-static void watch_end(bool watch_idle, bool watch_worker)
-{
-    if (watch_worker) {
-        (void)esp_task_wdt_delete(NULL);
-    }
-    if (watch_idle) {
-        (void)esp_task_wdt_add(xTaskGetIdleTaskHandleForCore(1));
-    }
-}
-
-/* The radio, once at boot and for good, without Wi-Fi: as a BLE-only application does,
- * esp_phy_enable() turns the Wi-Fi and BT clocks on for the PHY's first, full calibration
- * (ESP-IDF v6.1 phy_init.c, periph_ctrl.c phy_module_enable). The PHY is held under the BT
- * modem bit; with Bluetooth not built that bit asks for no PLL tracking. The DAC streams from
- * the Wi-Fi baseband, so its clock domain stays referenced. No Wi-Fi code is linked. */
+/* The radio, once at boot and for good, without Wi-Fi (radio_power.h). The DAC streams from the
+ * Wi-Fi baseband, so its clock domain stays referenced. */
 static bool phy_up;
 extern void phy_param_track_tot(bool en_wifi, bool en_ble_154); /* libphy */
 
+static void core1(void *arg)
+{
+    (void)arg;
+    watched = esp_task_wdt_add(NULL) == ESP_OK;
+    for (;;) {
+        if (xSemaphoreTake(job_ready, pdMS_TO_TICKS(1000)) == pdTRUE) {
+            job_task(job_arg);
+        }
+        if (watched) {
+            (void)esp_task_wdt_reset();
+        }
+    }
+}
+
 esp_err_t radio_s3_init(void)
 {
-#if CONFIG_BT_ENABLED || CONFIG_IEEE802154_ENABLED
-    return ESP_ERR_NOT_SUPPORTED;
-#else
-    if (phy_up) return ESP_OK;
-    if (phy_get_modem_flag() != 0) return ESP_ERR_INVALID_STATE;
-    esp_wifi_bt_power_domain_on();
-    esp_phy_enable(PHY_MODEM_BT);
-    wifi_module_enable();
-    phy_up = phy_get_modem_flag() == PHY_MODEM_BT;
-    return phy_up ? ESP_OK : ESP_ERR_INVALID_STATE;
-#endif
+    if (!worker_task) {
+        job_ready = xSemaphoreCreateBinaryStatic(&job_storage);
+        worker_task = xTaskCreateStaticPinnedToCore(core1, "radio", sizeof worker_stack, NULL,
+                                                    configMAX_PRIORITIES - 2, worker_stack,
+                                                    &worker_tcb, 1);
+    }
+    const esp_err_t e = radio_power_up();
+    phy_up = e == ESP_OK;
+    return worker_task ? e : ESP_ERR_NO_MEM;
 }
 
 static void worker(void *arg)
@@ -513,8 +503,7 @@ static void worker(void *arg)
             ((end+run->geo.lead-RADIO_S3_BANK_WORDS)/run->geo.step+1)*run->geo.step-run->geo.lead;
         run->startup = &startup;
     }
-    bool watch_worker = false;
-    bool watch_idle = false;
+    run->watch_worker = watched;
     bool rf_setup = false;
 #if CONFIG_PM_ENABLE
     esp_pm_lock_handle_t cpu_lock = NULL;
@@ -549,15 +538,14 @@ static void worker(void *arg)
     }
     error = radio_s3_stream_ready();
     if (error == ESP_OK && run->paced) {
-        error = watch_begin(run, &watch_idle, &watch_worker);
-        if (error == ESP_OK) error = paced(run);
+        error = paced(run);
         goto cleanup;
     }
     if (error != ESP_OK) {
         goto cleanup;
     }
     /* One PLL and temperature tracking pass before keying, as Wi-Fi's 1 s timer used to run.
-     * It returns a 16-byte front-end table to its Wi-Fi-up values (W9's register diff,
+     * It returns a 16-byte front-end table to its Wi-Fi-up values (the receiver's register diff,
      * results/2026-10-23-rx-no-wifi-ab) and takes about 44,000 cycles. */
     _lock_t phy_lock = phy_get_lock();
     _lock_acquire(&phy_lock);
@@ -576,10 +564,6 @@ static void worker(void *arg)
     /* Allow the unkeyed retune to settle. */
     vTaskDelay(pdMS_TO_TICKS(3));
 
-    error = watch_begin(run, &watch_idle, &watch_worker);
-    if (error != ESP_OK) {
-        goto cleanup;
-    }
     error = stream(run);
 
 cleanup:
@@ -597,7 +581,6 @@ cleanup:
         rom_pbus_xpd_rx_on(0);
         REG_WRITE(BANK_USAGE, REG_READ(BANK_USAGE) & ~0xfU);
     }
-    watch_end(watch_idle, watch_worker);
 #if CONFIG_PM_ENABLE
     if (sleep_lock) {
         (void)esp_pm_lock_release(sleep_lock);
@@ -614,7 +597,6 @@ cleanup:
     }
     run->error = error;
     xSemaphoreGive(run->done);
-    vTaskDelete(NULL);
 }
 
 /* The dry run: the fill sequence of stream() and the samples the DAC would play. */
@@ -629,8 +611,11 @@ static void dry_worker(void *arg)
         error = fill_bank(run, 1, step - lead);
     }
     for (uint64_t j = 0; error == ESP_OK && j * step < samples; ++j) {
-        // Let IDLE1 run now and then. A sink that rarely blocks (iddump keeps 1 sample in
-        // 4000) otherwise starves it past the 5 s task watchdog, whose log lands in the dump.
+        // Feed the watchdog every bank: a dump's USB sink can take 80 ms per bank, and a
+        // watchdog report would land in the dump. Let other core-1 work run now and then.
+        if (watched) {
+            (void)esp_task_wdt_reset();
+        }
         if ((j & 63) == 63) {
             vTaskDelay(1);
         }
@@ -652,10 +637,9 @@ static void dry_worker(void *arg)
     stats->max_fill_cycles = run->stats->max_fill_cycles;
     run->error = error;
     xSemaphoreGive(run->done);
-    vTaskDelete(NULL);
 }
 
-/* Run one task on core 1 and wait for it. One run at a time. */
+/* Run one job on the core-1 worker and wait for it. One run at a time. */
 static esp_err_t on_core1(TaskFunction_t task, run_t *run)
 {
     portENTER_CRITICAL(&state_lock);
@@ -667,11 +651,8 @@ static esp_err_t on_core1(TaskFunction_t task, run_t *run)
     portEXIT_CRITICAL(&state_lock);
     station_id_t *id = NULL;
     if (run->identify) {
-        id = heap_caps_calloc(1, sizeof *id, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-        if (!id) {
-            run->error = ESP_ERR_NO_MEM;
-            goto finished;
-        }
+        id = &worker_id;
+        memset(id, 0, sizeof *id);
         if (!station_id_init_rate(id, station_store_get(), run->samples, run->geo.rate,
                                   run->fill, run->ctx)) {
             run->error = ESP_ERR_INVALID_STATE;
@@ -700,15 +681,15 @@ static esp_err_t on_core1(TaskFunction_t task, run_t *run)
         run->stats->planned_samples = id->total_samples;
     }
     run->done = xSemaphoreCreateBinaryStatic(&done_storage);
-    BaseType_t created = xTaskCreatePinnedToCore(task, "radio", 6144, run,
-                                                configMAX_PRIORITIES - 2, NULL, 1);
-    if (created == pdPASS) {
+    if (worker_task) {
+        job_task = task;
+        job_arg = run;
+        xSemaphoreGive(job_ready);
         xSemaphoreTake(run->done, portMAX_DELAY);
     } else {
-        run->error = ESP_ERR_NO_MEM;
+        run->error = ESP_ERR_INVALID_STATE; /* radio_s3_init has not run */
     }
 finished:
-    heap_caps_free(id);
     portENTER_CRITICAL(&state_lock);
     running = false;
     portEXIT_CRITICAL(&state_lock);

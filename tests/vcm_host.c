@@ -87,18 +87,18 @@ int main(int argc, char **argv)
     if (!(sps == 8 && initial == 12)) assert(internal == 0);
     printf("VCM n%u %s: internal heap %zu, store %zu, table %zu, context %zu, slots %u\n",sps,argv[6],internal,
            vcm_enc.vcm_store_bytes,vcm_enc.vcm_axes ? SHAPER_AXES_BYTES : 4*shaper_table_words(sps,dvb.table.bits),dvbs2_fast_size(),dvb.ring.nslots);
-    stop_encoder(); printf("}\n"); assert(!live_allocations);
+    stop_encoder(); printf("}\n"); assert(run_returned());
     if (control) { rewind(native_wire); }
     // All startup allocations fail cleanly, without touching the radio.
     if (!control) for (int i=0;i<allocations;++i) {
         fail_after=i;
         assert(!start_encoder("dvbdump",initial,128,0,sps,40000000));
-        assert(!live_allocations);
+        assert(run_returned());
     }
     fail_after=-1;
     native_task_fail=1;
     assert(!start_encoder("dvbdump",initial,128,0,sps,40000000));
-    assert(!live_allocations);
+    assert(run_returned());
     native_task_fail=0;
     // Exercise the formerly overflowing command path, including staged stack
     // telemetry. The native high-water value is a stub, not a board measurement.
@@ -109,7 +109,7 @@ int main(int argc, char **argv)
         char iq[4096]; snprintf(iq,sizeof iq,"%s.iq",argv[3]);
         capture=fopen(iq,"wb"); assert(capture);
         dvbtx_dump(initial,frames,128,sps == 40 ? 10 : 1,0,sps,40000000);
-        fclose(capture); assert(!live_allocations);
+        fclose(capture); assert(run_returned());
     }
     if (!control) dvbtx_pace(initial,1,128,0,sps,40000000,false);
     if (native_wire) fclose(native_wire);
@@ -121,9 +121,12 @@ int main(int argc, char **argv)
     dvbtx_vcm_command("4 4 13");
     assert(!start_encoder("dvbdump",4,128,0,4,40000000));
     dvbtx_vcm_command("on");
-    native_internal_limit=16384; native_internal_largest=4096;
+    // Internal run memory too small for the overlap cache: a clean, reported failure.
+    native_internal_limit=native_internal_largest=SIZE_MAX;
+    native_run[0].size=4096; native_run[1].size=0;
     assert(!start_encoder("dvbdump",13,128,0,8,40000000));
-    assert(!live_allocations);
+    assert(run_returned());
+    native_run[0].size=RUN_LOW_BYTES; native_run[1].size=RUN_HIGH_BYTES;
     dvbtx_vcm_command("off");
     free(phases); free(banks);
     return 0;

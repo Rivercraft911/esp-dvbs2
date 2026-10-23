@@ -12,6 +12,7 @@
 #include "driver/spi_master.h"
 #include "esp_cpu.h"
 #include "esp_heap_caps.h"
+#include "run_memory.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -62,7 +63,6 @@ static void tx_free(void)
     }
     if (tx.dev) spi_bus_remove_device(tx.dev);
     if (tx.bus) spi_bus_free(SPI3_HOST);
-    heap_caps_free(tx.buf[0]); heap_caps_free(tx.buf[1]);
     tx.dev = NULL; tx.bus = false; tx.buf[0] = tx.buf[1] = NULL;
 }
 
@@ -75,6 +75,7 @@ static void tx_wake(void *arg)
 static esp_err_t tx_init(unsigned type, int mhz, double mbps, unsigned ms)
 {
     memset(&tx, 0, sizeof tx);
+    run_reset();
     tx.type = type; tx.mbps = mbps; tx.ms = ms;
     tx.pv = pv_mode;
     spi_bus_config_t bus = {
@@ -95,7 +96,7 @@ static esp_err_t tx_init(unsigned type, int mhz, double mbps, unsigned ms)
     err = spi_bus_add_device(SPI3_HOST, &cfg, &tx.dev);
     if (err != ESP_OK) goto fail;
     for (unsigned i=0; i<2; ++i) {
-        tx.buf[i] = heap_caps_calloc(1, TX_BYTES, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+        tx.buf[i] = run_take(TX_BYTES, 16, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
         if (!tx.buf[i]) { err = ESP_ERR_NO_MEM; goto fail; }
     }
     const esp_timer_create_args_t timer = {.callback=tx_wake,.name="spisend"};
@@ -180,7 +181,7 @@ static IRAM_ATTR bool received(void *ctx)
 }
 
 // Borrow only whole slots from disjoint, persistent encoder regions. The caller
-// keeps both regions alive until spi_input_stop. Fall back to one heap block.
+// keeps both regions alive until spi_input_stop. Otherwise the slots come from run memory.
 void spi_input_buffers(uint8_t *tail, size_t tail_bytes, uint8_t *workspace, size_t workspace_bytes)
 {
     borrowed_count=0;
@@ -200,6 +201,13 @@ esp_err_t spi_input_start(void)
     if (!input_type) { borrowed_count=0; return ESP_OK; }
     ingress_spi_config cfg=pins; cfg.replay=replay; cfg.pv=pv_mode;
     if (borrowed_count) memcpy(cfg.buffers,borrowed,sizeof borrowed);
+    else {
+        uint8_t *slots=run_take(INGRESS_SLOTS*INGRESS_SLOT_BYTES, 16, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+        if (!slots) return ESP_ERR_NO_MEM;
+        for (unsigned i=0; i<INGRESS_SLOTS; ++i) cfg.buffers[i]=slots+i*INGRESS_SLOT_BYTES;
+    }
+    cfg.crc=run_take(4096, 16, MALLOC_CAP_INTERNAL);
+    if (!cfg.crc) return ESP_ERR_NO_MEM;
     cfg.received=received; cfg.ctx=xTaskGetCurrentTaskHandle();
     const esp_err_t err=ingress_spi_start(&cfg, &rx);
     if (err != ESP_OK) return err;
@@ -280,7 +288,7 @@ static void probe(unsigned ms)
 {
     const int64_t start=esp_timer_get_time();
     uint32_t crc=0, bad=0, messages=0, bytes=0, copy_max=0;
-    uint8_t *want=heap_caps_malloc(2*PV_PAYLOAD_MAX, MALLOC_CAP_INTERNAL);
+    uint8_t *want=run_take(2*PV_PAYLOAD_MAX, 16, MALLOC_CAP_INTERNAL);
     if (!want) {
         spi_input_stop();
         printf("@{\"cmd\":\"spirx\",\"error\":\"probe allocation failed\"}\n");
@@ -303,7 +311,6 @@ static void probe(unsigned ms)
     }
     const int64_t us=esp_timer_get_time()-start;
     spi_input_stop();
-    heap_caps_free(want);
     printf("@{\"cmd\":\"spirx\",\"us\":%lld,\"verified_msgs\":%"PRIu32
            ",\"verified_bytes\":%"PRIu32",\"bad_payload\":%"PRIu32",\"crc32\":%"PRIu32
            ",\"mbps\":%.3f,\"copy_max\":%"PRIu32,
@@ -378,6 +385,7 @@ void spi_input_command(const char *cmd, const char *args)
         const unsigned old=input_type; const bool oldreplay=replay, oldpv=pv_mode, oldusb=usb_mode;
         input_type=type; replay=false;
         pv_mode=raw; usb_mode=false;
+        run_reset();
         const esp_err_t err=spi_input_start();
         if (err==ESP_OK) probe(ms);
         else printf("@{\"cmd\":\"spirx\",\"error\":\"setup failed\",\"status\":\"%s\"}\n",esp_err_to_name(err));

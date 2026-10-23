@@ -13,7 +13,6 @@
 #include "driver/gpio.h"
 #include "esp_attr.h"
 #include "esp_cpu.h"
-#include "esp_heap_caps.h"
 #include "esp_private/gdma.h"
 #include "esp_private/gpio.h"
 #include "esp_private/spi_common_internal.h"
@@ -34,7 +33,6 @@ static struct {
     ingress_hw hw;
     ingress_spi_config cfg;
     uint32_t *crc;
-    uint8_t *buffers;
     gdma_channel_handle_t rx;
     spi_dev_t *spi;
     portMUX_TYPE lock;
@@ -120,7 +118,10 @@ static void connect_input(int pin, int signal, bool pull_up)
 
 esp_err_t ingress_spi_start(const ingress_spi_config *cfg, ingress_ring **ring)
 {
-    if (s.bus || s.pv || s.buffers) return ESP_ERR_INVALID_STATE;
+    if (s.bus || s.pv || s.crc) return ESP_ERR_INVALID_STATE;
+    if (!cfg->crc) return ESP_ERR_INVALID_ARG;
+    for (unsigned i = 0; i < INGRESS_SLOTS; ++i)
+        if (!cfg->buffers[i]) return ESP_ERR_INVALID_ARG;
     const int pins[] = {cfg->sclk, cfg->cs, cfg->d0, cfg->d1, cfg->d2, cfg->d3, cfg->ready};
     for (unsigned i = 0; i < 7; ++i) {
         if (!GPIO_IS_VALID_OUTPUT_GPIO(pins[i])) return ESP_ERR_INVALID_ARG;
@@ -129,18 +130,11 @@ esp_err_t ingress_spi_start(const ingress_spi_config *cfg, ingress_ring **ring)
     }
     s.cfg = *cfg;
     s.stats.eof_irqs = s.stats.isr_cycles = s.stats.isr_max = 0;
-    s.buffers = cfg->buffers[0] ? NULL : heap_caps_aligned_alloc(4, INGRESS_SLOTS * INGRESS_SLOT_BYTES,
-                                        MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-    if (!cfg->buffers[0] && !s.buffers) {
-        return ESP_ERR_NO_MEM;
-    }
-    s.crc = heap_caps_malloc(4096,MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    if (!s.crc) { ingress_spi_stop(); return ESP_ERR_NO_MEM; }
+    s.crc = cfg->crc;
     pv_crc32_tables(s.crc);
     s.hw = (ingress_hw){.rearm = rearm, .ready = set_ready};
-    ingress_init(&s.ring, s.buffers, &s.hw);
-    if (cfg->buffers[0])
-        for (unsigned i = 0; i < INGRESS_SLOTS; ++i) s.ring.desc[i].buf = cfg->buffers[i];
+    ingress_init(&s.ring, NULL, &s.hw);
+    for (unsigned i = 0; i < INGRESS_SLOTS; ++i) s.ring.desc[i].buf = cfg->buffers[i];
     s.ring.type = 0;
 
     esp_err_t err;
@@ -234,11 +228,8 @@ fail:
 void ingress_spi_stop(void)
 {
     pv_crc32_tables(NULL);
-    heap_caps_free(s.crc); s.crc = NULL;
-    if (!s.bus && !s.pv) {
-        heap_caps_free(s.buffers); s.buffers = NULL;
-        return;
-    }
+    s.crc = NULL;
+    if (!s.bus && !s.pv) return;
     if (s.cfg.ready >= 0) {
         gpio_set_level(s.cfg.ready, 0);
     }
@@ -270,8 +261,6 @@ void ingress_spi_stop(void)
     // Keep READY actively low between sessions. A floating pad could advertise credit.
     gpio_set_level(s.cfg.ready, 0);
     gpio_set_direction(s.cfg.ready, GPIO_MODE_INPUT_OUTPUT);
-    heap_caps_free(s.buffers);
-    s.buffers = NULL;
 }
 
 void ingress_spi_get_stats(ingress_spi_stats *out)

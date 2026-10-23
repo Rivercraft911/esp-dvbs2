@@ -68,17 +68,16 @@ static unsigned tasks, commands;
 static const char *call = "N0CALL";
 static const char *station_store_get(void) { return call; }
 static bool station_require(const char *cmd) { (void)cmd; return call[0] != 0; }
-static void *heap_caps_calloc(size_t n, size_t size, unsigned caps) {
-    (void)caps; return calloc(n,size);
-}
-static void heap_caps_free(void *p) { free(p); }
 static int xSemaphoreCreateBinaryStatic(int *p) { (void)p; return 1; }
 static void xSemaphoreTake(int s, unsigned t) { assert(s == 1 && t == portMAX_DELAY); }
-static int xTaskCreatePinnedToCore(TaskFunction_t task, const char *name, unsigned stack,
-                                 void *arg, unsigned priority, void *handle, int core) {
-    (void)name; (void)stack; (void)priority; (void)handle; assert(core == 1);
-    ++tasks; task(arg); return pdPASS;
-}
+// The persistent core-1 worker (radio_s3_init): giving it a job runs the job.
+typedef void *TaskHandle_t;
+static int worker_tcb, job_ready = 2;
+static TaskHandle_t worker_task = &worker_tcb;
+static TaskFunction_t job_task;
+static void *job_arg;
+static station_id_t worker_id;
+static void xSemaphoreGive(int s) { assert(s == 2); ++tasks; job_task(job_arg); }
 radio_filter_mode_t radio_filter_get(void) { return RADIO_FILTER_AUTO; }
 static uint64_t clock_cycles;
 static uint32_t cycles(void) { return (uint32_t)clock_cycles++; }

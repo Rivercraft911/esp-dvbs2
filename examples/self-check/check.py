@@ -174,6 +174,7 @@ def main():
     print("VCM: vcm 1 4 11 13 17; dvbdump 4 5m 32 128 1; vcm off. Automatic axes;")
     print("  dvbpace 4 5m 5: minimum free internal RAM >=20000 B, original functional deadline/stack gates.")
     print("  CRC/geometry agree, >=30 exact contiguous BBFRAMEs, every MODCOD, clean FEC; no golden changes.")
+    print("Heap: no heap call after boot by the end (info heap_after_boot).")
     print("Keep going after failures; save IQ, logs, revision and summary; any failure exits 1.", flush=True)
     if a.plan:
         return 0
@@ -211,6 +212,11 @@ def main():
                 f.write(json.dumps(dict(command=text, **row))+"\n")
         assert rows and not any("error" in r for r in rows), rows
         return rows
+
+    def no_heap():
+        rows = command("info")
+        heap = rows[-1]["heap_after_boot"]
+        assert heap["allocs"] == heap["frees"] == heap["failed"] == 0, heap
 
     def info():
         rows = command("info", reset=True)
@@ -290,6 +296,7 @@ def main():
                  check_pace(command(text), mc, token, seconds))
         step("VCM dump", vcm_dump)
         step("VCM decode", vcm_decode)
+        step("no heap after boot", no_heap)
     failed = sum(row[0] == "FAIL" for row in outcomes)
     print(f"{len(outcomes)-failed}/{len(outcomes)} passed. Records: {out}")
     return int(failed != 0)

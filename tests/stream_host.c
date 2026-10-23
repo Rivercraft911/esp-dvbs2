@@ -2,17 +2,62 @@
 // Timing is synthetic. Compare every filled DAC word against the plain encoder.
 #include "native.h"
 #include <stdbool.h>
+#include "run_memory.h"
+/* Host run memory: native.h's heap model (counts, injected failures, caps) behind the firmware's
+ * arena capacity, which the firmware's allocator core and first-fit policy check here. */
+static arena_t native_run[3] = {{(uint8_t *)RUN_LOW_BASE, RUN_LOW_BYTES, 0, 0},
+                                {(uint8_t *)RUN_HIGH_BASE, RUN_HIGH_BYTES, 0, 0},
+                                {(uint8_t *)0x3d800000, RUN_PSRAM_BYTES, 0, 0}};
+static void *native_taken[64];
+static unsigned native_takes;
+static pthread_mutex_t native_run_lock = PTHREAD_MUTEX_INITIALIZER;
+void *run_take(size_t bytes, size_t align, uint32_t caps) {
+    if (align < 16) align = 16;
+    pthread_mutex_lock(&native_run_lock);
+    void *p = NULL;
+    const int fits = caps & MALLOC_CAP_SPIRAM ? arena_take_aligned(&native_run[2], bytes, align) != NULL :
+        arena_take_aligned(&native_run[0], bytes, align) || arena_take_aligned(&native_run[1], bytes, align);
+    if (fits && (p = heap_caps_aligned_alloc(align, bytes, caps))) {
+        memset(p, 0, bytes);
+        assert(native_takes < 64); native_taken[native_takes++] = p;
+    }
+    pthread_mutex_unlock(&native_run_lock);
+    return p;
+}
+void run_reset(void) {
+    pthread_mutex_lock(&native_run_lock);
+    while (native_takes) heap_caps_free(native_taken[--native_takes]);
+    for (unsigned i = 0; i < 3; ++i) native_run[i].used = 0;
+    pthread_mutex_unlock(&native_run_lock);
+}
+// A command's run memory is returned by the next command's run_reset. Return it now and check
+// that nothing else is left on the (modelled) heap.
+static bool run_returned(void) { run_reset(); return !live_allocations; }
+void run_memory_print(void) {
+    printf(",\"run_memory\":{\"low\":[%u,%u,%u],\"high\":[%u,%u,%u],\"psram\":[%u,%u,%u]}",
+           (unsigned)native_run[0].used, (unsigned)native_run[0].peak, (unsigned)native_run[0].size,
+           (unsigned)native_run[1].used, (unsigned)native_run[1].peak, (unsigned)native_run[1].size,
+           (unsigned)native_run[2].used, (unsigned)native_run[2].peak, (unsigned)native_run[2].size);
+}
 #include "ring.h"
 #include "machine.h"
 uint32_t native_ranges[4];
 static int checked_window(ring_t *, uint8_t *, size_t, uint64_t, size_t, unsigned, unsigned, unsigned);
 static int checked_task(void (*)(void *), const char *, unsigned, void *, unsigned, TaskHandle_t *, int);
+static TaskHandle_t checked_static_task(void (*fn)(void *), const char *name, unsigned stack, void *arg,
+                                        unsigned priority, StackType_t *buffer, StaticTask_t *tcb, int core)
+{
+    (void)buffer; (void)tcb; TaskHandle_t handle = NULL;
+    return checked_task(fn, name, stack, arg, priority, &handle, core) == pdPASS ? handle : NULL;
+}
 static uint32_t checked_load(const volatile uint32_t *, int);
 #define __atomic_load_n checked_load
 #define xTaskCreatePinnedToCore checked_task
+#define xTaskCreateStaticPinnedToCore checked_static_task
 #define ring_window checked_window
 #include "dvbtx.c"
 #undef ring_window
+#undef xTaskCreateStaticPinnedToCore
 #undef xTaskCreatePinnedToCore
 #undef __atomic_load_n
 
@@ -406,7 +451,7 @@ int main(int argc, char **argv)
     allocation_count = 0;
     if (!moon || native_input) {
         assert(!start_encoder_options("dvb",mc,128,0,sps,rate,true,true));
-        assert(!allocation_count && !live_allocations);
+        assert(!allocation_count && run_returned());
     }
     assert(start_encoder("dvbdump", mc, 128, 0, sps, rate));
     const int allocations = allocation_count;
@@ -425,7 +470,7 @@ int main(int argc, char **argv)
                           (resident && mode->t > 8 && !native_input && !borrowed_bch) + !resident));
     for (unsigned i = 0; i < 64; ++i) {
         if (native_blocks[i].p == enc.ws)
-            assert(native_blocks[i].caps == ((resident ? MALLOC_CAP_INTERNAL : MALLOC_CAP_SPIRAM) | MALLOC_CAP_8BIT));
+            assert(!(native_blocks[i].caps & MALLOC_CAP_SPIRAM) == resident);
         if (enc.bch && native_blocks[i].p == enc.bch)
             assert(native_blocks[i].n == DVBS2_BCH_CACHE_BYTES && (native_blocks[i].caps & MALLOC_CAP_INTERNAL));
     }
@@ -456,24 +501,24 @@ int main(int argc, char **argv)
     assert(dvb.win_bytes <= (moon ? 6864u : sps == 3 ? 1370u : sps == 4 ? 4105u : sps == 8 ? 2058u : 420u));
     stop_encoder();
     printf("}\n");
-    assert(live_allocations == 0);
+    assert(run_returned());
     for (int i = 0; i < allocations; ++i) {
         fail_after = i;
         assert(!start_encoder("dvbdump", mc, 128, 0, sps, rate));
-        assert(live_allocations == 0);
+        assert(run_returned());
     }
     fail_after = -1;
     if (dvb.lofty) {
         native_task_fail = 1;
         assert(!start_encoder("dvbdump",mc,128,0,sps,rate));
-        assert(!live_allocations);
+        assert(run_returned());
         native_task_fail = 0;
     }
     for (unsigned repeat = 0; repeat < 2; ++repeat) {
         capture = fopen(argv[3], "wb"); assert(capture);
         dvbtx_dump(mc, frames, 128, sps == 40 ? 10 : mc < 12 && sps == 8 ? 2 : 1, 0, sps, rate);
         fclose(capture);
-        assert(live_allocations == 0);
+        assert(run_returned());
         for (unsigned i = 0; i < 4; ++i) assert(native_ranges[i] == 0);
     }
     if (!native_input && (mc == 11 || mc == 13 || mc == 15 || mc == 17)) {
@@ -517,24 +562,24 @@ int main(int argc, char **argv)
         assert(!radio_s3_dry_run_rate(fill,NULL,((uint64_t)frames*length*sps+dvb.den-1)/dvb.den,
                                       rate,discard,NULL,&stats));
         stop_encoder(); printf("}\n");
-        assert(live_allocations == 0);
+        assert(run_returned());
         if (moon) {
             native_keyed_fixture = true;
             native_keyed_frames = frames;
             dvbtx_run(2412,mc,30,0,128,sps,rate,true);
-            assert(!live_allocations && !enc.failed);
+            assert(run_returned() && !enc.failed);
             native_keyed_fixture = false;
         }
         if (moon && !dvb.lofty && mc == 11) {
             assert(start_encoder_options("dvbpace",mc,128,0,sps,rate,false,true));
             id_handoff_check(rate);
             stop_encoder(); printf("}\n");
-            assert(live_allocations == 0);
+            assert(run_returned());
         }
         if (heap_input) {
             fail_after = pace_allocations-1;
             assert(!start_encoder_options("dvbpace",mc,128,0,sps,rate,false,moon));
-            assert(live_allocations == 0);
+            assert(run_returned());
             fail_after = -1;
         }
     }
@@ -550,7 +595,7 @@ int main(int argc, char **argv)
         while (!enc.frames) { assert(++tries < 5000); vTaskDelay(1); }
         assert(!enc.failed && enc.input_partial > 0);
         stop_encoder(); printf("}\n");
-        assert(live_allocations == 0);
+        assert(run_returned());
     }
     free(source); free(phases); free(banks);
     return 0;

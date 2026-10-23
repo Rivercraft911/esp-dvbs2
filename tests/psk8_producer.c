@@ -136,6 +136,6 @@ int main(int argc, char **argv)
     }
     assert(lofty_mux.page_max == 5000); // real stalls remain, accounting does not leak back in
 #endif
-    timed = false; release(); assert(!live_allocations);
+    timed = false; release(); assert(run_returned());
     return 0;
 }

@@ -4,6 +4,7 @@
 #include "radio_s3.h"
 #include "driver/usb_serial_jtag.h"
 #include "esp_heap_caps.h"
+#include "run_memory.h"
 #include "esp_rom_crc.h"
 #include "freertos/FreeRTOS.h"
 #include <inttypes.h>
@@ -97,16 +98,16 @@ void station_dump(char *args)
                "no radio\"}\n");
         return;
     }
-    station_id_t *id = heap_caps_calloc(1, sizeof *id, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    run_reset();
+    station_id_t *id = run_take(sizeof *id, 16, MALLOC_CAP_INTERNAL);
     if (!id) {
         printf("@{\"cmd\":\"iddump\",\"error\":\"allocation failed\"}\n");
         return;
     }
     station_id_init_rate(id, normalized, 0, rate, NULL, NULL);
     // USB staging buffer in PSRAM: the sink runs between fills, never inside one.
-    dump_t *d = heap_caps_calloc(1, sizeof *d, MALLOC_CAP_SPIRAM);
+    dump_t *d = run_take(sizeof *d, 16, MALLOC_CAP_SPIRAM);
     if (!d) {
-        heap_caps_free(id);
         printf("@{\"cmd\":\"iddump\",\"error\":\"allocation failed\"}\n");
         return;
     }
@@ -130,6 +131,4 @@ void station_dump(char *args)
            (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
            (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
            esp_err_to_name(err));
-    heap_caps_free(d);
-    heap_caps_free(id);
 }

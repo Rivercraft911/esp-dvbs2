@@ -23,7 +23,11 @@ CONFIG_ESP_PHY_CALIBRATION_AND_DATA_STORAGE=n
 
 # Only the spisend test sender uses the SPI master. RX DMA callbacks stay in IRAM.
 CONFIG_SPI_MASTER_ISR_IN_IRAM=n
-# Allocate before streaming and free after stopping. The encoder, bank fill and
-# SPI ISRs never allocate (PV uses internal DMA buffers and NO_RETURN_RESULT).
-# Keep the allocator in flash rather than spending shared instruction/data RAM.
+# Run memory comes from fixed arenas (main/run_memory.c), not the heap. The heap hooks count
+# any heap call after boot (info: heap_after_boot). Keep the allocator in flash rather than
+# spending shared instruction/data RAM.
 CONFIG_HEAP_PLACE_FUNCTION_INTO_FLASH=y
+CONFIG_HEAP_USE_HOOKS=y
+# Core 1 belongs to the radio worker, which holds that core's task-watchdog subscription
+# (radio_s3.c); its idle task never runs during a run.
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n

@@ -1,4 +1,4 @@
-"""Console fixture parser, post-Wi-Fi queue sizing and heap failures. No board."""
+"""Console fixture parser, queue sizing without heap use and run-memory failures. No board."""
 import argparse
 import json
 import pathlib
@@ -105,43 +105,35 @@ int main(void) {
     assert len(pace) == 2 and all(r['status'] == 'ESP_OK' for r in pace)
     assert not pace[0]['profile']['fill_phase_cycles'] and not pace[0]['profile']['fill']['whole']['calls']
     assert pace[1]['profile']['fill_phase_cycles'] and pace[1]['profile']['fill']['whole']['calls'] > 0
-    budget = [r for r in rows if r.get('test') == 'queue_budget']
-    assert len(budget) == 18
+    checks = [r for r in rows if r.get('test') == 'queue_check']
+    assert len(checks) == 12
     for mc in (13,15,17):
         for setup in ('dvb','dvbpace'):
-            pair = [r for r in budget[:12] if r['modcod'] == mc and r['setup'] == setup]
+            pair = [r for r in checks if r['modcod'] == mc and r['setup'] == setup]
             assert [r['queue_sizing']['automatic'] for r in pair] == [False,True]
             assert [r['queue_pages'] for r in pair] == [{13:54,15:50,17:46}[mc],54]
             assert pair[0]['crc'] == pair[1]['crc']
             auto = pair[1]
-            assert auto['queue_sizing']['free_before'] == 32000
-            assert auto['queue_sizing']['free_after'] == 32000
             assert auto['renderer_warm_words'] == 39983 and pair[0]['renderer_warm_words'] == 0
             assert auto['dummy_dcache_bytes'] == 13376 and not pair[0]['dummy_dcache_bytes']
-            assert not auto['ring_heap_bytes'] and auto['workspace_heap_bytes'] == 8144
+            store = int(auto['layout']['table'],16)
+            assert not store <= int(auto['layout']['workspace'],16) < store+65536
             layout = auto['queue_layout']
             assert layout['contiguous'] and layout['resident_pages'] == 54 and layout['page_bytes'] == 528
             region, = layout['regions']
             assert region['first_page'] == 0 and region['pages'] == 54 and not region['dac_overlap']
             assert int(region['end'],16)-int(region['begin'],16) == 54*528
             if setup == 'dvbpace':
-                assert auto['input_memory'] == 'psram' and auto['reference_psram_bytes'] > 5000
-                assert auto['reference_psram_bytes'] == {13:5370,15:6720,17:7264}[mc]
-                assert not auto['reference_store_bytes'] and int(auto['layout']['reference'],16)
-            else: assert auto['input_memory'] == 'none' and not auto['reference_psram_bytes']
+                assert auto['input_memory'] == 'psram' and not auto['reference_store_bytes']
+                assert int(auto['layout']['reference'],16)
+            else: assert auto['input_memory'] == 'none'
             assert int(auto['layout']['dummy'],16)
             assert int(auto['layout']['encoder_cache_tail'],16)
             assert auto['encoder_cache_psram_bytes'] == {13:2912,15:2720,17:2320}[mc]
-            assert auto['encoder_cache_heap_bytes']+auto['encoder_cache_psram_bytes'] == auto['encoder_cache_bytes']
-    assert [r['queue_pages'] for r in budget[-5:]] == [54,54,0,0,54]
-    assert [r['queue_sizing']['ready'] for r in budget[-3:]] == [False,False,True]
-    fragmented = [r for r in rows if r.get('test') == 'queue_fragmentation']
-    assert [(r['modcod'],r['setup']) for r in fragmented] == [(mc,s) for mc in (13,15,17) for s in ('dvb','dvbpace')]
-    assert all(r['queue_pages'] == 54 for r in fragmented)
-    for r in fragmented:
-        assert r['crc'] == next(b['crc'] for b in budget if (b['modcod'],b['setup']) == (r['modcod'],r['setup']))
-    print('fragmented heap: old order fails 15/17, cache-first order streams all three with identical words in pace and keyed setups')
-    print('contiguous queues: 13/15/17 pace and keyed setup 54 pages; no post-Wi-Fi allocations; exact reserve and failure cleanup')
+            # Every run fits the firmware's arenas (the host shim refuses what would not).
+            memory = auto['run_memory']
+            assert memory['low'][0]+memory['high'][0] > 0 and memory['psram'][0] > 0
+    print('contiguous queues: 13/15/17 pace and keyed setup 54 pages with identical words; the gate takes no memory; failure cleanup')
     print(run.stdout.splitlines()[-1])
 
 

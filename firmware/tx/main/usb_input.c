@@ -6,6 +6,7 @@
 #include "driver/usb_serial_jtag_select.h"
 #include "hal/usb_serial_jtag_ll.h"
 #include "esp_heap_caps.h"
+#include "run_memory.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -57,13 +58,9 @@ static const ingress_hw hw = {.ready=ready, .rearm=rearm};
 
 static void free_buffers(void)
 {
-    if (timer) {
-        esp_timer_stop_blocking(timer,portMAX_DELAY);
-        esp_timer_delete(timer); timer=NULL;
-    }
+    if (timer) (void)esp_timer_stop_blocking(timer,portMAX_DELAY); // kept for the next run
     pv_crc32_tables(NULL);
-    heap_caps_free(tables); heap_caps_free(buffers);
-    tables=NULL; buffers=NULL; active=false;
+    tables=NULL; buffers=NULL; active=false; // run memory, returned with the run
 }
 
 static bool (*control_handler)(unsigned);
@@ -71,11 +68,12 @@ void usb_input_control(bool (*control)(unsigned)) { control_handler=control; }
 
 esp_err_t usb_input_start(unsigned type)
 {
-    buffers=heap_caps_malloc(INGRESS_SLOTS*INGRESS_SLOT_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    tables=heap_caps_malloc(4096, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    buffers=run_take(INGRESS_SLOTS*INGRESS_SLOT_BYTES, 16, MALLOC_CAP_SPIRAM);
+    tables=run_take(4096, 16, MALLOC_CAP_INTERNAL);
     const esp_timer_create_args_t cfg={.callback=wake,.name="usb_rx"};
     esp_err_t err=ESP_ERR_NO_MEM;
-    if (!buffers || !tables || (err=esp_timer_create(&cfg,&timer))!=ESP_OK) {
+    // The timer is created on first use and kept: one heap allocation per boot.
+    if (!buffers || !tables || (!timer && (err=esp_timer_create(&cfg,&timer))!=ESP_OK)) {
         free_buffers(); return err;
     }
     portENTER_CRITICAL(&rx_mux);

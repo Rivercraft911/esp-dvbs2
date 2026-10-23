@@ -101,7 +101,7 @@ int main(int argc, char **argv)
     assert(!dvb.queue_empty && !dvb.ring.underruns);
     assert(!forced || (lofty_mux.startup == 2 && !lofty_mux.steady && transitions >= 6 && all_switches == 3));
     printf("@{\"test\":\"handoff_record\""); stop_encoder(); printf("}\n");
-    assert(!live_allocations);
+    assert(run_returned());
     free(banks);
     return 0;
 }
