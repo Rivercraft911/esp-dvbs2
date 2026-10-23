@@ -310,7 +310,7 @@ the RF path connected until the run's record arrives. A fill or deadline fault s
 once, and then the closing ID may be missing.
 
 **Drive.** The [keyed table](../results/2026-10-23-tx-table/README.md) used gain 0 with peak 128
-at 40 MS/s and peak 48 at 80 MS/s, and every frame decoded exactly. An earlier 20 Msym/s run at
+at 40 MS/s and peak 48 at 80 MS/s, and every recovered frame was exact. An earlier 20 Msym/s run at
 peak 128 overdrove the radio and decoded nothing ([measurements](measurements.md#over-the-air)). Gain is an
 uncalibrated index, so output power is unknown.
 
@@ -326,8 +326,9 @@ tracking pass, about 44,000 cycles (0.18 ms), the call Wi-Fi used to make every 
 ([no Wi-Fi](../results/2026-10-23-tx-no-wifi/README.md)). Wi-Fi had been costing frames: with
 the transmitter's Wi-Fi up, 2 of 51,791 frames failed at the S3 receiver, and with it stopped
 before keying (PHY-solo), 0 of 103,453 ([PHY-solo](../results/2026-10-23-tx-phy-solo/README.md)).
-A 535 s keyed run with only the one tracking pass decoded every captured frame from start to end
-([record](../results/2026-10-23-tx-no-wifi-checks/README.md)).
+In a 535 s keyed run with only the one tracking pass, six 0.5 s bursts sampled from start to end
+recovered 355 frames, every one exact; best-frame MER spanned 17.2 to 18.2 dB and moved 0.2 dB
+from the first burst to the last ([record](../results/2026-10-23-tx-no-wifi-checks/README.md)).
 
 `tx` plays a 40-sample pattern on repeat. The frequencies below are at 40 MS/s and double at
 80 MS/s.

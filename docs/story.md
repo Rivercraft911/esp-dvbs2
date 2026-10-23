@@ -519,8 +519,9 @@ on flash: its 8 KiB of BCH pair tables pushed the encoder's tables past the 32 K
 misses a frame. In internal RAM it went from 254k to 124k cycles a frame
 ([20 Msym/s](../results/2026-10-23-tx-8psk-20m/README.md)).
 
-Then every transmitter mode went back on air with a payload that never repeats: 19 keyed runs
-into a B200, 10,219 frames, every one exact, 0.97 to 69.8 Mb/s. Along the way it turned out that
+Then 19 selected transmitter configurations went back on air with a payload that never repeats,
+keyed into a B200: 10,219 frames recovered from sampled bursts, every one exact, 0.97 to
+69.8 Mb/s. Along the way it turned out that
 that day's earlier B200 captures had used its RX2 port, which hears the signal only by leakage,
 about 19 dB down; the table moved the coax to TX/RX ([keyed table](../results/2026-10-23-tx-table/README.md),
 [8PSK re-key](../results/2026-10-23-tx-table-8psk-rekey/README.md)).
@@ -548,8 +549,9 @@ transmitter sends then decoded 223,153 frames, every one exact
 
 ## Now
 
-One S3 transmits every mode keyed with a payload that never repeats, from 0.97 Mb/s to 69.8 Mb/s
-in 36 MHz and 58.2 Mb/s in 40 MHz, decoded exact from B200 captures. It carried a CM5's live
+One S3 has keyed 19 selected configurations with a payload that never repeats, from 0.97 Mb/s to
+69.8 Mb/s in 36 MHz and 58.2 Mb/s in 40 MHz, every frame recovered from sampled B200 bursts
+exact. It carried a CM5's live
 camera mux at 9 Mb/s. A second S3 receives every short-frame mode the first one sends, up to
 12.64 Mb/s, and decodes every frame itself. The limits are plain: conducted paths, one pair of
 boards, the receiver at 2420 MHz and one gain setting, and no real input has yet fed the top

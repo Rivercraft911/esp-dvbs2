@@ -64,7 +64,7 @@ python3 host/board.py "dvb 2420 16 5m 55 0 128 --short" --port TX_PORT --timeout
 ## What it transmits
 
 Every row was keyed for 30 s with a payload that never repeats and decoded by LeanDVB, an
-independent receiver, from B200 captures, with every frame exact
+independent receiver, from four short B200 captures per run: every recovered frame was exact
 ([keyed table](results/2026-10-23-tx-table/README.md), [8PSK re-key](results/2026-10-23-tx-table-8psk-rekey/README.md)). Spare is the share of each core left
 over: the encoder on core 0 against the frame period, the bank fill on core 1 against its
 deadline.

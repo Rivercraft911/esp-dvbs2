@@ -1,7 +1,7 @@
 # The transmitter
 
 One ESP32-S3 makes every DVB-S2 frame and every output sample itself, and keyed for 30 s with a
-payload that never repeats it delivers anything from 0.97 Mb/s (QPSK 1/2 at 1 Msym/s) to
+payload that never repeats, 19 selected configurations deliver anything from 0.97 Mb/s (QPSK 1/2 at 1 Msym/s) to
 69.8 Mb/s (8PSK 9/10 at 26.67 Msym/s), every frame LeanDVB recovered exact
 ([keyed table](../results/2026-10-23-tx-table/README.md),
 [8PSK re-key](../results/2026-10-23-tx-table-8psk-rekey/README.md)). Core 0 encodes frames;
@@ -152,8 +152,9 @@ settings and leaves the DAC on the data path (esp-sdr-zephyr's method,
 PBUS(4,2), so wide signals get 32 back and narrow ones 0, and the readback goes in the run's
 record. One PLL and temperature tracking pass, about 44,000 cycles (0.18 ms), runs before keying
 ([no Wi-Fi](../results/2026-10-23-tx-no-wifi/README.md)). Without Wi-Fi nothing repeats that pass;
-a 535 s keyed run still decoded every captured frame exact, start to end, with best-frame MER
-steady within 0.2 dB ([drift](../results/2026-10-23-tx-no-wifi-checks/README.md)).
+in a 535 s keyed run, six 0.5 s bursts sampled from start to end recovered 355 frames, every one
+exact; best-frame MER spanned 17.2 to 18.2 dB, and the last burst read 0.2 dB below the first
+([drift](../results/2026-10-23-tx-no-wifi-checks/README.md)).
 
 A run lasts at most 540 s including both Morse IDs (`RADIO_S3_MAX_SECONDS`), and the console
 refuses to key without a stored callsign ([transmitting](transmitting.md)).
