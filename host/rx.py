@@ -373,10 +373,20 @@ def ts_packets_expected(first_frame: int, frames: int, size: int) -> tuple[int, 
     return checked + unchecked, unchecked
 
 
-def ts_verdict(records, replay: bool, frames: dict) -> dict:
-    """The receiver's TS counters (`rx ... ts pattern` summary) against the frames check(): every
-    good frame went through the deframer (frames the LDPC decoder repaired come too late and do
-    not), and it handed on exactly the packets those frames hold. Then the counters are clean."""
+def ts_wraps(first_frame: int, packets: int, size: int) -> int:
+    """Continuity jumps the replay loop makes in `packets` packets handed on in a row from model
+    frame first_frame on: it repeats 56 packets, not a multiple of 16, so each return to its first
+    packet after the first one handed on is a jump (the receiver's pattern check counts them as
+    wraps)."""
+    first = -(-first_frame * size // 188)
+    return (first + packets - 1) // 56 - first // 56
+
+
+def ts_verdict(records, replay: bool, frames: dict, pattern: bool = True) -> dict:
+    """The receiver's TS counters (`rx ... ts [pattern]` summary) against the frames check():
+    every good frame went through the deframer (frames the LDPC decoder repaired come too late and
+    do not), and it handed on exactly the packets those frames hold. Then the counters are clean.
+    Without the pattern check the replay's jumps are counted from the packets (ts_wraps)."""
     summary = next((r for r in records if isinstance(r.get("ts"), dict)), None)
     if summary is None:
         return dict(passed=False, error="no ts counters")
@@ -384,9 +394,11 @@ def ts_verdict(records, replay: bool, frames: dict) -> dict:
     k0, span, size = frames.get("first_model_frame"), frames.get("sequence_span", 0), frames["frame_bytes"]
     want, want_unchecked = ts_packets_expected(k0, span, size) if k0 is not None else (None, None)
     deframed = frames.get("decoded", 0) - summary.get("decoded", 0)
+    jumps = (p["wraps"] if pattern else ts_wraps(k0, t["packets"], size) if k0 is not None else None) if replay else 0
     clean = (t["crc_errors"] == p["bad"] == p["jumps"] == t["resyncs"] == t["late"] == t["not_ts"] == 0
-             and t["cc_errors"] == (p["wraps"] if replay else 0) and t["unchecked"] == want_unchecked
-             and p["checked"] == t["packets"] == want and t["frames"] == deframed > 0)
+             and t["cc_errors"] == jumps and t["unchecked"] == want_unchecked
+             and p["checked"] == (t["packets"] if pattern else 0) and t["packets"] == want
+             and t["frames"] == deframed > 0)
     return dict(packets=t["packets"], expected_packets=want, frames=t["frames"], expected_frames=deframed,
                 crc_errors=t["crc_errors"], cc_errors=t["cc_errors"], replay_wraps=p["wraps"],
                 pattern_bad=p["bad"], pattern_jumps=p["jumps"], resyncs=t["resyncs"],
@@ -407,11 +419,13 @@ def main() -> int:
     p.add_argument("--callsign", default="N0CALL")
     p.add_argument("--ts", choices=("replay", "live"),
                    help="TS test input: the transmitter's `ts replay` loop, or a live sender's count")
+    p.add_argument("--no-pattern", action="store_true",
+                   help="with --ts: deframe only, without the receiver's check of every packet")
     p.add_argument("--tx-frames", type=int, help="model frames to search (default: the run and 60 s)")
     p.add_argument("--out", type=pathlib.Path, help="append the summary to this JSON-lines file")
     a = p.parse_args()
     port = board.resolve_port(a.port)
-    token = (" 5m" if a.rate == "5m" else "") + (" ts pattern" if a.ts else "")
+    token = (" 5m" if a.rate == "5m" else "") + ((" ts" if a.no_pattern else " ts pattern") if a.ts else "")
     if a.replay:
         data = a.replay.read_bytes()
         command = f"replay {a.modcod}" + (f" {a.skip}" if a.skip else "") + token
@@ -428,7 +442,7 @@ def main() -> int:
     keys = ts_keys(a.modcod, tx_frames, a.ts == "replay", crc) if a.ts else None
     result = check(frames, a.modcod, a.callsign, tx_frames, SYMBOL_RATE[a.rate], keys=keys)
     if a.ts:
-        result["ts"] = ts_verdict(after, a.ts == "replay", result)
+        result["ts"] = ts_verdict(after, a.ts == "replay", result, not a.no_pattern)
         result["passed"] = result["passed"] and result["ts"]["passed"]
     summary = dict(firmware=firmware, command=command, replay=str(a.replay) if a.replay else None,
                    board=before + after, check=result,
