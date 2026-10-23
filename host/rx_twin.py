@@ -4,10 +4,11 @@
     python3 host/rx_twin.py --frames 40 --mer-db 18 --out twin.u32      write dump words
     python3 host/rx_twin.py --frames 10 --gap 0 0.1 --out tone.sc8      int8 pairs, for replay
     python3 host/rx_twin.py --frames 3584 --check --reference 40         30 s through the C demodulator
+    python3 host/rx_twin.py --rate 5e6 --modcod 16 --frames 40 --check   8PSK 8/9 at 5 Msym/s
 
 Transmitter: host/dvbs2.py frames carrying the firmware's test payload (host/rx.py model), the
-firmware pulse (shaper_taps.h: inverse-hold RRC, 360 taps at 40 MS/s), each DAC sample held
-for 25 ns, then band-limited to the dump's +-8 MHz. Channel and receiver: symbol clock offset
+firmware pulse (shaper_taps.h: inverse-hold RRC at 40 MS/s, 360 taps at 1 Msym/s, 72 taps at
+5 Msym/s), each DAC sample held for 25 ns, then band-limited to the dump's +-8 MHz. Channel and receiver: symbol clock offset
 and carrier offset that drift together (both radios run from 40 MHz crystals), Wiener phase
 noise, the transmitter's carrier leak and IQ image, the receiver's IQ image and DC, AWGN set
 by Es/N0 at an ideal matched filter, level, 10-bit rounding, and junk in the unused word bits.
@@ -30,15 +31,18 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "host"))
 import dvbs2  # noqa: E402
 import rx  # noqa: E402
+from rx_demod import mode  # noqa: E402
 
 FS = 16e6                    # dump sample rate
-RS = 1e6                     # symbol rate
+DAC = 40e6                   # transmitter DAC rate
 GRID = 2048                  # pulse table points per symbol
+TAPS = {1e6: "qpsk_n40_a35", 5e6: "8psk_n8_a35"}   # the transmitter's pulse per symbol rate
 
 
 @dataclasses.dataclass
 class Link:
-    modcod: int = 7
+    modcod: int = 7              # QPSK 4..11, 8PSK 12..17
+    rate: float = 1e6            # symbols per second: 1e6 or 5e6
     short: bool = True
     frames: int = 20
     first: int = 0               # first payload frame of the transmitter model
@@ -49,6 +53,8 @@ class Link:
     clock_ppm: float = None      # TX symbol clock vs RX sample clock; None: cfo / carrier
     mer_db: float = 18.0         # AWGN Es/N0 at an ideal matched filter
     linewidth_hz: float = 0.05   # Wiener phase noise: 1.6 deg rms about a line over 33 ms
+    isi: float = None            # residual ISI at +-1 symbol after an RRC matched filter; None:
+                                 # 0.035 at 5 Msym/s (fitted on 2026-10-23 dumps), 0 at 1 Msym/s
     rms: float = 221.0           # 10-bit LSB before noise
     rx_dc_db: float = -23.0
     rx_image_db: float = -38.0
@@ -59,47 +65,54 @@ class Link:
     seed: int = 2026
 
 
-@functools.lru_cache(maxsize=1)
-def pulse():
-    """Transmitted pulse on a 1/GRID-symbol grid from t = -2 to 14 symbols: the firmware taps,
-    each DAC sample held for 1/40 symbol, band-limited to +-8 MHz, scaled so a stream of unit
-    symbols has unit rms (sum of p^2 at 16 samples/symbol = 16)."""
+@functools.lru_cache(maxsize=4)
+def pulse(rate=1e6, isi=0.0):
+    """Transmitted pulse on a 1/GRID-symbol grid from t = -2 to 14 symbols: the firmware's 9
+    symbols of taps at 40 MS/s, each DAC sample held for 25 ns, band-limited to +-8 MHz, scaled
+    so a stream of unit symbols has unit rms (sum of p^2 on a 16-point grid per symbol = 16).
+    isi adds the pulse one symbol either side at that weight: the analog filters' residual ISI
+    on the real link at 5 Msym/s."""
     text = (ROOT / "firmware/main/shaper_taps.h").read_text()
-    taps = np.array([int(v) for v in re.search(r"qpsk_n40_a35\[360\] = \{([^}]*)\}", text)
+    taps = np.array([int(v) for v in re.search(TAPS[rate] + r"\[\d+\] = \{([^}]*)\}", text)
                      .group(1).split(",") if v.strip()], float)
     n = 16 * GRID
     t = np.arange(n) / GRID - 2
-    k = np.floor(t * 40).astype(int)                    # DAC sample being held
+    k = np.floor(t * DAC / rate).astype(int)            # DAC sample being held
     held = np.where((k >= 0) & (k < len(taps)), taps[np.clip(k, 0, len(taps) - 1)], 0.0)
-    f = np.fft.fftfreq(n, 1 / (GRID * RS))
+    f = np.fft.fftfreq(n, 1 / (GRID * rate))
     p = np.real(np.fft.ifft(np.fft.fft(held) * (np.abs(f) < FS / 2)))
+    p = p + isi * (np.roll(p, GRID) + np.roll(p, -GRID))      # the table is zero at both ends
     return p * np.sqrt(16 / np.sum(p[::GRID // 16] ** 2))
+
+
+def link_isi(link):
+    return link.isi if link.isi is not None else (0.035 if link.rate > 1e6 else 0.0)
 
 
 def frames(link):
     """Symbols (phase index, 0..7) and per-frame truth: first symbol, model frame, codeword."""
-    rate = dvbs2.RATES[link.modcod - 1]
+    rate, modulation = mode(link.modcod)
     size = (dvbs2.code(rate, link.short).kbch - 80) // 8
     model = rx.model(size, link.first + link.frames, link.callsign)
     parts, truth, at = [np.zeros(link.lead_symbols, np.uint8)], [], link.lead_symbols
     active = [np.zeros(link.lead_symbols, bool)]
     for j in range(link.frames):
         if link.gap and j == link.gap[0]:
-            g = int(round(link.gap[1] * RS))
+            g = int(round(link.gap[1] * link.rate))
             parts.append(np.zeros(g, np.uint8))
             active.append(np.zeros(g, bool))
             at += g
         k = link.first + j
         bits = np.unpackbits(np.frombuffer(model[k], np.uint8))
         cw = dvbs2.fecframe(dvbs2.bbframe(bits, rate, link.short), rate, link.short)
-        ph = dvbs2.plframe_phases(cw, rate, link.short)
+        ph = dvbs2.plframe_phases(cw, rate, link.short, modulation=modulation)
         truth.append(dict(symbol=at, model_frame=k, codeword=cw, phases=ph))
         parts.append(ph)
         active.append(np.ones(len(ph), bool))
         at += len(ph)
     e0, de = clock(link)
     for f in truth:                   # pulse peak 4.5 symbols in; approximate, for matching
-        n = (f["symbol"] + 4.5) * 16 / (1 + e0)
+        n = (f["symbol"] + 4.5) * FS / link.rate / (1 + e0)
         f["header_sample"] = n - de * n * n / 2 / (1 + e0)
     tail = 3000                       # receiver keeps running after the last frame
     parts.append(np.zeros(tail, np.uint8))
@@ -108,7 +121,7 @@ def frames(link):
 
 
 def clock(link):
-    """Sample n's transmitter time in symbols: (n + e0 n + de n^2 / 2) / 16."""
+    """Sample n's transmitter time in symbols: (n + e0 n + de n^2 / 2) rate / FS."""
     if link.clock_ppm is None:
         return link.cfo_hz / link.carrier_hz, link.drift_hz_s / (link.carrier_hz * FS)
     return link.clock_ppm * 1e-6, 0.0
@@ -117,22 +130,23 @@ def clock(link):
 def generate(link, plan=None, chunk=1 << 18):
     """Yield (first sample, dump words) chunks, and finally (None, truth list)."""
     rng = np.random.default_rng(link.seed)
-    table = pulse()
+    table = pulse(link.rate, link_isi(link))
     sym, act, truth = plan or frames(link)
     unit = np.exp(1j * np.pi / 4 * np.arange(8))
     e0, de = clock(link)
-    total = int(len(sym) * 16 / (1 + e0)) - 16
+    sps = FS / link.rate
+    total = int(len(sym) * sps / (1 + e0)) - 16
     db = lambda v: 10 ** (v / 20)                                   # noqa: E731
     leak = db(link.tx_leak_db) * np.exp(0.7j)
     tx_nu, rx_nu = db(link.tx_image_db) * np.exp(0.3j), db(link.rx_image_db) * np.exp(-1.1j)
     dc = link.rms * db(link.rx_dc_db) * np.exp(2.1j)
-    # A matched filter sums 16 samples of signal coherently: Es/N0 = 16 rms^2 / sigma^2.
-    sigma = 4 * link.rms / np.sqrt(10 ** (link.mer_db / 10))
+    # A matched filter sums sps samples of signal coherently: Es/N0 = sps rms^2 / sigma^2.
+    sigma = np.sqrt(sps) * link.rms / np.sqrt(10 ** (link.mer_db / 10))
     pn_step = np.sqrt(2 * np.pi * link.linewidth_hz / FS)
     pn = 0.0
     for first in range(0, total, chunk):
         n = np.arange(first, min(first + chunk, total), dtype=np.float64)
-        t = (n + e0 * n + de * n * n / 2) / 16                      # symbols, TX clock
+        t = (n + e0 * n + de * n * n / 2) / sps                     # symbols, TX clock
         k0 = np.floor(t).astype(np.int64)
         x = np.zeros(len(n), complex)
         for j in range(-2, 14):                                     # pulse spans t - k in [-2, 14)
@@ -165,7 +179,8 @@ def generate(link, plan=None, chunk=1 << 18):
 
 def reference(words, truth, link):
     """Float reference receiver with the truth: the full 10-bit samples less the true DC, a
-    10-symbol RRC matched filter at the true symbol times, the true carrier offset and drift
+    10-symbol RRC matched filter (less the link's ISI at +-1 symbol, as the demodulator's 5 Msym/s
+    filter) at the true symbol times, the true carrier offset and drift
     removed, the remaining phase from a 101-symbol moving average of known symbols, amplitude
     and carrier leak fitted on known symbols.
     Returns each frame's data-symbol MER in dB, the yardstick for implementation loss."""
@@ -173,23 +188,24 @@ def reference(words, truth, link):
     x = (((words.astype(np.int64) << 12) & 0xffffffff) ^ 0x80000000) - 0x80000000 >> 22
     y = (((words.astype(np.int64) << 22) & 0xffffffff) ^ 0x80000000) - 0x80000000 >> 22
     x = x + 1j * y - link.rms * 10 ** (link.rx_dc_db / 20) * np.exp(2.1j)
-    table = pulse()
+    table = pulse(link.rate, link_isi(link))
     t = np.arange(len(table)) / GRID - 2
-    g = rrc(np.arange(-80, 81) / 16)
-    g /= np.sqrt(np.sum(g ** 2))
+    sps = FS / link.rate
+    half = int(5 * sps)                                         # 10 symbols of taps
     centre = t[np.argmax(np.convolve(table, rrc(np.arange(-5 * GRID, 5 * GRID + 1) / GRID), "same"))]
     e0, de = clock(link)
     out = []
     for f in truth:
         k = np.arange(len(f["phases"]))
-        n = 16 * (f["symbol"] + k + centre) / (1 + e0)
+        n = sps * (f["symbol"] + k + centre) / (1 + e0)
         n -= de * n * n / 2 / (1 + e0)
         m0 = np.floor(n).astype(np.int64)
-        idx = m0[:, None] + np.arange(-80, 82)[None, :]
+        idx = m0[:, None] + np.arange(-half, half + 2)[None, :]
         if idx.min() < 0 or idx.max() >= len(x):
             out.append(None)
             continue
-        h = rrc((n[:, None] - idx) / 16) / np.sqrt(np.sum(rrc(np.arange(-80, 81) / 16) ** 2))
+        u, isi = (n[:, None] - idx) / sps, link_isi(link)
+        h = rrc(u) - isi * (rrc(u - 1) + rrc(u + 1))
         sec = n / FS
         ym = np.sum(x[idx] * h, axis=1) * np.exp(-2j * np.pi * (link.cfo_hz * sec + link.drift_hz_s * sec * sec / 2))
         s = np.exp(1j * np.pi / 4 * f["phases"])
@@ -231,7 +247,8 @@ def check(link, reference_frames=0):
     kept, emitted = [], 0
     with tempfile.TemporaryDirectory() as tmp:
         d = rx_demod.Demod(rx_demod.build(tmp), link.modcod, not link.short,
-                           int(link.carrier_hz) // 1000, cfo_hint=int(link.cfo_hz), cfo_span=40000)
+                           int(link.carrier_hz) // 1000, cfo_hint=int(link.cfo_hz), cfo_span=40000,
+                           rate=link.rate)
         rows = {}
         for first, w in generate(link, plan):
             if first is None:
@@ -244,7 +261,8 @@ def check(link, reference_frames=0):
                 if near:
                     t = truth[near[0]]
                     rows[near[0]] = dict(errors=int(np.count_nonzero(t["codeword"] != f["hard"])),
-                                         mer=f["mer_db"], data_mer=rx_demod.data_mer(f, t["codeword"]),
+                                         mer=f["mer_db"],
+                                         data_mer=rx_demod.data_mer(f, t["codeword"], link.modcod),
                                          cfo=f["cfo_hz"], ppb=f["clock_ppb"])
             emitted += len(d.frames)
             d.frames = []

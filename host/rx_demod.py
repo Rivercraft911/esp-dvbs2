@@ -3,10 +3,12 @@
 
     python3 host/rx_demod.py tables [--check]       write or check demod_tables.h
     python3 host/rx_demod.py run CAPTURE --modcod 4 --normal --callsign KJ5SCH
+    python3 host/rx_demod.py run CAPTURE --modcod 13 --rate 5e6 --normal
 
 `run` feeds a 16 MS/s capture to the C demodulator in 12,288-word units, as the firmware does,
-and compares every frame's hard bits with the transmitter model's FEC codeword. A .sc8 capture
-holds the int8 I/Q pairs that rx_unpack produces (floor(s10/4)); a .u32 file holds dump words.
+releases every queued run after each unit, and compares every frame's hard bits with the
+transmitter model's FEC codeword. A .sc8 capture holds the int8 I/Q pairs that rx_unpack
+produces (floor(s10/4)); a .u32 file holds dump words.
 """
 import argparse
 import ctypes as ct
@@ -26,11 +28,17 @@ import dvbs2  # noqa: E402
 SRC = ROOT / "firmware/components/dvbs2rx"
 TABLES = SRC / "demod_tables.h"
 UNIT = 12288                     # words per firmware capture unit (768 us)
+RING_BYTES = 16384               # RX_DEMOD_RING_BYTES
 
 # Matched filter: RRC, roll-off 0.35, 96 taps at 16 samples/symbol (6 symbols), 4 fractional
 # phases per sample (1/64 symbol). Sets are padded to 7 vectors of 16 for rx_mf.
 SPS, TAPS, PHASES, VECTORS = 16, 96, 4, 7
 CENTRE = 47                      # tap j multiplies sample n0 - 47 + j for output time n0 + p/4
+# 5 Msym/s: 3.2 samples/symbol, 32 phases per sample. Row f, byte j: the pulse at j - 24 - f/32
+# samples from the centre; a 32-sample window whose centre is 8..24 samples in starts at byte
+# 24 - (centre's whole samples in it).
+SPS5, PHASES5, SPAN5 = 3.2, 32, 48
+ISI5 = 0.035
 
 
 def rrc(t, beta=0.35):
@@ -70,6 +78,26 @@ def mf_shift():
     return max(0, math.ceil(math.log2((worst + 1) / 32767)))
 
 
+def mf5(isi=ISI5):
+    """int8 rows c[f][j] = round(127 g((j - 24 - f/32) / 3.2) / g(0)), 32 x 48, where
+    g(t) = h(t) - isi (h(t - 1) + h(t + 1)) cancels the cascade's residual ISI at one symbol."""
+    j = np.arange(SPAN5)
+    g = lambda t: rrc(t) - isi * (rrc(t - 1) + rrc(t + 1))  # noqa: E731
+    h = np.array([g((j - 24 - f / PHASES5) / SPS5) for f in range(PHASES5)])
+    return np.floor(h * 127 / g(0) + 0.5).astype(int)
+
+
+def mf5_windows():
+    """Every window the 5 Msym/s filter can use: row f from byte 24 - o, o = 8..23."""
+    c = mf5()
+    return np.array([c[f, 24 - o:56 - o] for f in range(PHASES5) for o in range(8, 24)])
+
+
+def mf5_shift():
+    worst = 128 * np.abs(mf5_windows()).sum(1).max()
+    return max(0, math.ceil(math.log2((worst + 1) / 32767)))
+
+
 def array(name, ctype, values, columns=16, aligned=False):
     attr = " __attribute__((aligned(16)))" if aligned else ""
     values = list(values)
@@ -90,6 +118,12 @@ def generate():
            "/* RRC, roll-off 0.35, 6 symbols at 16 samples/symbol, peak 127. Set off * 4 + p holds\n"
            " * `off` zeros, then the pulse for output time n0 + p / 4 over samples n0 - 47 .. n0 + 48. */",
            array("rx_mf_sets", "int8_t", mf_sets().ravel(), 16, True),
+           f"#define RX_MF5_PHASES {PHASES5}\n#define RX_MF5_SPAN {SPAN5}",
+           f"#define RX_MF5_SHIFT {mf5_shift()}  /* int32 output >> SHIFT fits int16 */",
+           f"#define RX_MF5_GAIN {int(round(mf5_windows().sum(1).mean()))}  /* sum of a window's taps */\n",
+           "/* 5 Msym/s: RRC at 3.2 samples/symbol, peak 127. Row f, byte j: the pulse at\n"
+           " * j - 24 - f / 32 samples from the output time. */",
+           array("rx_mf5", "int8_t", mf5().ravel(), 16, True),
            "/* sin(2 pi k / 1024), Q14. */",
            array("rx_sin", "int16_t", sin, 16),
            "/* atan(2^-i) in 2^32 per turn, for CORDIC. */",
@@ -110,22 +144,24 @@ def tables(check):
 # ---------------------------------------------------------------- ctypes harness
 
 class Config(ct.Structure):
-    _fields_ = [("modcod", ct.c_uint8), ("cfo_hint_hz", ct.c_int32), ("cfo_span_hz", ct.c_uint32),
-                ("carrier_khz", ct.c_uint32), ("normal", ct.c_uint8), ("quick_lock", ct.c_uint8)]
+    _fields_ = [("modcod", ct.c_uint8), ("symbol_rate", ct.c_uint32), ("cfo_hint_hz", ct.c_int32),
+                ("cfo_span_hz", ct.c_uint32), ("carrier_khz", ct.c_uint32), ("normal", ct.c_uint8),
+                ("quick_lock", ct.c_uint8)]
 
 
 class Frame(ct.Structure):
     _fields_ = [("llr", ct.POINTER(ct.c_int8)), ("hard", ct.POINTER(ct.c_uint8)),
-                ("header_sample", ct.c_uint64), ("sequence", ct.c_uint32), ("cfo_hz", ct.c_int32),
-                ("clock_ppb", ct.c_int32), ("mer_cdb", ct.c_int16), ("modcod", ct.c_uint8),
-                ("type", ct.c_uint8)]
+                ("weak", ct.POINTER(ct.c_uint8)), ("header_sample", ct.c_uint64),
+                ("sequence", ct.c_uint32), ("cfo_hz", ct.c_int32), ("clock_ppb", ct.c_int32),
+                ("mer_cdb", ct.c_int16), ("modcod", ct.c_uint8), ("type", ct.c_uint8)]
 
 
 class Stats(ct.Structure):
     _fields_ = [("words", ct.c_uint64), ("frames", ct.c_uint32), ("lost", ct.c_uint32),
                 ("relocks", ct.c_uint32), ("acquire_cycles", ct.c_uint32),
                 ("dc_i", ct.c_int16), ("dc_q", ct.c_int16), ("locked", ct.c_uint8),
-                ("cfo_hz", ct.c_int32), ("clock_ppb", ct.c_int32), ("rejects", ct.c_uint32)]
+                ("cfo_hz", ct.c_int32), ("clock_ppb", ct.c_int32), ("rejects", ct.c_uint32),
+                ("dropped", ct.c_uint32)]
 
 
 def build(folder, extra=()):
@@ -136,24 +172,26 @@ def build(folder, extra=()):
                     str(SRC / "kernels.c"), *map(str, extra), "-o", str(lib)], check=True)
     so = ct.CDLL(str(lib))
     so.rx_demod_size.restype = ct.c_size_t
-    so.rx_demod_init.argtypes = [ct.c_void_p, ct.POINTER(Config)]
+    so.rx_demod_init.argtypes = [ct.c_void_p, ct.POINTER(Config), ct.c_void_p]
     so.rx_demod_push.restype = ct.c_size_t
-    so.rx_demod_push.argtypes = [ct.c_void_p, ct.c_void_p, ct.c_uint64, ct.c_size_t,
-                                 ct.POINTER(Frame), ct.c_size_t]
+    so.rx_demod_push.argtypes = [ct.c_void_p, ct.c_void_p, ct.c_uint64, ct.c_size_t]
+    so.rx_demod_release.argtypes = [ct.c_void_p, ct.POINTER(Frame)]
     so.rx_demod_stats.argtypes = [ct.c_void_p, ct.POINTER(Stats)]
     return so
 
 
 class Demod:
-    """One C demodulator instance. feed() pushes words in firmware-sized units."""
+    """One C demodulator instance. feed() pushes words in firmware-sized units and releases
+    the queued runs after each, as core 0 would."""
 
     def __init__(self, so, modcod, normal=False, carrier_khz=2420000, cfo_hint=-10000, cfo_span=30000,
-                 quick_lock=False):
-        self.so, self.bits = so, 64800 if normal else 16200
+                 quick_lock=False, rate=1e6):
+        self.so, self.bits, self.rate = so, 64800 if normal else 16200, rate
         self.mem = np.zeros(so.rx_demod_size() + 16, np.uint8)
         self.ptr = (self.mem.ctypes.data + 15) & ~15
-        cfg = Config(modcod, cfo_hint, cfo_span, carrier_khz, int(normal), int(quick_lock))
-        if so.rx_demod_init(ct.c_void_p(self.ptr), ct.byref(cfg)):
+        self.ring = np.zeros(RING_BYTES + 16, np.uint8)
+        cfg = Config(modcod, int(rate), cfo_hint, cfo_span, carrier_khz, int(normal), int(quick_lock))
+        if so.rx_demod_init(ct.c_void_p(self.ptr), ct.byref(cfg), ct.c_void_p((self.ring.ctypes.data + 15) & ~15)):
             raise ValueError("rx_demod_init rejected the configuration")
         self.next, self.frames = 0, []
         self._new_buffers()
@@ -161,22 +199,32 @@ class Demod:
     def _new_buffers(self):
         self.llr = np.zeros(self.bits, np.int8)
         self.hard = np.zeros((self.bits // 8 + 16) // 16 * 16, np.uint8)
+        self.weak = np.zeros_like(self.hard)
         self.out = Frame(self.llr.ctypes.data_as(ct.POINTER(ct.c_int8)),
-                         self.hard.ctypes.data_as(ct.POINTER(ct.c_uint8)))
+                         self.hard.ctypes.data_as(ct.POINTER(ct.c_uint8)),
+                         self.weak.ctypes.data_as(ct.POINTER(ct.c_uint8)))
+
+    def release(self):
+        while self.so.rx_demod_release(ct.c_void_p(self.ptr), ct.byref(self.out)):
+            o = self.out
+            self.frames.append(dict(header_sample=o.header_sample, sequence=o.sequence,
+                                    cfo_hz=o.cfo_hz, clock_ppb=o.clock_ppb, mer_db=o.mer_cdb / 100,
+                                    modcod=o.modcod, type=o.type, llr=self.llr,
+                                    hard=np.unpackbits(self.hard[:self.bits // 8]),
+                                    weak=np.unpackbits(self.weak[:self.bits // 8])))
+            self._new_buffers()
 
     def feed(self, words, first=None):
+        """Push in capture units, releasing after each. At 5 Msym/s a unit carries 3,840
+        symbols against the ring's 4,096, so release every 4,096 words, as a concurrent core 0
+        would keep up."""
         words = np.ascontiguousarray(words, np.uint32)
         first = self.next if first is None else first
-        for k in range(0, len(words), UNIT):
-            chunk = words[k:k + UNIT]
-            if self.so.rx_demod_push(ct.c_void_p(self.ptr), chunk.ctypes.data, first + k, len(chunk),
-                                     ct.byref(self.out), 1):
-                o = self.out
-                self.frames.append(dict(header_sample=o.header_sample, sequence=o.sequence,
-                                        cfo_hz=o.cfo_hz, clock_ppb=o.clock_ppb, mer_db=o.mer_cdb / 100,
-                                        modcod=o.modcod, type=o.type, llr=self.llr,
-                                        hard=np.unpackbits(self.hard[:self.bits // 8])))
-                self._new_buffers()
+        unit = UNIT if self.rate < 5e6 else UNIT // 3
+        for k in range(0, len(words), unit):
+            chunk = words[k:k + unit]
+            self.so.rx_demod_push(ct.c_void_p(self.ptr), chunk.ctypes.data, first + k, len(chunk))
+            self.release()
         self.next = first + len(words)
 
     def stats(self):
@@ -191,32 +239,51 @@ def sc8_words(path):
     return (((b[:, 0] & 0xff) << 12) | ((b[:, 1] & 0xff) << 2)).astype(np.uint32)
 
 
+def mode(modcod):
+    """(code rate, modulation) of a MODCOD: QPSK 1..11, 8PSK 12..17 (EN 302 307-1 Table 12)."""
+    if modcod >= 12:
+        return dvbs2.PSK8_RATES[modcod - 12], "8psk"
+    return dvbs2.RATES[modcod - 1], "qpsk"
+
+
 def codeword(modcod, payload, normal):
-    rate = dvbs2.RATES[modcod - 1]
+    rate = mode(modcod)[0]
     bits = np.unpackbits(np.frombuffer(payload, np.uint8))
     return dvbs2.fecframe(dvbs2.bbframe(bits, rate, not normal), rate, not normal)
 
 
 def payload_bytes(hard, modcod, normal):
     """DATA FIELD bytes carried by a frame's hard bits (BB descrambled systematic part)."""
-    kbch = dvbs2.code(dvbs2.RATES[modcod - 1], not normal).kbch
+    kbch = dvbs2.code(mode(modcod)[0], not normal).kbch
     bb = hard[:kbch] ^ dvbs2.bb_prbs(kbch)
     return np.packbits(bb[80:]).tobytes()
 
 
-def data_mer(frame, cw):
-    """MER of the data symbols in dB, from the LLRs (32 per nominal axis) and the codeword."""
-    x = frame["llr"].astype(float) / 32
-    ref = 1 - 2 * cw.astype(float)
-    g = np.dot(x, ref) / np.dot(ref, ref)
-    return 10 * math.log10(2 / (2 * np.mean((x / g - ref) ** 2)))
+def data_mer(frame, cw, modcod=None):
+    """MER of the data symbols in dB, from the soft bits and the codeword. QPSK: 32 per nominal
+    axis. 8PSK: the second and third bits are the point's coordinates after -pi/8, 32 per
+    a sin(pi/8); the codeword gives the transmitted point."""
+    if modcod is None or modcod < 12:
+        x = frame["llr"].astype(float) / 32
+        ref = 1 - 2 * cw.astype(float)
+        g = np.dot(x, ref) / np.dot(ref, ref)
+        return 10 * math.log10(2 / (2 * np.mean((x / g - ref) ** 2)))
+    n = len(cw) // 3
+    planes = cw.reshape(3, n)[::-1] if modcod == 12 else cw.reshape(3, n)
+    soft = frame["llr"].astype(float).reshape(3, n)
+    soft = soft[::-1] if modcod == 12 else soft
+    z = (soft[1] + 1j * soft[2]) * np.sin(np.pi / 8) / 32
+    k = dvbs2.psk8_map(planes.T.ravel())
+    ref = np.exp(1j * (np.pi / 4 * k - np.pi / 8))
+    g = np.vdot(ref, z) / np.vdot(ref, ref)
+    return 10 * math.log10(1 / np.mean(np.abs(z / g - ref) ** 2))
 
 
 def check(frames, modcod, normal, callsign, limit=4000):
     """Compare each frame with the transmitter model. The model index comes from the first
     frame whose payload appears in the model stream; later frames follow their sequence."""
     import rx
-    size = (dvbs2.code(dvbs2.RATES[modcod - 1], not normal).kbch - 80) // 8
+    size = (dvbs2.code(mode(modcod)[0], not normal).kbch - 80) // 8
     model = rx.model(size, limit, callsign)
     index = {m[40:72]: k for k, m in enumerate(model)}
     base = None
@@ -233,14 +300,15 @@ def check(frames, modcod, normal, callsign, limit=4000):
             continue
         cw = codeword(modcod, model[k], normal)
         rows.append(dict(model_frame=k, bit_errors=int(np.count_nonzero(cw != f["hard"])),
-                         data_mer_db=round(data_mer(f, cw), 2)))
+                         data_mer_db=round(data_mer(f, cw, modcod), 2)))
     return rows
 
 
 def run(a):
     words = sc8_words(a.capture) if a.capture.suffix == ".sc8" else np.fromfile(a.capture, np.uint32)
     with tempfile.TemporaryDirectory() as tmp:
-        d = Demod(build(tmp), a.modcod, a.normal, a.carrier_khz, a.cfo_hint, a.cfo_span, quick_lock=True)
+        d = Demod(build(tmp), a.modcod, a.normal, a.carrier_khz, a.cfo_hint, a.cfo_span, quick_lock=True,
+                  rate=a.rate)
         d.feed(words)
         stats = d.stats()
     rows = check(d.frames, a.modcod, a.normal, a.callsign)
@@ -266,6 +334,7 @@ def main():
     r.add_argument("--carrier-khz", type=int, default=2420000)
     r.add_argument("--cfo-hint", type=int, default=-10000)
     r.add_argument("--cfo-span", type=int, default=30000)
+    r.add_argument("--rate", type=float, default=1e6, help="symbols per second: 1e6 or 5e6")
     a = p.parse_args()
     return tables(a.check) if a.cmd == "tables" else run(a)
 

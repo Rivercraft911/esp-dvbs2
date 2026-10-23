@@ -27,7 +27,7 @@ A = 1 / np.sqrt(2)          # QPSK amplitude per axis, unit symbol energy
 
 class Frame(ct.Structure):
     _fields_ = [("llr", ct.POINTER(ct.c_int8)), ("hard", ct.POINTER(ct.c_uint8)),
-                ("header_sample", ct.c_uint64), ("sequence", ct.c_uint32),
+                ("weak", ct.POINTER(ct.c_uint8)), ("header_sample", ct.c_uint64), ("sequence", ct.c_uint32),
                 ("cfo_hz", ct.c_int32), ("clock_ppb", ct.c_int32), ("mer_cdb", ct.c_int16),
                 ("modcod", ct.c_uint8), ("type", ct.c_uint8)]
 
@@ -78,7 +78,7 @@ class Native:
         hard = np.zeros(2032, np.uint8)
         hard[:2025] = np.packbits(llr < 0 if hard_bits is None else hard_bits)
         frame = Frame(llr.ctypes.data_as(ct.POINTER(ct.c_int8)),
-                      hard.ctypes.data_as(ct.POINTER(ct.c_uint8)), 0, 0, 0, 0, 0,
+                      hard.ctypes.data_as(ct.POINTER(ct.c_uint8)), None, 0, 0, 0, 0, 0,
                       modcod if frame_modcod is None else frame_modcod, frame_type)
         payload, stats = ct.POINTER(ct.c_uint8)(), Stats()
         n = self.lib.rx_fec_frame(self.decoder(modcod, work), ct.byref(frame), ct.byref(payload),

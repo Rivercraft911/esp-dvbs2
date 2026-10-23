@@ -46,3 +46,8 @@ the S3 transmitter at 2420 MHz through coax, RX gain 32, 2026-10-22 (notes captu
 short7-gain32, samples 38,280 to 56,519, from 150 symbols before a PLHEADER). Int8 I then Q
 per sample, floor(s10 / 4), exactly what rx_unpack produces. tests/test_rx_demod.py checks
 acquisition, timing and the carrier estimate on it.
+
+`rx_5m13.sc8` is 6,400 samples (2,000 symbols) of a real S3 dump at 5 Msym/s: 8PSK 2/3 normal
+frames, TX peak 128, 2420 MHz, coax, RX gain 32, 2026-10-22 (notes capture
+normal13-5m-peak128, samples 110,935 to 117,334, from 150 symbols before a PLHEADER through
+the first pilot block), same format.

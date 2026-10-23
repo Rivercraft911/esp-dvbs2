@@ -21,17 +21,21 @@ repeated payload. [Capture and plotting details](results/2026-10-21-rf-figures/R
 
 ## Receiving on an S3
 
-A second ESP32-S3 now receives the stream and decodes all of it on the chip: it captures
-through its own radio at 16 MS/s, matched-filters, tracks timing and carrier, runs LDPC and
-BCH, and streams the payload over USB. With short frames, QPSK 3/4 at 1 Msym/s, it decoded
-every frame of three 38 s runs exactly, **1.39 Mb/s**, starting before the transmitter keyed.
-The path was coax with 30 dB of attenuation.
-[Results](results/2026-10-22-rx-continuous/README.md), [receiver chain](docs/how-it-works.md#receiving).
+A second ESP32-S3 receives the stream and decodes all of it on the chip: it captures through
+its own radio at 16 MS/s, matched-filters, tracks timing and carrier, checks or decodes LDPC and
+BCH, and streams a record per frame over USB. With short frames, 8PSK 8/9 at 5 Msym/s, it
+decoded every frame of three 38 s runs exactly, **12.64 Mb/s**, with no samples dropped and a
+median pilot MER of 29.9 dB. One QPSK 3/4 run at 5 Msym/s (6.95 Mb/s) and one at 1 Msym/s
+(1.39 Mb/s) were also exact. The receiver started before the transmitter keyed; the path was coax with
+30 dB of attenuation.
+[5 Msym/s results](results/2026-10-23-rx-5m-margin/README.md),
+[1 Msym/s qualification](results/2026-10-22-rx-continuous/README.md),
+[receiver chain](docs/how-it-works.md#receiving).
 
 ```sh
 (. ~/.espressif/tools/activate_idf_v6.1.sh && cd firmware/rx && idf.py build flash)
-python3 host/rx.py 7 --mhz 2420 --gain 32 --seconds 45 --port RX_PORT --callsign KJ5SCH
-python3 host/board.py "dvb 2420 7 55 0 64 --short" --port TX_PORT   # transmitter, keyed
+python3 host/rx.py 16 --rate 5m --mhz 2420 --gain 32 --seconds 45 --port RX_PORT --callsign KJ5SCH
+python3 host/board.py "dvb 2420 16 5m 55 0 128 --short --phy-solo" --port TX_PORT   # transmitter, keyed
 ```
 
 ## Live video
