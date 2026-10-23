@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Run the receiver firmware's `rx` command and check every payload against the transmitter.
 
-    python3 host/rx.py 7 --mhz 2420 --gain 32 --seconds 30 --port PORT --callsign KJ5SCH
-    python3 host/rx.py 16 --rate 5m --seconds 30 --port PORT --callsign KJ5SCH
-    python3 host/rx.py 7 --replay capture.sc8 --port PORT --callsign KJ5SCH
+    python3 host/rx.py 7 --mhz 2420 --gain 32 --seconds 30 --port PORT --callsign N0CALL
+    python3 host/rx.py 16 --rate 5m --seconds 30 --port PORT --callsign N0CALL
+    python3 host/rx.py 7 --replay capture.sc8 --port PORT --callsign N0CALL
     python3 host/rx.py 16 --rate 5m --ts replay --seconds 30 --port PORT
 
 --replay uploads a recorded 16 MS/s int8 capture and runs it through the same receiver with

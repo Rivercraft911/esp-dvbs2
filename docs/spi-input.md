@@ -12,13 +12,22 @@ an FPGA.
 | Wires | SCK, CS, MOSI, READY, GND | Single-line plus D1..D3 |
 | Clock | up to 20 MHz | up to 40 MHz |
 | Ideal payload rate | 19.4 Mb/s | 136 Mb/s |
-| Tested on the board | 9 and 12 Mb/s | 46.6 Mb/s |
+| Tested on the board | 9 Mb/s from a CM5; 12 Mb/s on-chip | 46.6 Mb/s on-chip |
 | Sender needs | plain SPI writes | one command byte + one address byte + 8 dummy clocks |
 | Select with | `spiinput on` | `spiinput quad` |
 
-The table's tested rates use on-chip loopback between the S3's two SPI peripherals.
-An external CM5 sender also delivered a 9 Mb/s camera mux at 16 MHz through the
-[live RF link](../results/2026-10-19-live-rf/README.md). Ideal rates follow from the
+A CM5 drove the single-line wire at 16 MHz with a 9 Mb/s camera mux: 106,227 messages in a
+140 s run, none rejected, no late banks ([live RF](../results/2026-10-19-live-rf/README.md)).
+The on-chip figures came from a loopback sender, one of the S3's SPI peripherals driving the
+other, which has since been cut from the firmware. The quad run's record is in the
+[development archive](https://github.com/Rivercraft911/esp-dvbs2/tree/archive/dev-2026-10-17/results/2026-10-17-spi-in):
+46.6 Mb/s was the selected test point (46.765 Mb/s verified in one second), and an unpaced
+one-second, receive-only loopback in the same log verified 5,799 GCS messages, 7,631,484 bytes,
+at 61.049 Mb/s with no bad payloads. Neither shows sustained input or input during a keyed run.
+The 12 Mb/s single-line run left no record. With the encoder running, above 46.6 Mb/s only the
+parser is measured: `spiinput quad ts replay` feeds presealed messages through it with no
+transfers, and keyed runs held full rate at 58.2 and 69.8 Mb/s that way
+([TS input](../results/2026-10-23-tx-ts-input/README.md)). Ideal rates follow from the
 message size and the gap between messages (below).
 
 ## What it carries
@@ -106,7 +115,8 @@ quad:        H = 24, L = 4   -> 136 Mb/s at 40 MHz
 
 ## Pins
 
-3.3 V logic, common ground.
+3.3 V logic, common ground. A build with `firmware/tx/sdkconfig.xiao` starts on the XIAO
+preset; other builds start on the DevKit preset.
 
 | Signal | DevKit GPIO | XIAO GPIO / label | Raspberry Pi CM5 IO board, 40-pin header |
 |---|---:|---|---|
@@ -133,17 +143,22 @@ quad:        H = 24, L = 4   -> 136 Mb/s at 40 MHz
 | `spirx ms on\|quad [ts\|gcs]` | Receive diagnostic from an external sender, radio off |
 | `spisend ms on\|quad [ts\|gcs] [MHz [Mb/s]]` | Test sender on a second S3 |
 
-Input selection applies to the next `dvbdump`, `dvbpace` or `dvb`; it does not
-start reception or the radio. It does install the SPI driver for the chosen wire, so runs
-only start and stop it. Settings last until changed or reset.
+Input selection applies to the next `dvbdump`, `dvbpace` or `dvb`; it does not start
+reception or the radio. It does claim the hardware, once: `spiinput on` installs ESP-IDF's SPI
+slave driver, `spiinput quad` claims the SPI bus and a GDMA channel, and both take the CRC-32
+table. Runs only start and stop them, so a run makes no heap calls. `spiinput off` frees all
+of it, and `spiinput usb` releases the SPI driver; USB input's wake timer is made at boot.
+Settings last until changed or reset.
 
 ## Diagnostics
 
-`spirx` and `spisend` accept **100..120000 ms**, TS by default.
-`spisend` clocks at **1..20 MHz** single-line (default 20), or **1..40 MHz** quad
-(default 40). Offered payload rate is **0..140 Mb/s**; zero means unpaced, still obeying
-READY and the inter-message gap. `spirx` waits for an external sender. Corrupt, short,
-long and lost messages are covered by the host model of the receiver (`tests/ingress_sim.c`).
+`spirx` and `spisend` accept **100 to 120,000 ms**, TS by default.
+`spisend` clocks at **1 to 20 MHz** single-line (default 20), or **1 to 40 MHz** quad
+(default 40). Offered payload rate is **0 to 140 Mb/s**; zero means unpaced, still obeying
+READY and the inter-message gap. `spirx` waits for an external sender. It borrows the wire it
+tests, then gives the selected input its own driver back, even when setup fails. Corrupt,
+short, long and lost messages are covered by the host model of the receiver
+(`tests/ingress_sim.c`).
 
 `spiinput quad [ts\|gcs] replay` supplies an in-memory pattern without SPI transfers;
 it is a diagnostic, not external input. `spipins SCK CS D0 D1 D2 D3 READY` accepts seven
@@ -177,9 +192,11 @@ sender.
 
 The same messages also work over the S3's USB cable, with no wiring at all. The
 [examples/usb-send](../examples/usb-send/README.md) Python sender uses only `pyserial`
-and defaults to radio-off checks. Measured payload intake is **3.23 Mb/s** at
-5 Msym/s with the PSRAM encoder (radio off, 2026-10-17), suitable for files,
-telemetry and low-rate video.
+and defaults to radio-off checks. Feeding a keyed transmitter from a 3 Mb/s ceiling, it
+delivered TS at **2.59 to 2.65 Mb/s**, and the receiving S3 found every packet exact
+([TS link](../results/2026-10-23-ts-link/README.md)). Radio off, intake once reached
+3.23 Mb/s at 5 Msym/s (firmware 5059465, 2026-10-17), a run with no results record. That
+suits files, telemetry and low-rate video, not the 9 Mb/s camera mux.
 
 Its console protocol:
 
@@ -194,9 +211,9 @@ Its console protocol:
   Console TX remains with the driver; the prior RX-enable bit is restored after the session.
   When the encoder pauses, the endpoint applies USB backpressure.
 - The opening station ID also pauses the encoder once its output ring fills.
-  Write timeouts must cover the ID (5.22 seconds for N0CALL), including writes of
-  the final NOP. Radio-off pace adds ID time to the requested payload duration;
-  the keyed run retains its wall-time limit. RX runs in the encoder task itself,
+  Write timeouts must cover the ID (5.22 s for N0CALL), including writes of
+  the final NOP. Radio-off `dvbpace` adds ID time to the requested payload duration;
+  a keyed `dvb` run's 1 to 540 s include both IDs. RX runs in the encoder task itself,
   with notification sleeps for input and output waits. `usb.trace[i]` records
   read calls and payload bytes in each second after ready (first 64 seconds), so
   the result exposes whether reception resumes after ID. `last_message_us` uses

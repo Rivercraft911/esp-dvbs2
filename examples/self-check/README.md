@@ -1,9 +1,10 @@
 # Radio-off self-check
 
-Pass means the firmware revision matches the checkout, all seven fixed-mode dumps match their
-original CRCs, the VCM dump matches its host model, all decode as contiguous exact
-payloads in LeanDVB, every paced run keeps
-its bank deadlines within its run memory, and nothing calls the heap after boot. A failure makes
+The last recorded run passed all 30 checks on firmware 27259c5
+([record](../../results/2026-10-23-tx-self-check/README.md)). Pass means the firmware
+revision matches the checkout, all seven fixed-mode dumps match their original CRCs, the VCM
+dump matches its host model, all decode as contiguous exact payloads in LeanDVB, every paced
+run keeps its bank deadlines within its run memory, and nothing calls the heap after boot. A failure makes
 the final exit status nonzero. The script prints the complete criteria before any command,
 keeps going after a failed dump/decode/pace, and writes each verdict to `summary.tsv`.
 
@@ -14,8 +15,8 @@ the stored callsign. No samples play through the DAC. No SDR is needed.
 ## Prepare
 
 Use Python 3.12 or later with numpy, scipy and pyserial in the [separate host shell](../../README.md#quick-start).
-Build and flash the committed
-ESP-IDF v6.1 firmware separately. The contained-test callsign **N0CALL must already be stored**;
+Build and flash the committed transmitter (`firmware/tx`, ESP-IDF v6.1) separately.
+The contained-test callsign **N0CALL must already be stored**;
 the example refuses that criterion if a different callsign is present. Never use N0CALL
 as an assigned callsign for a radiating transmission. A reset selects synthetic payload
 input so the test does not depend on a SPI sender.
@@ -80,10 +81,10 @@ make up the rest. A failing or stalled device can take longer because each comma
 The VCM dump cycles 4/11/13/17 every frame at 5 Msym/s using automatic axes.
 It requires matching transport CRCs and sample geometry, at least 30 contiguous
 exact host-model BBFRAMEs covering every mode, and zero FEC corrections. A 5 s VCM pace also enforces deadlines
-and its run memory. VCM is turned off again even if the dump fails. [Scope and OTA reruns](../../docs/vcm.md).
+and its run memory. VCM is turned off again even if the dump fails. [Scope and OTA runs](../../docs/vcm.md).
 
 The selected modes cover 1 Msym/s QPSK, 5 Msym/s 8PSK, 20 Msym/s QPSK/8PSK,
-26.67 Msym/s QPSK/8PSK and 33.33 Msym/s QPSK. The new 8PSK dump uses MODCOD 17;
+26.67 Msym/s QPSK/8PSK and 33.33 Msym/s QPSK. The 26.67 Msym/s 8PSK dump uses MODCOD 17;
 10 s paces cover 13, 15 and 17 at `26m667`. Paces also cover QPSK at 5/10 Msym/s
 and 8PSK at 10 Msym/s. CI checks every supported modulation/rate combination on the host.
 
@@ -123,12 +124,15 @@ four startup dummies and one cold production-bound miss are allowed. All 54 page
 must be admitted automatically. For payload duration T and steady-dummy cap C,
 at least `floor((T*80e6/3 - (C+4)*3330)/22194)-1` data frames must play. The extra
 frame accounts for the ending partial frame. This rejects excessive lost airtime
-independently of the dummy counters. [Keyed and pace evidence](../../docs/measurements.md#8psk-at-36-mhz).
+independently of the dummy counters. On 27259c5 the three 10 s paces came in under their
+ceilings with no steady dummies ([record](../../results/2026-10-23-tx-self-check/README.md)).
 
 Other modes enforce functional deadlines. These checks do not enforce a 15% reserve.
-The 40 MHz mode met 15% reserve on both cores in one 30 s keyed run
-([e96795b](../../docs/measurements.md#40-mhz)). Compare saved timing and heap records
-when evaluating a performance change.
+The 40 MHz mode is the tight one: keyed for 30 s with a payload that never repeats, it kept
+26.1% encoder spare but 14.2% fill spare
+([keyed table](../../results/2026-10-23-tx-table/README.md)). An older run, on e96795b, met
+15% on both cores ([record](../../docs/measurements.md#40-mhz)). Compare saved timing and run-memory records when evaluating a
+performance change.
 
 The output contains the host commit and expected firmware revision, the board's actual
 `info` record, raw command JSON lines, IQ dumps, receiver logs/JSON and a pass/fail summary.

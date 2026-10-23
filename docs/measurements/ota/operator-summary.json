@@ -1,7 +1,7 @@
 {
   "source": "Operator-provided OTA results in the documentation request, 2026-10-18",
   "evidence_type": "operator_summary",
-  "note": "Transcribed summary, not raw receiver output. Raw reports for these results were not included in notes/ota-evidence at documentation time.",
+  "note": "Transcribed summary, not raw receiver output. Raw reports for these results were not included in the archived evidence at documentation time.",
   "setup": {
     "transmitter": "ESP32-S3",
     "receiver": "ANTSDR E200, Pluto firmware, receive-only",
@@ -33,7 +33,7 @@
       "symbol_rate": 5000000,
       "payload_frames": 2936,
       "mer_db": null,
-      "snapshot_discrepancy": "notes/ota-evidence/vcm-qpsk-5m/report.json records 2938 recovered frames and median MER 20.5 dB. The operator summary's 2936-frame count is retained separately."
+      "snapshot_discrepancy": "docs/measurements/ota/vcm-qpsk-5m/report.json records 2938 recovered frames and median MER 20.5 dB. The operator summary's 2936-frame count is retained separately."
     },
     {
       "mode": "Mixed QPSK/8PSK VCM",

@@ -25,15 +25,15 @@
   "board_command": "dvb 2420 7 5m 30 0 128",
   "port": "/dev/cu.usbmodem1101",
   "key_authorized": true,
-  "receiver": "/Users/river/Documents/stanford/SSI/esp-dvbs2/notes/leansdr/src/apps/leandvb",
+  "receiver": "local LeanDVB build",
   "capture_command": [
-    "/Users/river/radioconda/bin/python",
-    "/Users/river/Documents/stanford/SSI/esp-dvbs2-work/ota-pluto/examples/over-the-air/capture_iio.py",
+    "python3",
+    "examples/over-the-air/capture_iio.py",
     "OUT/settings.json",
     "--key"
   ],
   "decoder_command": [
-    "/Users/river/Documents/stanford/SSI/esp-dvbs2/notes/leansdr/src/apps/leandvb",
+    "local LeanDVB build",
     "--standard",
     "DVB-S2",
     "--f32",

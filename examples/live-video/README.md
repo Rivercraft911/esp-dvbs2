@@ -5,15 +5,19 @@ Use **8PSK 2/3 (MODCOD 13), 5 Msym/s, normal frames, pilots and .35 roll-off**:
 9.68 Mb/s TS capacity in 6.75 MHz. The [Pi sender](../pi-sender/README.md) accepts
 files or stdin; an existing PV-SPI v1 source can connect directly.
 
-Measured in a closed box on 2026-10-18: S3 → E200 with Pluto firmware → LeanDVB
+A CM5 sent a 9 Mb/s mux of two camera streams over 16 MHz SPI to a XIAO S3, and a B200
+behind 40 dB of attenuation received it with no TS continuity gaps in 111 s
+([records](../../results/2026-10-19-live-rf/README.md)). That run applied a per-board IQ/DC
+correction that has since been cut from the firmware.
+
+Earlier, in a closed box on 2026-10-18, S3 → E200 with Pluto firmware → LeanDVB
 recovered 47,672 packets as an exact contiguous source slice, 99.6% of the file,
 with zero continuity or PSI CRC errors. That test used USB input at about 2.8 Mb/s
 and a mostly null-padded MPEG-2 fixture. A 2.4 Mb/s H.264 USB fixture also passed
-live reception and playback. A later CM5 → 16 MHz SPI → XIAO S3 → B200
-camera test recovered a 9 Mb/s mux through 40 dB of coax attenuation with no TS
-continuity gaps in 111 s ([records](../../results/2026-10-19-live-rf/README.md)).
-USB intake tops out near 3.2 Mb/s; it preserves a finite file but cannot carry
-the live 9 Mb/s mux.
+live reception and playback. Neither E200 run left a record in `results/`.
+USB intake, 2.59 to 2.65 Mb/s into a keyed transmitter
+([TS link](../../results/2026-10-23-ts-link/README.md)), preserves a finite file but cannot
+carry the live 9 Mb/s mux.
 
 ## Prepare
 
@@ -87,8 +91,9 @@ dvb FREQ_MHZ 13 5m 60 0 128
 
 Replace `FREQ_MHZ` with its integer value and use the preset for your board.
 Start the SPI source after the opening station ID; stop it several seconds
-before the payload window ends so it can drain. The 60 seconds includes both
-IDs. Keep the RF path contained until the board finishes.
+before the payload window ends so it can drain. The 60 s include both IDs;
+`dvb` takes 1 to 540 s, and a longer run needs a longer `--seconds` on the receiver.
+Keep the RF path contained until the board finishes.
 
 Append `--player 'ffplay -infbuf -autoexit -i pipe:0'` to receive while saving. The player must
 support MPEG-TS and the source codec (H.264 for cameras, MPEG-2 for the fixture).
@@ -104,7 +109,7 @@ require zero protocol errors, drops, timeouts, uncertain writes and late banks.
 
 The E200 passed 10 and 15 MS/s; 20 MS/s fell behind near 15.5 MS/s. RX gain
 30 dB worked in the box; 0 dB left MER near 4 dB. QPSK 3/4 at 10 Msym/s,
-captured at 15 MS/s, lost lock four times in a minute and is not yet reliable.
+captured at 15 MS/s, lost lock four times in a minute: not reliable on the E200.
 LeanDVB uses `--sr-tol 0.0005` to retain lock through dummy-heavy streams.
 libiio exposes no sample timestamps/overflow count here; the capture report
 checks host timing and queue health, while a source comparison checks TS loss.

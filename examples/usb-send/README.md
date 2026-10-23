@@ -5,8 +5,11 @@ USB-Serial-JTAG** port. The S3 frames and encodes them. Its only package depende
 is `pyserial`. For standalone use, copy `send.py`; FEC also needs
 [`host/filelink.py`](../../host/filelink.py) alongside it. Close other serial tools first.
 
-Measured payload intake: **3.23 Mb/s on 2026-10-17 at 5 Msym/s with the PSRAM
-encoder**, radio off. This suits files, telemetry and low-rate video.
+Feeding a keyed transmitter from a 3 Mb/s ceiling, it delivered TS at **2.59 to 2.65 Mb/s**,
+and the receiving S3 found every packet exact
+([TS link](../../results/2026-10-23-ts-link/README.md)). Radio off, intake reached 3.23 Mb/s at
+5 Msym/s (firmware 5059465, 2026-10-17; details below, no results record). This suits files,
+telemetry and low-rate video.
 
 ```sh
 python3 -m pip install pyserial
@@ -34,16 +37,17 @@ Write deadlines cover those pauses, including the terminal NOP. Longer files
 need more seconds; incomplete containers fail. Raw streams can leave a partial
 BBFRAME at EOF; containers pad it. Dummy frames fill gaps when input runs dry.
 
-RF requires explicit `--key --frequency 2400 --seconds 20` (2390..2450 integer
-MHz; optional `--gain 0..17`, default 0). The script reads `info` and refuses RF
-without a **stored assigned callsign**, set via console `callsign YOURCALL`.
-Firmware retains its 60-second keyed limit and start/end Morse station ID.
+RF requires explicit `--key --frequency 2400 --seconds 20`: whole MHz from 2390 to 2450,
+1 to 60 s, optional `--gain 0..17` (default 0). The seconds include the start and end Morse
+station IDs. The 60 s cap is this script's; the firmware allows up to 540 s. The script reads
+`info` and refuses RF unless a callsign is stored. An operator stores their own with the
+console command `callsign`; N0CALL is only for radio-off fixtures.
 
 ## File recovery
 
 ```sh
 python3 send.py send document.pdf --dump document.iq --frames 24 --report dump.json
-# Decode the int16-LE IQ with LeanDVB; the coordinator below automates this.
+# Decode the int16-LE IQ with LeanDVB; the board check below automates this.
 python3 send.py unpack decoded.gcs -o recovered.pdf
 ```
 
@@ -55,7 +59,7 @@ frames; **any four missing frames per block** can be recovered. Identity and
 sequence repeat in each frame. `unpack --bbf` also accepts LeanDVB's raw
 `--fd-bbf` records (from the repository, where `host/decode.py` is available).
 The [file-link protocol and proof](../../docs/file-link.md) document the code,
-overhead, host IQ tests and coordinator-only board-dump commands.
+overhead, host IQ tests, board-dump commands and the over-the-air file record.
 
 The container is `PVFILE1\n`, little-endian uint16 UTF-8 basename length, uint64
 file length, 32 SHA-256 bytes, basename, then file bytes. Eight zero-filled
@@ -66,10 +70,10 @@ LeanDVB `--fd-bbf` and strip each ten-byte BBHEADER, as `host/decode.py` does;
 LeanDVB's normal stdout is TS-only. Dumps allow 1..256 frames and run slower than
 real time over USB. Increase the frame count for larger files.
 
-## Coordinator: radio-off proof, about two minutes
+## Radio-off board check, about two minutes
 
-Already flashed with this branch, native USB plugged in, other consoles closed.
-From the repository root, the **coordinator** runs:
+Flash `firmware/tx` from this checkout, plug in native USB and close other consoles.
+From the repository root, run:
 
 ```sh
 PORT=/dev/cu.usbmodem101 \
@@ -96,7 +100,7 @@ On 2026-10-17, firmware `5059465` accepted 5,514 GCS messages without errors:
 3.226 Mb/s over 17 steady seconds, 2.50 Mb/s including the opening ID pause,
 and 2.90 Mb/s averaged over the requested payload run. TS pace measured
 0.966 Mb/s at the mode's rate. File recovery and interrupted-write recovery also
-passed, alongside self-check 23/23 and SPI 19/19. The 3.0 Mb/s floor allows
+passed. That run left no record in `results/`. The 3.0 Mb/s floor allows
 variation around this measurement; byte counts, integrity, recovery and timing
 checks stay strict.
 
@@ -141,8 +145,8 @@ FIFO plus driver bytes must equal wire bytes. If the board disconnects before co
 
 ## Live rate changes
 
-`--control /tmp/modcod` enables [GCS VCM](../../docs/vcm.md) at 1, 5 or
-10 Msym/s, within the initial modulation. Add `--mixed --rate 5m` for
+`--control /tmp/modcod` enables [GCS VCM](../../docs/vcm.md) at 1 or
+5 Msym/s, within the initial modulation. Add `--mixed --rate 5m` for
 QPSK/8PSK changes. Write a decimal MODCOD to that file before starting, then replace the
 file atomically during the run. The sender inserts PV type 3 controls without
 altering payload bytes. It defaults to radio off; TS VCM is rejected.
@@ -152,5 +156,5 @@ For scripted changes, replace `--control` with
 USB-ready plus the opening ID duration; the initial control is sent immediately.
 The report includes each control's host time, PV sequence and preceding payload
 byte count. Use a source long enough to span the schedule. The
-[live OTA coordinator](../over-the-air/README.md#laptop-driven-live-vcm) generates
+[live OTA demo](../over-the-air/README.md#laptop-driven-live-vcm) generates
 that source, captures the E200, and verifies exact payload and ordered switches.
