@@ -38,6 +38,7 @@ CENTRE = 47                      # tap j multiplies sample n0 - 47 + j for outpu
 # samples from the centre; a 32-sample window whose centre is 8..24 samples in starts at byte
 # 24 - (centre's whole samples in it).
 SPS5, PHASES5, SPAN5 = 3.2, 32, 48
+ISI5 = 0.035
 
 
 def rrc(t, beta=0.35):
@@ -77,11 +78,13 @@ def mf_shift():
     return max(0, math.ceil(math.log2((worst + 1) / 32767)))
 
 
-def mf5():
-    """int8 rows c[f][j] = round(127 h((j - 24 - f/32) / 3.2) / max h), 32 x 48."""
+def mf5(isi=ISI5):
+    """int8 rows c[f][j] = round(127 g((j - 24 - f/32) / 3.2) / g(0)), 32 x 48, where
+    g(t) = h(t) - isi (h(t - 1) + h(t + 1)) cancels the cascade's residual ISI at one symbol."""
     j = np.arange(SPAN5)
-    h = np.array([rrc((j - 24 - f / PHASES5) / SPS5) for f in range(PHASES5)])
-    return np.floor(h * 127 / rrc(0) + 0.5).astype(int)
+    g = lambda t: rrc(t) - isi * (rrc(t - 1) + rrc(t + 1))  # noqa: E731
+    h = np.array([g((j - 24 - f / PHASES5) / SPS5) for f in range(PHASES5)])
+    return np.floor(h * 127 / g(0) + 0.5).astype(int)
 
 
 def mf5_windows():

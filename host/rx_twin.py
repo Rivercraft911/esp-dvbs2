@@ -53,6 +53,8 @@ class Link:
     clock_ppm: float = None      # TX symbol clock vs RX sample clock; None: cfo / carrier
     mer_db: float = 18.0         # AWGN Es/N0 at an ideal matched filter
     linewidth_hz: float = 0.05   # Wiener phase noise: 1.6 deg rms about a line over 33 ms
+    isi: float = None            # residual ISI at +-1 symbol after an RRC matched filter; None:
+                                 # 0.035 at 5 Msym/s (fitted on 2026-10-23 dumps), 0 at 1 Msym/s
     rms: float = 221.0           # 10-bit LSB before noise
     rx_dc_db: float = -23.0
     rx_image_db: float = -38.0
@@ -63,11 +65,13 @@ class Link:
     seed: int = 2026
 
 
-@functools.lru_cache(maxsize=2)
-def pulse(rate=1e6):
+@functools.lru_cache(maxsize=4)
+def pulse(rate=1e6, isi=0.0):
     """Transmitted pulse on a 1/GRID-symbol grid from t = -2 to 14 symbols: the firmware's 9
     symbols of taps at 40 MS/s, each DAC sample held for 25 ns, band-limited to +-8 MHz, scaled
-    so a stream of unit symbols has unit rms (sum of p^2 on a 16-point grid per symbol = 16)."""
+    so a stream of unit symbols has unit rms (sum of p^2 on a 16-point grid per symbol = 16).
+    isi adds the pulse one symbol either side at that weight: the analog filters' residual ISI
+    on the real link at 5 Msym/s."""
     text = (ROOT / "firmware/main/shaper_taps.h").read_text()
     taps = np.array([int(v) for v in re.search(TAPS[rate] + r"\[\d+\] = \{([^}]*)\}", text)
                      .group(1).split(",") if v.strip()], float)
@@ -77,7 +81,12 @@ def pulse(rate=1e6):
     held = np.where((k >= 0) & (k < len(taps)), taps[np.clip(k, 0, len(taps) - 1)], 0.0)
     f = np.fft.fftfreq(n, 1 / (GRID * rate))
     p = np.real(np.fft.ifft(np.fft.fft(held) * (np.abs(f) < FS / 2)))
+    p = p + isi * (np.roll(p, GRID) + np.roll(p, -GRID))      # the table is zero at both ends
     return p * np.sqrt(16 / np.sum(p[::GRID // 16] ** 2))
+
+
+def link_isi(link):
+    return link.isi if link.isi is not None else (0.035 if link.rate > 1e6 else 0.0)
 
 
 def frames(link):
@@ -121,7 +130,7 @@ def clock(link):
 def generate(link, plan=None, chunk=1 << 18):
     """Yield (first sample, dump words) chunks, and finally (None, truth list)."""
     rng = np.random.default_rng(link.seed)
-    table = pulse(link.rate)
+    table = pulse(link.rate, link_isi(link))
     sym, act, truth = plan or frames(link)
     unit = np.exp(1j * np.pi / 4 * np.arange(8))
     e0, de = clock(link)
@@ -170,7 +179,8 @@ def generate(link, plan=None, chunk=1 << 18):
 
 def reference(words, truth, link):
     """Float reference receiver with the truth: the full 10-bit samples less the true DC, a
-    10-symbol RRC matched filter at the true symbol times, the true carrier offset and drift
+    10-symbol RRC matched filter (less the link's ISI at +-1 symbol, as the demodulator's 5 Msym/s
+    filter) at the true symbol times, the true carrier offset and drift
     removed, the remaining phase from a 101-symbol moving average of known symbols, amplitude
     and carrier leak fitted on known symbols.
     Returns each frame's data-symbol MER in dB, the yardstick for implementation loss."""
@@ -178,7 +188,7 @@ def reference(words, truth, link):
     x = (((words.astype(np.int64) << 12) & 0xffffffff) ^ 0x80000000) - 0x80000000 >> 22
     y = (((words.astype(np.int64) << 22) & 0xffffffff) ^ 0x80000000) - 0x80000000 >> 22
     x = x + 1j * y - link.rms * 10 ** (link.rx_dc_db / 20) * np.exp(2.1j)
-    table = pulse(link.rate)
+    table = pulse(link.rate, link_isi(link))
     t = np.arange(len(table)) / GRID - 2
     sps = FS / link.rate
     half = int(5 * sps)                                         # 10 symbols of taps
@@ -194,7 +204,8 @@ def reference(words, truth, link):
         if idx.min() < 0 or idx.max() >= len(x):
             out.append(None)
             continue
-        h = rrc((n[:, None] - idx) / sps)
+        u, isi = (n[:, None] - idx) / sps, link_isi(link)
+        h = rrc(u) - isi * (rrc(u - 1) + rrc(u + 1))
         sec = n / FS
         ym = np.sum(x[idx] * h, axis=1) * np.exp(-2j * np.pi * (link.cfo_hz * sec + link.drift_hz_s * sec * sec / 2))
         s = np.exp(1j * np.pi / 4 * f["phases"])

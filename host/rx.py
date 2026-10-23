@@ -47,20 +47,30 @@ def frame_symbols(modcod: int) -> int:
     return 5598 if modcod >= 12 else 8370
 
 
+def stream(n: int) -> bytes:
+    """The first n bytes of the transmitter's xorshift32 stream (seed 2026), cached in the
+    temp directory because 5 Msym/s runs need about 100 MB of it."""
+    import tempfile
+    path = pathlib.Path(tempfile.gettempdir()) / "esp-dvbs2-xorshift.bin"
+    if path.exists() and path.stat().st_size >= n:
+        with path.open("rb") as f:
+            return f.read(n)
+    out, state = bytearray(n), 2026
+    for i in range(n):
+        state ^= (state << 13) & 0xffffffff
+        state ^= state >> 17
+        state ^= (state << 5) & 0xffffffff
+        out[i] = state & 255
+    path.write_bytes(out)
+    return bytes(out)
+
+
 def model(size: int, frames: int, callsign: str) -> list[bytes]:
-    """The transmitter's first `frames` payloads, as host/decode.py generates them."""
+    """The transmitter's first `frames` payloads, as host/decode.py generates them: one
+    continuous stream cut into frames, each starting with the station header."""
     header = ("ESP-DVBS2 ID=" + morse.callsign(callsign)).ljust(39).encode("ascii") + b"\n"
-    state, out = 2026, []
-    for _ in range(frames):
-        data = bytearray(size)
-        for i in range(size):
-            state ^= (state << 13) & 0xffffffff
-            state ^= state >> 17
-            state ^= (state << 5) & 0xffffffff
-            data[i] = state & 255
-        data[:40] = header
-        out.append(bytes(data))
-    return out
+    data = stream(size * frames)
+    return [header + data[k * size + 40:(k + 1) * size] for k in range(frames)]
 
 
 def read_exact(link, n: int, deadline: float) -> bytes:
@@ -172,6 +182,10 @@ def check(frames, modcod: int, callsign: str, tx_frames: int, symbol_rate: float
     exact = sum(index.get(key(f)) == k0 + f["sequence"] - s0 for f in good) if k0 is not None else 0
     span = good[-1]["sequence"] - s0 + 1
     period = frame_symbols(modcod) / symbol_rate
+    found = [k for k in (index.get(key(f)) for f in good) if k is not None]
+    report.update(valid=len(found), in_order=all(b > a for a, b in zip(found, found[1:])),
+                  model_span=found[-1] - found[0] + 1 if found else 0,
+                  lost=found[-1] - found[0] + 1 - len(found) if found else 0)
     report.update(first_model_frame=k0, sequence_span=span, span_seconds=round(span * period, 3),
                   exact=exact, missing=span - len(good), payload_mbps=round(8 * size / period / 1e6, 4),
                   exact_bytes=exact * size, passed=k0 is not None and exact == span == len(good))
@@ -190,7 +204,7 @@ def main() -> int:
     p.add_argument("--skip", type=int, default=0, help="replay: leave out every SKIP-th push")
     p.add_argument("--port", default=board.DEFAULT_PORT)
     p.add_argument("--callsign", default="N0CALL")
-    p.add_argument("--tx-frames", type=int, default=8000, help="model frames to search")
+    p.add_argument("--tx-frames", type=int, help="model frames to search (default: 60 s of the rate)")
     p.add_argument("--out", type=pathlib.Path, help="append the summary to this JSON-lines file")
     a = p.parse_args()
     port = board.resolve_port(a.port)
@@ -206,7 +220,9 @@ def main() -> int:
             upload(port, data)
         before, frames, after = receive(port, command, timeout)
     summary = dict(command=command, replay=str(a.replay) if a.replay else None, board=before + after,
-                   check=check(frames, a.modcod, a.callsign, a.tx_frames, SYMBOL_RATE[a.rate]),
+                   check=check(frames, a.modcod, a.callsign,
+                               a.tx_frames or int(60 * SYMBOL_RATE[a.rate] / frame_symbols(a.modcod)) + 100,
+                               SYMBOL_RATE[a.rate]),
                    frames=[{k: v for k, v in f.items() if k != "payload"} for f in frames[:3]],
                    failed=[{k: v for k, v in f.items() if k != "payload"} | {"index": n}
                            for n, f in enumerate(frames) if f["length"] < 0],
