@@ -5,6 +5,28 @@ ASSERT(machine_axis_samples >= 0x40370000 && machine_axis_samples < 0x403e0000,
        "fractional bank-cut wrapper must be in IRAM")
 ASSERT(shaper_copy_pie >= 0x40370000 && shaper_copy_pie < 0x403e0000,
        "fractional cut copies must be in IRAM")
+ASSERT(lofty_render_pages_pie >= 0x40370000 && lofty_render_pages_pie < 0x403e0000,
+       "lofty_render_pages_pie must be in IRAM: its alignment class below is an IRAM layout")
+ASSERT(lofty_render_pie >= 0x40370000 && lofty_render_pie < 0x403e0000,
+       "lofty_render_pie must be in IRAM: its alignment class below is an IRAM layout")
+ASSERT(shaper_short4_pie >= 0x40370000 && shaper_short4_pie < 0x403e0000,
+       "shaper_short4_pie must be in IRAM: its alignment class below is an IRAM layout")
+ASSERT(shaper_qpsk3_pie >= 0x40370000 && shaper_qpsk3_pie < 0x403e0000,
+       "shaper_qpsk3_pie must be in IRAM: its alignment class below is an IRAM layout")
+ASSERT(shaper_qpsk4_pie >= 0x40370000 && shaper_qpsk4_pie < 0x403e0000,
+       "shaper_qpsk4_pie must be in IRAM: its alignment class below is an IRAM layout")
+ASSERT(ring_copy_quads_pie >= 0x40370000 && ring_copy_quads_pie < 0x403e0000,
+       "ring_copy_quads_pie must be in IRAM: its alignment class below is an IRAM layout")
+ASSERT(shaper_fill4_pie >= 0x40370000 && shaper_fill4_pie < 0x403e0000,
+       "shaper_fill4_pie must be in IRAM: its alignment class below is an IRAM layout")
+ASSERT(shaper_fill8_pie >= 0x40370000 && shaper_fill8_pie < 0x403e0000,
+       "shaper_fill8_pie must be in IRAM: its alignment class below is an IRAM layout")
+ASSERT(shaper_fill40_pie >= 0x40370000 && shaper_fill40_pie < 0x403e0000,
+       "shaper_fill40_pie must be in IRAM: its alignment class below is an IRAM layout")
+ASSERT(shaper_unpack_codes_pie >= 0x40370000 && shaper_unpack_codes_pie < 0x403e0000,
+       "shaper_unpack_codes_pie must be in IRAM: its alignment class below is an IRAM layout")
+ASSERT(shaper_axes8_pie >= 0x40370000 && shaper_axes8_pie < 0x403e0000,
+       "shaper_axes8_pie must be in IRAM: its alignment class below is an IRAM layout")
 ASSERT((lofty_render_pages_pie & 31) == 4 && (lofty_render_pie & 31) == 20,
        "8PSK renderer loop fetch alignment must match the measured 7391f86 layout")
 ASSERT((machine_axis_render_pie & 31) == 0 && (shaper_short4_pie & 31) == 24 &&
