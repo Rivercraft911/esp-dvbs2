@@ -100,8 +100,8 @@ bool station_id_init_rate(station_id_t *id, const char *call, uint64_t samples, 
 static inline __attribute__((always_inline)) void copy8(volatile uint32_t *dst,
                                                           const uint32_t *src)
 {
-    // DAC SRAM needs word stores. Volatile also prevents compiler conversion
-    // to memcpy/memset, which may use byte stores. See radio_signals.c:127-134.
+    // DAC SRAM gets whole-word stores only (radio_signals.c, copy8). Volatile also prevents
+    // compiler conversion to memcpy/memset, which may use byte stores.
     // Load groups before storing to hide the scalar load/use interlock.
     uint32_t a = src[0], b = src[1], c = src[2], d = src[3];
     dst[0] = a; dst[1] = b; dst[2] = c; dst[3] = d;
