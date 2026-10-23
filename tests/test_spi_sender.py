@@ -268,6 +268,13 @@ int main(void) {
     spi_input_command("spiinput","on gcs");
     assert(!usb_mode && input_type==PV_GCS);
     assert(spi_input_start()==ESP_OK && native_takes==1); // slots only: the table is provisioned
+    // While the session runs, no selection may change or free its driver and CRC table.
+    uint32_t *live=crc_table;
+    const char *during[][2]={{"spiinput","off"},{"spiinput","usb"},{"spiinput","quad ts"},{"spirx","100 on"}};
+    for (unsigned i=0;i<4;++i) {
+        spi_input_command(during[i][0],during[i][1]);
+        assert(crc_table==live && held==1 && pv_mode && !usb_mode && input_type==PV_GCS && allocations==2);
+    }
     spi_input_stop(); run_reset();
     spi_input_command("spiinput","off");
     assert(!pv_mode && !replay && !input_type && held==-1 && !crc_table && !allocations);
