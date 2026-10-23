@@ -56,7 +56,7 @@ calibrates the PHY directly, and after boot it never touches the heap
 ```sh
 (. ~/.espressif/tools/activate_idf_v6.1.sh && cd firmware/rx && idf.py build flash)
 python3 host/rx.py 16 --rate 5m --mhz 2420 --gain 32 --seconds 45 --port RX_PORT --callsign N0CALL
-python3 host/board.py "dvb 2420 16 5m 55 0 128 --short" --port TX_PORT   # keys the transmitter
+python3 host/board.py "dvb 2420 16 5m 55 0 128 --short" --port TX_PORT --timeout 90   # keys the transmitter
 ```
 
 ![Receiver load per core in the live runs](docs/img/rx-load.png)
@@ -90,8 +90,10 @@ deadline.
 
 Roll-off is 0.35 unless noted. Rates use normal frames with pilots, except the short-frame row,
 and leave out the Morse ID. The B200 listened through coax and attenuation on its TX/RX port.
-Input over SPI keeps up too: QPSK 9/10 at 40 MHz ran at full rate with its payload replayed
-through the real SPI input path.
+The encoder also keeps up with payload arriving through the real SPI input code: QPSK 9/10 at
+40 MHz ran at full rate with TS input replayed on the chip, keeping 15.3% spare
+([TS input](results/2026-10-23-tx-ts-input/README.md)). That is a capacity test; the fastest live
+input so far is a CM5's 9 Mb/s camera mux.
 
 ![36 MHz 8PSK spectrum and spectrogram transmitted by an ESP32-S3](docs/img/rf-36mhz.png)
 
@@ -107,14 +109,16 @@ receive   core 1: the S3's radio -> 16 MS/s bank -> matched filter -> sync -> sy
 The S3's radio hides a test engine that plays samples from internal RAM straight into its I/Q
 DAC, and a dump engine that writes what the receiver hears into RAM. Both work in banks. On the
 transmit side a fresh 16,380-sample bank is due every 196.75 µs at 80 MS/s: 47,220 CPU cycles
-to make 15,740 new samples. On the receive side a 12,288-sample bank lands every 768 µs.
+to make 15,740 new samples. On the receive side the dump engine fills a 16,384-sample ring and
+hands the receiver 12,288 new samples every 768 µs.
 
 To pulse shape with such speed and tenacity I went a similar path to my
 [RP2350 version](https://github.com/Rivercraft911/RP2350_IQ_Benchmark/tree/88ab018e65a51805ff562842177a4d47b1b04b2e): every possible output of
 the shaping filter is computed once into a table, so producing samples is copying table rows
 instead of doing filter math. The heavy loops on both sides run on the S3's 128-bit PIE vector
 unit. Neither app starts Wi-Fi, and neither touches the heap once it has booted.
-[The encoder, fill, receiver and bank schedules](docs/how-it-works.md).
+[How it works](docs/how-it-works.md), then the [transmitter](docs/transmitter.md) and the
+[receiver](docs/receiver.md) in depth.
 
 ## Quick start
 
@@ -151,7 +155,7 @@ python3 host/decode.py fast.iq --rate 80000000 --symbol-rate 20000000 \
 ```
 
 The [self-check](examples/self-check/README.md) runs the full radio-off regression. Every console
-command for both apps is in [transmitting](docs/transmitting.md#console).
+command for both apps is in [transmitting and receiving](docs/transmitting.md#console).
 
 ## Send it your data
 
@@ -184,7 +188,7 @@ and the synthetic test payloads carry it too. External payload bytes are sent un
 | `examples/` | [Self-check](examples/self-check/README.md), [USB send](examples/usb-send/README.md), [SPI sender](examples/pi-sender/README.md), [live video](examples/live-video/README.md), [over the air](examples/over-the-air/README.md) |
 | `tests/` | Standard vectors, C/Python agreement, pinned output CRCs ([running them](docs/how-it-works.md#checking-changes)) |
 | `results/` | Every recorded run, one folder per run with its README and raw records |
-| `docs/` | [How it works](docs/how-it-works.md), [transmitting](docs/transmitting.md), [SPI input](docs/spi-input.md), [measurements](docs/measurements.md), [story](docs/story.md), [credits](docs/prior-art.md) |
+| `docs/` | [How it works](docs/how-it-works.md), [transmitter](docs/transmitter.md), [receiver](docs/receiver.md), [transmitting and receiving](docs/transmitting.md), [SPI input](docs/spi-input.md), [measurements](docs/measurements.md), [story](docs/story.md), [credits](docs/prior-art.md) |
 
 ## Licence
 
