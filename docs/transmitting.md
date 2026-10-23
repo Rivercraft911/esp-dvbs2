@@ -93,8 +93,31 @@ python3 host/board.py "dvbpace 11 26m667 10" --timeout 120 --out notes/pace.json
 `--save FILE` keeps the binary bytes. `--out FILE` appends the records to a JSON-lines file with
 the command and the host time. `--port` picks the board: `/dev/cu.usbmodem101` by default, or
 the only `/dev/cu.usbmodem*` if that one is missing. The default `--timeout` is 30 s, extended
-while bytes keep arriving. A keyed run prints nothing until it ends, so give it the run's
-length plus a margin.
+while bytes keep arriving. Up to 10 Msym/s the status line below keeps it moving during a run;
+give a faster run its length plus a margin.
+
+**Status line.** While `dvb` or `dvbpace` runs at 10 Msym/s or less, the transmitter prints one
+`{"cmd":"status",...}` record a second. From the start of the run it counts `frames` played,
+`frames_encoded`, `dummies`, `late_fills` and `late_switches`, and with payload input the
+`input_bytes` and `input_messages` accepted, `input_rejected` (failed checks or wrong type),
+`input_crc_errors`, `input_lost` (sequence gaps) and `input_overruns`. Since the previous line it
+gives the encoder's mean and slowest frame and the slowest bank fill, in CPU cycles and as spare
+against `frame_period_cycles` and `fill_deadline_cycles`, or null if none ran. With VCM,
+`modcod` is the encoder's current one, a frame or more ahead of playback. The command task
+prints the line on core 0 while it waits for the run, so neither the encoder nor a fill ever
+prints, and a line the USB buffer has no room for is counted in `lines_dropped` instead of waited
+for. Each line still costs the encoder one slower frame, up to 47k cycles more. At 5 and
+10 Msym/s that leaves 38.8% or more of the frame period spare and the fills unchanged
+([gated](../results/2026-10-23-tx-status-gated/README.md)). At 26.67 Msym/s it put dummy frames
+into 8PSK 9/10 with TS input ([status timing](../results/2026-10-23-tx-status/README.md)), so
+a run above 10 Msym/s prints one status record with `"status_lines":"off above 10 Msym/s"` at
+its start and no lines.
+
+`board.py` neither prints nor keeps status records. `--monitor HOST:PORT` sends them and the
+command's own records to `host/monitor.py` as UDP datagrams: a 12-byte little-endian header
+(`PVMN`, version 1, type 4, a 16-bit sequence number and the low 32 bits of the host's monotonic
+clock in microseconds), then the record's JSON. For example,
+`python3 host/board.py "dvbpace 14 5m 30 --short" --monitor 127.0.0.1:1235`.
 
 `spiinput`, `spipins`, `vcm` and `rflo` settings last until changed or until the board restarts.
 The callsign lives in flash and survives restarts. `--short`, `--fixture` and `--phy-solo`

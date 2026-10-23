@@ -4,10 +4,14 @@
     python3 host/board.py info
     python3 host/board.py "dvbpace 11 26m667 10" --out notes/pace.jsonl
     python3 host/board.py "dvbdump 4 16" --save dump.iq
+    python3 host/board.py "dvbpace 14 5m 30 --short" --monitor 127.0.0.1:1235
 
 Each record is printed, and with --out appended to a JSON-lines file together with the command
 and the host time. The firmware marks the end of every command with {"done": true}. A record
 with "binary_bytes": N is followed by exactly N raw bytes, which --save writes to a file.
+The `status` records that dvb and dvbpace print (once a second up to 10 Msym/s, a single one
+above) are not results: they are neither printed nor kept, and --monitor forwards them, with
+the command's records, to host/monitor.py.
 """
 from __future__ import annotations
 
@@ -19,6 +23,8 @@ import json
 import os
 import pathlib
 import shutil
+import socket
+import struct
 import subprocess
 import sys
 import time
@@ -130,10 +136,42 @@ def watchdog_reset(port: str) -> None:
     time.sleep(2.5)                        # boot and USB driver start
 
 
+class Monitor:
+    """Forward records to host/monitor.py as UDP datagrams of type 4, transmitter stats: a 12-byte
+    little-endian header (b'PVMN', version 1, type, a sequence number and the host's monotonic
+    clock in microseconds, each cut to its width), then the record as JSON. A send that fails is
+    counted and skipped, so the monitor can never stop a run's records."""
+    HEADER = struct.Struct('<4sBBHI')
+    TYPE = 4
+
+    def __init__(self, address: str):
+        host, _, port = address.rpartition(':')
+        host = host.strip('[]')
+        if not host or not 0 < int(port) < 65536:
+            raise ValueError(f'expected HOST:PORT, got {address!r}')
+        # Resolve once, before the command starts, and never block afterwards: a send that would
+        # wait is a failed send, so a slow name lookup or a full buffer cannot stall the serial reader.
+        family, kind, proto, _, target = socket.getaddrinfo(host, int(port), type=socket.SOCK_DGRAM)[0]
+        self.socket = socket.socket(family, kind, proto)
+        self.socket.connect(target)
+        self.socket.setblocking(False)
+        self.seq = self.failed = 0
+
+    def __call__(self, record: dict) -> None:
+        stamp = time.monotonic_ns() // 1000
+        head = self.HEADER.pack(b'PVMN', 1, self.TYPE, self.seq & 0xFFFF, stamp & 0xFFFFFFFF)
+        self.seq += 1
+        try:
+            self.socket.send(head + json.dumps(record, separators=(',', ':')).encode())
+        except OSError:
+            self.failed += 1
+
+
 def run(port: str, command: str, timeout: float = 30.0, reset: bool = False,
-        save: pathlib.Path | None = None) -> list[dict]:
+        save: pathlib.Path | None = None, live=None) -> list[dict]:
     """Collect '@' records until done. Raw bytes announced by binary_bytes go to save, and the
-    record gains host_crc32 of what arrived. The deadline moves while bytes keep arriving."""
+    record gains host_crc32 of what arrived. The deadline moves while bytes keep arriving.
+    live(record), if given, sees every record as it arrives; `status` records go only there."""
     link = open_port(port, reset)
     sink, left, received = None, 0, 0
     try:
@@ -165,6 +203,10 @@ def run(port: str, command: str, timeout: float = 30.0, reset: bool = False,
                 record = json.loads(line[1:])
                 if record.get("done"):
                     return records
+                if live:
+                    live(record)
+                if record.get("cmd") == "status":
+                    continue
                 records.append(record)
                 if record.get("binary_bytes"):
                     if save is None:
@@ -187,11 +229,13 @@ def main() -> int:
     parser.add_argument("--reset", action="store_true", help="restart the firmware first")
     parser.add_argument("--out", type=pathlib.Path, help="append records to this JSON-lines file")
     parser.add_argument("--save", type=pathlib.Path, help="write binary data from the board here")
+    parser.add_argument("--monitor", type=Monitor, metavar="HOST:PORT",
+                        help="also send status and result records to host/monitor.py over UDP")
     args = parser.parse_args()
     args.port = resolve_port(args.port)
 
     with reserve_port(args.port, args.reset):
-        records = run(args.port, args.command, args.timeout, args.reset, args.save)
+        records = run(args.port, args.command, args.timeout, args.reset, args.save, args.monitor)
     stamp = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
     for record in records:
         print(json.dumps(record))

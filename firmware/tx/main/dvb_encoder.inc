@@ -157,6 +157,7 @@ static void ENCODER_TASK(void *arg)
         e->kernel_cycles += kernel_spent;
         e->min_cycles = spent < e->min_cycles ? spent : e->min_cycles;
         e->max_cycles = spent > e->max_cycles ? spent : e->max_cycles;
+        if (spent > e->status_max_cycles) e->status_max_cycles = spent;
         if (f >= (dvb.moon ? 2 : dvb.ring.nslots) && spent > e->live_max_cycles) e->live_max_cycles = spent;
         if (f >= (dvb.moon ? 2 : dvb.ring.nslots) && kernel_spent > e->kernel_live_max) e->kernel_live_max = kernel_spent;
         if (e->stall_ms) {

@@ -7,12 +7,13 @@
 esp_err_t radio_s3_paced_run(uint32_t seconds, uint32_t rate, radio_s3_fill_fn fn, void *ctx,
                              const radio_s3_options_t *options, radio_s3_stats_t *stats)
 {
-    (void)options;
     assert(seconds == 1 && rate == 40000000 && fn == fill_vcm);
     memset(stats,0,sizeof *stats);
     radio_s3_dry_stats_t dry;
-    return radio_s3_dry_run_rate(fn,ctx,2ull*dvb.ring.frame_symbols*dvb.table.n,
-                                rate,discard,NULL,&dry);
+    const esp_err_t err = radio_s3_dry_run_rate(fn,ctx,2ull*dvb.ring.frame_symbols*dvb.table.n,
+                                                rate,discard,NULL,&dry);
+    if (options->status) options->status(stats,23610); // one status line, as the command task's
+    return err;
 }
 
 static void vcm_header(dvbs2_workspace *ws)

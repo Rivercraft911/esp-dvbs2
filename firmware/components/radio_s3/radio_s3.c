@@ -282,6 +282,11 @@ static esp_err_t IRAM_ATTR fill_bank(run_t *run, unsigned bank, uint64_t start)
         run->stats->max_fill_cycles = elapsed;
         run->stats->max_fill_sample = start;
     }
+    /* on_core1's status call swaps this for 0 from core 0. A swap between this read and this
+     * write loses the fill only when it was no slower than the value the swap took. */
+    if (elapsed > run->stats->status_fill_cycles) {
+        run->stats->status_fill_cycles = elapsed;
+    }
     return error;
 }
 
@@ -719,7 +724,24 @@ static esp_err_t on_core1(TaskFunction_t task, run_t *run)
         job_task = task;
         job_arg = run;
         xSemaphoreGive(job_ready);
-        xSemaphoreTake(run->done, portMAX_DELAY);
+        /* The optional status report runs here, in the waiting task, once a second. */
+        TickType_t due = xTaskGetTickCount();
+        for (;;) {
+            TickType_t wait = portMAX_DELAY;
+            if (run->options.status) {
+                const TickType_t now = xTaskGetTickCount();
+                due += pdMS_TO_TICKS(1000);
+                if ((int32_t)(due - now) < 0) {
+                    due = now; /* fell behind: no burst of reports */
+                }
+                wait = due - now;
+            }
+            if (xSemaphoreTake(run->done, wait) == pdTRUE) {
+                break;
+            }
+            run->options.status(run->stats,
+                                __atomic_exchange_n(&run->stats->status_fill_cycles, 0, __ATOMIC_RELAXED));
+        }
     } else {
         run->error = ESP_ERR_INVALID_STATE; /* radio_s3_init has not run */
     }

@@ -130,6 +130,7 @@ esp_err_t usb_input_start(unsigned type) { (void)type; return ESP_OK; }
 size_t usb_input_read(uint8_t *dst,size_t n) { (void)dst; (void)n; return 0; }
 void usb_input_stop(void) {}
 void usb_input_print(void) {}
+const ingress_ring *usb_input_ring(void) { return NULL; }
 int spi_device_polling_start(spi_device_handle_t d,spi_transaction_t *t,unsigned ticks) {
     (void)d;(void)ticks;
     assert(t->flags==(raw_wire?0:SPI_TRANS_MODE_QIO) && t->cmd==(raw_wire?0:0x23) && t->addr==0 && t->length==1332*8);

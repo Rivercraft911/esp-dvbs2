@@ -17,6 +17,7 @@
 #include "spi_input.h"
 
 #include <inttypes.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,6 +30,7 @@
 #include "esp_heap_caps.h"
 #include "esp_memory_utils.h"
 #include "esp_rom_crc.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -205,6 +207,7 @@ typedef struct {
     uint8_t *table_tail;            // lofty: program/columns/CRC in PSRAM; uses alignment padding
     uint64_t cycles;                // per frame: payload and encoding, raw
     uint32_t min_cycles, max_cycles, live_max_cycles; // live excludes the initial ring prefill
+    uint32_t status_max_cycles;     // slowest frame since the last status line (live_print)
     uint64_t kernel_cycles;        // same-frame interval after payload generation
     uint32_t kernel_live_max;
     uint64_t work_cycles;          // kernel interval minus full-queue backpressure
@@ -1449,6 +1452,110 @@ static void print_startup(void)
     printf("]}");
 }
 
+// The status line, once a second while dvb or dvbpace runs at 10 Msym/s or less
+// (radio_s3_options_t.status). The command task prints it on core 0 while it waits for the run;
+// the encoder and the fills never print. Counts run from the start of the run; encoder_* and
+// fill_* cover the time since the previous line. A line the USB buffer has no room for is
+// dropped, never waited for. At 26.67 and 33.33 Msym/s each line cost the encoder one slower
+// frame, 24k to 50k cycles, and 8PSK 9/10 at 26.67 Msym/s with TS input dummy frames
+// (results/2026-10-23-tx-status), so a run above 10 Msym/s says once, at the start, that it
+// prints none.
+static struct {
+    const char *cmd;
+    uint32_t freq_mhz;              // keyed runs only
+    int64_t start_us;
+    uint32_t frames, pages, dropped; // encoder frames and consumed pages at the previous line
+    uint64_t cycles;                // and the encoder's summed cycles
+    char line[1024];                // static: the command task's stack is small
+} live;
+
+static __attribute__((format(printf,2,3))) size_t live_add(size_t at, const char *format, ...)
+{
+    if (at >= sizeof live.line) return at;
+    va_list args;
+    va_start(args,format);
+    const int n = vsnprintf(live.line+at,sizeof live.line-at,format,args);
+    va_end(args);
+    return n < 0 ? sizeof live.line : at+(size_t)n;
+}
+
+// Every function here runs in the command task. The encoder shares its core at a higher priority:
+// masking this core's interrupts stops it from preempting a copy of its counters halfway.
+// False above 10 Msym/s: then the run has no status lines.
+static bool live_start(const char *cmd, uint32_t freq_mhz)
+{
+    const uint32_t symbol_rate = (uint32_t)((uint64_t)dvb.dac_rate*dvb.den/dvb.table.n);
+    if (symbol_rate > 10000000) {
+        const int n = snprintf(live.line,sizeof live.line,"@{\"cmd\":\"status\",\"run\":\"%s\","
+                               "\"symbol_rate\":%" PRIu32 ",\"status_lines\":\"off above 10 Msym/s\"}\n",cmd,symbol_rate);
+        (void)usb_serial_jtag_write_bytes(live.line,n,0);
+        return false;
+    }
+    const uint32_t irq = portSET_INTERRUPT_MASK_FROM_ISR();
+    live.frames = enc.frames;
+    live.cycles = enc.cycles;
+    enc.status_max_cycles = 0;
+    portCLEAR_INTERRUPT_MASK_FROM_ISR(irq);
+    live.pages = __atomic_load_n(&dvb.consumed,__ATOMIC_ACQUIRE);
+    live.cmd = cmd, live.freq_mhz = freq_mhz, live.dropped = 0;
+    live.start_us = esp_timer_get_time();
+    return true;
+}
+
+static void live_print(const radio_s3_stats_t *s, uint32_t slowest_fill)
+{
+    const uint32_t irq = portSET_INTERRUPT_MASK_FROM_ISR();
+    const uint32_t frames = enc.frames, slowest = enc.status_max_cycles;
+    const uint32_t pending = enc.input_pending, waits = enc.input_waits;
+    const uint64_t cycles = enc.cycles;
+    const dvbs2_mode *mode = enc.mode;
+    enc.status_max_cycles = 0;
+    const ingress_ring *ring = spi_input_ring();
+    const ingress_stats in = ring ? ring->st : (ingress_stats){0};
+    const uint32_t wrong_type = ring ? ring->wrong_type : 0;
+    portCLEAR_INTERRUPT_MASK_FROM_ISR(irq);
+    // The fill's counters on core 1 are single 32-bit words. The 33m333 queue counts pages, not
+    // frames: 1,536 samples a page, 12 samples per 5 symbols.
+    const uint32_t pages = __atomic_load_n(&dvb.consumed,__ATOMIC_ACQUIRE)-live.pages;
+    const uint32_t played = dvb.lofty ? lofty_mux.frames : dvb.moon ?
+        (uint32_t)((uint64_t)pages*MACHINE_PAGE_SAMPLES*5/(12*dvb.ring.frame_symbols)) : dvb.ring.next_frame;
+    const uint32_t dummies = dvb.lofty ? lofty_mux.startup+lofty_mux.steady : dvb.ring.underruns;
+    const uint32_t count = frames-live.frames;
+    const uint64_t mean = count ? (cycles-live.cycles)/count : 0;
+    live.frames = frames, live.cycles = cycles;
+    // Cycles at 240 MHz: a frame at this MODCOD's symbol rate, and the new samples of one bank.
+    const uint64_t period = (uint64_t)dvbs2_frame_symbols(mode,PILOTS)*240000000u*dvb.table.n/
+                            ((uint64_t)dvb.dac_rate*dvb.den);
+    const uint32_t deadline = RADIO_S3_STEP_FOR(dvb.dac_rate)*(240000000u/dvb.dac_rate);
+    const unsigned input = spi_input_type();
+
+    size_t at = live_add(0,"@{\"cmd\":\"status\",\"run\":\"%s\",\"elapsed_s\":%.2f",live.cmd,
+                         (double)(esp_timer_get_time()-live.start_us)/1e6);
+    if (live.freq_mhz) at = live_add(at,",\"freq_mhz\":%" PRIu32,live.freq_mhz);
+    at = live_add(at,",\"modcod\":%u,\"rate\":\"%s\",\"symbol_rate\":%" PRIu32 ",\"short\":%s,\"frames\":%" PRIu32
+                  ",\"frames_encoded\":%" PRIu32 ",\"dummies\":%" PRIu32 ",\"late_fills\":%" PRIu32
+                  ",\"late_switches\":%" PRIu32 ",\"input\":\"%s\"",
+                  mode->modcod,mode->rate,(uint32_t)((uint64_t)dvb.dac_rate*dvb.den/dvb.table.n),
+                  mode->short_frame ? "true" : "false",played,frames,dummies,s->late_fills,s->late_switches,
+                  input == PV_TS ? "ts" : input == PV_GCS ? "gcs" : "synthetic");
+    if (ring) at = live_add(at,",\"input_wire\":\"%s\",\"input_bytes\":%" PRIu32 ",\"input_messages\":%" PRIu32
+                            ",\"input_rejected\":%" PRIu32 ",\"input_crc_errors\":%" PRIu32 ",\"input_lost\":%" PRIu32
+                            ",\"input_overruns\":%" PRIu32 ",\"input_waits\":%" PRIu32 ",\"input_pending\":%" PRIu32,
+                            spi_input_source(),in.bytes,in.msgs,
+                            in.err_short+in.err_long+in.err_header+in.err_crc+in.err_sync+wrong_type,
+                            in.err_crc,in.lost,in.overruns,waits,pending);
+    if (count) at = live_add(at,",\"encoder_mean_cycles\":%" PRIu64 ",\"encoder_max_cycles\":%" PRIu32
+                             ",\"encoder_spare_pct\":%.1f",mean,slowest,100.0-100.0*(double)mean/(double)period);
+    else at = live_add(at,",\"encoder_mean_cycles\":null,\"encoder_max_cycles\":null,\"encoder_spare_pct\":null");
+    if (slowest_fill) at = live_add(at,",\"fill_max_cycles\":%" PRIu32 ",\"fill_spare_pct\":%.1f",
+                                    slowest_fill,100.0-100.0*slowest_fill/deadline);
+    else at = live_add(at,",\"fill_max_cycles\":null,\"fill_spare_pct\":null");
+    at = live_add(at,",\"frame_period_cycles\":%" PRIu64 ",\"fill_deadline_cycles\":%" PRIu32
+                  ",\"lines_dropped\":%" PRIu32 "}\n",period,deadline,live.dropped);
+    // One whole line or none: the driver's ring buffer takes a write entirely or not at all.
+    if (at >= sizeof live.line || usb_serial_jtag_write_bytes(live.line,at,0) != (int)at) ++live.dropped;
+}
+
 void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, unsigned level,
                 unsigned sps, uint32_t dac_rate, bool fixture)
 {
@@ -1462,7 +1569,9 @@ void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, 
     radio_s3_stats_t s = {0};
     // RRC support B = Rs * (1 + alpha), alpha = 0.20 or 0.35. Round upward in integer Hz.
     const uint32_t bandwidth = ((uint64_t)dac_rate * dvb.den * (dvb.den == 5 ? 120 : 135) + sps * 100 - 1) / (sps * 100);
-    const esp_err_t err = radio_s3_run_bandwidth(freq,(uint8_t)gain,seconds,dac_rate,bandwidth,encoder_fill(),NULL,&s);
+    const radio_s3_options_t options = {.status=live_start("dvb",freq) ? live_print : NULL};
+    const esp_err_t err = radio_s3_run_options(freq,(uint8_t)gain,seconds,dac_rate,bandwidth,encoder_fill(),NULL,
+                                               &options,&s);
     print_mode("dvb", modcod, symbols, level);
     printf(",\"prepared_fixture\":%s",fixture ? "true" : "false");
     printf(",\"freq_mhz\":%" PRIu32 ",\"seconds\":%" PRIu32 ",\"gain\":%u,\"dac_rate\":%" PRIu32
@@ -1484,7 +1593,8 @@ void dvbtx_pace(unsigned modcod, uint32_t seconds, unsigned level, unsigned stal
     const size_t symbols = start_encoder_options("dvbpace",modcod,level,stall_ms,sps,dac_rate,true,fixture);
     if (!symbols) return;
     radio_s3_stats_t s;
-    const radio_s3_options_t options = {.startup=dvb.lofty ? lofty_startup() : NULL};
+    const radio_s3_options_t options = {.startup=dvb.lofty ? lofty_startup() : NULL,
+                                        .status=live_start("dvbpace",0) ? live_print : NULL};
     const esp_err_t err = radio_s3_paced_run(seconds,dac_rate,encoder_fill(),NULL,&options,&s);
     print_mode("dvbpace", modcod, symbols, level);
     printf(",\"prepared_fixture\":%s",fixture ? "true" : "false");

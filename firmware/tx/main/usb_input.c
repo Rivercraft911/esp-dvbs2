@@ -179,6 +179,8 @@ size_t usb_input_read(uint8_t *dst, size_t n)
 
 void usb_input_stop(void) { /* RX stays masked through final counters and drain. */ }
 
+const ingress_ring *usb_input_ring(void) { return active ? &ring : NULL; }
+
 void usb_input_print(void)
 {
     const ingress_stats *s=&ring.st;

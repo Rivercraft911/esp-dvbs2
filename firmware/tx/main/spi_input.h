@@ -11,4 +11,7 @@ esp_err_t spi_input_start(void); // on the encoder core; spiinput provisioned SP
 size_t spi_input_read(uint8_t *dst, size_t n);
 void spi_input_stop(void);
 void spi_input_print(void); // append JSON fields after the encoder has stopped
+// The running session's ring, or NULL: for the status line, read on the encoder's core with
+// its interrupts masked.
+const ingress_ring *spi_input_ring(void);
 void spi_input_command(const char *cmd, const char *args);
