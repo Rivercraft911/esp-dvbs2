@@ -79,7 +79,7 @@ READY is an S3 output that says it has room for another message.
 Eight 1,336-byte receive buffers use 10,688 bytes of DMA RAM, borrowed from
 unused encoder regions when all eight fit, otherwise taken from run memory. The 4 KiB CRC-32
 table comes from the heap when `spiinput` selects the wire, with the SPI driver, and `spiinput
-off` frees it; runs make no heap calls.
+off` or `spiinput usb` frees it; runs make no heap calls.
 The two-slot READY margin permits seven unread messages (9,212 payload bytes),
 enough for a complete 5,370-byte BB payload while the encoder works.
 

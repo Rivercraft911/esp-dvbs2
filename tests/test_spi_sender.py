@@ -259,8 +259,8 @@ int main(void) {
     assert(pins.sclk==7 && pins.cs==1 && pins.d0==2 && pins.ready==8);
     spi_input_command("spipins","devkit");
     assert(pins.sclk==12 && pins.cs==10 && pins.d0==11 && pins.ready==8);
-    spi_input_command("spiinput","usb gcs");
-    assert(usb_mode && input_type==PV_GCS && !replay && held==-1);
+    spi_input_command("spiinput","usb gcs"); // USB input needs neither SPI driver nor CRC table
+    assert(usb_mode && input_type==PV_GCS && !replay && held==-1 && !crc_table && !allocations);
     spi_input_command("spiinput","usb ts extra");
     assert(usb_mode && input_type==PV_GCS);
     spi_input_command("spiinput","usb");

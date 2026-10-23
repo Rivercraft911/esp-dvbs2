@@ -32,6 +32,13 @@ static ingress_ring *rx;
 // The CRC-32 tables come with the wire from spiinput, in internal heap, so 8PSK 5/6 at
 // 26.67 Msym/s still finds run memory for its pair BCH table and the slots.
 static uint32_t *crc_table;
+// Give back the selected wire's SPI driver and CRC table (spiinput off, or usb: no SPI wire).
+static void release_wire(void)
+{
+    ingress_spi_release();
+    heap_caps_free(crc_table);
+    crc_table=NULL;
+}
 static bool (*control_handler)(unsigned);
 void spi_input_control(bool (*control)(unsigned)) { control_handler=control; usb_input_control(control); }
 static ingress_stats saved;
@@ -349,7 +356,7 @@ void spi_input_command(const char *cmd, const char *args)
             if (tokens>2 || (tokens==2 && strcmp(b,"ts") && strcmp(b,"gcs"))) goto usage;
             input_type=tokens==2 && !strcmp(b,"gcs") ? PV_GCS : PV_TS;
             usb_mode=true; replay=pv_mode=false;
-            ingress_spi_release(); // the SPI driver held is always the selected wire's, or none
+            release_wire(); // the SPI driver held is always the selected wire's, or none
             printf("@{\"cmd\":\"spiinput\",\"input\":\"%s\",\"wire\":\"usb\"}\n", input_type==PV_TS?"ts":"gcs");
             return;
         }
@@ -366,7 +373,7 @@ void spi_input_command(const char *cmd, const char *args)
         // them back. Commands run on core 0, the encoder's core, where the interrupt belongs.
         esp_err_t err=ESP_OK;
         if (type) err=ingress_spi_provision(raw);
-        else { ingress_spi_release(); heap_caps_free(crc_table); crc_table=NULL; }
+        else release_wire();
         if (err==ESP_OK && type && !crc_table) {
             crc_table=heap_caps_malloc(4096, MALLOC_CAP_INTERNAL);
             if (!crc_table) err=ESP_ERR_NO_MEM;
