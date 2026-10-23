@@ -396,15 +396,19 @@ static HOT void descramble(const rx_fec_t *f, uint8_t *x, const uint8_t *prbs, u
     }
 }
 
-/* Descramble the BBHEADER in place and check it (GCS, single stream, UPL = 0,
- * SYNCD = 0, byte-aligned DFL that fits); then descramble the data field.
- * Returns DFL in bytes or -1. */
+/* Descramble the BBHEADER in place and check it (5.1.6: single stream, byte-aligned DFL that
+ * fits; GCS with UPL = 0 and SYNCD = 0, or TS without ISSY or null-packet deletion, UPL = 188 x 8,
+ * SYNC = 0x47 and SYNCD a byte offset inside the data field or 65,535 for none); then descramble
+ * the data field. Returns DFL in bytes or -1. */
 static HOT int bbframe(const rx_fec_t *f, uint8_t *hard)
 {
     descramble(f, hard, f->prbs, 10);
-    const unsigned dfl = (unsigned)hard[4] << 8 | hard[5];
-    if (crc8(f, hard, 9) != hard[9] || (hard[0] & 0xe0) != 0x60 || hard[2] || hard[3] ||
-        hard[7] || hard[8] || dfl % 8 || dfl > f->kbch - 80u) {
+    const unsigned upl = (unsigned)hard[2] << 8 | hard[3], dfl = (unsigned)hard[4] << 8 | hard[5];
+    const unsigned syncd = (unsigned)hard[7] << 8 | hard[8];
+    const int gcs = (hard[0] & 0xe0) == 0x60 && !upl && !syncd;
+    const int ts = (hard[0] & 0xec) == 0xe0 && upl == 188 * 8 && hard[6] == 0x47 &&
+                   (syncd == 0xffff || (syncd % 8 == 0 && syncd < dfl));
+    if (crc8(f, hard, 9) != hard[9] || !(gcs || ts) || dfl % 8 || dfl > f->kbch - 80u) {
         return -1;
     }
     descramble(f, hard + 10, f->prbs + 10, dfl / 8);
