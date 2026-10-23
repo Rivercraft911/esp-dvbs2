@@ -252,7 +252,7 @@ static void decoder(void *arg)
     quit(r, &s->decode_stack_free);
 }
 
-/* Every run allocation (after Wi-Fi has gone, internal RAM for what core 1 and the release
+/* Every run allocation (internal RAM for what core 1 and the release
  * touch), the core 0 tasks and the stream header. */
 static esp_err_t start(void *ctx)
 {

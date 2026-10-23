@@ -22,8 +22,8 @@ typedef esp_err_t (*capture_fn)(const uint32_t *words, size_t count, uint64_t fi
 
 typedef struct {
     unsigned mhz, gain, seconds;
-    /* Optional, on the calling core after Wi-Fi is up and before streaming: the place
-     * to allocate run memory, so Wi-Fi gets its blocks first. An error aborts the run. */
+    /* Optional, on the calling core before streaming: the place to allocate run memory.
+     * An error aborts the run. */
     esp_err_t (*ready)(void *ctx);
 } capture_config_t;
 
@@ -31,12 +31,14 @@ typedef struct {
     uint64_t samples, dropped;  /* timeline position; samples lost to overload */
     uint64_t max_service_at;    /* where the slowest unit started */
     uint32_t units, drops, max_late, max_service, max_clear, max_spin, max_lag;
-    uint32_t free_before, free_wifi, free_ready, largest_ready, min_free, stack_free;  /* free_wifi: after Wi-Fi is gone */
+    uint32_t free_before, free_ready, largest_ready, min_free, stack_free;
     uint8_t gain_max;
     const char *fault;  /* first fault, or NULL */
     esp_err_t error, cleanup;
 } capture_stats_t;
 
+/* Power, calibrate and hold the PHY, once at boot; every capture needs it. */
+esp_err_t capture_radio_init(void);
 esp_err_t capture_run(const capture_config_t *config, capture_fn fn, void *ctx,
                       capture_stats_t *stats);
 /* The radio off: pairs of int8 I, Q (.sc8) handed to fn as dump words, a unit at a time from

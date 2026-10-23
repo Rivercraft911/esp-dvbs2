@@ -27,7 +27,7 @@ static int console_put(char c, FILE *stream)
     return usb_serial_jtag_write_bytes(&c, 1, portMAX_DELAY) == 1 ? 0 : EOF;
 }
 
-/* Logs from Wi-Fi start and stop would land inside rx's binary stream. */
+/* Logs during a run would land inside rx's binary stream. */
 static volatile bool quiet;
 static int log_filter(const char *format, va_list args)
 {
@@ -42,7 +42,7 @@ static void print_capture(const capture_stats_t *s)
     printf(",\"samples\":%llu,\"dropped\":%llu,\"drops\":%lu,\"units\":%lu,\"max_late\":%lu,\"max_service\":%lu,"
            "\"max_service_at\":%llu,\"max_clear\":%lu,"
            "\"max_spin\":%lu,\"max_lag\":%lu,"
-           "\"free_before\":%lu,\"free_wifi\":%lu,\"free_ready\":%lu,\"largest_ready\":%lu,"
+           "\"free_before\":%lu,\"free_ready\":%lu,\"largest_ready\":%lu,"
            "\"min_free\":%lu,\"capture_stack_free\":%lu,"
            "\"gain_max\":%u,\"status\":\"%s\",\"cleanup\":\"%s\"",
            (unsigned long long)s->samples, (unsigned long long)s->dropped, (unsigned long)s->drops,
@@ -50,7 +50,7 @@ static void print_capture(const capture_stats_t *s)
            (unsigned long)s->max_service, (unsigned long long)s->max_service_at,
            (unsigned long)s->max_clear,
            (unsigned long)s->max_spin, (unsigned long)s->max_lag,
-           (unsigned long)s->free_before, (unsigned long)s->free_wifi,
+           (unsigned long)s->free_before,
            (unsigned long)s->free_ready, (unsigned long)s->largest_ready,
            (unsigned long)s->min_free, (unsigned long)s->stack_free, s->gain_max,
            esp_err_to_name(s->error), esp_err_to_name(s->cleanup));
@@ -247,6 +247,7 @@ void app_main(void)
     stdout = &output;
     setvbuf(stdin, NULL, _IONBF, 0);
     esp_log_set_vprintf(log_filter);
+    const esp_err_t radio = capture_radio_init();
     char line[96];
     while (true) {
         if (!fgets(line, sizeof line, stdin)) { vTaskDelay(1); continue; }
@@ -258,12 +259,13 @@ void app_main(void)
             uint8_t mac[6];
             esp_read_mac(mac, ESP_MAC_WIFI_STA);
             printf("@{\"cmd\":\"info\",\"app\":\"esp_dvbs2_rx\",\"firmware\":\"%s\","
-                   "\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\",\"psram_bytes\":%u,"
-                   "\"free_internal\":%u,\"largest_internal\":%u}\n",
+                   "\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\",\"psram_bytes\":%u,\"radio\":\"%s\","
+                   "\"free_internal\":%u,\"largest_internal\":%u,\"min_free_internal\":%u}\n",
                    esp_app_get_description()->version, mac[0], mac[1], mac[2], mac[3], mac[4],
-                   mac[5], (unsigned)esp_psram_get_size(),
+                   mac[5], (unsigned)esp_psram_get_size(), esp_err_to_name(radio),
                    (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-                   (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+                   (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                   (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
         } else if (fields >= 4 && !strcmp(cmd, "rxprobe") && fields == 4) {
             capture_config_t c = {.mhz = mhz, .gain = gain, .seconds = seconds};
             rxprobe(&c);

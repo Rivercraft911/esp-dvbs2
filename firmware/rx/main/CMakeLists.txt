@@ -1,5 +1,7 @@
 # The transmitter's test pattern (components/ingress) is compiled in for `rx ... ts pattern`;
 # the rest of that component is the transmitter's SPI input.
+# esp_wifi only for its Kconfig: periph_ctrl's wifi_module_enable() needs ESP_WIFI_ENABLED.
+# No Wi-Fi code is called, so none is linked.
 idf_component_register(SRCS "main.c" "capture.c" "receive.c" "replay.c"
                             "../../components/ingress/ingress_pattern.c"
                        INCLUDE_DIRS "." "../../components/ingress/include"

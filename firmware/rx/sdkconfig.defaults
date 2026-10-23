@@ -9,21 +9,11 @@ CONFIG_SPIRAM_SPEED_80M=y
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 CONFIG_FREERTOS_HZ=1000
 
-# Vendor gain and tone entry points; full calibration each run, no PHY storage.
+# Vendor gain and tone entry points; full calibration at boot, no PHY storage.
 CONFIG_ESP_PHY_ENABLE_CERT_TEST=y
 CONFIG_ESP_PHY_CALIBRATION_AND_DATA_STORAGE=n
 
-# Wi-Fi only brings the PHY up; keep its RAM small and its code in flash.
-CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=2
-CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=8
-CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=8
-CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=n
-CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=n
-CONFIG_ESP_WIFI_MGMT_SBUF_NUM=8
-CONFIG_ESP_WIFI_NVS_ENABLED=n
-CONFIG_ESP_WIFI_IRAM_OPT=n
-CONFIG_ESP_WIFI_RX_IRAM_OPT=n
-CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+# The PHY comes up without Wi-Fi (capture.c); heap code stays in flash to leave IRAM free.
 CONFIG_HEAP_PLACE_FUNCTION_INTO_FLASH=y
 
 # Core 1 belongs to the capture loop for the whole run; its idle task never runs.

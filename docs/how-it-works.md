@@ -243,13 +243,13 @@ re-anchors, so handoffs land within a few samples. The task then processes relea
 may trail by a unit. If it trails by two, the interrupt takes back the newest bank it has not
 started; the loss reaches the demodulator as a jump in the sample index.
 
-Wi-Fi starts only to power and calibrate the PHY. The run holds the PHY through the
-Bluetooth modem bit, as `physolo` does for the transmitter, keeps the Wi-Fi clock domain
-referenced and deinitializes Wi-Fi. Stopping Wi-Fi also clears bit 1 of
-`SYSCON_WIFI_BB_CFG_REG`, which the dump needs: without it the samples hold a constant.
-The receiver sets it again; a diff of the radio registers with Wi-Fi up and stopped found it.
-No Wi-Fi interrupt or periodic work runs during a capture. Run memory is allocated after
-the teardown, and every task stack is static in internal RAM.
+The receiver never starts Wi-Fi. At boot it powers the modem domain and enables the PHY
+under the Bluetooth modem bit, which calibrates it in full; ESP-IDF turns the Wi-Fi and
+Bluetooth clocks on for that itself, as for a Bluetooth-only application. It keeps the Wi-Fi
+clock domain referenced, since the dump engine is part of the Wi-Fi baseband, and each run
+sets bit 1 of `SYSCON_WIFI_BB_CFG_REG`, which a running Wi-Fi sets and the dump needs: without
+it the samples hold a constant (a diff of the radio registers with Wi-Fi up and stopped found
+it). No Wi-Fi code is linked, and every task stack is static in internal RAM.
 
 **Front end.** Each 10-bit word becomes int8 I and Q, floor(s10/4), at 1.55 cycles per
 sample. A root-raised-cosine matched filter is evaluated only at symbol times.

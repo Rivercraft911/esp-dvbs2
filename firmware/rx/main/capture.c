@@ -15,7 +15,6 @@
 #include "esp_private/periph_ctrl.h"
 #include "esp_private/phy.h"
 #include "driver/gptimer.h"
-#include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -410,7 +409,7 @@ static void worker(void *arg)
     } else {
         force_rx_gain(1, c->gain, 0);
         select_lo(divided);
-        /* Bit 1 is set while Wi-Fi runs; without it the dump holds a constant. */
+        /* Wi-Fi sets bit 1 when it runs; without it the dump holds a constant. */
         REG_SET_BIT(SYSCON_WIFI_BB_CFG_REG, 1U << 1);
         vTaskDelay(pdMS_TO_TICKS(3));
         s->free_ready = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
@@ -501,34 +500,29 @@ esp_err_t capture_bench(const capture_config_t *config, uint32_t results[16],
     return launch(&job);
 }
 
+/* The radio, once at boot and for good, without Wi-Fi. esp_phy_enable() turns the Wi-Fi and BT
+ * clocks on itself for the PHY's first, full calibration and its PLL tracking (ESP-IDF v6.1
+ * phy_init.c, periph_ctrl.c phy_module_enable), as a BLE-only application relies on. The PHY is
+ * held under the Bluetooth modem bit: with Bluetooth not built that bit asks for no PLL tracking,
+ * the state Wi-Fi's stop used to leave behind. The dump engine lives in the Wi-Fi baseband, so its
+ * clock domain stays referenced; the worker sets the baseband bit that Wi-Fi used to set. */
+static bool radio_up;
+
+esp_err_t capture_radio_init(void)
+{
+    if (radio_up) return ESP_OK;
+    esp_wifi_bt_power_domain_on();
+    esp_phy_enable(PHY_MODEM_BT);
+    wifi_module_enable();
+    radio_up = phy_get_modem_flag() == PHY_MODEM_BT;
+    return radio_up ? ESP_OK : ESP_ERR_INVALID_STATE;
+}
+
 static esp_err_t launch(job_t *job)
 {
     capture_stats_t *s = job->stats;
-    bool initialized = false, held = false;
-    /* Wi-Fi starts only to power and calibrate the PHY. The run then holds the PHY with
-     * the Bluetooth modem bit, as firmware/components/radio_s3/physolo.c does for the
-     * transmitter, keeps the Wi-Fi clock domain referenced and deinitializes Wi-Fi: no MAC
-     * interrupts or periodic work, and about 44 KB of internal RAM return. The worker
-     * sets the baseband bit that Wi-Fi's stop clears. */
     s->free_before = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    cfg.nvs_enable = 0;
-    if (job->sc8) goto replay;
-    if ((s->error = esp_wifi_init(&cfg)) != ESP_OK) goto done;
-    initialized = true;
-    if ((s->error = esp_wifi_set_storage(WIFI_STORAGE_RAM)) != ESP_OK ||
-        (s->error = esp_wifi_set_mode(WIFI_MODE_NULL)) != ESP_OK ||
-        (s->error = esp_wifi_start()) != ESP_OK) goto done;
-    if (phy_get_modem_flag() != PHY_MODEM_WIFI) { s->error = ESP_ERR_INVALID_STATE; goto done; }
-    esp_wifi_bt_power_domain_on();
-    esp_phy_modem_init();
-    esp_phy_enable(PHY_MODEM_BT);
-    wifi_module_enable();
-    held = true;
-    if ((s->error = esp_wifi_stop()) != ESP_OK || (s->error = esp_wifi_deinit()) != ESP_OK) goto done;
-    initialized = false;
-replay:
-    s->free_wifi = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    if (!job->sc8 && !radio_up) return s->error = ESP_ERR_INVALID_STATE;
     if (job->config->ready && (s->error = job->config->ready(job->ctx)) != ESP_OK) goto done;
     if (!(job->done = xSemaphoreCreateBinary())) { s->error = ESP_ERR_NO_MEM; goto done; }
     /* A static stack stays in internal SRAM; from the heap it could land in slow RTC FAST
@@ -548,16 +542,5 @@ replay:
 
 done:
     if (job->done) vSemaphoreDelete(job->done);
-    if (initialized) {
-        esp_err_t e = esp_wifi_stop();
-        if (e != ESP_OK && e != ESP_ERR_WIFI_NOT_STARTED) s->cleanup = e;
-        if ((e = esp_wifi_deinit()) != ESP_OK && s->cleanup == ESP_OK) s->cleanup = e;
-    }
-    if (held) {
-        esp_phy_disable(PHY_MODEM_BT);
-        esp_phy_modem_deinit();
-        wifi_module_disable();
-        esp_wifi_bt_power_domain_off();
-    }
     return s->error;
 }
