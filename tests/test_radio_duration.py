@@ -141,7 +141,7 @@ static esp_err_t fill_bank(run_t *run, unsigned bank, uint64_t start) {
     ++run->stats->fills; return ESP_OK;
 }
 static void dvbtx_set_short(bool enabled) { (void)enabled; }
-static void dvbtx_run_options(uint32_t f, unsigned m, uint32_t seconds, unsigned g,
+static void dvbtx_run(uint32_t f, unsigned m, uint32_t seconds, unsigned g,
                             unsigned p, unsigned sps, uint32_t rate, bool fixture,
                             bool solo) {
     (void)m; (void)g; (void)p; (void)sps; (void)rate; (void)fixture;

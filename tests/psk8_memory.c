@@ -212,10 +212,10 @@ int main(void)
     assert(!posix_memalign((void **)&banks,65536,2*sizeof *banks));
     // Public paces choose Wi-Fi and gate the queue after its allocations.
     expect_wifi = true; expect_pages = 54;
-    dvbtx_pace(17,10,128,0,3,80000000);
+    dvbtx_pace(17,10,128,0,3,80000000,false);
     assert(!live_allocations);
     expect_pages = MACHINE_PAGES;
-    dvbtx_pace(11,10,128,0,DVB_SPS_12_5,80000000);
+    dvbtx_pace(11,10,128,0,DVB_SPS_12_5,80000000,false);
     assert(!live_allocations && pace_calls == 2);
     // Fail each setup allocation, including the dummy and PSRAM payload.
     allocation_count = 0;

@@ -815,12 +815,6 @@ esp_err_t radio_s3_dry_run_rate(radio_s3_fill_fn fill, void *ctx, uint64_t sampl
     return on_core1(dry_worker, &run);
 }
 
-esp_err_t radio_s3_dry_run(radio_s3_fill_fn fill, void *ctx, uint64_t samples,
-                           radio_s3_sink_fn sink, void *sink_ctx, radio_s3_dry_stats_t *stats)
-{
-    return radio_s3_dry_run_rate(fill, ctx, samples, RADIO_S3_DAC_RATE, sink, sink_ctx, stats);
-}
-
 esp_err_t radio_s3_paced_run_rate(uint32_t seconds, uint32_t dac_rate, radio_s3_fill_fn fill,
                                   void *ctx, radio_s3_stats_t *stats)
 {
@@ -864,12 +858,6 @@ esp_err_t radio_s3_paced_wifi_options(uint32_t seconds, uint32_t dac_rate, radio
     return error;
 }
 
-esp_err_t radio_s3_paced_run(uint32_t seconds, radio_s3_fill_fn fill, void *ctx,
-                             radio_s3_stats_t *stats)
-{
-    return radio_s3_paced_run_rate(seconds, RADIO_S3_DAC_RATE, fill, ctx, stats);
-}
-
 static esp_err_t no_fill(uint32_t *dst, uint64_t first, size_t count, void *ctx)
 {
     (void)dst, (void)first, (void)count, (void)ctx;
@@ -891,18 +879,6 @@ esp_err_t radio_s3_wifi_probe(radio_s3_stats_t *stats)
         .geo = geometry(RADIO_S3_DAC_RATE),
     };
     return on_core1(worker, &run);
-}
-
-esp_err_t radio_s3_run(uint32_t freq_mhz, uint8_t gain, uint32_t seconds,
-                       radio_s3_fill_fn fill, void *ctx, radio_s3_stats_t *stats)
-{
-    return radio_s3_run_rate(freq_mhz, gain, seconds, RADIO_S3_DAC_RATE, fill, ctx, stats);
-}
-
-esp_err_t radio_s3_run_rate(uint32_t freq_mhz, uint8_t gain, uint32_t seconds, uint32_t dac_rate,
-                            radio_s3_fill_fn fill, void *ctx, radio_s3_stats_t *stats)
-{
-    return radio_s3_run_bandwidth(freq_mhz, gain, seconds, dac_rate, dac_rate, fill, ctx, stats);
 }
 
 esp_err_t radio_s3_run_bandwidth(uint32_t freq_mhz, uint8_t gain, uint32_t seconds,

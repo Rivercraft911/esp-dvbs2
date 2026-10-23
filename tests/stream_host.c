@@ -550,7 +550,7 @@ int main(int argc, char **argv)
         if (moon) {
             native_keyed_fixture = true;
             native_keyed_frames = frames;
-            dvbtx_run(2412,mc,30,0,128,sps,rate,true);
+            dvbtx_run(2412,mc,30,0,128,sps,rate,true,false);
             assert(!live_allocations && !enc.failed);
             native_keyed_fixture = false;
         }

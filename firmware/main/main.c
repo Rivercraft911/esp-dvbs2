@@ -128,7 +128,7 @@ static void cmd_dvb(char *args)
         return;
     }
     dvbtx_set_short(short_frames);
-    dvbtx_run_options(freq,modcod,seconds,gain,top,sps,rate,fixture,phy_solo);
+    dvbtx_run(freq,modcod,seconds,gain,top,sps,rate,fixture,phy_solo);
 }
 
 static void cmd_dvbdump(char *args)
@@ -178,7 +178,7 @@ static void cmd_dvbpace(char *args)
         return;
     }
     dvbtx_set_short(short_frames);
-    dvbtx_pace_options(modcod,seconds,top,stall,sps,rate,phy_solo);
+    dvbtx_pace(modcod,seconds,top,stall,sps,rate,phy_solo);
 }
 
 void fecbench_command(unsigned modcod, bool short_frame);

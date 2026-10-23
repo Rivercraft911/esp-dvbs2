@@ -184,8 +184,6 @@ static void encoder(void)
     printf("@{\"test\":\"lofty_mapper\",\"frames\":%u,\"errors\":0}\n",cases);
 
     free(bits); free(cache); free(map); free(raw); free(payload); free(ws); free(f);
-    void sign_mapper_check(void);
-    sign_mapper_check();
 }
 
 int main(void) { kernels(); encoder(); return 0; }

@@ -185,21 +185,16 @@ int dvbs2_encode_frame_packed(dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_state
                               const uint8_t *payload, size_t input_bits, uint8_t *packed);
 void dvbs2_pack(const uint8_t *phases, uint8_t *packed, size_t symbols);
 
-/* Streaming QPSK mapper. Keep history/pending across frames, initially zero
- * (six phase-1 history symbols). start maps FEC bytes, read writes one eleven-
- * sign history per five PL symbols, including header/pilots. No packed frame.
- * at reaches frame_symbols at EOF; a partial five-symbol group survives EOF.
- * lut has 1024 words: five phase>>1 codes to I bits 8:4 and Q bits 24:20. */
+/* Streaming mapper state, kept across frames, initially zero. at reaches frame_symbols
+ * at EOF; a partial group survives EOF. */
 typedef struct {
     uint32_t history;
     unsigned pending, at;
 } dvbs2_sign_state;
+/* QPSK FEC bytes to chronological quad bytes in the context scratch. */
 int dvbs2_fast_sign_start(dvbs2_fast *f, const dvbs2_workspace *ws, dvbs2_sign_state *s);
-unsigned dvbs2_fast_sign_read(const dvbs2_fast *f, dvbs2_sign_state *s, uint32_t *dst,
-                              unsigned blocks, const uint32_t *lut);
-/* QPSK axis queue variant: requires MAP_QUADS; separate start/read pair with the same state lifetime.
- * Each output word holds sixteen I-negative bits in 15:0 and Q in 31:16,
- * oldest first. pending counts symbols modulo sixteen. Do not mix the two APIs. */
+/* QPSK axis queue: requires MAP_QUADS. Each output word holds sixteen I-negative bits in 15:0
+ * and Q in 31:16, oldest first, including header and pilots. pending counts symbols modulo 16. */
 int dvbs2_fast_axis_start(dvbs2_fast *, const dvbs2_workspace *, dvbs2_sign_state *);
 unsigned dvbs2_fast_axis_read(const dvbs2_fast *, dvbs2_sign_state *, uint32_t *, unsigned words);
 

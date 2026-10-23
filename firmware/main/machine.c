@@ -37,19 +37,8 @@ int machine_build(uint32_t *table, unsigned peak)
     return 0;
 }
 
-void machine_lut(uint32_t *lut)
-{
-    for (unsigned w = 0; w < MACHINE_LUT_WORDS; ++w) {
-        uint32_t value = 0;
-        for (unsigned j = 0; j < 5; ++j) {
-            unsigned c = w >> (2*j);
-            value |= ((c ^ (c >> 1)) & 1) << (j+4);
-            value |= ((c >> 1) & 1) << (j+20);
-        }
-        lut[w] = value;
-    }
-}
-
+#ifndef __XTENSA__
+// Host oracles for the tests: whole eleven-sign windows rendered one block at a time.
 static unsigned symbol(const uint8_t *src, unsigned at)
 {
     return (src[at/4] >> (6-2*(at&3))) & 3;
@@ -65,31 +54,8 @@ static uint32_t prepare_one(const uint8_t *src, unsigned at)
     return state;
 }
 
-IRAM_ATTR void machine_prepare(uint32_t *dst, const uint8_t *src, unsigned at, unsigned n,
-                               const uint32_t *lut)
+void machine_render(uint32_t *dst, const uint32_t *signs, unsigned n, const uint32_t *table)
 {
-#ifdef __XTENSA__
-    while (n && (at&3)) {
-        *dst++ = prepare_one(src,at);
-        at += 5, --n;
-    }
-    unsigned runs = n/4;
-    if (runs) machine_prepare_pie(dst,src+at/4,runs,lut);
-    dst += 4*runs, at += 20*runs, n -= 4*runs;
-#else
-    (void)lut;
-#endif
-    while (n--) {
-        *dst++ = prepare_one(src,at);
-        at += 5;
-    }
-}
-
-IRAM_ATTR void machine_render(uint32_t *dst, const uint32_t *signs, unsigned n, const uint32_t *table)
-{
-#ifdef __XTENSA__
-    machine_render_pie(dst,signs,n,table);
-#else
     const unsigned shift[] = {3,2,0};
     while (n--) {
         uint32_t w = *signs++;
@@ -99,15 +65,10 @@ IRAM_ATTR void machine_render(uint32_t *dst, const uint32_t *signs, unsigned n, 
             for (unsigned p = 0; p < 4; ++p) *dst++ = i[p] | q[p];
         }
     }
-#endif
 }
 
-IRAM_ATTR uint32_t machine_expand(uint32_t *dst, const uint32_t *axes, uint32_t history)
+uint32_t machine_expand(uint32_t *dst, const uint32_t *axes, uint32_t history)
 {
-#ifdef __XTENSA__
-    uint32_t dvbs2_qpsk_histories(uint32_t *, const uint8_t *, unsigned, uint32_t);
-    return dvbs2_qpsk_histories(dst,(const uint8_t *)axes,MACHINE_PAGE_BLOCKS/16,history);
-#else
     unsigned pending = 0;
     for (unsigned k = 0; k < MACHINE_PAGE_AXIS_WORDS; ++k) {
         uint32_t w = axes[k];
@@ -119,26 +80,6 @@ IRAM_ATTR uint32_t machine_expand(uint32_t *dst, const uint32_t *axes, uint32_t 
         }
     }
     return history;
-#endif
-}
-
-IRAM_ATTR void machine_samples(uint32_t *dst, const uint32_t *signs, unsigned skip, size_t n,
-                              const uint32_t *table)
-{
-    uint32_t tmp[12] __attribute__((aligned(16)));
-    while (n && (skip || ((uintptr_t)dst&15) || n < 12)) {
-        machine_render(tmp,signs,1,table);
-        size_t take = n < 12-skip ? n : 12-skip;
-        for (size_t i = 0; i < take; ++i) *dst++ = tmp[skip+i];
-        ++signs, n -= take, skip = 0;
-    }
-    unsigned blocks = n/12;
-    if (blocks) machine_render(dst,signs,blocks,table);
-    dst += 12*blocks, signs += blocks, n -= 12*blocks;
-    if (n) {
-        machine_render(tmp,signs,1,table);
-        for (size_t i = 0; i < n; ++i) dst[i] = tmp[i];
-    }
 }
 
 void machine_reference(uint32_t *dst, const uint8_t *src, unsigned at,
@@ -150,6 +91,7 @@ void machine_reference(uint32_t *dst, const uint8_t *src, unsigned at,
         dst += 12, at += 5;
     }
 }
+#endif
 
 // One 192-sample chunk. The Xtensa kernel extracts the three windows per axis
 // directly from the two rolling 32-bit sign streams; no history page is stored.

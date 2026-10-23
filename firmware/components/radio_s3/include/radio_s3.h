@@ -154,26 +154,21 @@ typedef struct {
     uint32_t overlap_mismatches; /* must be 0: the fill must depend on sample index only */
 } radio_s3_dry_stats_t;
 
-/* The same fill sequence as radio_s3_run, into the same bank memory, on core 1, without the
- * radio: bank j holds [j * STEP - LEAD, ... + BANK_WORDS) and plays [j * STEP, (j + 1) * STEP).
- * At every switch both banks' shared lead and tail words are compared, then the played samples
- * go to sink. No RF. Not timed against the DAC: the sink may be slow. */
-esp_err_t radio_s3_dry_run(radio_s3_fill_fn fill, void *ctx, uint64_t samples,
-                           radio_s3_sink_fn sink, void *sink_ctx, radio_s3_dry_stats_t *stats);
-/* The same at dac_rate's bank geometry (RADIO_S3_DAC_RATE or RADIO_S3_DAC_RATE_80M). */
+/* The same fill sequence as a keyed run at dac_rate's bank geometry (RADIO_S3_DAC_RATE or
+ * RADIO_S3_DAC_RATE_80M), into the same bank memory, on core 1, without the radio: bank j holds
+ * [j * STEP - LEAD, ... + BANK_WORDS) and plays [j * STEP, (j + 1) * STEP). At every switch both
+ * banks' shared lead and tail words are compared, then the played samples go to sink. No RF.
+ * Not timed against the DAC: the sink may be slow. */
 esp_err_t radio_s3_dry_run_rate(radio_s3_fill_fn fill, void *ctx, uint64_t samples,
                                 uint32_t dac_rate, radio_s3_sink_fn sink, void *sink_ctx,
                                 radio_s3_dry_stats_t *stats);
 
-/* Radio off: radio_s3_run's bank schedule on core 1 for 1..600 seconds, the same fills into
- * the same bank memory against the same cycle-counter deadlines, with no Wi-Fi, PHY, DAC or
- * bank-ownership register access. Nothing is transmitted, so the DAC's own reads of the bank
- * memory are absent. Stats as for radio_s3_run; the fe_* fields stay 0.
- * With a configured callsign, inserts the same start/periodic/end IDs as RF;
- * otherwise keeps the original unwrapped run. seconds counts payload time. */
-esp_err_t radio_s3_paced_run(uint32_t seconds, radio_s3_fill_fn fill, void *ctx,
-                             radio_s3_stats_t *stats);
-/* The same at dac_rate: its geometry and 240e6 / dac_rate cycles per sample, IDs included. */
+/* Radio off: a keyed run's bank schedule on core 1 for 1..600 seconds at dac_rate (240e6 /
+ * dac_rate cycles per sample), the same fills into the same bank memory against the same
+ * cycle-counter deadlines, with no Wi-Fi, PHY, DAC or bank-ownership register access. Nothing
+ * is transmitted, so the DAC's own reads of the bank memory are absent. Stats as for a keyed
+ * run; the fe_* fields stay 0. With a configured callsign, inserts the same start/periodic/end
+ * IDs as RF; otherwise keeps the original unwrapped run. seconds counts payload time. */
 esp_err_t radio_s3_paced_run_rate(uint32_t seconds, uint32_t dac_rate, radio_s3_fill_fn fill,
                                   void *ctx, radio_s3_stats_t *stats);
 
@@ -181,23 +176,17 @@ esp_err_t radio_s3_paced_run_rate(uint32_t seconds, uint32_t dac_rate, radio_s3_
  * runs the CPU may use them as plain internal RAM; a run overwrites both. */
 uint32_t *radio_s3_bank(unsigned n);
 
-esp_err_t radio_s3_run(uint32_t freq_mhz, uint8_t gain, uint32_t seconds,
-                       radio_s3_fill_fn fill, void *ctx, radio_s3_stats_t *stats);
-/* The same at dac_rate (RADIO_S3_DAC_RATE or RADIO_S3_DAC_RATE_80M) and its bank geometry. The
- * CW ID keeps 20 WPM at either rate; at 80 MS/s its tone is +2 MHz (station_id.h). */
-esp_err_t radio_s3_run_rate(uint32_t freq_mhz, uint8_t gain, uint32_t seconds, uint32_t dac_rate,
-                            radio_s3_fill_fn fill, void *ctx, radio_s3_stats_t *stats);
-
-/* Explicit total occupied bandwidth in Hz for automatic filter selection. The older
- * run/run_rate entries conservatively assume the full DAC Nyquist band. */
+/* Keyed run at dac_rate (RADIO_S3_DAC_RATE or RADIO_S3_DAC_RATE_80M) and its bank geometry.
+ * occupied_hz, the total occupied bandwidth, selects the transmit filter. The CW ID keeps 20 WPM
+ * at either rate; at 80 MS/s its tone is +2 MHz (station_id.h). */
 esp_err_t radio_s3_run_bandwidth(uint32_t freq_mhz, uint8_t gain, uint32_t seconds,
                                  uint32_t dac_rate, uint32_t occupied_hz, radio_s3_fill_fn fill,
                                  void *ctx, radio_s3_stats_t *stats);
 
-/* Wi-Fi memory probe: radio_s3_run's set-up on core 1 (the 30 s run's station ID, the worker
+/* Wi-Fi memory probe: a keyed run's set-up on core 1 (the 30 s run's station ID, the worker
  * task and stack) and its Wi-Fi start-up (init, NULL mode, start with the PHY's calibration,
  * power save off, promiscuous receive, channel 1), then the same stop and deinit. It stops
- * before radio_s3_run's first register access: no retune, keying, gain, tone, bank grant or
+ * before a keyed run's first register access: no retune, keying, gain, tone, bank grant or
  * DAC. NULL mode sends no frames. Fills stats->wifi; needs a stored callsign. */
 esp_err_t radio_s3_wifi_probe(radio_s3_stats_t *stats);
 

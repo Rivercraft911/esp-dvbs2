@@ -41,7 +41,7 @@ static void dvbtx_run_check(uint32_t freq, unsigned mc, uint32_t sec, unsigned g
     assert(fixture == (keyed_calls < 4 || keyed_calls >= 5));
     assert(solo == expected_solo); ++keyed_calls;
 }
-#define dvbtx_run_options dvbtx_run_check
+#define dvbtx_run dvbtx_run_check
 static unsigned calls;
 static void dvbtx_pace_check(unsigned mc, uint32_t sec, unsigned peak, unsigned stall,
     unsigned sps, uint32_t rate, bool solo)
@@ -49,7 +49,7 @@ static void dvbtx_pace_check(unsigned mc, uint32_t sec, unsigned peak, unsigned 
     assert(mc == 17 && sec == 10 && peak == 128 && !stall && sps == 3 && rate == 80000000);
     assert(solo == expected_solo); ++calls;
 }
-#define dvbtx_pace_options dvbtx_pace_check
+#define dvbtx_pace dvbtx_pace_check
 void dvbtx_set_short(bool enabled) { assert(!enabled); }
 '''+functions+'''
 int main(void) {

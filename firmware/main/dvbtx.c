@@ -1446,18 +1446,6 @@ static void print_session(bool solo, const radio_s3_stats_t *s)
 }
 
 void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, unsigned level,
-                unsigned sps, uint32_t dac_rate, bool fixture)
-{
-    dvbtx_run_options(freq,modcod,seconds,gain,level,sps,dac_rate,fixture,false);
-}
-
-void dvbtx_pace(unsigned modcod, uint32_t seconds, unsigned level, unsigned stall_ms,
-                 unsigned sps, uint32_t dac_rate)
-{
-    dvbtx_pace_options(modcod,seconds,level,stall_ms,sps,dac_rate,false);
-}
-
-void dvbtx_run_options(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, unsigned level,
                 unsigned sps, uint32_t dac_rate, bool fixture, bool phy_solo)
 {
     if (!station_require("dvb")) {
@@ -1492,7 +1480,7 @@ void dvbtx_run_options(uint32_t freq, unsigned modcod, uint32_t seconds, unsigne
            err != ESP_OK ? ",\"error\":\"radio run failed\"" : "");
 }
 
-void dvbtx_pace_options(unsigned modcod, uint32_t seconds, unsigned level, unsigned stall_ms,
+void dvbtx_pace(unsigned modcod, uint32_t seconds, unsigned level, unsigned stall_ms,
                  unsigned sps, uint32_t dac_rate, bool phy_solo)
 {
     const size_t symbols = start_encoder_options("dvbpace",modcod,level,stall_ms,sps,dac_rate,true,false);
