@@ -985,6 +985,27 @@ dvbs2_pie_lofty_store:
     .endif
     retw
     .endm
+    /* Unaligned destination, two vectors per pass: each source vector loads once and
+     * the current/lower and result registers alternate, so nothing is copied.
+     * cur, low: data registers; out, prev: this and the previous result. */
+    .macro move_plain cur, prev
+    ee.vld.128.ip \cur,a3,-16
+    ee.src.q q3,\cur,\prev
+    ee.vst.128.ip q3,a2,-16
+    .endm
+    .macro move_shift cur, low, out, prev
+    ee.vld.128.ip \low,a3,-16
+    wur.sar_byte a10
+    ee.src.q q2,\low,\cur
+    ee.vsr.32 q3,\cur
+    ee.andq q3,q3,q6
+    ee.vsl.32 q2,q2
+    ee.andq q2,q2,q7
+    ee.orq \out,q2,q3
+    wur.sar_byte a9
+    ee.src.q q3,\out,\prev
+    ee.vst.128.ip q3,a2,-16
+    .endm
 dvbs2_pie_lofty_move:
     entry a1,32
     slli a8,a4,4
@@ -996,9 +1017,22 @@ dvbs2_pie_lofty_move:
     movi a11,16
     sub a9,a11,a9
     ee.zero.q q4
+    srli a12,a4,1
     bnez a5,.Lmove_shift
     beqi a9,16,.Lmove_aligned
-    lofty_move_loop 0,1,plain
+    wur.sar_byte a9
+    loopnez a12,.Lmove_plain_end
+    move_plain q0,q4
+    move_plain q4,q0
+.Lmove_plain_end:
+    bbci a4,0,.Lmove_plain_flush
+    move_plain q0,q4
+    ee.orq q4,q0,q0
+.Lmove_plain_flush:
+    ee.zero.q q0
+    ee.src.q q3,q0,q4
+    ee.vst.128.ip q3,a2,0
+    retw
 .Lmove_aligned:
     lofty_move_loop 0,0,aligned
 .Lmove_shift:
@@ -1007,7 +1041,19 @@ dvbs2_pie_lofty_move:
     ssai 6
     movi a10,14
     beqi a9,16,.Lmove_shift_aligned
-    lofty_move_loop 1,1,shift
+    ee.vld.128.ip q0,a3,-16
+    loopnez a12,.Lmove_shift_end
+    move_shift q0,q1,q5,q4
+    move_shift q1,q0,q4,q5
+.Lmove_shift_end:
+    bbci a4,0,.Lmove_shift_flush
+    move_shift q0,q1,q5,q4
+    ee.orq q4,q5,q5
+.Lmove_shift_flush:
+    ee.zero.q q0
+    ee.src.q q3,q0,q4
+    ee.vst.128.ip q3,a2,0
+    retw
 .Lmove_shift_aligned:
     lofty_move_loop 1,0,shift_aligned
     .size dvbs2_pie_lofty_move,.-dvbs2_pie_lofty_move
