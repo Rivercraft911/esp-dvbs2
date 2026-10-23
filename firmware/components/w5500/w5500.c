@@ -19,6 +19,7 @@
 #define SN_PORT 0x04       /* DS p.51 */
 #define SN_DIPR 0x0C       /* DS p.51; Sn_DPORT follows at 0x10 (DS pp.51-52) */
 #define SN_RXBUF_SIZE 0x1E /* DS pp.52-53; Sn_TXBUF_SIZE follows at 0x1F (DS p.53) */
+#define SN_TX_FSR 0x20     /* DS pp.53-54; then Sn_TX_RD 0x22 */
 #define SN_TX_RD 0x22      /* DS p.54; then Sn_TX_WR 0x24, Sn_RX_RSR 0x26, Sn_RX_RD 0x28 */
 #define SN_TX_WR 0x24      /* DS pp.54-55 */
 #define SN_RX_RD 0x28      /* DS p.55 */
@@ -250,6 +251,18 @@ void w5500_udp_dest(w5500 *w, unsigned s, const uint8_t ip[4], uint16_t port)
 const w5500_stats *w5500_udp_stats(const w5500 *w, unsigned s)
 {
     return s < W5500_SOCKETS ? &w->sock[s].st : NULL;
+}
+
+int w5500_udp_regs(w5500 *w, unsigned s, w5500_regs *r)
+{
+    if (s >= W5500_SOCKETS) return W5500_ERR_ARG;
+    uint8_t a[3], b[6];
+    int e = rd(w, BSB_REG(s), SN_CR, a, 3);
+    if (!e) e = rd(w, BSB_REG(s), SN_TX_FSR, b, 6);   /* TX_FSR, TX_RD, TX_WR */
+    if (e) return e;
+    *r = (w5500_regs){.cr = a[0], .ir = a[1], .sr = a[2], .tx_fsr = get16(b),
+                      .tx_rd = get16(b + 2), .tx_wr = get16(b + 4)};
+    return W5500_OK;
 }
 
 /* TX buffer bytes free for staging: Sn_TX_FSR (Sn_TX_WR - Sn_TX_RD, DS pp.53-54) less the staged

@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include "ts_egress.h"
+#include "w5500.h"
 
 /* `rx ... ts eth`: the transport stream out through a W5500 (components/w5500) as UDP datagrams
  * of seven TS packets to the eth settings' destination (sdkconfig.defaults: the laptop,
@@ -31,6 +32,11 @@ typedef struct {
     uint32_t stack_free;            /* the sender's least free stack, bytes */
     int esp_err;                    /* the ESP-IDF error behind a "spi" status */
     uint32_t underflows;            /* payload writes the SPI DMA underran, written again */
+    /* When the run ended badly: the chip's socket registers and the driver's view of them. */
+    bool stuck;
+    w5500_regs regs;
+    uint16_t flight, staged, tx_wr, tx_end;
+    bool cmd_pending;
 } eth_egress_stats_t;
 
 /* At boot, before arena_booted: the SPI port and the sender task. */

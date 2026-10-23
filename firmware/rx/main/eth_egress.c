@@ -164,6 +164,13 @@ static void sender(void *arg)
         e.link_mbps = s->phy >= 0 && !(s->phy & W5500_PHY_100M) ? 10 : 100;
         s->status = pump();
         esp_timer_stop(e.kick);
+        const w5500_socket *so = &w->sock[0];
+        s->stuck = s->status != W5500_OK && w5500_udp_regs(w, 0, &s->regs) == W5500_OK;
+        s->flight = so->flight;
+        s->staged = so->q_count;
+        s->tx_wr = so->tx_wr;
+        s->tx_end = so->tx_end;
+        s->cmd_pending = so->cmd_pending;
         s->esp_err = w5500_eth_error();
         s->underflows = w5500_eth_underflows() - underflows;
         const w5500_stats *st = w5500_udp_stats(w, 0);
@@ -229,10 +236,17 @@ void eth_egress_print(const eth_egress_stats_t *s)
                s->phy & W5500_PHY_100M ? 100 : 10);
     printf(",\"datagrams\":%lu,\"sent\":%lu,\"packets\":%lu,\"partial\":%lu,\"dropped\":%lu,"
            "\"peak\":%lu,\"queue\":%lu,\"full\":%lu,\"arp_dropped\":%lu,\"max_send_cycles\":%lu,"
-           "\"send_cycles\":%llu,\"stack_free\":%lu,\"underflows\":%lu}",
+           "\"send_cycles\":%llu,\"stack_free\":%lu,\"underflows\":%lu",
            (unsigned long)s->datagrams, (unsigned long)s->sent, (unsigned long)s->packets,
            (unsigned long)s->partial, (unsigned long)s->dropped, (unsigned long)s->peak,
            (unsigned long)s->queue, (unsigned long)s->full, (unsigned long)s->arp_dropped,
            (unsigned long)s->max_send_cycles, (unsigned long long)s->send_cycles,
            (unsigned long)s->stack_free, (unsigned long)s->underflows);
+    if (s->stuck)
+        printf(",\"stuck\":{\"sn_cr\":%u,\"sn_ir\":%u,\"sn_sr\":%u,\"sn_tx_fsr\":%u,"
+               "\"sn_tx_rd\":%u,\"sn_tx_wr\":%u,\"flight\":%u,\"staged\":%u,\"tx_wr\":%u,"
+               "\"tx_end\":%u,\"cmd_pending\":%s}", s->regs.cr, s->regs.ir, s->regs.sr,
+               s->regs.tx_fsr, s->regs.tx_rd, s->regs.tx_wr, s->flight, s->staged, s->tx_wr,
+               s->tx_end, s->cmd_pending ? "true" : "false");
+    printf("}");
 }

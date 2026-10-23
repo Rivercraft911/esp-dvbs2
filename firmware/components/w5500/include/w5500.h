@@ -244,6 +244,13 @@ int w5500_udp_poll(w5500 *w, unsigned s);
  * longer than cap are skipped and counted. buf follows the same DMA rule as udp_send. */
 int w5500_udp_recv(w5500 *w, unsigned s, uint8_t *buf, size_t cap, w5500_peer *from);
 const w5500_stats *w5500_udp_stats(const w5500 *w, unsigned s);
+/* The chip's view of socket s, for diagnosis: Sn_CR, Sn_IR, Sn_SR (DS pp.46-50) and Sn_TX_FSR,
+ * Sn_TX_RD, Sn_TX_WR (DS pp.53-55). */
+typedef struct {
+    uint8_t cr, ir, sr;
+    uint16_t tx_fsr, tx_rd, tx_wr;
+} w5500_regs;
+int w5500_udp_regs(w5500 *w, unsigned s, w5500_regs *r);
 
 /* The `eth send` diagnostic (w5500_diag.c). Datagram seq is 7 TS packets on PID 0x100 with
  * running continuity counters, each payload starting with seq, MSB first. */
