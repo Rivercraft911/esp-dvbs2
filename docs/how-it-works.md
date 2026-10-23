@@ -356,7 +356,7 @@ regions reserved when the firmware links and gives it back when the next run sta
 
 Queues, semaphores and the capture timer are made once at boot from static storage. ESP-IDF's
 heap hooks count every heap call after boot, and runs report the count: zero. About 51 KB of
-heap stays free for ESP-IDF.
+heap stays free for ESP-IDF. [Results without Wi-Fi or malloc](../results/2026-10-23-rx-no-wifi/README.md).
 [5 Msym/s results](../results/2026-10-23-rx-5m-margin/README.md),
 [1 Msym/s qualification](../results/2026-10-22-rx-continuous/README.md),
 [demodulator measurements](../results/2026-10-22-rx-demod/README.md).
