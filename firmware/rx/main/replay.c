@@ -13,6 +13,11 @@
 static int8_t *const capture = arena_store;
 static size_t pairs;
 
+void replay_forget(void)
+{
+    pairs = 0;
+}
+
 void replay_upload(size_t bytes)
 {
     pairs = 0;

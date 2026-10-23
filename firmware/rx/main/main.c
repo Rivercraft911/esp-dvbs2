@@ -96,11 +96,12 @@ static esp_err_t IRAM_ATTR dump_unit(const uint32_t *w, size_t count, uint64_t f
 
 static void dump(unsigned mhz, unsigned gain, unsigned pairs)
 {
-    dump_t d = {.i = arena_store, .n = pairs};
-    if (!pairs || 2 * (size_t)pairs > ARENA_STORE_BYTES) {
+    if (!pairs || pairs > ARENA_STORE_BYTES / 2) {
         printf("@{\"cmd\":\"dump\",\"error\":\"pairs 1..%u\"}\n", (unsigned)(ARENA_STORE_BYTES / 2));
         return;
     }
+    replay_forget();            /* the dump overwrites the store an upload filled */
+    dump_t d = {.i = arena_store, .n = pairs};
     d.q = d.i + pairs;
     capture_config_t c = {.mhz = mhz, .gain = gain, .seconds = 1 + pairs / CAPTURE_RATE};
     capture_stats_t s;
@@ -299,6 +300,7 @@ void app_main(void)
                       run_options(line + used, &rate, NULL, &o);
             capture_config_t c = {.mhz = mhz, .gain = gain, .seconds = seconds};
             capture_stats_t s = {0};
+            memset(&run, 0, sizeof run);
             quiet = true;
             esp_err_t e = ok ? receive_run(&c, modcod, rate, &o, &run, &s) : ESP_ERR_INVALID_ARG;
             quiet = false;
@@ -316,6 +318,7 @@ void app_main(void)
             bool ok = sscanf(line, "replay %*u %n", &used) == 0 && used &&
                       run_options(line + used, &rate, &skip, &o);
             capture_stats_t s = {0};
+            memset(&run, 0, sizeof run);
             quiet = true;
             esp_err_t e = ok ? replay_run(modcod, rate, skip, &o, &run, &s) : ESP_ERR_INVALID_ARG;
             quiet = false;
