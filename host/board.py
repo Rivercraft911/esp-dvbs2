@@ -4,13 +4,14 @@
     python3 host/board.py info
     python3 host/board.py "dvbpace 11 26m667 10" --out notes/pace.jsonl
     python3 host/board.py "dvbdump 4 16" --save dump.iq
-    python3 host/board.py "dvbpace 17 26m667 30" --monitor 127.0.0.1:1235
+    python3 host/board.py "dvbpace 14 5m 30 --short" --monitor 127.0.0.1:1235
 
 Each record is printed, and with --out appended to a JSON-lines file together with the command
 and the host time. The firmware marks the end of every command with {"done": true}. A record
 with "binary_bytes": N is followed by exactly N raw bytes, which --save writes to a file.
-The `status` records that dvb and dvbpace print once a second are not results: they are neither
-printed nor kept, and --monitor forwards them, with the command's records, to host/monitor.py.
+The `status` records that dvb and dvbpace print (once a second up to 10 Msym/s, a single one
+above) are not results: they are neither printed nor kept, and --monitor forwards them, with
+the command's records, to host/monitor.py.
 """
 from __future__ import annotations
 
