@@ -18,7 +18,7 @@
 #define HOLD pdMS_TO_TICKS(10)  /* the longest a packet waits for six more */
 #define DRAIN pdMS_TO_TICKS(3000)   /* at the end; a chip ARP gives up after 1.8 s (w5500.h) */
 #define STACK 3072U
-#define PRIORITY 10
+#define PRIORITY 13             /* above the release (12): see eth_egress.h */
 #if CONFIG_W5500_DIRECT_SPI
 #define SPI "direct"
 #else

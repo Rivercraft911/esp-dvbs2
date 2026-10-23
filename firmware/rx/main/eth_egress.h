@@ -8,9 +8,11 @@
  * 192.168.77.1:1234).
  *
  * The checker task copies each packet into a queue of 256 in PSRAM and never waits: a packet
- * that finds it full is dropped and counted. A sender task on core 0 drains it, priority 10:
- * below the checker (11), above the decoder (5), whose repairs of failed frames take
- * milliseconds. It wakes after each frame (ts_egress_t.flush), and when the datagram on the wire
+ * that finds it full is dropped and counted. A sender task on core 0 drains it at priority 13,
+ * above the release (12) and the checker (11): at 10 Mb/s the chip needs its next SEND within
+ * microseconds of the last one ending, and below them, which keep core 0 about 70% busy at
+ * 8PSK 5 Msym/s, the sender ran late and the egress topped out near 6.9 Mb/s. Each wake is short
+ * (a status read, a SEND, a 1,316-byte copy; posted writes sleep). It wakes after each frame (ts_egress_t.flush), and when the datagram on the wire
  * should be out (an esp_timer: the chip starts its next SEND only when called), sends every full
  * datagram, and sends what is left as a shorter datagram once it has waited 10 ms, or at the
  * end. Everything is static or made at boot: no heap after boot. */
