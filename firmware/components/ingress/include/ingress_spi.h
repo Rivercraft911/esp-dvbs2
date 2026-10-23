@@ -27,7 +27,6 @@ typedef struct {
     void *ctx;
     uint8_t *buffers[INGRESS_SLOTS]; /* optional borrowed internal DMA slots, each 1336 B */
     bool replay; /* diagnostic: presealed ring, DMA idle, no external sender */
-    bool loopback;  /* the pads are driven by an on-chip master: only connect the slave inputs */
     bool pv; /* raw PV-SPI v1, single-line, no command/address/dummy prefix; <=20 MHz */
 } ingress_spi_config;
 

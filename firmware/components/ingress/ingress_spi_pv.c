@@ -69,8 +69,8 @@ esp_err_t ingress_spi_pv_start(ingress_ring *ring, const ingress_spi_config *cfg
 {
     memset(&pv, 0, sizeof pv);
     pv.ring = ring; pv.cfg = *cfg; pv.stats = stats;
-    // ingress_spi connects the matrix inputs itself, preserving SPI3 outputs
-    // in one-board loopback. No slave output or unused lane claims a pad.
+    // ingress_spi connects the matrix inputs itself. No slave output or
+    // unused lane claims a pad.
     const spi_bus_config_t bus = {
         .mosi_io_num=-1, .miso_io_num=-1, .sclk_io_num=-1,
         .quadwp_io_num=-1, .quadhd_io_num=-1,

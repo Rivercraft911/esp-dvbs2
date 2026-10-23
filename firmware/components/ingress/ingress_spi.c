@@ -111,11 +111,9 @@ static void connect_input(int pin, int signal, bool pull_up)
     if (pin < 0) {
         return;
     }
-    if (!s.cfg.loopback) {
-        gpio_func_sel(pin, PIN_FUNC_GPIO);
-        gpio_set_direction(pin, GPIO_MODE_INPUT);
-        gpio_set_pull_mode(pin, pull_up ? GPIO_PULLUP_ONLY : GPIO_PULLDOWN_ONLY);
-    }
+    gpio_func_sel(pin, PIN_FUNC_GPIO);
+    gpio_set_direction(pin, GPIO_MODE_INPUT);
+    gpio_set_pull_mode(pin, pull_up ? GPIO_PULLUP_ONLY : GPIO_PULLDOWN_ONLY);
     gpio_input_enable(pin);
     esp_rom_gpio_connect_in_signal(pin, signal, false);
 }
@@ -262,13 +260,11 @@ void ingress_spi_stop(void)
         spicommon_bus_free(HOST);
         s.bus = false;
     }
-    if (!s.cfg.loopback) {
-        const int pins[] = {s.cfg.sclk, s.cfg.cs, s.cfg.d0, s.cfg.d1, s.cfg.d2, s.cfg.d3};
-        const size_t count = s.cfg.pv ? 3 : sizeof pins / sizeof pins[0];
-        for (size_t i = 0; i < count; ++i) {
-            if (pins[i] >= 0) {
-                gpio_reset_pin(pins[i]);
-            }
+    const int pins[] = {s.cfg.sclk, s.cfg.cs, s.cfg.d0, s.cfg.d1, s.cfg.d2, s.cfg.d3};
+    const size_t count = s.cfg.pv ? 3 : sizeof pins / sizeof pins[0];
+    for (size_t i = 0; i < count; ++i) {
+        if (pins[i] >= 0) {
+            gpio_reset_pin(pins[i]);
         }
     }
     // Keep READY actively low between sessions. A floating pad could advertise credit.

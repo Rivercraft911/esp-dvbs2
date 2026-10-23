@@ -163,63 +163,48 @@ int main(void) {
     for (unsigned test=0;test<12;++test) {
         pv_mode=test>=6;
         now_us=alarms=delays=transfers=sequence=0; ready_at=test?2000:0;
-        assert(tx_init((test/3)%2?PV_GCS:PV_TS,pv_mode?20:40,test%3==2?0:22,0,10)==ESP_OK);
+        assert(tx_init((test/3)%2?PV_GCS:PV_TS,pv_mode?20:40,test%3==2?0:22,10)==ESP_OK);
         tx_run();
         assert(tx.errors==0 && transfers>14 && alarms>10 && first_tx>=ready_at);
         assert(first_tx < ready_at+100 && delays==0); // READY resumes within a poll, no 1 ms sleep
         tx_free(); assert(allocations==0 && !tx.timer);
     }
-    // Reproduce core-0 preemption using the 5 Msym/s PSRAM encoder's ~2.1 ms
-    // kernel. READY is always high: the polling sender alone misses 12 Mb/s.
-    for (unsigned rate=6;rate<=12;rate+=6) {
-        pv_mode=model_encoder=true;
-        now_us=alarms=delays=transfers=sequence=frame_bytes=ready_at=0;
-        assert(tx_init(PV_GCS,20,rate,0,1000)==ESP_OK);
-        tx_run();
-        const double achieved=tx.bytes*8.0/tx.us;
-        assert(!tx.waits && !tx.errors);
-        if (rate==6) assert(achieved>=.98*rate && achieved<=1.02*rate);
-        else assert(achieved<9.678); // below the selected output mode's demand
-        printf("shared-core sender model: target %u, achieved %.3f Mb/s, no READY stalls\n",rate,achieved);
-        tx_free(); assert(allocations==0);
-    }
-    model_encoder=false;
-    pv_mode=false; input_type=PV_TS; loop=true;
-    for (sender_core=0;sender_core<2;++sender_core) {
-        assert(spi_input_start()==ESP_OK && tx.task);
-        tx.finished=true; spi_input_stop();
-        assert(!rx && !tx.task && allocations==0);
-    }
-    assert(tasks==2);
-    spi_input_command("spiinput","on loop 9");
-    assert(pv_mode && loop && input_type==PV_TS && target==9);
-    spi_input_command("spiinput","on replay"); // rejected without changing preferences
-    assert(pv_mode && loop && target==9);
-    const char *invalid[]={"on loop garbage","on gcs loop nan","quad ts extra","off ts","on loop 9 7"};
+    pv_mode=false; input_type=PV_TS;
+    assert(spi_input_start()==ESP_OK); spi_input_stop();
+    assert(!rx && allocations==0 && !tasks);
+    spi_input_command("spiinput","on");
+    assert(pv_mode && !replay && input_type==PV_TS);
+    spi_input_command("spiinput","on replay"); // replay is quad only: rejected without changes
+    assert(pv_mode && !replay && input_type==PV_TS);
+    const char *invalid[]={"on loop 9","on garbage","quad ts extra","off ts","quad replay 9","quad gcs loop 22"};
     for (unsigned i=0;i<sizeof invalid/sizeof *invalid;++i) {
         spi_input_command("spiinput",invalid[i]);
-        assert(pv_mode && loop && input_type==PV_TS && target==9);
+        assert(pv_mode && !replay && input_type==PV_TS);
     }
     spi_input_command("spiinput","on gcs");
-    assert(pv_mode && !loop && input_type==PV_GCS);
-    spi_input_command("spiinput","quad gcs loop 22");
-    assert(!pv_mode && loop && input_type==PV_GCS && target==22);
+    assert(pv_mode && !replay && input_type==PV_GCS);
+    spi_input_command("spiinput","quad ts replay");
+    assert(!pv_mode && replay && input_type==PV_TS);
     spi_input_command("spiinput","quad");
-    assert(!pv_mode && !loop && input_type==PV_TS);
+    assert(!pv_mode && !replay && input_type==PV_TS);
     spi_input_command("spiinput","pv"); // compatible old raw selector
-    assert(pv_mode && !loop && input_type==PV_TS);
+    assert(pv_mode && input_type==PV_TS);
     spi_input_command("spiinput","gcs"); // compatible old quad selector
-    assert(!pv_mode && !loop && input_type==PV_GCS);
+    assert(!pv_mode && input_type==PV_GCS);
     spi_input_command("spiinput","ts");
-    assert(!pv_mode && !loop && input_type==PV_TS);
+    assert(!pv_mode && input_type==PV_TS);
     spi_input_command("spisend","100 on gcs 21"); // no raw clock above 20 MHz
+    assert(!pv_mode && !allocations);
+    spi_input_command("spisend","100 quad 40 22 1"); // the fault argument is retired
+    assert(!pv_mode && !allocations);
+    spi_input_command("spirx","100 quad loop 22"); // so is the on-chip loopback
     assert(!pv_mode && !allocations);
     spi_input_command("spipins","xiao");
     assert(pins.sclk==7 && pins.cs==1 && pins.d0==2 && pins.ready==8);
     spi_input_command("spipins","devkit");
     assert(pins.sclk==12 && pins.cs==10 && pins.d0==11 && pins.ready==8);
     spi_input_command("spiinput","usb gcs");
-    assert(usb_mode && input_type==PV_GCS && !loop);
+    assert(usb_mode && input_type==PV_GCS && !replay);
     spi_input_command("spiinput","usb ts extra");
     assert(usb_mode && input_type==PV_GCS);
     spi_input_command("spiinput","usb");
@@ -227,7 +212,7 @@ int main(void) {
     spi_input_command("spiinput","on gcs");
     assert(!usb_mode && input_type==PV_GCS);
     spi_input_command("spiinput","off");
-    assert(!pv_mode && !loop && !input_type);
+    assert(!pv_mode && !replay && !input_type);
     puts("SPI sender: real scheduler, timer sleeps, 22 Mb/s pacing, fresh READY, CRC and cleanup: ok");
 }
 '''

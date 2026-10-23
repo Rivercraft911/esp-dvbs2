@@ -1,4 +1,4 @@
-// General input and radio-off diagnostics. The second S3 runs this same firmware's spisend.
+// Payload input selection and radio-off diagnostics. A second S3 runs this same firmware's spisend.
 #include "spi_input.h"
 #include "usb_input.h"
 #include "ingress_spi.h"
@@ -17,7 +17,6 @@
 #include "freertos/task.h"
 
 #define CPU_MHZ CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ
-#define TX_PRIORITY 2             // below the core-0 encoder (5); run while it waits for input/slots
 #define TX_BYTES (PV_MSG_BYTES + 64)
 #ifdef CONFIG_SPI_INPUT_XIAO
 static ingress_spi_config pins = {.sclk=7, .cs=1, .d0=2, .d1=4, .d2=5, .d3=6, .ready=8};
@@ -25,11 +24,9 @@ static ingress_spi_config pins = {.sclk=7, .cs=1, .d0=2, .d1=4, .d2=5, .d3=6, .r
 static ingress_spi_config pins = {.sclk=12, .cs=10, .d0=11, .d1=13, .d2=14, .d3=9, .ready=8};
 #endif
 static unsigned input_type;
-static bool loop, replay, pv_mode, usb_mode;
+static bool replay, pv_mode, usb_mode;
 static uint8_t *borrowed[INGRESS_SLOTS];
-static unsigned borrowed_count, saved_borrowed, sender_core;
-static double target;
-static unsigned fault;
+static unsigned borrowed_count, saved_borrowed;
 static ingress_ring *rx;
 static bool (*control_handler)(unsigned);
 void spi_input_control(bool (*control)(unsigned)) { control_handler=control; usb_input_control(control); }
@@ -40,18 +37,15 @@ static uint16_t next_seq;
 static uint64_t read_cycles, copy_cycles;
 static uint32_t copy_max;
 
+// spisend: the test sender on a second S3, SPI3 master.
 static struct {
     spi_device_handle_t dev;
-    TaskHandle_t task, waiter;
+    TaskHandle_t waiter;
     esp_timer_handle_t timer;
     bool bus, pv;
-    volatile bool stop, finished;
-    unsigned type, fault, ms;
+    unsigned type, ms;
     double mbps;
     uint32_t sent, bytes, waits, forced, crc, errors, crc_chain;
-    uint64_t build_cycles, wire_cycles, crc_cycles, cpu_us;
-    uint32_t heap_bytes, stack_min_free;
-    unsigned core;
     int khz;
     int64_t us;
     uint8_t *buf[2];
@@ -78,11 +72,10 @@ static void tx_wake(void *arg)
     xTaskNotifyGive(tx.waiter);
 }
 
-static esp_err_t tx_init(unsigned type, int mhz, double mbps, unsigned injected, unsigned ms)
+static esp_err_t tx_init(unsigned type, int mhz, double mbps, unsigned ms)
 {
-    const size_t free_before=heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     memset(&tx, 0, sizeof tx);
-    tx.type = type; tx.mbps = mbps; tx.fault = injected; tx.ms = ms;
+    tx.type = type; tx.mbps = mbps; tx.ms = ms;
     tx.pv = pv_mode;
     spi_bus_config_t bus = {
         .data0_io_num=pins.d0, .data1_io_num=tx.pv?-1:pins.d1, .data2_io_num=tx.pv?-1:pins.d2,
@@ -109,7 +102,6 @@ static esp_err_t tx_init(unsigned type, int mhz, double mbps, unsigned injected,
     err=esp_timer_create(&timer,&tx.timer);
     if (err != ESP_OK) goto fail;
     spi_device_get_actual_freq(tx.dev, &tx.khz);
-    tx.heap_bytes=free_before-heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     return ESP_OK;
 fail:
     tx_free();
@@ -118,15 +110,9 @@ fail:
 
 static unsigned build(uint8_t *m, uint16_t seq)
 {
-    const uint32_t t0=esp_cpu_get_cycle_count();
     if (tx.pv && tx.type == PV_TS) ingress_pv_pattern(m+PV_HEADER_BYTES, seq);
     else ingress_pattern(m+PV_HEADER_BYTES, seq, tx.type);
     pv_seal(m, tx.type, seq, PV_PAYLOAD_MAX);
-    tx.build_cycles += esp_cpu_get_cycle_count()-t0;
-    if ((seq & 63) != 63) return PV_MSG_BYTES;
-    if (tx.fault == 1) m[PV_HEADER_BYTES+100] ^= 1;
-    if (tx.fault == 2) return 1000;
-    if (tx.fault == 3) return PV_MSG_BYTES+64;
     return PV_MSG_BYTES;
 }
 
@@ -140,7 +126,6 @@ static bool tx_wait(int64_t us)
 
 static void tx_run(void)
 {
-    tx.core=xPortGetCoreID();
     tx.waiter=xTaskGetCurrentTaskHandle();
     const int64_t period = tx.mbps > 0 ? PV_PAYLOAD_MAX*8.0/tx.mbps : 0;
     bool waiting=false;
@@ -149,9 +134,9 @@ static void tx_run(void)
     const int64_t start=esp_timer_get_time();
     int64_t next=start, end=start-10;
     int64_t yielded=start;
-    while (!tx.stop && (!tx.ms || esp_timer_get_time()-start < tx.ms*1000LL)) {
+    while (esp_timer_get_time()-start < tx.ms*1000LL) {
         const int64_t now=esp_timer_get_time();
-        if ((!period && now-yielded >= 10000) || (tx.fault == 6 && (now-start)%100000 < 20000)) {
+        if (!period && now-yielded >= 10000) {
             vTaskDelay(1); yielded=now; next=esp_timer_get_time();
             continue;
         }
@@ -160,7 +145,7 @@ static void tx_run(void)
             if (!tx_wait(due-now < 1000 ? due-now : 1000)) break;
             continue;
         }
-        if (!gpio_get_level(pins.ready) && tx.fault != 4) {
+        if (!gpio_get_level(pins.ready)) {
             tx.waits += !waiting; waiting=true;
             // READY can rise as soon as the encoder releases a slot. A whole
             // tick here wastes almost half the demo's 2.2194 ms frame period.
@@ -169,7 +154,6 @@ static void tx_run(void)
         }
         waiting=false;
         tx.forced += !gpio_get_level(pins.ready);
-        const uint32_t wire_start=esp_cpu_get_cycle_count();
         spi_transaction_t t = {.flags=tx.pv?0:SPI_TRANS_MODE_QIO, .cmd=tx.pv?0:0x23, .addr=0,
                                 .tx_buffer=tx.buf[cur], .length=len*8};
         esp_err_t err=spi_device_polling_start(tx.dev, &t, portMAX_DELAY);
@@ -178,40 +162,14 @@ static void tx_run(void)
         err=spi_device_polling_end(tx.dev, portMAX_DELAY);
         if (err != ESP_OK) { tx.errors++; break; }
         end=esp_timer_get_time(); next += period;
-        tx.wire_cycles += esp_cpu_get_cycle_count()-wire_start;
-        // Diagnostic cost only: sender CRC covers bytes offered, including deliberate faults.
-        const uint32_t crc_start=esp_cpu_get_cycle_count();
+        // The sender's CRCs cover the bytes offered, for comparison with the receiver.
         tx.crc=pv_crc32(tx.crc, tx.buf[cur]+PV_HEADER_BYTES, PV_PAYLOAD_MAX);
         tx.crc_chain=pv_crc32(tx.crc_chain, tx.buf[cur]+PV_MSG_BYTES-4, 4);
-        tx.crc_cycles += esp_cpu_get_cycle_count()-crc_start;
         tx.sent++; tx.bytes += PV_PAYLOAD_MAX;
         seq++; cur^=1; len=nextlen;
         if (period && end-next > period) next=end;
     }
     tx.us=esp_timer_get_time()-start;
-}
-
-static void tx_task(void *arg)
-{
-    (void)arg;
-    tx_run();
-    tx.finished=true;
-    vTaskSuspend(NULL);
-}
-
-static void tx_stop(void)
-{
-    if (tx.task) {
-        tx.stop=true;
-        while (!tx.finished) vTaskDelay(1);
-#if configGENERATE_RUN_TIME_STATS
-        TaskStatus_t stats;
-        vTaskGetInfo(tx.task, &stats, pdFALSE, eInvalid);
-        tx.cpu_us=stats.ulRunTimeCounter;
-#endif
-        tx.stack_min_free=uxTaskGetStackHighWaterMark(tx.task);
-        vTaskDelete(tx.task); tx.task=NULL;
-    }
 }
 
 static IRAM_ATTR bool received(void *ctx)
@@ -240,19 +198,13 @@ esp_err_t spi_input_start(void)
     saved_borrowed=borrowed_count;
     read_bytes=read_calls=read_max=wrong_type=0; read_cycles=copy_cycles=copy_max=0; next_seq=0;
     if (!input_type) { borrowed_count=0; return ESP_OK; }
-    esp_err_t err=ESP_OK;
-    if (loop) err=tx_init(input_type, pv_mode?20:40, target, fault, 0);
-    if (err != ESP_OK) return err;
-    ingress_spi_config cfg=pins; cfg.loopback=loop; cfg.replay=replay; cfg.pv=pv_mode;
+    ingress_spi_config cfg=pins; cfg.replay=replay; cfg.pv=pv_mode;
     if (borrowed_count) memcpy(cfg.buffers,borrowed,sizeof borrowed);
     cfg.received=received; cfg.ctx=xTaskGetCurrentTaskHandle();
-    err=ingress_spi_start(&cfg, &rx);
-    if (err != ESP_OK) { tx_free(); return err; }
+    const esp_err_t err=ingress_spi_start(&cfg, &rx);
+    if (err != ESP_OK) return err;
     rx->type=input_type; rx->control=control_handler;
     if (replay) ingress_replay_fill(rx);
-    if (loop && xTaskCreatePinnedToCore(tx_task, "spisend", 2048, NULL, TX_PRIORITY, &tx.task, sender_core)!=pdPASS) {
-        ingress_spi_stop(); rx=NULL; tx_free(); return ESP_ERR_NO_MEM;
-    }
     return ESP_OK;
 }
 
@@ -271,10 +223,8 @@ void spi_input_stop(void)
 {
     if (usb_mode) { usb_input_stop(); return; }
     if (!rx) { borrowed_count=0; return; }
-    if (loop) tx_stop();
     // Stop DMA/interrupts before taking the final counter snapshot.
     ingress_spi_stop(); ingress_spi_get_stats(&hw);
-    if (loop) tx_free(); // keep master's idle pads driven until the receiver is detached
     borrowed_count=0;
     copy_cycles=rx->copy_cycles; copy_max=rx->copy_max;
     saved=rx->st; wrong_type=rx->wrong_type; next_seq=rx->seq_next; rx=NULL;
@@ -287,17 +237,11 @@ void spi_input_print(void)
     if (usb_mode) { usb_input_print(); return; }
     printf(",\"controls\":%"PRIu32",\"control_rejected\":%"PRIu32, saved.controls, saved.control_rejected);
     printf(",\"input_wire\":\"%s\"", pv_mode?"raw":"quad");
-    printf(",\"input_fault\":%u,\"input_target\":%.3f,\"input_replay\":%s,\"input_borrowed_slots\":%u", fault, target, replay?"true":"false", saved_borrowed);
-    printf(",\"input_loop\":%s,\"input_bytes\":%"PRIu32",\"input_calls\":%"PRIu32
+    printf(",\"input_replay\":%s,\"input_borrowed_slots\":%u", replay?"true":"false", saved_borrowed);
+    printf(",\"input_bytes\":%"PRIu32",\"input_calls\":%"PRIu32
            ",\"input_cycles\":%"PRIu64",\"input_call_max\":%"PRIu32,
-           loop?"true":"false", read_bytes, read_calls, read_cycles, read_max);
+           read_bytes, read_calls, read_cycles, read_max);
     printf(",\"input_copy_cycles\":%"PRIu64",\"input_copy_max\":%"PRIu32,copy_cycles,copy_max);
-    if (loop) printf(",\"sender\":{\"core\":%u,\"priority\":%u,\"stack_bytes\":2048,"
-                     "\"heap_bytes\":%u,\"stack_min_free\":%u,\"sent\":%u,\"errors\":%u,\"waits\":%u,"
-                     "\"cpu_timed\":%s,\"cpu_us\":%"PRIu64",\"build_cycles\":%"PRIu64",\"poll_and_build_cycles\":%"PRIu64
-                     ",\"diagnostic_crc_cycles\":%"PRIu64",\"crc_chain\":%"PRIu32",\"us\":%lld}",
-                     tx.core,TX_PRIORITY,(unsigned)tx.heap_bytes,(unsigned)tx.stack_min_free,(unsigned)tx.sent,(unsigned)tx.errors,(unsigned)tx.waits,
-                     configGENERATE_RUN_TIME_STATS ? "true" : "false",tx.cpu_us,tx.build_cycles,tx.wire_cycles,tx.crc_cycles,tx.crc_chain,(long long)tx.us);
     printf(",\"spi\":{\"msgs\":%"PRIu32",\"bytes\":%"PRIu32",\"nops\":%"PRIu32
            ",\"short\":%"PRIu32",\"long\":%"PRIu32",\"header\":%"PRIu32
            ",\"crc\":%"PRIu32",\"sync\":%"PRIu32",\"lost\":%"PRIu32
@@ -344,9 +288,6 @@ static void probe(unsigned ms)
     }
     uint8_t *copy=want+PV_PAYLOAD_MAX;
     while (esp_timer_get_time()-start < ms*1000LL) {
-        if ((fault==4 || fault==5) && (esp_timer_get_time()-start)%50000<5000) {
-            vTaskDelay(1); continue;
-        }
         size_t n; unsigned type;
         const uint8_t *p=ingress_next(rx, &n, &type);
         if (!p) { ulTaskNotifyTake(pdTRUE, 1); continue; }
@@ -368,8 +309,6 @@ static void probe(unsigned ms)
            ",\"mbps\":%.3f,\"copy_max\":%"PRIu32,
            (long long)us, messages, bytes, bad, crc, bytes*8.0/us, copy_max);
     spi_input_print();
-    if (loop) printf(",\"sent\":%"PRIu32",\"sender_errors\":%"PRIu32
-                     ",\"sender_waits\":%"PRIu32,tx.sent,tx.errors,tx.waits);
     printf("}\n");
 }
 
@@ -398,38 +337,35 @@ void spi_input_command(const char *cmd, const char *args)
         if (tokens>=1 && !strcmp(a,"usb")) {
             if (tokens>2 || (tokens==2 && strcmp(b,"ts") && strcmp(b,"gcs"))) goto usage;
             input_type=tokens==2 && !strcmp(b,"gcs") ? PV_GCS : PV_TS;
-            usb_mode=true; loop=replay=pv_mode=false; target=0; fault=0;
+            usb_mode=true; replay=pv_mode=false;
             printf("@{\"cmd\":\"spiinput\",\"input\":\"%s\",\"wire\":\"usb\"}\n", input_type==PV_TS?"ts":"gcs");
             return;
         }
         b[0]=0;
-        double mbps=0; unsigned f=0;
         unsigned type=0; bool raw=false; const char *rest=NULL; int used=0;
         if (sscanf(args,"%15s %c",a,&extra)==1 && !strcmp(a,"off")) rest="";
         else if (!input_mode(args,&type,&raw,&rest)) goto usage;
-        int n=sscanf(rest,"%15s %n%lf %n%u %n%c",b,&used,&mbps,&used,&f,&used,&extra);
-        if (rest[used] || n>3 || (n>0 && strcmp(b,"loop") && strcmp(b,"replay")) ||
-            !isfinite(mbps) || mbps<0 || mbps>140 || f>6) goto usage;
-        if (!strcmp(b,"replay") && (n!=1 || raw)) goto usage;
+        int n=sscanf(rest,"%15s %n%c",b,&used,&extra);
+        if (rest[used] || n>1 || (n>0 && (strcmp(b,"replay") || raw))) goto usage;
         usb_mode=false;
-        input_type=type; loop=n>0 && !strcmp(b,"loop"); replay=n>0 && !strcmp(b,"replay"); target=mbps; fault=f;
+        input_type=type; replay=n>0;
         pv_mode=raw;
-        printf("@{\"cmd\":\"spiinput\",\"input\":\"%s\",\"wire\":\"%s\",\"loop\":%s,\"replay\":%s,\"mbps\":%.3f,\"fault\":%u}\n",
-               type==PV_TS?"ts":type==PV_GCS?"gcs":"off",type?(raw?"raw":"quad"):"off",loop?"true":"false",replay?"true":"false",target,fault); return;
+        printf("@{\"cmd\":\"spiinput\",\"input\":\"%s\",\"wire\":\"%s\",\"replay\":%s}\n",
+               type==PV_TS?"ts":type==PV_GCS?"gcs":"off",type?(raw?"raw":"quad"):"off",replay?"true":"false"); return;
     }
-    unsigned ms=0, f=0; int mhz=40; double mbps=0;
+    unsigned ms=0; int mhz=40; double mbps=0;
     unsigned type; bool raw; const char *rest; int used=0;
     if (sscanf(args,"%u %n",&ms,&used)!=1 || ms<100 || ms>120000 ||
         !input_mode(args+used,&type,&raw,&rest)) goto usage;
     if (!strcmp(cmd,"spisend")) {
         mhz=raw?20:40; used=0;
-        int n=sscanf(rest,"%d %n%lf %n%u %n%c",&mhz,&used,&mbps,&used,&f,&used,&extra);
-        if (rest[used] || n>3 || mhz<1 || mhz>(raw?20:40) ||
-            !isfinite(mbps) || mbps<0 || mbps>140 || f>6) goto usage;
+        int n=sscanf(rest,"%d %n%lf %n%c",&mhz,&used,&mbps,&used,&extra);
+        if (rest[used] || n>2 || mhz<1 || mhz>(raw?20:40) ||
+            !isfinite(mbps) || mbps<0 || mbps>140) goto usage;
         const bool oldpv=pv_mode;
         pv_mode=raw;
         gpio_set_direction(pins.ready, GPIO_MODE_INPUT); gpio_set_pull_mode(pins.ready, GPIO_PULLDOWN_ONLY);
-        esp_err_t err=tx_init(type,mhz,mbps,f,ms);
+        esp_err_t err=tx_init(type,mhz,mbps,ms);
         if (err==ESP_OK) tx_run();
         printf("@{\"cmd\":\"spisend\",\"status\":\"%s\",\"sent\":%"PRIu32
                ",\"bytes\":%"PRIu32",\"crc32\":%"PRIu32",\"waits\":%"PRIu32
@@ -438,22 +374,17 @@ void spi_input_command(const char *cmd, const char *args)
         tx_free(); pv_mode=oldpv; return;
     }
     if (!strcmp(cmd,"spirx")) {
-        used=0;
-        int n=sscanf(rest,"%15s %n%lf %n%u %n%c",b,&used,&mbps,&used,&f,&used,&extra);
-        if (rest[used] || n>3 || (n>0 && strcmp(b,"loop")) ||
-            !isfinite(mbps) || mbps<0 || mbps>140 || f>6) goto usage;
-        const unsigned old=input_type, oldfault=fault; const bool oldloop=loop, oldreplay=replay, oldpv=pv_mode, oldusb=usb_mode; const double oldtarget=target;
-        input_type=type; loop=n>0; replay=false; target=mbps; fault=f;
+        if (*rest) goto usage;
+        const unsigned old=input_type; const bool oldreplay=replay, oldpv=pv_mode, oldusb=usb_mode;
+        input_type=type; replay=false;
         pv_mode=raw; usb_mode=false;
-        sender_core=1; // standalone verifier has no timed fill worker on core 1
         const esp_err_t err=spi_input_start();
         if (err==ESP_OK) probe(ms);
         else printf("@{\"cmd\":\"spirx\",\"error\":\"setup failed\",\"status\":\"%s\"}\n",esp_err_to_name(err));
-        sender_core=0;
-        input_type=old; loop=oldloop; replay=oldreplay; pv_mode=oldpv; usb_mode=oldusb; target=oldtarget; fault=oldfault; return;
+        input_type=old; replay=oldreplay; pv_mode=oldpv; usb_mode=oldusb; return;
     }
 usage:
     printf("@{\"cmd\":\"%s\",\"error\":\"usage: spipins devkit|xiao|CLK CS D0 D1 D2 D3 READY; "
-           "spiinput usb [ts|gcs] or off|on|quad [ts|gcs] [loop [Mb/s [fault 0..6]]]; spisend ms on|quad [ts|gcs] [MHz [Mb/s [fault]]]; "
-           "spirx ms on|quad [ts|gcs] [loop [Mb/s [fault]]]\"}\n",cmd);
+           "spiinput usb [ts|gcs] or off|on [ts|gcs] or quad [ts|gcs] [replay]; spisend ms on|quad [ts|gcs] [MHz [Mb/s]]; "
+           "spirx ms on|quad [ts|gcs]\"}\n",cmd);
 }

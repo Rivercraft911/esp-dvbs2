@@ -80,8 +80,8 @@ with a receiver. Tuning selections last until changed or the board restarts.
 | `spiinput on\|quad\|off [ts\|gcs]` | Select [SPI payload input](spi-input.md) for the next run |
 | `vcm off\|on\|mixed\|N MODCOD...` | Opt-in [GCS rate switching](vcm.md); repeat each mode for N frames |
 | `spipins devkit\|xiao` | Select the SPI pin preset |
-| `spirx ms on\|quad [ts\|gcs] [loop [Mb/s [fault]]]` | Radio-off SPI receive diagnostic |
-| `spisend ms on\|quad [ts\|gcs] [MHz [Mb/s [fault]]]` | SPI test sender on a second S3; no RF |
+| `spirx ms on\|quad [ts\|gcs]` | Radio-off SPI receive diagnostic |
+| `spisend ms on\|quad [ts\|gcs] [MHz [Mb/s]]` | SPI test sender on a second S3; no RF |
 | `wifimem MODCOD [rate]` | Radio-off Wi-Fi startup and heap check |
 | `iddump [CALL] [40\|80]` | Morse ID samples at 10 kS/s, radio off |
 | `tx MHz signal seconds [gain] [40\|80]` | Transmit a test tone |
@@ -92,7 +92,7 @@ MODCOD selects modulation and code rate: QPSK 4..11, 8PSK 12..17. The
 `--short` selects 16,200-bit short frames: QPSK MODCOD 4..10 at the default 1 Msym/s or `5m`, and 8PSK MODCOD 12..16 (3/5 .. 8/9, no short 9/10) at `5m` (not VCM, `10m` or faster; SPI input untested). Each frame carries (Kbch - 80) / 8 payload bytes: 1,454 at MODCOD 7 and 1,454 at 8PSK MODCOD 14. A pilot-on short frame has 8,370 QPSK or 5,598 8PSK symbols.
 Both modulations accept `5m`, `10m`, `20m` and `26m667`; `33m333` is QPSK only.
 Dumps are little-endian int16 I/Q with full scale 512. Golden CRCs use peak 128 and N0CALL.
-SPI argument ranges, custom pins and fault/replay options: [diagnostics](spi-input.md#diagnostics).
+SPI argument ranges, custom pins and the replay option: [diagnostics](spi-input.md#diagnostics).
 
 All three IQ helpers (`host/decode.py`, `host/morse.py`, `examples/live-video/receive.py`)
 accept these `--format` aliases. Each pair is I followed by Q, little endian.

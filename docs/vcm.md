@@ -59,15 +59,13 @@ a radio-off pace. The sender checks scope before sending each update.
 
 These commands are for the operator; the latest placement changes are unmeasured.
 Use fresh output directories. Build/flash separately, store
-N0CALL for radio-off fixtures, close serial clients, and disconnect SPI jumpers
-before the on-chip loopback check. See the [self-check](../examples/self-check/README.md),
+N0CALL for radio-off fixtures and close serial clients. See the [self-check](../examples/self-check/README.md),
 [SPI check](spi-input.md) and [USB check](../examples/usb-send/README.md).
 
 ```sh
 export PORT=/dev/cu.usbmodem1101
 export RX="$PWD/notes/leansdr/src/apps/leandvb"
 python3 examples/self-check/check.py notes/vcm-layout-self --port "$PORT" --receiver "$RX"
-PORT="$PORT" RX="$RX" bash host/spi-board.sh notes/vcm-layout-spi
 PORT="$PORT" RX="$RX" python3 examples/usb-send/check.py notes/vcm-layout-usb
 python3 host/board.py --port "$PORT" 'vcm 1 4 11 13 17'
 python3 host/board.py --port "$PORT" 'dvbpace 4 5m 30'

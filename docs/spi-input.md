@@ -127,9 +127,9 @@ quad:        H = 24, L = 4   -> 136 Mb/s at 40 MHz
 | `spiinput quad [ts\|gcs]` | Quad input for the next run |
 | `spiinput off` | Back to the synthetic test payload |
 | `spiinput usb [ts\|gcs]` | The same messages over the USB cable instead of SPI |
-| `spiinput on [ts\|gcs] loop Mb/s` | On-chip test sender at that rate (also with `quad`) |
-| `spirx ms on\|quad [ts\|gcs] [loop [Mb/s [fault]]]` | Receive diagnostic, radio off |
-| `spisend ms on\|quad [ts\|gcs] [MHz [Mb/s [fault]]]` | Test sender on a second S3 |
+| `spiinput quad [ts\|gcs] replay` | In-memory sealed messages through the real parser, no transfers |
+| `spirx ms on\|quad [ts\|gcs]` | Receive diagnostic from an external sender, radio off |
+| `spisend ms on\|quad [ts\|gcs] [MHz [Mb/s]]` | Test sender on a second S3 |
 
 Input selection applies to the next `dvbdump`, `dvbpace`, `wifimem` or `dvb`; it does not
 start reception or the radio. Settings last until changed or reset.
@@ -139,21 +139,8 @@ start reception or the radio. Settings last until changed or reset.
 `spirx` and `spisend` accept **100..120000 ms**, TS by default.
 `spisend` clocks at **1..20 MHz** single-line (default 20), or **1..40 MHz** quad
 (default 40). Offered payload rate is **0..140 Mb/s**; zero means unpaced, still obeying
-READY and the inter-message gap. On-chip `loop` uses 20 MHz for single-line input and
-40 MHz for quad. Without `loop`, `spirx` waits for an external sender.
-For example, `spirx 3000 on loop 9` checks single-line reception for three seconds.
-
-`fault` is **0..6**, default 0. These are deliberate diagnostic conditions:
-
-| Fault | Effect |
-|---|---|
-| 0 | Normal transfers |
-| 1 | Corrupt payload CRC every 64th message |
-| 2 | Short transfer every 64th message |
-| 3 | Long transfer every 64th message |
-| 4 | Ignore READY; receive probe also pauses periodically |
-| 5 | Receive probe pauses periodically while sender obeys READY |
-| 6 | Sender pauses periodically |
+READY and the inter-message gap. `spirx` waits for an external sender. Corrupt, short,
+long and lost messages are covered by the host model of the receiver (`tests/ingress_sim.c`).
 
 `spiinput quad [ts\|gcs] replay` supplies an in-memory pattern without SPI transfers;
 it is a diagnostic, not external input. `spipins SCK CS D0 D1 D2 D3 READY` accepts seven
@@ -179,16 +166,9 @@ Afterwards the sender's and the S3's `messages`, `payload_bytes` and `next_seq` 
 and for TS also `ts_packets` and `crc_chain` (a CRC-32 chained over each accepted message's
 CRC bytes, starting from zero). Protocol, sequence and overrun error counts should be zero.
 
-The on-chip sender needs no jumpers: SPI3 drives SPI2 through the same pads, so disconnect
-external SPI devices before using `loop`. To check the whole input path on a flashed board
-with callsign `N0CALL` (radio off, about two minutes):
-
-```sh
-PORT=/dev/cu.usbmodem101 PINS=devkit RX=/path/to/leandvb bash host/spi-board.sh
-```
-
-At 5 Msym/s the on-chip sender shares core 0 with the encoder, which caps it near 8 Mb/s;
-the check offers it 6 Mb/s for raw bytes. External senders don't share that core.
+A second S3 running `spisend` is the quad-rate sender: wire its SPI pins to the receiving
+S3's preset, run `spiinput quad` and a radio-off run on the receiver, then `spisend` on the
+sender.
 
 ## Over USB instead
 

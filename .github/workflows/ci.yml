@@ -44,7 +44,6 @@ jobs:
           python tests/test_pi_sender.py
           python tests/test_spi_input.py
           python tests/test_spi_pv.py
-          python tests/test_spi_board.py
           python tests/test_spi_sender.py
 
       - name: USB payload input (no hardware)
