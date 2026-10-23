@@ -29,10 +29,11 @@ error-correcting codes, maps the bits onto QPSK or 8PSK symbols, and adds a head
 symbols so a receiver can find and follow the signal. Doing all of that on a $5 chip starts
 with one blunt question: can it even make samples fast enough?
 
-The S3's radio hides a test engine, found by [esp-sdr-zephyr](prior-art.md), that plays a
-bank of 16,380 samples from internal RAM into its I/Q DAC, looping until the CPU hands it the
-other bank. At 40 MS/s, after the overlap the engine needs, a freshly filled bank is due every
-356.7 µs, or 85,608 CPU cycles. Everything else in this project is measured against that number.
+The S3's radio hides a test engine, which [esp-sdr-zephyr](prior-art.md) turned into a
+transmitter. It plays a bank of 16,380 samples from internal RAM into the I/Q DAC, looping until
+the CPU hands it the other bank. At 40 MS/s, after the overlap the engine needs, a freshly filled
+bank is due every 356.7 µs, or 85,608 CPU cycles. Everything else in this project is measured
+against that number.
 
 The first benchmark gave the answer. Copying 8-sample rows from a precomputed table filled a
 bank in 179 µs, half the deadline. Building each sample from separate I and Q tables in plain C
@@ -323,9 +324,9 @@ were wrong-MODCOD header guesses, so the losses look like lost lock, not payload
 Everything so far needed an SDR and a laptop to prove it. The question that had been sitting
 there all week: can an S3 receive what an S3 sends?
 
-The S3 can capture its radio's samples through the dump engine, which shares its SRAM banks with
-the DAC engine the transmitter plays from. [ESPARGOS](prior-art.md) showed raw I/Q capture from
-these chips, and esp-sdr-zephyr's register notes map the engine on the S3. Receiving is a much
+The S3 can capture its radio's samples through the same undocumented dump engine that plays the
+transmitter's banks. [ESPARGOS](prior-art.md) showed raw I/Q capture from these chips, and
+esp-sdr-zephyr's register notes map the engine on the S3. Receiving is a much
 harder budget, though. The transmitter only has to produce samples on time. The receiver has to
 find frames in noise, follow timing and carrier, and decode, all before the next 768 µs of
 samples lands: 12,288 samples at 16 MS/s, 184,320 cycles.
@@ -364,8 +365,9 @@ The demodulator was built against real dumps first. On the S3's own short-frame 
   derotation raised MER from about 16 dB to about 29 dB. On the same samples LeanDVB, which does
   not remove it, reported 7 to 16 dB.
 - Both radios run from 40 MHz crystals, so the symbol clock offset equals the carrier offset
-  divided by the carrier frequency. A float fit agreed within 0.01 ppm on 13 of 15 captures. The
-  timing loop starts at that clock and only has to hold it.
+  divided by the carrier frequency, as esp-sdr-zephyr's QAM receiver also assumes. A float fit
+  here agreed within 0.01 ppm on 13 of 15 captures. The timing loop starts at that clock and
+  only has to hold it.
 
 A digital twin with the measured impairments decoded 3,583 of 3,583 frames at 18 dB, with
 0.22 dB of implementation loss against a float reference receiver.
