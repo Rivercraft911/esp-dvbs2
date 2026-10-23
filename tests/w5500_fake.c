@@ -80,6 +80,7 @@ typedef struct {
     uint8_t version, phy, mosi_and;
     uint16_t open_ptr;
     int fail_in;
+    unsigned sit;          /* the next SENDs are accepted (Sn_CR cleared) but not run */
     bool tear;
     dgram tear_dg;
     dgram *log;
@@ -203,6 +204,7 @@ int fake_set(fake *f, const char *key, double v)
     else if (!strcmp(key, "mosi_and")) f->mosi_and = (uint8_t)v;
     else if (!strcmp(key, "open_ptr")) f->open_ptr = (uint16_t)v;
     else if (!strcmp(key, "fail_in")) f->fail_in = (int)v;
+    else if (!strcmp(key, "sit")) f->sit = (unsigned)v;
     else return -1;
     return 0;
 }
@@ -324,6 +326,10 @@ static void command(fake *f, unsigned s, uint8_t v)
         }
         if (f->sending[s]) {
             violate(f, "S%u SEND while a SEND is in progress", s);
+            return;
+        }
+        if (f->sit) {       /* as the board's chip did at the end of some egress runs */
+            f->sit--;
             return;
         }
         const unsigned n = (uint16_t)(r16(r + 0x24) - r16(r + 0x22));

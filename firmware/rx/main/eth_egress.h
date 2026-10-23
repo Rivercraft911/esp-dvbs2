@@ -25,6 +25,7 @@ typedef struct {
     uint32_t datagrams, packets;    /* handed to the chip */
     uint32_t partial;               /* datagrams of fewer than seven packets */
     uint32_t sent;                  /* SEND finished (SEND_OK) */
+    uint32_t resends;               /* SENDs the chip sat on for 20 ms, given again */
     uint32_t full;                  /* sends the chip refused for lack of room, retried */
     uint32_t arp_dropped;           /* datagrams lost to a SEND TIMEOUT (ARP) */
     uint32_t dropped, peak, queue;  /* packets the queue refused, most waiting, its size */

@@ -17,6 +17,7 @@
 #define QUEUE 4096U             /* packets: 770 KB of PSRAM, 0.74 s at 8.3 Mb/s */
 #define HOLD pdMS_TO_TICKS(10)  /* the longest a packet waits for six more */
 #define DRAIN pdMS_TO_TICKS(3000)   /* at the end; a chip ARP gives up after 1.8 s (w5500.h) */
+#define SAT_US 20000            /* a SEND unfinished this long, 18 wire times: give it again */
 #define STACK 3072U
 #define PRIORITY 13             /* above the release (12): see eth_egress.h */
 #if CONFIG_W5500_DIRECT_SPI
@@ -112,6 +113,9 @@ static int pump(void)
     bool backlog = false;
     int64_t mark = esp_timer_get_time();
     uint32_t marked = 0;
+    uint32_t sent = w->sock[0].st.sent;   /* the chip's last progress, and when */
+    uint16_t sent_wr = w->sock[0].tx_wr;
+    int64_t moved = mark;
     send_clock clock = {w->sock[0].tx_wr, 0};
     for (;;) {
         const bool ending = e.ending;   /* read first: every packet was pushed before it was set */
@@ -143,6 +147,17 @@ static int pump(void)
             note_send(&w->sock[0], &clock);
         }
         if (staged < 0) return staged;
+        const int64_t now_us = esp_timer_get_time();
+        if (w->sock[0].st.sent != sent || w->sock[0].tx_wr != sent_wr) {
+            sent = w->sock[0].st.sent;
+            sent_wr = w->sock[0].tx_wr;
+            moved = now_us;
+        } else if (staged > 0 && now_us - moved > SAT_US) {
+            const int again = w5500_udp_resend(w, 0);   /* w5500.h: the chip sat on it */
+            if (again < 0) return again;
+            if (again) clock.started = esp_cpu_get_cycle_count();
+            moved = now_us;
+        }
         if (staged > 0) wake_after_send(&w->sock[0], &clock);
         if (ending) {
             if (!staged && !e.t.held && !w5500_ts_waiting(&e.q)) return W5500_OK;
@@ -187,6 +202,7 @@ static void sender(void *arg)
         s->underflows = w5500_eth_underflows() - underflows;
         const w5500_stats *st = w5500_udp_stats(w, 0);
         s->sent = st->sent;
+        s->resends = st->resends;
         s->arp_dropped = st->dropped;
         w5500_eth_stop();
         s->stack_free = uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t);
@@ -249,6 +265,7 @@ void eth_egress_print(const eth_egress_stats_t *s)
     printf(",\"backlog_ms\":%.1f,\"backlog_datagrams\":%lu,\"drain_mbps\":%.3f",
            s->backlog_us / 1000.0, (unsigned long)s->backlog_datagrams,
            s->backlog_us ? s->backlog_datagrams * 8.0 * W5500_TS_DATAGRAM / s->backlog_us : 0.0);
+    printf(",\"resends\":%lu", (unsigned long)s->resends);
     printf(",\"datagrams\":%lu,\"sent\":%lu,\"packets\":%lu,\"partial\":%lu,\"dropped\":%lu,"
            "\"peak\":%lu,\"queue\":%lu,\"full\":%lu,\"arp_dropped\":%lu,\"max_send_cycles\":%lu,"
            "\"send_cycles\":%llu,\"stack_free\":%lu,\"underflows\":%lu",

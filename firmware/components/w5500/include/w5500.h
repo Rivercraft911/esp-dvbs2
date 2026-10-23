@@ -180,6 +180,7 @@ typedef struct {
                           * possible loss (TS continuity counters downstream measure real loss) */
     uint32_t discarded;  /* received datagrams skipped: empty or longer than the caller's buffer */
     uint32_t malformed;  /* impossible lengths or Sn_RX_WR outside the buffer: flushed */
+    uint32_t resends;    /* SENDs given again after the chip sat on them (w5500_udp_resend) */
     uint32_t deferred;   /* receive calls that found a datagram not yet fully received, or
                           * Sn_RX_WR still moving, and returned 0 to look again later; if it
                           * keeps rising with nothing received, reopen the socket */
@@ -251,6 +252,12 @@ typedef struct {
     uint16_t tx_fsr, tx_rd, tx_wr;
 } w5500_regs;
 int w5500_udp_regs(w5500 *w, unsigned s, w5500_regs *r);
+/* A SEND the chip accepted (Sn_CR 0) but has not run: no SEND_OK or TIMEOUT in Sn_IR and the
+ * datagram still between Sn_TX_RD and Sn_TX_WR. Seen at the end of about 1 egress run in 8 at
+ * 10 Mb/s; the datagram left only at the next command. Give SEND again then: 1 if given, 0 if
+ * the SEND is not stuck, or an error. A SEND still on the wire reads the same (Sn_TX_RD moves
+ * at its end), so call this only well after the datagram should be out. */
+int w5500_udp_resend(w5500 *w, unsigned s);
 
 /* The `eth send` diagnostic (w5500_diag.c). Datagram seq is 7 TS packets on PID 0x100 with
  * running continuity counters, each payload starting with seq, MSB first. */

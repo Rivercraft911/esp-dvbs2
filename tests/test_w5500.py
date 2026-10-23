@@ -35,7 +35,7 @@ BROADCAST = bytes([255] * 4)
 SN_MR, SN_SR, SN_PORT, SN_RX_WR = 0x00, 0x03, 0x04, 0x2A
 
 STATS = ("sent", "sent_bytes", "full", "dropped", "received", "received_bytes", "overruns",
-         "discarded", "malformed", "deferred")
+         "discarded", "malformed", "resends", "deferred")
 FAKE = ("frames", "polled", "queued", "bytes", "violations", "rx_dropped", "arp_requests",
         "resets", "logged", "waits")
 
@@ -136,6 +136,7 @@ class Native:
             "w5500_udp_dest": (None, [p, ct.c_uint, b, u16]),
             "w5500_udp_send": (ct.c_int, [p, ct.c_uint, b, ct.c_size_t]),
             "w5500_udp_poll": (ct.c_int, [p, ct.c_uint]),
+            "w5500_udp_resend": (ct.c_int, [p, ct.c_uint]),
             "w5500_udp_recv": (ct.c_int, [p, ct.c_uint, p, ct.c_size_t, ct.POINTER(Peer)]),
             "w5500_udp_stats": (ct.POINTER(Stats), [p, ct.c_uint]),
             "w5500_busy": (ct.c_bool, [p]),
@@ -503,6 +504,27 @@ def test_full(native):
     check(accepted == 1 + TXQ, "one in flight plus W5500_TXQ staged")
     check(len(chip.drain(0)) == accepted, "queue drained")
     chip.close()
+
+
+def test_resend(native):
+    """A SEND the chip accepts but does not run is given again, once, and nothing else is."""
+    for mode in ({}, DIRECT):
+        chip = sender(native, wire_bps=10e6, **mode)
+        check(chip.lib.w5500_udp_resend(chip.w, 0) == 0, "nothing in flight")
+        # A SEND on the wire reads the same as one the chip sits on (Sn_TX_RD moves at the end),
+        # so only time tells them apart: the caller waits far longer than the wire time.
+        check(chip.send(0, b"a" * 1316) == OK and chip.poll(0) == 1, "first SEND on the wire")
+        chip.drain(0)
+        chip.set(sit=1)
+        check(chip.send(0, b"b" * 1316) == OK, "second staged")
+        chip.poll(0)
+        chip.lib.fake_advance(chip.f, 20000.0)
+        check(chip.poll(0) == 1 and chip.take() is None, "the chip sits on it")
+        check(chip.lib.w5500_udp_resend(chip.w, 0) == 1, "given again")
+        out = [d[3] for d in chip.drain(0)]
+        check(out == [b"b" * 1316] and chip.stats()["resends"] == 1 and chip.stats()["sent"] == 2,
+              f"sent once: {len(out)} {chip.stats()}")
+        chip.close()
 
 
 def test_arp_timeout(native):
@@ -1128,6 +1150,7 @@ def main():
         test_send(native)
         test_full(native)
         test_arp_timeout(native)
+        test_resend(native)
         table = test_throughput(native)
         test_receive(native)
         test_malformed(native)

@@ -253,6 +253,24 @@ const w5500_stats *w5500_udp_stats(const w5500 *w, unsigned s)
     return s < W5500_SOCKETS ? &w->sock[s].st : NULL;
 }
 
+int w5500_udp_resend(w5500 *w, unsigned s)
+{
+    if (s >= W5500_SOCKETS || !w->sock[s].open) return W5500_ERR_ARG;
+    w5500_socket *k = &w->sock[s];
+    w5500_regs r;
+    if (!k->flight) return 0;
+    int e = w5500_udp_regs(w, s, &r);
+    if (e) return e;
+    if (r.cr || (r.ir & (IR_SEND_OK | IR_TIMEOUT)) || (uint16_t)(r.tx_wr - r.tx_rd) != k->flight ||
+        r.tx_wr != k->tx_wr)
+        return 0;
+    k->cmd_pending = false;   /* Sn_CR reads 0 */
+    e = command(w, s, CR_SEND);
+    if (e) return e;
+    k->st.resends++;
+    return 1;
+}
+
 int w5500_udp_regs(w5500 *w, unsigned s, w5500_regs *r)
 {
     if (s >= W5500_SOCKETS) return W5500_ERR_ARG;
