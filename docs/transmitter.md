@@ -233,9 +233,13 @@ to 20.4% fill spare, with no dummies
 
 ## PIE kernels
 
-Every hot loop is a PIE kernel, and [`tests/tx_pie_bench`](../tests/tx_pie_bench.c) checks each
-one on the board against portable C or an independent oracle: 82,493 cases, every configuration
-the transmitter uses exact ([PIE bench](../results/2026-10-23-tx-pie-bench/README.md)).
+The kernels below run on PIE. The PV CRC-32 that checks input stays scalar C (`ingress.c`),
+slicing by 4. [`tests/tx_pie_bench`](../tests/tx_pie_bench.c) checks the kernels on the board
+against portable C or an independent oracle: 82,493 cases, every configuration the transmitter
+uses exact ([PIE bench](../results/2026-10-23-tx-pie-bench/README.md)). The slot copy came later
+and has its own 128-case run ([TS input](../results/2026-10-23-tx-ts-input/README.md#the-slot-copy)).
+The Morse ID's 40-sample copy, `station_repeat40` (`components/station_id/station_copy.S`), is
+checked only through the pinned ID dumps.
 
 | Where | Kernels |
 |---|---|

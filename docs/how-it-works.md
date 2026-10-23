@@ -14,8 +14,9 @@ their own pages:
 DVB-S2 is the second-generation satellite broadcast standard,
 [ETSI EN 302 307-1 V1.4.1](https://www.etsi.org/deliver/etsi_en/302300_302399/30230701/01.04.01_60/en_30230701v010401p.pdf).
 A MODCOD names a modulation and code rate pair, such as 8PSK 2/3. PIE, the S3's Processor
-Instruction Extensions, is its 128-bit vector instruction set; every hot loop on both sides
-runs on it.
+Instruction Extensions, is its 128-bit vector instruction set. The encoding, shaping and
+demodulation kernels listed on the two pages run on it; two CRC-32 loops stay scalar C, the
+transmitter's input check (`ingress.c`) and the receiver's 5 Msym/s record CRC (`receive.c`).
 
 ## Two pipelines, four cores
 
@@ -176,7 +177,7 @@ radio off and compares them with portable C or an independent oracle:
 
 | Bench | What it checks | Record |
 |---|---|---|
-| [`tests/tx_pie_bench`](../tests/tx_pie_bench.c) | every transmitter PIE kernel: encoder stages, BB inputs at every alignment, xorshift, fills, ring, slot copy, axes, the 8PSK queue kernels | [82,493 cases](../results/2026-10-23-tx-pie-bench/README.md) |
+| [`tests/tx_pie_bench`](../tests/tx_pie_bench.c) | the transmitter's PIE kernels: encoder stages, BB inputs at every alignment, xorshift, fills, ring, axes, the 8PSK queue kernels; the slot copy in a later 128-case run; not the Morse ID's 40-sample copy (`station_repeat40`), which only the pinned ID dumps check | [82,493 cases](../results/2026-10-23-tx-pie-bench/README.md), [slot copy](../results/2026-10-23-tx-ts-input/README.md#the-slot-copy) |
 | [`tests/rx_demod_bench`](../tests/rx_demod_bench.c) | each demodulator kernel against its C version, timed | [kernel bench](../results/2026-10-22-rx-demod/README.md#board-cycles) |
 | [`tests/rx_fec_bench`](../tests/rx_fec_bench.c) | each FEC kernel against its C version, then whole MODCOD 7 frames | no recorded run yet |
 
