@@ -60,9 +60,11 @@
  * read first, so a read that straddles an update is never high. When Sn_RX_WR covers only part of
  * the next datagram (a straddling read, or a chip that publishes a datagram in parts, which the
  * datasheet does not rule out), the driver re-reads it until two reads agree (DS p.55 advice for
- * the size registers) and waits up to 2.5 ms for the rest; only a stable value that stays short
- * that long is declared malformed and flushed. `deferred` counts the calls that gave up because
- * Sn_RX_WR never held still.
+ * the size registers) and waits up to 150 us for the rest, once per position of Sn_RX_WR; if it is
+ * still short, the call returns 0 and a later call looks again (`deferred`). Only what no chip
+ * state can explain is flushed as malformed: a length over 1,472 bytes or the buffer, or Sn_RX_WR
+ * outside the buffer. A record that never completes is left to the caller, who can reopen the
+ * socket.
  *
  * Throughput (derived; the board measures it, `eth send` and `eth recv`). Each access is one SPI
  * frame: 3 header bytes plus data. The ESP backend polls frames of at most W5500_SMALL_MAX data
@@ -169,8 +171,10 @@ typedef struct {
                           * last length: the chip drops datagrams that do not fit, so each marks a
                           * possible loss (TS continuity counters downstream measure real loss) */
     uint32_t discarded;  /* received datagrams skipped: empty or longer than the caller's buffer */
-    uint32_t malformed;  /* headers inconsistent with Sn_RX_WR; the buffer was flushed */
-    uint32_t deferred;   /* receive calls that gave up waiting for Sn_RX_WR to hold still */
+    uint32_t malformed;  /* impossible lengths or Sn_RX_WR outside the buffer: flushed */
+    uint32_t deferred;   /* receive calls that found a datagram not yet fully received, or
+                          * Sn_RX_WR still moving, and returned 0 to look again later; if it
+                          * keeps rising with nothing received, reopen the socket */
 } w5500_stats;
 
 typedef struct {
@@ -185,7 +189,8 @@ typedef struct {
     uint16_t rx_rd;              /* read pointer; Sn_RX_RD lags until the next RECV */
     uint16_t rx_left;            /* bytes known received and not yet read */
     uint16_t rx_last;            /* length of the last datagram received */
-    bool open, dest_dirty, rx_dirty;
+    uint16_t stall_wr;           /* Sn_RX_WR at the last short look at the next datagram */
+    bool open, dest_dirty, rx_dirty, stalled;
     bool cmd_pending;            /* Sn_CR written and not yet seen accepted */
     w5500_stats st;
 } w5500_socket;

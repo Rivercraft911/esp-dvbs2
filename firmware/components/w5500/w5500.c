@@ -43,7 +43,7 @@
 #define RESET_POLLS 100    /* x 100 us */
 #define COMMAND_POLLS 100  /* x 10 us: Sn_CR acceptance */
 #define STATE_POLLS 100    /* x 100 us: Sn_SR after OPEN or CLOSE */
-#define SETTLE_POLLS 100   /* x 25 us: the rest of a partly published datagram */
+#define SETTLE_POLLS 6     /* x 25 us: longer than a 1,500-byte frame on a 100 Mb/s wire */
 
 static uint16_t get16(const uint8_t *p)
 {
@@ -204,6 +204,7 @@ static int open_socket(w5500 *w, unsigned s)
     k->q_head = k->q_count = 0;
     k->rx_left = 0;
     k->rx_dirty = false;
+    k->stalled = false;
     k->dest_dirty = true;
     k->open = true;
     return W5500_OK;
@@ -380,10 +381,11 @@ static int level(w5500 *w, unsigned s, bool stable)
 }
 
 /* Sn_RX_WR covers fewer than `need` bytes of the datagram at rx_rd: a straddling read, or the
- * chip publishing a datagram in parts (the datasheet does not rule it out). Look again every
- * 25 us for up to 2.5 ms, twice the time a 1,500-byte frame takes on a 10 Mb/s wire. Returns 1
- * once the datagram is covered. Otherwise 0: if stable reads still came up short, nothing valid
- * is coming and the buffer is flushed as malformed; if Sn_RX_WR never held still, try later. */
+ * chip publishing a datagram in parts (the datasheet neither rules it out nor bounds how long it
+ * may take). Look again every 25 us for up to 150 us, longer than a 1,500-byte frame takes on a
+ * 100 Mb/s wire, but only once per position of Sn_RX_WR. Returns 1 once the datagram is covered;
+ * otherwise 0 and a later call looks again (counted in `deferred`). Nothing is flushed here: a
+ * short record is not proof of corruption. */
 static int settle(w5500 *w, unsigned s, unsigned need)
 {
     w5500_socket *k = &w->sock[s];
@@ -391,11 +393,19 @@ static int settle(w5500 *w, unsigned s, unsigned need)
     for (unsigned i = 0; i < SETTLE_POLLS; ++i) {
         if (i) w->bus.delay_us(w->bus.ctx, 25);
         if ((r = level(w, s, true)) < 0) return r;
-        if (r && k->rx_left >= need) return 1;
-        if (r && !k->rx_left) return 0;
+        if (!k->rx_left) return 0;                       /* resynchronized by level() */
+        if (!r) continue;                                /* Sn_RX_WR still moving */
+        if (k->rx_left >= need) {
+            k->stalled = false;
+            return 1;
+        }
+        if (k->stalled && (uint16_t)(k->rx_rd + k->rx_left) == k->stall_wr) break;
     }
-    if (r) flush(k);
-    else k->st.deferred++;
+    if (r) {
+        k->stalled = true;
+        k->stall_wr = (uint16_t)(k->rx_rd + k->rx_left);
+    }
+    k->st.deferred++;
     return 0;
 }
 

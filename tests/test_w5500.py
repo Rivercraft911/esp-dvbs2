@@ -594,11 +594,17 @@ def test_malformed(native):
     rd = chip.peek16(0, 0x28)
     chip.poke(rxbuf(0), (rd + 6) & 0xFFFF, 0)
     chip.poke(rxbuf(0), (rd + 7) & 0xFFFF, 200)
+    for _ in range(20):
+        check(chip.recv(0)[0] == 0, "nothing until the record completes")
+        chip.lib.fake_advance(chip.f, 1000.0)
+    st = chip.stats()
+    check(st["malformed"] == 0 and st["deferred"] == 20, f"a short record is deferred: {st}")
     before = chip.fake()["now_us"]
-    check(chip.recv(0)[0] == 0 and chip.stats()["malformed"] == 1, "length past Sn_RX_WR")
-    check(chip.fake()["now_us"] - before >= 2475, "flushed only after 2.5 ms of stable reads")
+    chip.recv(0)
+    check(chip.fake()["now_us"] - before < 100, "no new 150 us wait while Sn_RX_WR stays put")
+    check(chip.open(0, 5004) == OK, "the caller's recovery: reopen")
     chip.inject(good)
-    check(chip.recv(0)[1] == good, "next datagram after the flush")
+    check(chip.recv(0)[1] == good, "next datagram after the reopen")
     chip.close()
 
     # A zero-length datagram and one longer than the caller's buffer are skipped in one call.
@@ -621,10 +627,12 @@ def test_malformed(native):
     check(chip.recv(0)[1] == good, "next datagram after the flush")
     chip.close()
 
-    # Fewer than 8 bytes received: no header can be read.
+    # Fewer than 8 bytes received: no header to read yet, so deferred too.
     chip = receiver(native)
     chip.poke16(0, SN_RX_WR, chip.peek16(0, SN_RX_WR) + 3)
-    check(chip.recv(0)[0] == 0 and chip.stats()["malformed"] == 1, "3 bytes")
+    check(chip.recv(0)[0] == 0 and chip.stats()["deferred"] == 1 and
+          chip.stats()["malformed"] == 0, "3 bytes")
+    check(chip.open(0, 5004) == OK, "reopen")
     chip.inject(good)
     check(chip.recv(0)[1] == good, "resynchronized")
     chip.close()
@@ -693,12 +701,12 @@ def test_publication(native):
     """Sn_RX_WR covering only part of a datagram, or moving during every read, delays delivery
     but never discards valid data."""
     rng = random.Random(7)
-    for first, delay in ((8 + 500, 80.0), (4, 30.0), (8, 2000.0)):
+    for first, delay in ((8 + 500, 80.0), (4, 30.0), (8, 2000.0), (8 + 1000, 20000.0)):
         chip = receiver(native)
         d = payload(rng, TS_DATAGRAM)
         check(chip.inject_split(d, first, delay) == 1, "inject")
         got = b""
-        for _ in range(100):
+        for _ in range(2000):
             n, got, _ = chip.recv(0)
             if n:
                 break
