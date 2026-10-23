@@ -9,7 +9,7 @@ import tempfile
 
 import numpy as np
 
-from test_stream import compile_stream
+from test_stream import compile_stream, status_check
 from test_dvbs2_c import NativeEncoder, U8P
 from test_ingress import Native, Ring, pv_message, MSG
 from test_usb_send import send
@@ -137,6 +137,7 @@ def run(receiver=None, output=None):
             if hold:
                 pace = next(row for row in records if row.get('cmd') == 'dvbpace' and 'status' in row)
                 assert pace['status'] == 'ESP_OK' and not pace['encoder_failed']
+                status_check(records, pace, late_fills=0)
             assert Path(str(symbols)+'.iq').stat().st_size > 0
             failures = [json.loads(line[1:]) for line in result.stdout.splitlines() if line.startswith('@') and 'VCM allocation failed' in line]
             assert failures

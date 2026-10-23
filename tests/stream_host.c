@@ -238,7 +238,9 @@ bool station_require(const char *cmd) { (void)cmd; return callsign[0] != 0; }
 int usb_serial_jtag_write_bytes(const void *buf, size_t n, unsigned timeout)
 {
     (void)timeout;
-    assert(fwrite(buf, 1, n, capture) == n);
+    // Status records join the run records on stdout; every other write is a dump's samples.
+    FILE *to = n > 16 && !memcmp(buf, "@{\"cmd\":\"status\"", 16) ? stdout : capture;
+    assert(fwrite(buf, 1, n, to) == n);
     return (int)n;
 }
 
@@ -383,7 +385,7 @@ esp_err_t radio_s3_run_options(uint32_t freq, uint8_t gain, uint32_t sec, uint32
     // Public keyed API, with the radio replaced by the actual dry fill/oracle.
     assert(native_keyed_fixture && freq == 2412 && !gain && sec == 30 && rate == 80000000);
     assert(bandwidth == (dvb.lofty ? 36000000u : 40000000u));
-    assert(enc.input && !spi_input_type() && options && options->status && !options->startup);
+    assert(enc.input && !spi_input_type() && options && !options->startup);
     uint32_t x = SEED;
     for (size_t i = 0; i < (enc.mode->kbch-80U)/8; ++i) assert(enc.input[i] == next_byte(&x));
     if (dvb.lofty) assert(radio_s3_stream_ready() == ESP_OK);
@@ -392,13 +394,9 @@ esp_err_t radio_s3_run_options(uint32_t freq, uint8_t gain, uint32_t sec, uint32
     memset(stats,0,sizeof *stats);
     const esp_err_t err = radio_s3_dry_run_rate(fn,ctx,samples,rate,discard,NULL,&dry);
     stats->fills = dry.fills;
-    // One status line after the frames played, as the waiting command task would print it,
-    // to stdout (the dump capture is closed by now). The test reads it with the run record.
+    // One status line after the frames played, as the waiting command task would print it.
     stats->late_fills = 1;
-    FILE *dump = capture;
-    capture = stdout;
-    options->status(stats,23610);
-    capture = dump;
+    if (options->status) options->status(stats,23610);
     stats->late_fills = 0;
     return err;
 }

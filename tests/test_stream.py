@@ -241,16 +241,29 @@ def compile_stream(folder, source="stream_host.c", defines=()):
     return exe
 
 
-def status_check(records, run, period):
-    """The keyed stub's one status line (stream_host.c) against the run's own record."""
-    status, = [r for r in records if r.get('cmd') == 'status']
-    for key in ('freq_mhz', 'modcod', 'rate', 'symbol_rate', 'short'):
+def status_check(records, run, period=None, late_fills=1):
+    """The status record a host stub prints for a run (stream_host.c, vcm_host.c) against the
+    run's own record. Above 10 Msym/s the run says once that it prints no status lines."""
+    status = [r for r in records if r.get('cmd') == 'status']
+    if run['symbol_rate'] > 10_000_000:
+        assert status == [dict(cmd='status', run=run['cmd'], symbol_rate=run['symbol_rate'],
+                               status_lines='off above 10 Msym/s')], status
+        return
+    status, = status
+    deadline = run['step_words'] * 240_000_000 // run['dac_rate']
+    assert status['run'] == run['cmd'] and status.get('freq_mhz') == run.get('freq_mhz')
+    # With VCM the line names the MODCOD the encoder is on, which runs ahead of playback.
+    assert run['mode_frames'][status['modcod'] - 4] if run.get('vcm') else status['modcod'] == run['modcod']
+    assert status['input'] == run['input']
+    for key in ('symbol_rate', 'short') + (() if run.get('vcm') else ('rate',)):
         assert status[key] == run[key], key
-    assert status['run'] == 'dvb' and status['input'] == 'synthetic' and 'input_bytes' not in status
     assert status['frames'] == run['frames_played'] and status['frames_encoded'] <= run['frames_encoded']
-    assert status['dummies'] == 0 and status['late_fills'] == 1 and status['lines_dropped'] == 0
-    assert status['frame_period_cycles'] == period and status['fill_deadline_cycles'] == 47220
-    assert status['fill_max_cycles'] == 23610 and status['fill_spare_pct'] == 50.0
+    assert status['dummies'] == run['underruns'] + run.get('dummy_startup', 0) + run.get('dummy_steady', 0)
+    assert status['late_fills'] == late_fills and status['lines_dropped'] == 0
+    assert status['fill_deadline_cycles'] == deadline and status['fill_max_cycles'] == 23610
+    assert status['fill_spare_pct'] == float(f'{100 - 100 * 23610 / deadline:.1f}')
+    if period:
+        assert status['frame_period_cycles'] == period
 
 
 def test_stream(output=None, receiver=None, input_only=False):

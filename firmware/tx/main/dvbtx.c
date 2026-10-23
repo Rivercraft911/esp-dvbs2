@@ -1452,10 +1452,14 @@ static void print_startup(void)
     printf("]}");
 }
 
-// The status line, once a second while dvb or dvbpace runs (radio_s3_options_t.status). The
-// command task prints it on core 0 while it waits for the run; the encoder and the fills never
-// print. Counts run from the start of the run; encoder_* and fill_* cover the time since the
-// previous line. A line the USB buffer has no room for is dropped, never waited for.
+// The status line, once a second while dvb or dvbpace runs at 10 Msym/s or less
+// (radio_s3_options_t.status). The command task prints it on core 0 while it waits for the run;
+// the encoder and the fills never print. Counts run from the start of the run; encoder_* and
+// fill_* cover the time since the previous line. A line the USB buffer has no room for is
+// dropped, never waited for. At 26.67 and 33.33 Msym/s each line cost the encoder one slower
+// frame, 24k to 50k cycles, and 8PSK 9/10 at 26.67 Msym/s with TS input dummy frames
+// (results/2026-10-23-tx-status), so a run above 10 Msym/s says once, at the start, that it
+// prints none.
 static struct {
     const char *cmd;
     uint32_t freq_mhz;              // keyed runs only
@@ -1477,8 +1481,16 @@ static __attribute__((format(printf,2,3))) size_t live_add(size_t at, const char
 
 // Every function here runs in the command task. The encoder shares its core at a higher priority:
 // masking this core's interrupts stops it from preempting a copy of its counters halfway.
-static void live_start(const char *cmd, uint32_t freq_mhz)
+// False above 10 Msym/s: then the run has no status lines.
+static bool live_start(const char *cmd, uint32_t freq_mhz)
 {
+    const uint32_t symbol_rate = (uint32_t)((uint64_t)dvb.dac_rate*dvb.den/dvb.table.n);
+    if (symbol_rate > 10000000) {
+        const int n = snprintf(live.line,sizeof live.line,"@{\"cmd\":\"status\",\"run\":\"%s\","
+                               "\"symbol_rate\":%" PRIu32 ",\"status_lines\":\"off above 10 Msym/s\"}\n",cmd,symbol_rate);
+        (void)usb_serial_jtag_write_bytes(live.line,n,0);
+        return false;
+    }
     const uint32_t irq = portSET_INTERRUPT_MASK_FROM_ISR();
     live.frames = enc.frames;
     live.cycles = enc.cycles;
@@ -1487,6 +1499,7 @@ static void live_start(const char *cmd, uint32_t freq_mhz)
     live.pages = __atomic_load_n(&dvb.consumed,__ATOMIC_ACQUIRE);
     live.cmd = cmd, live.freq_mhz = freq_mhz, live.dropped = 0;
     live.start_us = esp_timer_get_time();
+    return true;
 }
 
 static void live_print(const radio_s3_stats_t *s, uint32_t slowest_fill)
@@ -1556,8 +1569,7 @@ void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, 
     radio_s3_stats_t s = {0};
     // RRC support B = Rs * (1 + alpha), alpha = 0.20 or 0.35. Round upward in integer Hz.
     const uint32_t bandwidth = ((uint64_t)dac_rate * dvb.den * (dvb.den == 5 ? 120 : 135) + sps * 100 - 1) / (sps * 100);
-    const radio_s3_options_t options = {.status=live_print};
-    live_start("dvb",freq);
+    const radio_s3_options_t options = {.status=live_start("dvb",freq) ? live_print : NULL};
     const esp_err_t err = radio_s3_run_options(freq,(uint8_t)gain,seconds,dac_rate,bandwidth,encoder_fill(),NULL,
                                                &options,&s);
     print_mode("dvb", modcod, symbols, level);
@@ -1581,8 +1593,8 @@ void dvbtx_pace(unsigned modcod, uint32_t seconds, unsigned level, unsigned stal
     const size_t symbols = start_encoder_options("dvbpace",modcod,level,stall_ms,sps,dac_rate,true,fixture);
     if (!symbols) return;
     radio_s3_stats_t s;
-    const radio_s3_options_t options = {.startup=dvb.lofty ? lofty_startup() : NULL, .status=live_print};
-    live_start("dvbpace",0);
+    const radio_s3_options_t options = {.startup=dvb.lofty ? lofty_startup() : NULL,
+                                        .status=live_start("dvbpace",0) ? live_print : NULL};
     const esp_err_t err = radio_s3_paced_run(seconds,dac_rate,encoder_fill(),NULL,&options,&s);
     print_mode("dvbpace", modcod, symbols, level);
     printf(",\"prepared_fixture\":%s",fixture ? "true" : "false");
