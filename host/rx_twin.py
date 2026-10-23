@@ -5,10 +5,10 @@
     python3 host/rx_twin.py --frames 10 --gap 0 0.1 --out tone.sc8      int8 pairs, for replay
     python3 host/rx_twin.py --frames 3584 --check --reference 40         30 s through the C demodulator
     python3 host/rx_twin.py --rate 5e6 --modcod 16 --frames 40 --check   8PSK 8/9 at 5 Msym/s
-    python3 host/rx_twin.py --rate 5e6 --dummies 3 3 9 --frames 40 --check
+    python3 host/rx_twin.py --rate 5e6 --ts --dummies 3 3 9 --frames 40 --out ts.sc8
 
-Transmitter: host/dvbs2.py frames carrying the firmware's test payload (host/rx.py model), dummy
-PLFRAMEs after the frames listed, the
+Transmitter: host/dvbs2.py frames carrying the firmware's test payload (host/rx.py model), or with
+--ts its TS replay input (host/rx.py ts_model), dummy PLFRAMEs after the frames listed, the
 firmware pulse (shaper_taps.h: inverse-hold RRC at 40 MS/s, 360 taps at 1 Msym/s, 72 taps at
 5 Msym/s), each DAC sample held for 25 ns, then band-limited to the dump's +-8 MHz. Channel and receiver: symbol clock offset
 and carrier offset that drift together (both radios run from 40 MHz crystals), Wiener phase
@@ -64,6 +64,7 @@ class Link:
     tx_image_db: float = -32.0
     gap: tuple = None            # (after this many frames, seconds of keyed tone)
     dummies: tuple = ()          # a dummy PLFRAME after each frame listed (repeat for more)
+    ts: bool = False             # payload: the TS replay input instead of the GCS test stream
     lead_symbols: int = 500      # receiver noise before the transmitter starts
     seed: int = 2026
 
@@ -96,7 +97,10 @@ def frames(link):
     """Symbols (phase index, 0..7) and per-frame truth: first symbol, model frame, codeword."""
     rate, modulation = mode(link.modcod)
     size = (dvbs2.code(rate, link.short).kbch - 80) // 8
-    model = rx.model(size, link.first + link.frames, link.callsign)
+    if link.ts:
+        model = rx.ts_model(link.modcod, link.first + link.frames, short=link.short)
+    else:
+        model = rx.model(size, link.first + link.frames, link.callsign)
     parts, truth, at = [np.zeros(link.lead_symbols, np.uint8)], [], link.lead_symbols
     active = [np.zeros(link.lead_symbols, bool)]
     for j in range(link.frames):
@@ -107,7 +111,12 @@ def frames(link):
             at += g
         k = link.first + j
         bits = np.unpackbits(np.frombuffer(model[k], np.uint8))
-        cw = dvbs2.fecframe(dvbs2.bbframe(bits, rate, link.short), rate, link.short)
+        if link.ts:
+            syncd = (-8 * size * k) % 1504
+            bbf = np.concatenate([dvbs2.bbheader(dvbs2.matype1(dvbs2.TS), 8 * size, 1504, 0x47, syncd), bits])
+        else:
+            bbf = dvbs2.bbframe(bits, rate, link.short)
+        cw = dvbs2.fecframe(bbf, rate, link.short)
         ph = dvbs2.plframe_phases(cw, rate, link.short, modulation=modulation)
         truth.append(dict(symbol=at, model_frame=k, codeword=cw, phases=ph))
         parts.append(ph)
@@ -308,6 +317,7 @@ def main():
     p.add_argument("--gap", type=float, nargs=2, metavar=("AFTER", "SECONDS"))
     p.add_argument("--dummies", type=int, nargs="*", default=(), metavar="AFTER",
                    help="a dummy PLFRAME after each of these frames (repeat for more)")
+    p.add_argument("--ts", action="store_true", help="TS replay payload")
     p.add_argument("--out", type=pathlib.Path, help=".u32 dump words, or .sc8 int8 I, Q pairs")
     p.add_argument("--check", action="store_true", help="run the C demodulator on it")
     p.add_argument("--reference", type=int, default=0, help="frames for the float reference")

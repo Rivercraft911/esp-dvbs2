@@ -314,11 +314,81 @@ def test_continuity(so):
     print("continuity: duplicate, no payload, discontinuity indicator, nulls, 16 PIDs: ok")
 
 
+def test_link(so, folder):
+    """The whole receiver on the host: the transmitter's TS replay input (host/rx.py ts_model) in
+    8PSK 8/9 short frames at 5 Msym/s with dummy PLFRAMEs between them, through the twin channel,
+    the C demodulator, the FEC check and the deframer, gives back the replay's packets."""
+    import rx
+    import rx_demod as R
+    import rx_twin as T
+    modcod = 16
+    dfl = (d.code("8/9", True).kbch - 80) // 8
+    stream = b"".join(rx.ts_messages(0, 30, True))
+    packets = [stream[i:i + 188] for i in range(0, len(stream), 188)]
+    link = T.Link(rate=5e6, modcod=modcod, frames=14, mer_db=24, seed=10, ts=True,
+                  dummies=(3, 6, 6, 9) + (11,) * 12)
+    words, truth = T.twin(link)
+    demod = R.Demod(R.build(folder), modcod, rate=5e6, cfo_hint=-16600, cfo_span=40000)
+    demod.feed(words)
+    check = ct.create_string_buffer(so.rx_fec_check_size(modcod) + 16)
+    fec = ct.addressof(check) + (-ct.addressof(check) % 16)
+    assert so.rx_fec_init(fec, modcod, None) == 0
+    r = Deframer(so)
+    received = []
+    for f in demod.frames:
+        hard = (ct.c_uint8 * 2048)()
+        ct.memmove(hard, np.packbits(f["hard"]).tobytes(), 2025)
+        frame = Frame(None, hard, None, 0, f["sequence"], 0, 0, 0, f["modcod"], f["type"])
+        payload = ct.POINTER(ct.c_uint8)()
+        n = so.rx_fec_frame(fec, ct.byref(frame), ct.byref(payload), None)
+        assert n == dfl, n
+        r.so.rx_ts_frame(r.mem, hard, n, f["sequence"])
+        received.append(min(truth, key=lambda t: abs(t["header_sample"] - f["header_sample"]))["model_frame"])
+    r.flush()
+    s = r.stats()
+    assert received == list(range(1, 14)) and demod.stats()["dummies"] == 16, (received, demod.stats())
+    assert r.out == expected(packets, dfl, received)[0] and s["crc_errors"] == s["resyncs"] == 0, s
+    assert s["cc_errors"] == sum(a[6] == 6 and a[4] == 7 for a in r.out[:-1]), s   # replay wraps
+    print(f"link: twin 8PSK 8/9 TS frames with 16 dummies, demodulated, checked and deframed: "
+          f"{s['packets']} packets exact: ok")
+
+
+def test_pattern(folder):
+    """The receiver checks `rx ... ts pattern` packets with ingress_pattern_ts_differs: zero for the
+    transmitter's own packets (host/spi_input.py pattern), nonzero for any changed byte."""
+    from spi_input import pattern
+    ingress = ROOT / "firmware/components/ingress"
+    lib = pathlib.Path(folder) / "pattern.so"
+    subprocess.run(shlex.split(os.environ.get("CC", "cc")) + [
+        "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-fPIC", "-shared", "-I", str(ingress / "include"),
+        str(ingress / "ingress_pattern.c"), "-o", str(lib)], check=True)
+    so = ct.CDLL(str(lib))
+    so.ingress_pattern_ts_differs.restype = ct.c_uint32
+    so.ingress_pattern_ts_differs.argtypes = [ct.c_char_p, ct.c_uint16, ct.c_uint]
+    so.ingress_pattern_packet.argtypes = [ct.c_void_p, ct.c_uint16, ct.c_uint, ct.c_uint]
+    rng = np.random.default_rng(6)
+    for seq in (0, 1, 7, 8, 255, 256, 4097, 65535):
+        message = pattern(seq, 1)
+        for j in range(7):
+            p = message[188 * j:188 * (j + 1)]
+            out = ct.create_string_buffer(188)
+            so.ingress_pattern_packet(out, seq, j, 1)
+            assert out.raw == p and so.ingress_pattern_ts_differs(p, seq, j) == 0, (seq, j)
+            for k in [0, 3, 4, 6, 7, 8, 187] + list(rng.integers(0, 188, 4)):
+                bad = bytearray(p)
+                bad[k] ^= 1 << int(rng.integers(8))
+                assert so.ingress_pattern_ts_differs(bytes(bad), seq, j), (seq, j, k)
+        assert so.ingress_pattern_ts_differs(message[:188], seq, 7)
+    print("pattern: the transmitter's packets pass, any flipped bit fails: ok")
+
+
 def main():
     with tempfile.TemporaryDirectory() as tmp:
+        test_pattern(tmp)
         so = build(tmp)
         for test in (test_exact, test_boundaries, test_gaps, test_crc, test_headers, test_continuity):
             test(so)
+        test_link(so, tmp)
     print("rx ts deframer passed")
 
 

@@ -45,6 +45,21 @@ def main():
     assert ok["passed"] and ok["first_model_frame"] == 3 and ok["payload_mbps"] == 12.6402, ok
     crcs[5] = dict(crcs[5], crc=crcs[5]["crc"] ^ 1)
     assert not rx.check(crcs, 16, "KJ5SCH", 40, 5e6)["passed"]
+
+    # TS input: the model's data fields are host/dvbs2.py ts_bbframes of the transmitter's
+    # replay loop and of a live sender's counting pattern (60 frames cross the 56-packet loop).
+    import numpy as np
+    import dvbs2
+    for modcod, rate, replay in ((7, "3/4", True), (16, "8/9", False), (13, "2/3", True)):
+        stream = b"".join(rx.ts_messages(0, 120, replay))
+        want = [np.packbits(f[80:]).tobytes() for f in
+                dvbs2.ts_bbframes(np.frombuffer(stream, np.uint8), rate, short=True)]
+        assert rx.ts_model(modcod, 60, replay) == want[:60], (modcod, replay)
+    assert rx.ts_messages(8, 1, True) == rx.ts_messages(0, 1, True) != rx.ts_messages(8, 1, False)
+    model = rx.ts_model(7, 40)
+    crcs = [dict(sequence=3 + k, length=len(p), payload=b"", crc=zlib.crc32(p)) for k, p in enumerate(model[5:35])]
+    ok = rx.check(crcs, 7, "KJ5SCH", 40, 5e6, payloads=model)
+    assert ok["passed"] and ok["first_model_frame"] == 5 and ok["payload_mbps"] == 6.9486, ok
     print("rx host checks passed")
 
 
