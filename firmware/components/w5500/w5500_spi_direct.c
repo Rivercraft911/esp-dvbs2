@@ -31,7 +31,10 @@
  * interrupt that gives a semaphore), anything shorter spins on SPI_USR. Every wait has a deadline;
  * one that passes aborts: both GDMA links are stopped and reset, GP-SPI2 goes through its
  * peripheral reset, and later frames fail until the chip is started again, so no buffer stays
- * with the GDMA after an error is returned. */
+ * with the GDMA after an error is returned.
+ * Ownership: GP-SPI2 is claimed through ESP-IDF's SPI-common allocator (spicommon_bus_alloc, as
+ * the TX's SPI input does), so neither can take it from the other; the GDMA channels come from
+ * ESP-IDF's allocator and are set to a known configuration, whatever a previous owner left. */
 #include "w5500_port.h"
 #include "w5500_gpspi.h"
 
@@ -40,6 +43,7 @@
 #include "esp_intr_alloc.h"
 #include "esp_private/gdma.h"
 #include "esp_private/periph_ctrl.h"
+#include "esp_private/spi_common_internal.h"
 #include "esp_rom_sys.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -103,10 +107,15 @@
 /* GDMA channel n registers, TRM 3.7 (p.369): base + 0xC0 n. */
 #define CH_STRIDE 0xC0u
 #define IN_CONF0 0x00u                    /* GDMA_IN_CONF0_CHn: GDMA_IN_RST_CHn [0] */
+#define IN_CONF1 0x04u                    /* GDMA_IN_CONF1_CHn: GDMA_IN_CHECK_OWNER_CHn [12] */
+#define IN_INT_ENA 0x10u
 #define IN_INT_RAW 0x08u                  /* GDMA_IN_SUC_EOF_CHn [1], GDMA_IN_DSCR_ERR_CHn [3] */
 #define IN_INT_CLR 0x14u
 #define IN_LINK 0x20u                     /* GDMA_INLINK_ADDR_CHn [19:0], _START_CHn [22] */
 #define OUT_CONF0 0x60u                   /* GDMA_OUT_RST_CHn [0] */
+#define OUT_CONF1 0x64u                   /* GDMA_OUT_CHECK_OWNER_CHn [12] */
+#define OUT_INT_ENA 0x70u
+#define OUT_INT_CLR 0x74u
 #define OUT_LINK 0x80u                    /* GDMA_OUTLINK_ADDR_CHn [19:0], _START_CHn [21] */
 #define IN_SUC_EOF (1u << 1)
 #define IN_DSCR_ERR (1u << 3)
@@ -114,6 +123,12 @@
 #define INLINK_STOP (1u << 21)
 #define OUTLINK_START (1u << 21)
 #define OUTLINK_STOP (1u << 20)
+#define CHECK_OWNER (1u << 12)
+/* GDMA_IN_CONF0_CHn: IN_LOOP_TEST, INDSCR_BURST_EN, IN_DATA_BURST_EN, MEM_TRANS_EN (TRM 3.8) */
+#define IN_CONF0_OFF 0x1Eu
+/* GDMA_OUT_CONF0_CHn: OUT_LOOP_TEST, OUT_AUTO_WRBACK, OUTDSCR_BURST_EN, OUT_DATA_BURST_EN */
+#define OUT_CONF0_OFF 0x36u
+#define OUT_EOF_MODE (1u << 3)            /* EOF once the last byte has left the GDMA */
 #define LINK_ADDR 0xFFFFFu
 #define DMA_RAM_LOW 0x3FC88000u           /* internal RAM the GDMA reaches (TRM 3.4.8, p.364) */
 #define DMA_RAM_HIGH 0x3FD00000u
@@ -181,8 +196,19 @@ _Static_assert(GDMA_IN_CONF0_CH0_REG == GDMA_BASE + IN_CONF0 &&
                GDMA_IN_DSCR_ERR_CH0_INT_RAW == IN_DSCR_ERR &&
                GDMA_INLINK_START_CH0 == INLINK_START && GDMA_OUTLINK_START_CH0 == OUTLINK_START &&
                GDMA_INLINK_ADDR_CH0 == LINK_ADDR && GDMA_OUTLINK_ADDR_CH0 == LINK_ADDR, "GDMA");
-_Static_assert(GDMA_INLINK_STOP_CH0 == INLINK_STOP && GDMA_OUTLINK_STOP_CH0 == OUTLINK_STOP,
-               "GDMA link stop");
+_Static_assert(GDMA_IN_CONF1_CH0_REG == GDMA_BASE + IN_CONF1 &&
+               GDMA_IN_INT_ENA_CH0_REG == GDMA_BASE + IN_INT_ENA &&
+               GDMA_OUT_CONF1_CH0_REG == GDMA_BASE + OUT_CONF1 &&
+               GDMA_OUT_INT_ENA_CH0_REG == GDMA_BASE + OUT_INT_ENA &&
+               GDMA_OUT_INT_CLR_CH0_REG == GDMA_BASE + OUT_INT_CLR &&
+               GDMA_INLINK_STOP_CH0 == INLINK_STOP && GDMA_OUTLINK_STOP_CH0 == OUTLINK_STOP &&
+               GDMA_IN_CHECK_OWNER_CH0 == CHECK_OWNER &&
+               GDMA_OUT_CHECK_OWNER_CH0 == CHECK_OWNER &&
+               IN_CONF0_OFF == (GDMA_IN_LOOP_TEST_CH0 | GDMA_INDSCR_BURST_EN_CH0 |
+                                GDMA_IN_DATA_BURST_EN_CH0 | GDMA_MEM_TRANS_EN_CH0) &&
+               OUT_CONF0_OFF == (GDMA_OUT_LOOP_TEST_CH0 | GDMA_OUT_AUTO_WRBACK_CH0 |
+                                 GDMA_OUTDSCR_BURST_EN_CH0 | GDMA_OUT_DATA_BURST_EN_CH0) &&
+               GDMA_OUT_EOF_MODE_CH0 == OUT_EOF_MODE, "GDMA channel configuration");
 _Static_assert(SYSTEM_PERIP_CLK_EN0_REG == PERIP_CLK_EN0 &&
                SYSTEM_PERIP_RST_EN0_REG == PERIP_RST_EN0 && SYSTEM_SPI2_CLK_EN == SYS_SPI2 &&
                SYSTEM_SPI2_RST == SYS_SPI2, "system registers");
@@ -222,7 +248,8 @@ static struct {
     uint32_t end;            /* CPU cycle count at which the transfer in flight should end */
     uint32_t cycles_per_byte;
     int8_t pins[4];          /* sclk, mosi, miso, cs */
-    bool claimed;            /* GP-SPI2's clock is on and it is ours */
+    bool claimed;            /* GP-SPI2 is ours (spicommon_bus_alloc) */
+    bool bus_clock_was_on;   /* SYSTEM_SPI2_CLK_EN before we started */
     bool routed;             /* the pins are connected */
     bool busy, reading;      /* a DMA transfer is in flight */
     bool failed;             /* a transfer was aborted: frames fail until the next start */
@@ -436,6 +463,21 @@ static bool configure(void)
     return cleared(G_CMD, CMD_UPDATE, UPDATE_US);
 }
 
+/* Whatever the channels' previous owner left (TRM 3.8): no burst, so size, length and buffer
+ * address need no alignment (Table 3.4-2, p.364); no loop test or memory-to-memory; no owner
+ * check or descriptor write-back; EOF once the last byte has left the GDMA; no interrupts. */
+static void dma_configure(void)
+{
+    put(d.ch + IN_CONF0, get(d.ch + IN_CONF0) & ~IN_CONF0_OFF);
+    put(d.ch + IN_CONF1, get(d.ch + IN_CONF1) & ~CHECK_OWNER);
+    put(d.ch + OUT_CONF0, (get(d.ch + OUT_CONF0) & ~OUT_CONF0_OFF) | OUT_EOF_MODE);
+    put(d.ch + OUT_CONF1, get(d.ch + OUT_CONF1) & ~CHECK_OWNER);
+    put(d.ch + IN_INT_ENA, 0);
+    put(d.ch + OUT_INT_ENA, 0);
+    put(d.ch + IN_INT_CLR, 0xFFFFFFFFu);
+    put(d.ch + OUT_INT_CLR, 0xFFFFFFFFu);
+}
+
 void w5500_port_stop(void)
 {
     if (d.claimed && !d.failed && !finish()) d.failed = true;
@@ -449,7 +491,10 @@ void w5500_port_stop(void)
         d.routed = false;
     }
     if (d.claimed) {
-        PERIPH_RCC_ATOMIC() { put(PERIP_CLK_EN0, get(PERIP_CLK_EN0) & ~SYS_SPI2); }
+        spicommon_bus_free(SPI2_HOST);
+        if (!d.bus_clock_was_on) {
+            PERIPH_RCC_ATOMIC() { put(PERIP_CLK_EN0, get(PERIP_CLK_EN0) & ~SYS_SPI2); }
+        }
         d.claimed = false;
     }
     if (d.intr) esp_intr_free(d.intr);
@@ -479,19 +524,26 @@ esp_err_t w5500_port_start(const w5500_settings *s, w5500_bus *bus)
     if (!d.done) d.done = xSemaphoreCreateBinaryStatic(&d.done_buf);
     d.failed = false;
 
-    /* GP-SPI2's bus clock on and a reset (TRM 17.3.5). A GDMA channel pair connected to SPI2
-     * (Table 3.4-1: peripheral 0) through ESP-IDF's allocator. The SPI2 interrupt line for
-     * sleeping on TRANS_DONE. */
-    PERIPH_RCC_ATOMIC() { put(PERIP_CLK_EN0, get(PERIP_CLK_EN0) | SYS_SPI2); }
-    d.claimed = true;
-    spi_reset();
+    /* GP-SPI2 through ESP-IDF's SPI-common allocator, then its bus clock on and a reset (TRM
+     * 17.3.5). A GDMA channel pair connected to SPI2 (Table 3.4-1: peripheral 0) through ESP-IDF's
+     * allocator, then configured. The SPI2 interrupt line for sleeping on TRANS_DONE. */
+    esp_err_t err = spicommon_bus_alloc(SPI2_HOST, "w5500");
+    if (!err) {
+        d.claimed = true;
+        PERIPH_RCC_ATOMIC() {
+            d.bus_clock_was_on = get(PERIP_CLK_EN0) & SYS_SPI2;
+            put(PERIP_CLK_EN0, get(PERIP_CLK_EN0) | SYS_SPI2);
+        }
+        spi_reset();
+    }
     int group, channel;
-    esp_err_t err = gdma_new_ahb_channel(&(gdma_channel_alloc_config_t){0}, &d.tx, &d.rx);
+    if (!err) err = gdma_new_ahb_channel(&(gdma_channel_alloc_config_t){0}, &d.tx, &d.rx);
     if (!err) err = gdma_connect(d.tx, GDMA_MAKE_TRIGGER(GDMA_TRIG_PERIPH_SPI, 2));
     if (!err) err = gdma_connect(d.rx, GDMA_MAKE_TRIGGER(GDMA_TRIG_PERIPH_SPI, 2));
     if (!err) err = gdma_get_group_channel_id(d.tx, &group, &channel);
     if (!err) {
         d.ch = GDMA_BASE + CH_STRIDE * (uint32_t)channel;
+        dma_configure();
         err = esp_intr_alloc(ETS_SPI2_INTR_SOURCE, ESP_INTR_FLAG_LOWMED, on_done, NULL, &d.intr);
     }
     if (!err && !configure()) err = ESP_ERR_TIMEOUT;
