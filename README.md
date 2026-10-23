@@ -191,7 +191,7 @@ and the synthetic test payloads carry it too. External payload bytes are sent un
 | `host/` | Board protocol, Python reference encoder, receiver checks, figures |
 | `examples/` | [Self-check](examples/self-check/README.md), [USB send](examples/usb-send/README.md), [SPI sender](examples/pi-sender/README.md), [live video](examples/live-video/README.md), [over the air](examples/over-the-air/README.md) |
 | `tests/` | Standard vectors, C/Python agreement, pinned output CRCs ([running them](docs/how-it-works.md#checking-changes)) |
-| `results/` | Every recorded run, one folder per run with its README and raw records |
+| `results/` | The run records since 2026-10-19, one folder per run with its README and raw records; earlier evidence is indexed in [measurements](docs/measurements.md#earlier-work) |
 | `docs/` | [How it works](docs/how-it-works.md), [transmitter](docs/transmitter.md), [receiver](docs/receiver.md), [transmitting and receiving](docs/transmitting.md), [SPI input](docs/spi-input.md), [measurements](docs/measurements.md), [story](docs/story.md), [credits](docs/prior-art.md) |
 
 ## Licence
