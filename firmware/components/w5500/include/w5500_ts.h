@@ -49,6 +49,8 @@ typedef struct {
     uint32_t (*clock)(void);        /* a cycle counter for the send times, or NULL */
     unsigned next;                  /* the buffer the next datagram is built in */
     uint16_t held;                  /* bytes in buf[next] that the chip refused, 0 if none */
+    uint16_t wr;                    /* the socket's Sn_TX_WR after the last SEND seen to start */
+    uint32_t wr_at;                 /* clock() just after that call: about when the SEND began */
     w5500_ts_stats st;
 } w5500_ts_sender;
 

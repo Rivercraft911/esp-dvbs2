@@ -45,7 +45,7 @@ void w5500_ts_sender_init(w5500_ts_sender *t, w5500 *chip, unsigned sock, w5500_
                           uint8_t *const buf[2], uint32_t (*clock)(void))
 {
     *t = (w5500_ts_sender){.chip = chip, .sock = sock, .q = q, .buf = {buf[0], buf[1]},
-                           .clock = clock};
+                           .clock = clock, .wr = chip->sock[sock].tx_wr};
 }
 
 int w5500_ts_send(w5500_ts_sender *t, bool partial)
@@ -60,7 +60,11 @@ int w5500_ts_send(w5500_ts_sender *t, bool partial)
         }
         const uint32_t start = t->clock ? t->clock() : 0;
         const int e = w5500_udp_send(t->chip, t->sock, t->buf[t->next], n);
-        const uint32_t cycles = t->clock ? t->clock() - start : 0;
+        const uint32_t after = t->clock ? t->clock() : 0, cycles = after - start;
+        if (t->chip->sock[t->sock].tx_wr != t->wr) {   /* this call started a SEND */
+            t->wr = t->chip->sock[t->sock].tx_wr;
+            t->wr_at = after;
+        }
         if (e == W5500_FULL) {
             t->held = (uint16_t)n;
             t->st.full++;

@@ -74,7 +74,8 @@ class TsStats(ct.Structure):
 class TsSender(ct.Structure):
     _fields_ = [("chip", ct.c_void_p), ("sock", ct.c_uint), ("q", ct.POINTER(TsQueue)),
                 ("buf", ct.c_void_p * 2), ("clock", ct.c_void_p), ("next", ct.c_uint),
-                ("held", ct.c_uint16), ("st", TsStats)]
+                ("held", ct.c_uint16), ("wr", ct.c_uint16), ("wr_at", ct.c_uint32),
+                ("st", TsStats)]
 
 
 CLOCK = ct.CFUNCTYPE(ct.c_uint32)
@@ -940,6 +941,10 @@ def test_ts(native):
             link.push(ts_packet(k))
         check(link.send() == FULL and link.t.held == TS_DATAGRAM and link.waiting() == 7,
               "second datagram refused and held")
+        # The first datagram's SEND, and the clock just after the call that gave it: its own call,
+        # or with posting the next one (w5500_udp_send).
+        check(link.t.wr == chip.peek16(0, 0x24) and link.t.wr_at == (150 if mode else 50),
+              "when the first datagram's SEND was given")
         check(link.send() == FULL and link.t.st.full == 2, "still no room")
         chip.lib.fake_advance(chip.f, 2000.0)
         check(link.send() == OK or link.t.held, "held datagram goes first")

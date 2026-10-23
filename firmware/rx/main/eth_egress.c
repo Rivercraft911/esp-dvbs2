@@ -71,15 +71,30 @@ static void kick(void *arg)
  * (w5500.h). At 10 Mb/s a 1,316-byte datagram is 1.106 ms on the wire, longer than a tick, so
  * the sender is woken when it should be done: its bytes plus 66 of UDP, IP, Ethernet, preamble
  * and gap, at the link rate, from when its SEND was given. */
-static void wake_after_send(const w5500_socket *so, uint16_t *last_wr, int64_t *started)
+typedef struct {
+    uint16_t wr;                /* Sn_TX_WR at the last SEND seen */
+    uint32_t started;           /* CPU cycle count just after the call that gave it */
+} send_clock;
+
+/* After every driver call: a new SEND moved Sn_TX_WR. With a posting backend a later call first
+ * waits out a payload write (about 400 us), so the sender notes it inside w5500_ts_send. */
+static void note_send(const w5500_socket *so, send_clock *c)
 {
-    const int64_t now = esp_timer_get_time();
-    if (so->tx_wr != *last_wr) {
-        *last_wr = so->tx_wr;
-        *started = now;
+    if (e.t.wr != c->wr && e.t.wr == so->tx_wr) {
+        c->wr = e.t.wr;
+        c->started = e.t.wr_at;
+    } else if (so->tx_wr != c->wr) {
+        c->wr = so->tx_wr;
+        c->started = esp_cpu_get_cycle_count();
     }
+}
+
+static void wake_after_send(const w5500_socket *so, const send_clock *c)
+{
     if (!so->flight) return;
-    int64_t due = *started + (so->flight + 66) * 8 / e.link_mbps + 10 - now;
+    const int32_t since = (int32_t)(esp_cpu_get_cycle_count() - c->started) /
+                          CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
+    int64_t due = (so->flight + 66) * 8 / e.link_mbps + 10 - since;
     if (due < 20) due = 20;
     esp_timer_stop(e.kick);
     esp_timer_start_once(e.kick, (uint64_t)due);
@@ -93,12 +108,12 @@ static int pump(void)
     TickType_t since = 0, end = 0;
     bool waiting = false;       /* fewer than seven packets wait */
     int staged = 0;             /* datagrams in the chip not yet sent */
-    uint16_t last_wr = w->sock[0].tx_wr;
-    int64_t started = 0;
+    send_clock clock = {w->sock[0].tx_wr, 0};
     for (;;) {
         const bool ending = e.ending;   /* read first: every packet was pushed before it was set */
         const uint32_t before = e.t.st.datagrams;
         int r = w5500_ts_send(&e.t, false);
+        note_send(&w->sock[0], &clock);
         const TickType_t now = xTaskGetTickCount();
         if (e.t.st.datagrams != before) waiting = false;
         if (r == W5500_OK && w5500_ts_waiting(&e.q)) {
@@ -106,14 +121,17 @@ static int pump(void)
             waiting = true;
             if (ending || now - since >= HOLD) {
                 r = w5500_ts_send(&e.t, true);
+                note_send(&w->sock[0], &clock);
                 waiting = false;
             }
         }
         if (r < 0) return r;
-        if (r == W5500_FULL || e.t.st.datagrams != before || staged > 0)
+        if (r == W5500_FULL || e.t.st.datagrams != before || staged > 0) {
             staged = w5500_udp_poll(w, 0);   /* starts the last datagram's SEND */
+            note_send(&w->sock[0], &clock);
+        }
         if (staged < 0) return staged;
-        if (staged > 0) wake_after_send(&w->sock[0], &last_wr, &started);
+        if (staged > 0) wake_after_send(&w->sock[0], &clock);
         if (ending) {
             if (!staged && !e.t.held && !w5500_ts_waiting(&e.q)) return W5500_OK;
             if (!end) end = now | 1;
