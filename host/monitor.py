@@ -2,7 +2,7 @@
 """Live window on the whole link: cameras, CM5, transmitting S3, radio, receiving S3, viewer.
 
     python3 host/monitor.py              # listen on UDP 1235, poll pv view on 127.0.0.1:8768
-    python3 host/monitor.py --cm5 pigeon@pigeonvision.local:~/esp-dvbs2-ota/live/status.json
+    python3 host/monitor.py --cm5 pigeon@pigeonvision.local:esp-dvbs2-ota/live-20261023/
     python3 host/monitor.py --demo       # every source synthetic, no hardware
 
 Then open http://127.0.0.1:8770/. Four sources feed it:
@@ -20,7 +20,8 @@ Then open http://127.0.0.1:8770/. Four sources feed it:
                                   ten times a second: u16 count, u8 bits per symbol, u8 0
       type 4, transmitter stats   JSON, the transmitter's `status` records, once a second
 
-- `--cm5 USER@HOST:PATH`: pv-capture's status file, read once a second over ssh.
+- `--cm5 USER@HOST:PATH`: pv-capture's status file, read once a second over ssh. A PATH ending
+  in / means the newest */status.json below it, since every capture run needs a new session.
 - `--viewer URL`: PigeonVision's `pv view` health report, polled once a second.
 
 The page gets everything through server-sent events, with rates derived here from the counters.
@@ -280,10 +281,12 @@ def listen(monitor: Monitor, port: int):
 def poll_cm5(monitor: Monitor, target: str, key: str | None):
     """One ssh session that prints the status file once a second; reconnects if it drops."""
     host, path = target.split(':', 1)
+    pick = f'f=$(ls -t {path}*/status.json 2>/dev/null | head -1)' if path.endswith('/') else f'f={path}'
+
     opts = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', '-o', 'ServerAliveInterval=5']
     if key:
         opts += ['-i', key, '-o', 'IdentitiesOnly=yes']
-    remote = f'while :; do tr -d "\\n" < {path} 2>/dev/null; echo; sleep 1; done'
+    remote = f'while :; do {pick}; tr -d "\\n" < "$f" 2>/dev/null; echo; sleep 1; done'
     while True:
         p = subprocess.Popen(['ssh', *opts, host, remote], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
         for line in p.stdout:
