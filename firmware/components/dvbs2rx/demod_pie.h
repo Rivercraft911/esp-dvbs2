@@ -49,6 +49,11 @@ void demod_mf5_c(const demod_mf_t *m, unsigned n, int16_t *oi, int16_t *oq);
  * window: groups windows from x (I) and x + DEMOD_STRIDE (Q), advancing 16 samples a group,
  * against the five 32-byte coefficient sets at sets, outputs five per group. */
 void demod_mf5_pie(const int8_t *x, const int8_t *sets, unsigned groups, int16_t *oi, int16_t *oq);
+/* A 5 Msym/s batch from time t (Q24 samples): the five centres' offsets in their windows (1/32
+ * sample) in c, the first window base in *b0 (samples), and the first centre past a window
+ * advance (0: none). In 64 bits: 32-bit times in 1/32 sample wrap every 2^27 samples (8.4 s), and a
+ * batch whose centres straddled the wrap took it for a window advance and lost up to 256 symbols. */
+unsigned demod_mf5_plan(uint64_t t, uint32_t step, uint32_t c[5], uint64_t *b0);
 /* demod_mf5_c's outputs by demod_mf5_pie: sets (192 bytes, 16-byte aligned) and key (5 words,
  * zero at first) cache the coefficient sets between calls. Writes oi, oq from index -4. */
 void demod_mf5_run(const demod_mf_t *m, unsigned n, int16_t *oi, int16_t *oq, int8_t *sets,
