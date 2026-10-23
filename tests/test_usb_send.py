@@ -335,6 +335,15 @@ def test_safety():
     a.dump = None; a.key = True; assert send.command(a) == 'dvb 2400 4 10 0'
     a.seconds = 61; rejects(send.command, a)
     rejects(send.mode, 13, '1m'); rejects(send.mode, 13, '26m667')
+    # Short frames: (Kbch - 80) / 8 bytes in 8,370 QPSK or 5,598 8PSK symbols; no short 9/10.
+    assert send.mode(7, '5m', True) == (1454, 8*1454*5e6/8370/1e6) and send.mode(10, '1m', True)[0] == 1769
+    assert send.mode(16, '5m', True) == (1769, 8*1769*5e6/5598/1e6) and send.mode(4, '1m', True)[0] == 869
+    for bad in ((11, '1m'), (17, '5m'), (12, '1m'), (7, '10m')):
+        rejects(send.mode, *bad, True)
+    a.seconds, a.short, a.modcod, a.frequency = 20, True, 7, 2395
+    assert send.command(a) == 'dvb 2395 7 20 0 --short'
+    a.key = False; a.rate = '5m'; assert send.command(a) == 'dvbpace 7 5m 20 --short'
+    a.short, a.modcod, a.rate, a.frequency = False, 4, '1m', 2400
     with tempfile.TemporaryDirectory() as tmp:
         source = Path(tmp)/'x'; source.write_bytes(b'x')
         class Link:

@@ -22,6 +22,11 @@ deframes every frame and checks each packet against the pattern (`rx ... ts patt
 receiver's TS counters must account for every exact frame and the packets in them, and be clean:
 no CRC-8 errors, pattern errors or jumps, restarts or late frames, and continuity errors only
 where the replay loops (it repeats 56 packets, not a multiple of 16).
+
+--input FILE: the transmitter's input was these bytes, sent from their start (examples/usb-send):
+a TS file with --ts live, or the GCS byte stream otherwise (send.py's file container, say). The
+model is then that input cut into data fields. --save FILE writes the data fields of the exact
+frames, in sequence order, as received at 1 Msym/s: `send.py unpack FILE [--fec]` takes them.
 """
 from __future__ import annotations
 
@@ -177,6 +182,22 @@ def ts_model(modcod: int, frames: int, replay: bool = True, short: bool = True) 
     return [bytes(stream[k * size:(k + 1) * size]) for k in range(frames)]
 
 
+def input_model(data: bytes, size: int, frames: int, ts: bool) -> list[bytes]:
+    """Data fields of the transmitter's first `frames` frames, at most, when its input was `data`
+    from the start. TS: whole 188-byte packets, each sync byte replaced by the CRC-8 of the packet
+    before it (the first by 0), as ts_model does. GCS: the bytes as they are."""
+    if ts:
+        import numpy as np
+        n = min(len(data) // 188, -(-frames * size // 188) + 1)
+        pk = np.frombuffer(data, np.uint8, n * 188).reshape(n, 188).copy()
+        crc, table = np.zeros(n, np.uint8), np.array(CRC8, np.uint8)
+        for j in range(1, 188):          # every packet's CRC-8 at once, one byte column at a time
+            crc = table[crc ^ pk[:, j]]
+        pk[1:, 0], pk[0, 0] = crc[:-1], 0
+        data = pk.tobytes()
+    return [bytes(data[k * size:(k + 1) * size]) for k in range(min(frames, len(data) // size))]
+
+
 class Periodic:
     """Keys that repeat with a period after a distinct first one."""
     def __init__(self, first, period: list, length: int):
@@ -314,16 +335,21 @@ def check(frames, modcod: int, callsign: str, tx_frames: int, symbol_rate: float
         keys = model_keys(size, tx_frames, callsign, crc)
     elif keys is None:
         keys = [zlib.crc32(p) for p in payloads] if crc else payloads
-    index = {}
+    index, count = {}, {}
     for k, v in enumerate(keys):
         index.setdefault(v, k)
+        count[v] = count.get(v, 0) + 1
     good = sorted((f for f in frames if f["length"] == size), key=lambda f: f["sequence"])
     report = dict(frame_bytes=size, records=len(frames), decoded=len(good),
                   failed=sum(f["length"] < 0 for f in frames))
     if not good:
         return report | dict(exact=0, passed=False)
-    k0 = index.get(key(good[0]))
     s0 = good[0]["sequence"]
+    # Place the run by the first frame whose payload occurs once in the model: an input can open
+    # with repeated fields (send.py's zero-filled acquisition frames). Else by the first frame.
+    anchor = next((f for f in good if count.get(key(f)) == 1), good[0])
+    k0 = index.get(key(anchor))
+    k0 = None if k0 is None else k0 - (anchor["sequence"] - s0)
     implied = lambda f: k0 + f["sequence"] - s0
     matches = [k0 is not None and 0 <= implied(f) < len(keys) and keys[implied(f)] == key(f) for f in good]
     found = [implied(f) if ok else index.get(key(f)) for f, ok in zip(good, matches)]
@@ -423,7 +449,14 @@ def main() -> int:
                    help="with --ts: deframe only, without the receiver's check of every packet")
     p.add_argument("--tx-frames", type=int, help="model frames to search (default: the run and 60 s)")
     p.add_argument("--out", type=pathlib.Path, help="append the summary to this JSON-lines file")
+    p.add_argument("--input", type=pathlib.Path,
+                   help="the transmitter's input from its start: a TS file (--ts live) or GCS bytes")
+    p.add_argument("--save", type=pathlib.Path, help="1 Msym/s: write the exact frames' data fields here")
     a = p.parse_args()
+    if a.input and a.ts == "replay":
+        p.error("--input is the live input: use it with --ts live, or without --ts for GCS")
+    if a.save and a.rate != "1m":
+        p.error("--save needs payloads: at 5 Msym/s the records carry CRC-32s")
     port = board.resolve_port(a.port)
     token = (" 5m" if a.rate == "5m" else "") + ((" ts" if a.no_pattern else " ts pattern") if a.ts else "")
     if a.replay:
@@ -439,12 +472,21 @@ def main() -> int:
         before, frames, after = receive(port, command, timeout)
     tx_frames = a.tx_frames or model_frames(a.seconds, a.rate, a.modcod)
     crc = any("crc" in f for f in frames)
-    keys = ts_keys(a.modcod, tx_frames, a.ts == "replay", crc) if a.ts else None
+    if a.input:
+        fields = input_model(a.input.read_bytes(), frame_bytes(a.modcod), tx_frames, bool(a.ts))
+        keys = [zlib.crc32(f) for f in fields] if crc else fields
+    else:
+        keys = ts_keys(a.modcod, tx_frames, a.ts == "replay", crc) if a.ts else None
     result = check(frames, a.modcod, a.callsign, tx_frames, SYMBOL_RATE[a.rate], keys=keys)
+    if a.save:
+        good = sorted((f for f in frames if f["length"] == frame_bytes(a.modcod)), key=lambda f: f["sequence"])
+        a.save.write_bytes(b"".join(f["payload"] for f in good))
+        result["saved"] = dict(file=str(a.save), frames=len(good), bytes=len(good) * frame_bytes(a.modcod))
     if a.ts:
         result["ts"] = ts_verdict(after, a.ts == "replay", result, not a.no_pattern)
         result["passed"] = result["passed"] and result["ts"]["passed"]
     summary = dict(firmware=firmware, command=command, replay=str(a.replay) if a.replay else None,
+                   input=str(a.input) if a.input else None,
                    board=before + after, check=result,
                    frames=[{k: v for k, v in f.items() if k != "payload"} for f in frames[:3]],
                    failed=[{k: v for k, v in f.items() if k != "payload"} | {"index": n}

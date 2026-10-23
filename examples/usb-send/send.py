@@ -20,6 +20,9 @@ MAGIC = b'PVFILE1\n'
 HEADER = struct.Struct('<8sHQ32s')  # magic, UTF-8 name length, file length, SHA-256
 KBCH = (32208, 38688, 43040, 48408, 51648, 53840, 57472, 58192,
         38688, 43040, 48408, 53840, 57472, 58192)
+# Short frames (16,200 bits), MODCOD 4..10 and 12..16; there is no short 9/10.
+KBCH_SHORT = (7032, 9552, 10632, 11712, 12432, 13152, 14232, None,
+              9552, 10632, 11712, 13152, 14232, None)
 
 
 def fec_codec():
@@ -161,26 +164,30 @@ def unpack(source, output=None, *, fec=False, bbf=False):
     return dict(file=str(target), name=name, bytes=length, sha256=digest.hexdigest())
 
 
-def mode(modcod, rate):
+def mode(modcod, rate, short=False):
     if not 4 <= modcod <= 17 or (rate == '1m' and modcod >= 12) or (rate in ('26m667', '33m333') and modcod >= 12):
         raise ValueError('MODCOD 4..11: QPSK; 12..17: 8PSK; 1m/26m667/33m333 require QPSK')
-    frame_bytes = (KBCH[modcod-4]-80)//8
-    symbols = 33282 if modcod < 12 else 22194
+    if short and (rate not in ('1m', '5m') or KBCH_SHORT[modcod-4] is None):
+        raise ValueError('short frames: 1m or 5m, MODCOD 4..10 or 12..16')
+    frame_bytes = ((KBCH_SHORT if short else KBCH)[modcod-4]-80)//8
+    symbols = (8370 if modcod < 12 else 5598) if short else (33282 if modcod < 12 else 22194)
     symbol_rate = {'1m': 1000000, '5m': 5000000, '10m': 10000000,
                    '20m': 20000000, '26m667': 80000000/3, '33m333': 100000000/3}[rate]
     return frame_bytes, 8*frame_bytes*symbol_rate/symbols/1e6
 
 
 def command(a):
-    mode(a.modcod, a.rate)
+    short = getattr(a, 'short', False)
+    mode(a.modcod, a.rate, short)
     named = '' if a.rate == '1m' else a.rate+' '
+    flag = ' --short' if short else ''  # the firmware takes the flag anywhere on the line
     if a.dump:
-        return f'dvbdump {a.modcod} {named}{a.frames}'
+        return f'dvbdump {a.modcod} {named}{a.frames}{flag}'
     if a.key:
         if not 1 <= a.seconds <= 60:
             raise ValueError('keyed duration must be 1..60 seconds')
-        return f'dvb {a.frequency} {a.modcod} {named}{a.seconds} {a.gain}'
-    return f'dvbpace {a.modcod} {named}{a.seconds}'
+        return f'dvb {a.frequency} {a.modcod} {named}{a.seconds} {a.gain}{flag}'
+    return f'dvbpace {a.modcod} {named}{a.seconds}{flag}'
 
 
 def sender_stats():
@@ -616,6 +623,7 @@ def main(argv=None):
     controls.add_argument('--control', type=Path, help='live MODCOD text file; enables GCS VCM at 1m/5m')
     controls.add_argument('--schedule', type=control_schedule, help='seconds after opening ID:MODCOD, e.g. 0:4,3:7,6:11,9:4')
     s.add_argument('--mixed', action='store_true', help='allow QPSK/8PSK controls at 5m; requires --control or --schedule')
+    s.add_argument('--short', action='store_true', help='16,200-bit frames: QPSK 4..10 at 1m or 5m, 8PSK 12..16 at 5m')
     s.add_argument('--seconds', type=int, default=10); s.add_argument('--frames', type=int, default=24)
     safety = s.add_mutually_exclusive_group()
     safety.add_argument('--dump', type=Path, help='radio-off IQ dump instead of radio-off pace')
@@ -646,7 +654,7 @@ def main(argv=None):
         cmd = command(a); report['command'] = cmd
         a.report.parent.mkdir(parents=True, exist_ok=True)
         a.report.write_text(json.dumps(report, indent=2)+'\n')
-        frame_bytes, capacity = mode(a.modcod, a.rate)
+        frame_bytes, capacity = mode(a.modcod, a.rate, a.short)
         kind = a.kind or ('file' if a.fec else 'ts' if a.file == '-' or Path(a.file).suffix.lower() == '.ts' else 'file')
         if a.fec and kind != 'file':
             raise ValueError('--fec requires --kind file')
@@ -655,6 +663,8 @@ def main(argv=None):
             raise ValueError('--mixed needs --control/--schedule and --rate 5m')
         if live and a.fec:
             raise ValueError('--control/--schedule with --fec is not supported')
+        if live and a.short:
+            raise ValueError('VCM runs on normal frames; --short is not supported with --control/--schedule')
         if live:
             if kind == 'ts' or a.rate not in ('1m', '5m'):
                 raise ValueError('--control needs file/GCS at 1m or 5m; TS VCM needs Annex D')
