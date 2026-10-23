@@ -129,8 +129,9 @@ Three tasks share core 0:
   known blocks, takes off the leak, descrambles and demaps. Each code bit becomes a hard bit, its
   sign, and a weak bit, set when it lies less than half the noise-free distance from its decision
   boundary. For 8PSK it writes each symbol's three bits to three bit planes, which undoes the
-  column interleaver. Hard and weak bits cost 0.3 to 0.5 dB against full soft bits in a host
-  simulation, and a frame needs 4 KB instead of 16 KB, so frames stay in internal RAM.
+  column interleaver. A frame of hard and weak bits needs 4 KB instead of 16 KB, so frames stay
+  in internal RAM. A host simulation during development put the cost against full soft bits at
+  0.3 to 0.5 dB; that simulation was not kept as a record, so treat the figure as an estimate.
 - **Check** re-encodes each frame's hard bits with the transmitter's own fast BCH and LDPC encoder
   and compares parity: 31.6k cycles for a clean QPSK 3/4 frame
   ([commit](https://github.com/Rivercraft911/esp-dvbs2/commit/32990841d2ad3f8822499dd570fe7ecc2c9cc52e)).
@@ -139,8 +140,9 @@ Three tasks share core 0:
   cold caches.
 - **Decode** (lowest priority) runs a layered normalized min-sum LDPC decoder in int8 on frames
   that fail the check, one at a time. It uses the code's 360-column structure, 16 checks per PIE
-  vector, and builds two-level beliefs from the hard and weak bits. With its 48 KB work area in
-  PSRAM an iteration takes 393k cycles
+  vector, and builds two-level beliefs from the hard and weak bits. For QPSK 3/4 short frames
+  (MODCOD 7), with the 48 KB work area in PSRAM, an iteration takes 393k cycles; other MODCODs
+  need different amounts of decoder memory
   ([commit](https://github.com/Rivercraft911/esp-dvbs2/commit/d2c33ea94fa3ab788602c8cf5d83ea9cca9ab1bb)),
   for at most 8 iterations with an early stop. 8PSK MODCODs use the code of the QPSK MODCOD with
   the same rate.
