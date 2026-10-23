@@ -4,6 +4,7 @@
     python3 host/rx.py 7 --mhz 2420 --gain 32 --seconds 30 --port PORT --callsign KJ5SCH
     python3 host/rx.py 16 --rate 5m --seconds 30 --port PORT --callsign KJ5SCH
     python3 host/rx.py 7 --replay capture.sc8 --port PORT --callsign KJ5SCH
+    python3 host/rx.py 16 --rate 5m --ts replay --seconds 30 --port PORT
 
 --replay uploads a recorded 16 MS/s int8 capture and runs it through the same receiver with
 the radio off, paced as the radio would deliver it, timing every push.
@@ -14,6 +15,13 @@ continuous xorshift32 stream seeded with 2026, with the callsign in the first 40
 frame (host/decode.py payload_sequence). Each received payload (or CRC) must equal the model
 frame's that its sequence number implies. Exits 1 unless every frame from the first decoded one
 to the last is present and exact.
+
+--ts: the transmitter sends its TS test input (`spiinput ... ts replay`, or a live sender's
+counting pattern), the model is that input's TS BBFRAMEs (ts_model), and the receiver also
+deframes every frame and checks each packet against the pattern (`rx ... ts pattern`). Then the
+receiver's TS counters must account for every exact frame and the packets in them, and be clean:
+no CRC-8 errors, pattern errors or jumps, restarts or late frames, and continuity errors only
+where the replay loops (it repeats 56 packets, not a multiple of 16).
 """
 from __future__ import annotations
 
@@ -71,6 +79,61 @@ def model(size: int, frames: int, callsign: str) -> list[bytes]:
     header = ("ESP-DVBS2 ID=" + morse.callsign(callsign)).ljust(39).encode("ascii") + b"\n"
     data = stream(size * frames)
     return [header + data[k * size + 40:(k + 1) * size] for k in range(frames)]
+
+
+CRC8 = [0] * 256
+for _v in range(256):
+    _c = _v
+    for _ in range(8):
+        _c = ((_c << 1) ^ (0xD5 if _c & 0x80 else 0)) & 0xFF
+    CRC8[_v] = _c
+
+
+def ts_crc8(packet: bytes) -> int:
+    """CRC-8 of a packet's 187 bytes after the sync byte (5.1.4), as host/dvbs2.py crc8."""
+    c = 0
+    for b in packet[1:188]:
+        c = CRC8[c ^ b]
+    return c
+
+
+def ts_messages(first: int, count: int, replay: bool) -> list[bytes]:
+    """The transmitter's TS test input, 7 packets per PV message (host/spi_input.py pattern).
+    `spiinput ... ts replay` repeats the messages of sequence 0..7 (ingress_replay_fill); a live
+    sender counts its sequence on from 0, wrapping at 65,536."""
+    from spi_input import pattern
+    cache = {}
+    out = []
+    for m in range(first, first + count):
+        seq = m % 8 if replay else m % 65536
+        if seq not in cache:
+            cache[seq] = pattern(seq, 1)
+        out.append(cache[seq])
+    return out
+
+
+def ts_model(modcod: int, frames: int, replay: bool = True, short: bool = True) -> list[bytes]:
+    """Data fields of the transmitter's first `frames` TS frames for that input: the sync byte of
+    each packet replaced by the CRC-8 of the packet before it (the first by 0), cut into fields of
+    Kbch - 80 bits, as host/dvbs2.py ts_bbframes does (tests/test_rx_host.py checks the two
+    agree)."""
+    rate = PSK8_RATES[modcod - 12] if modcod >= 12 else RATES[modcod - 1]
+    size = (BCH_PARAMS["short" if short else "normal"][rate][0] - 80) // 8
+    messages = -(-size * frames // 1316) + 1
+    if replay:
+        cycle = b"".join(ts_messages(0, 8, True))
+        crcs = [ts_crc8(cycle[188 * i:188 * i + 188]) for i in range(56)]
+        period = bytearray(cycle)
+        for i in range(56):
+            period[188 * i] = crcs[i - 1]
+        stream = bytearray(period * (-(-messages // 8)))
+    else:
+        stream = bytearray(b"".join(ts_messages(0, messages, False)))
+        crcs = [ts_crc8(stream[i:i + 188]) for i in range(0, len(stream), 188)]
+        for i in range(1, len(crcs)):
+            stream[188 * i] = crcs[i - 1]
+    stream[0] = 0
+    return [bytes(stream[k * size:(k + 1) * size]) for k in range(frames)]
 
 
 def read_exact(link, n: int, deadline: float) -> bytes:
@@ -164,13 +227,15 @@ def upload(port: str, data: bytes) -> dict:
         link.close()
 
 
-def check(frames, modcod: int, callsign: str, tx_frames: int, symbol_rate: float = 1e6) -> dict:
+def check(frames, modcod: int, callsign: str, tx_frames: int, symbol_rate: float = 1e6,
+          payloads: list[bytes] | None = None) -> dict:
     """Frames carry a payload, or at 5 Msym/s its CRC-32 ("crc"); either must match the model
     frame that the sequence implies. Records arrive in sequence order except decoded ones.
     Tens of thousands of model frames share some CRC-32s (birthday collisions), so a frame is
-    compared with the model frame its sequence implies, and the lookup is only a fallback."""
+    compared with the model frame its sequence implies, and the lookup is only a fallback.
+    payloads: the transmitter's data fields, if not its synthetic GCS stream (ts_model)."""
     size = frame_bytes(modcod)
-    expected = model(size, tx_frames, callsign)
+    expected = payloads if payloads is not None else model(size, tx_frames, callsign)
     crc = any("crc" in f for f in frames)
     key = (lambda f: f["crc"]) if crc else (lambda f: f["payload"])
     keys = [zlib.crc32(p) for p in expected] if crc else expected
@@ -200,8 +265,41 @@ def check(frames, modcod: int, callsign: str, tx_frames: int, symbol_rate: float
                   first_model_frame=k0, sequence_span=span, span_seconds=round(span * period, 3),
                   mer_db=[mers[0] / 100, mers[len(mers) // 2] / 100] if mers else None,
                   exact=exact, missing=span - len(good), payload_mbps=round(8 * size / period / 1e6, 4),
+                  missing_sequences=sorted(set(range(s0, s0 + span)) - {f["sequence"] for f in good})[:8],
                   exact_bytes=exact * size, passed=k0 is not None and exact == span == len(good))
     return report
+
+
+def ts_packets_expected(first_frame: int, frames: int, size: int) -> tuple[int, int]:
+    """Packets a deframer must hand on from model frames first_frame .. first_frame + frames - 1
+    received in a row, data fields of `size` bytes: those that start at or after the first packet
+    start in the range and whose CRC-8 (the next packet's first byte) is in it, and the one ending
+    exactly at the end of the range, unchecked at the flush. Returns (all, unchecked)."""
+    lo, hi = first_frame * size, (first_frame + frames) * size
+    first = -(-lo // 188)
+    checked = max(0, (hi - 1) // 188 - first)
+    unchecked = int(hi % 188 == 0 and hi // 188 - 1 >= first)
+    return checked + unchecked, unchecked
+
+
+def ts_verdict(records, replay: bool, frames: dict) -> dict:
+    """The receiver's TS counters (`rx ... ts pattern` summary) against the frames check(): every
+    good frame went through the deframer (frames the LDPC decoder repaired come too late and do
+    not), and it handed on exactly the packets those frames hold. Then the counters are clean."""
+    summary = next((r for r in records if isinstance(r.get("ts"), dict)), None)
+    if summary is None:
+        return dict(passed=False, error="no ts counters")
+    t, p = summary["ts"], summary["ts"]["pattern"]
+    k0, span, size = frames.get("first_model_frame"), frames.get("sequence_span", 0), frames["frame_bytes"]
+    want, want_unchecked = ts_packets_expected(k0, span, size) if k0 is not None else (None, None)
+    deframed = frames.get("decoded", 0) - summary.get("decoded", 0)
+    clean = (t["crc_errors"] == p["bad"] == p["jumps"] == t["resyncs"] == t["late"] == t["not_ts"] == 0
+             and t["cc_errors"] == (p["wraps"] if replay else 0) and t["unchecked"] == want_unchecked
+             and p["checked"] == t["packets"] == want and t["frames"] == deframed > 0)
+    return dict(packets=t["packets"], expected_packets=want, frames=t["frames"], expected_frames=deframed,
+                crc_errors=t["crc_errors"], cc_errors=t["cc_errors"], replay_wraps=p["wraps"],
+                pattern_bad=p["bad"], pattern_jumps=p["jumps"], resyncs=t["resyncs"],
+                unchecked=t["unchecked"], null_packets=t["null_packets"], passed=clean)
 
 
 def main() -> int:
@@ -216,11 +314,13 @@ def main() -> int:
     p.add_argument("--skip", type=int, default=0, help="replay: leave out every SKIP-th push")
     p.add_argument("--port", default=board.DEFAULT_PORT)
     p.add_argument("--callsign", default="N0CALL")
+    p.add_argument("--ts", choices=("replay", "live"),
+                   help="TS test input: the transmitter's `ts replay` loop, or a live sender's count")
     p.add_argument("--tx-frames", type=int, help="model frames to search (default: 60 s of the rate)")
     p.add_argument("--out", type=pathlib.Path, help="append the summary to this JSON-lines file")
     a = p.parse_args()
     port = board.resolve_port(a.port)
-    token = " 5m" if a.rate == "5m" else ""
+    token = (" 5m" if a.rate == "5m" else "") + (" ts pattern" if a.ts else "")
     if a.replay:
         data = a.replay.read_bytes()
         command = f"replay {a.modcod}" + (f" {a.skip}" if a.skip else "") + token
@@ -232,11 +332,14 @@ def main() -> int:
         if a.replay:
             upload(port, data)
         before, frames, after = receive(port, command, timeout)
+    tx_frames = a.tx_frames or int(60 * SYMBOL_RATE[a.rate] / frame_symbols(a.modcod)) + 100
+    payloads = ts_model(a.modcod, tx_frames, a.ts == "replay") if a.ts else None
+    result = check(frames, a.modcod, a.callsign, tx_frames, SYMBOL_RATE[a.rate], payloads)
+    if a.ts:
+        result["ts"] = ts_verdict(after, a.ts == "replay", result)
+        result["passed"] = result["passed"] and result["ts"]["passed"]
     summary = dict(firmware=firmware, command=command, replay=str(a.replay) if a.replay else None,
-                   board=before + after,
-                   check=check(frames, a.modcod, a.callsign,
-                               a.tx_frames or int(60 * SYMBOL_RATE[a.rate] / frame_symbols(a.modcod)) + 100,
-                               SYMBOL_RATE[a.rate]),
+                   board=before + after, check=result,
                    frames=[{k: v for k, v in f.items() if k != "payload"} for f in frames[:3]],
                    failed=[{k: v for k, v in f.items() if k != "payload"} | {"index": n}
                            for n, f in enumerate(frames) if f["length"] < 0],

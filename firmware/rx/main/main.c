@@ -15,6 +15,7 @@
 #include "esp_psram.h"
 #include "freertos/FreeRTOS.h"
 
+#include "arena.h"
 #include "capture.h"
 #include "receive.h"
 #include "replay.h"
@@ -27,19 +28,38 @@ static int console_put(char c, FILE *stream)
     return usb_serial_jtag_write_bytes(&c, 1, portMAX_DELAY) == 1 ? 0 : EOF;
 }
 
-/* Logs from Wi-Fi start and stop would land inside rx's binary stream. */
+/* Logs during a run would land inside rx's binary stream. */
 static volatile bool quiet;
 static int log_filter(const char *format, va_list args)
 {
     return quiet ? 0 : vprintf(format, args);
 }
 
+/* Memory since boot: the arenas' use and the heap use arena.h counts (there should be none). */
+static void print_memory(void)
+{
+    arena_heap_t h;
+    arena_heap(&h);
+    printf(",\"arena\":{\"low\":[%u,%u],\"high\":[%u,%u],\"psram\":[%u,%u]},"
+           "\"heap_after_boot\":{\"allocs\":%lu,\"frees\":%lu,\"failed\":%lu,\"bytes\":%u,\"last_size\":%lu,"
+           "\"last_caps\":%lu},\"min_free_internal\":%u,\"min_free_psram\":%u",
+           (unsigned)arena_low.peak, (unsigned)arena_low.size, (unsigned)arena_high.peak,
+           (unsigned)arena_high.size, (unsigned)arena_psram.peak, (unsigned)arena_psram.size,
+           (unsigned long)h.allocs, (unsigned long)h.frees, (unsigned long)h.failed, (unsigned)h.bytes,
+           (unsigned long)h.last_size, (unsigned long)h.last_caps,
+           (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+           (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM));
+}
+
+/* rx's and replay's results: one run at a time, and large (the push log), so one static copy. */
+static receive_stats_t run;
+
 static void print_capture(const capture_stats_t *s)
 {
     printf(",\"samples\":%llu,\"dropped\":%llu,\"drops\":%lu,\"units\":%lu,\"max_late\":%lu,\"max_service\":%lu,"
            "\"max_service_at\":%llu,\"max_clear\":%lu,"
            "\"max_spin\":%lu,\"max_lag\":%lu,"
-           "\"free_before\":%lu,\"free_wifi\":%lu,\"free_ready\":%lu,\"largest_ready\":%lu,"
+           "\"free_before\":%lu,\"free_ready\":%lu,\"largest_ready\":%lu,"
            "\"min_free\":%lu,\"capture_stack_free\":%lu,"
            "\"gain_max\":%u,\"status\":\"%s\",\"cleanup\":\"%s\"",
            (unsigned long long)s->samples, (unsigned long long)s->dropped, (unsigned long)s->drops,
@@ -47,7 +67,7 @@ static void print_capture(const capture_stats_t *s)
            (unsigned long)s->max_service, (unsigned long long)s->max_service_at,
            (unsigned long)s->max_clear,
            (unsigned long)s->max_spin, (unsigned long)s->max_lag,
-           (unsigned long)s->free_before, (unsigned long)s->free_wifi,
+           (unsigned long)s->free_before,
            (unsigned long)s->free_ready, (unsigned long)s->largest_ready,
            (unsigned long)s->min_free, (unsigned long)s->stack_free, s->gain_max,
            esp_err_to_name(s->error), esp_err_to_name(s->cleanup));
@@ -76,11 +96,12 @@ static esp_err_t IRAM_ATTR dump_unit(const uint32_t *w, size_t count, uint64_t f
 
 static void dump(unsigned mhz, unsigned gain, unsigned pairs)
 {
-    dump_t d = {.i = heap_caps_aligned_alloc(16, 2 * (size_t)pairs, MALLOC_CAP_SPIRAM), .n = pairs};
-    if (!d.i || !pairs) {
-        printf("@{\"cmd\":\"dump\",\"error\":\"no memory for %u pairs\"}\n", pairs);
+    if (!pairs || pairs > ARENA_STORE_BYTES / 2) {
+        printf("@{\"cmd\":\"dump\",\"error\":\"pairs 1..%u\"}\n", (unsigned)(ARENA_STORE_BYTES / 2));
         return;
     }
+    replay_forget();            /* the dump overwrites the store an upload filled */
+    dump_t d = {.i = arena_store, .n = pairs};
     d.q = d.i + pairs;
     capture_config_t c = {.mhz = mhz, .gain = gain, .seconds = 1 + pairs / CAPTURE_RATE};
     capture_stats_t s;
@@ -102,7 +123,6 @@ static void dump(unsigned mhz, unsigned gain, unsigned pairs)
         fflush(stdout);
         receive_write(d.i, 2 * (size_t)pairs);
     }
-    heap_caps_free(d.i);
 }
 
 /* Level, DC, ADC clipping and the gain field (bits 27:20) on every 64th sample. */
@@ -168,6 +188,44 @@ static unsigned symbol_rate(const char *token)
     return !*token || !strcmp(token, "1m") ? 1000000 : !strcmp(token, "5m") ? 5000000 : 0;
 }
 
+/* The words after a run's numbers: [1m|5m] [ts [pattern] [nonull]], and for a replay a skip
+ * count. Returns false on anything else. */
+static bool run_options(char *rest, unsigned *rate, unsigned *skip, receive_options_t *o)
+{
+    char *save, *t;
+    for (t = strtok_r(rest, " ", &save); t; t = strtok_r(NULL, " ", &save)) {
+        if (symbol_rate(t)) *rate = symbol_rate(t);
+        else if (!strcmp(t, "ts")) o->ts = true;
+        else if (!strcmp(t, "pattern")) o->pattern = true;
+        else if (!strcmp(t, "nonull")) o->drop_null = true;
+        else if (skip && *t >= '0' && *t <= '9') *skip = (unsigned)atoi(t);
+        else return false;
+    }
+    return o->ts || !(o->pattern || o->drop_null);
+}
+
+/* TS mode's counters, inside a summary left open. */
+static void print_ts(const receive_stats_t *r)
+{
+    const rx_ts_stats_t *t = &r->ts;
+    printf(",\"ts\":{\"frames\":%lu,\"packets\":%lu,\"crc_errors\":%lu,\"unchecked\":%lu,"
+           "\"null_packets\":%lu,\"cc_errors\":%lu,\"resyncs\":%lu,\"syncd_errors\":%lu,\"not_ts\":%lu,"
+           "\"late\":%lu,\"dropped_bytes\":%lu,\"untracked\":%lu,\"cycles\":%llu,\"max_cycles\":%lu,"
+           "\"pids\":[",
+           (unsigned long)t->frames, (unsigned long)t->packets, (unsigned long)t->crc_errors,
+           (unsigned long)t->unchecked, (unsigned long)t->null_packets, (unsigned long)t->cc_errors,
+           (unsigned long)t->resyncs, (unsigned long)t->syncd_errors, (unsigned long)t->not_ts,
+           (unsigned long)t->late, (unsigned long)t->dropped_bytes, (unsigned long)t->untracked,
+           (unsigned long long)r->ts_cycles, (unsigned long)r->max_ts_cycles);
+    for (unsigned k = 0; k < r->ts_pids; ++k)
+        printf("%s{\"pid\":%u,\"packets\":%lu,\"cc_errors\":%lu}", k ? "," : "", r->pids[k].pid,
+               (unsigned long)r->pids[k].packets, (unsigned long)r->pids[k].cc_errors);
+    const receive_pattern_t *p = &r->pattern;
+    printf("],\"pattern\":{\"checked\":%lu,\"bad\":%lu,\"jumps\":%lu,\"wraps\":%lu,\"cycles\":%llu}}",
+           (unsigned long)p->checked, (unsigned long)p->bad, (unsigned long)p->jumps,
+           (unsigned long)p->wraps, (unsigned long long)p->cycles);
+}
+
 /* A receive or replay summary, left open for more fields. */
 static void print_receive(const char *cmd, esp_err_t e, unsigned modcod, unsigned rate,
                           const receive_stats_t *r)
@@ -179,7 +237,7 @@ static void print_receive(const char *cmd, esp_err_t e, unsigned modcod, unsigne
            "\"stack_free\":[%lu,%lu,%lu],\"free_internal\":%lu,\"largest_internal\":%lu,"
            "\"demod\":{\"words\":%llu,\"frames\":%lu,\"lost\":%lu,\"dropped\":%lu,\"relocks\":%lu,"
            "\"rejects\":%lu,\"locked\":%u,\"cfo_hz\":%ld,\"clock_ppb\":%ld,\"acquire_cycles\":%lu,"
-           "\"dc\":[%d,%d]}",
+           "\"dc\":[%d,%d],\"dummies\":%lu}",
            cmd, esp_err_to_name(e), modcod, rate, (unsigned long)r->frames, (unsigned long)r->good,
            (unsigned long)r->failed, (unsigned long)r->decoded, (unsigned long)r->dropped,
            (unsigned long)r->max_iterations, (unsigned long)r->pushes,
@@ -193,7 +251,7 @@ static void print_receive(const char *cmd, esp_err_t e, unsigned modcod, unsigne
            (unsigned long)r->demod.lost, (unsigned long)r->demod.dropped,
            (unsigned long)r->demod.relocks, (unsigned long)r->demod.rejects, r->demod.locked,
            (long)r->demod.cfo_hz, (long)r->demod.clock_ppb, (unsigned long)r->demod.acquire_cycles,
-           r->demod.dc_i, r->demod.dc_q);
+           r->demod.dc_i, r->demod.dc_q, (unsigned long)r->demod.dummies);
 }
 
 void app_main(void)
@@ -206,6 +264,10 @@ void app_main(void)
     stdout = &output;
     setvbuf(stdin, NULL, _IONBF, 0);
     esp_log_set_vprintf(log_filter);
+    receive_init();
+    const esp_err_t radio = capture_init();
+    const int fits = !arena_check();
+    arena_booted();
     char line[96];
     while (true) {
         if (!fgets(line, sizeof line, stdin)) { vTaskDelay(1); continue; }
@@ -217,45 +279,55 @@ void app_main(void)
             uint8_t mac[6];
             esp_read_mac(mac, ESP_MAC_WIFI_STA);
             printf("@{\"cmd\":\"info\",\"app\":\"esp_dvbs2_rx\",\"firmware\":\"%s\","
-                   "\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\",\"psram_bytes\":%u,"
-                   "\"free_internal\":%u,\"largest_internal\":%u}\n",
+                   "\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\",\"psram_bytes\":%u,\"radio\":\"%s\","
+                   "\"arena_fits\":%s,\"free_internal\":%u,\"largest_internal\":%u,\"free_psram\":%u",
                    esp_app_get_description()->version, mac[0], mac[1], mac[2], mac[3], mac[4],
-                   mac[5], (unsigned)esp_psram_get_size(),
+                   mac[5], (unsigned)esp_psram_get_size(), esp_err_to_name(radio),
+                   fits ? "true" : "false",
                    (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-                   (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+                   (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                   (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+            print_memory();
+            printf("}\n");
         } else if (fields >= 4 && !strcmp(cmd, "rxprobe") && fields == 4) {
             capture_config_t c = {.mhz = mhz, .gain = gain, .seconds = seconds};
             rxprobe(&c);
         } else if (fields >= 5 && !strcmp(cmd, "rx")) {
             unsigned modcod = 0, rate = 1000000;
-            char token[8] = "";
-            if (sscanf(line, "rx %*u %*u %*u %u %7s", &modcod, token) == 2) rate = symbol_rate(token);
+            int used = 0;
+            receive_options_t o = {0};
+            bool ok = sscanf(line, "rx %*u %*u %*u %u %n", &modcod, &used) == 1 && used &&
+                      run_options(line + used, &rate, NULL, &o);
             capture_config_t c = {.mhz = mhz, .gain = gain, .seconds = seconds};
-            static receive_stats_t r;
             capture_stats_t s = {0};
+            memset(&run, 0, sizeof run);
             quiet = true;
-            esp_err_t e = rate ? receive_run(&c, modcod, rate, &r, &s) : ESP_ERR_INVALID_ARG;
+            esp_err_t e = ok ? receive_run(&c, modcod, rate, &o, &run, &s) : ESP_ERR_INVALID_ARG;
             quiet = false;
-            print_receive("rx", e, modcod, rate, &r);
+            print_receive("rx", e, modcod, rate, &run);
+            if (o.ts) print_ts(&run);
             print_capture(&s);
+            print_memory();
             printf("}\n");
         } else if (fields == 2 && !strcmp(cmd, "upload")) {
             replay_upload(mhz);
         } else if (fields >= 2 && !strcmp(cmd, "replay")) {
             unsigned modcod = mhz, skip = 0, rate = 1000000;
-            char *save, *token = strtok_r(line, " ", &save);
-            strtok_r(NULL, " ", &save);
-            while ((token = strtok_r(NULL, " ", &save)))    /* [skip] [5m] */
-                strchr(token, 'm') ? (void)(rate = symbol_rate(token)) : (void)(skip = (unsigned)atoi(token));
-            static receive_stats_t r;
+            int used = 0;
+            receive_options_t o = {0};
+            bool ok = sscanf(line, "replay %*u %n", &used) == 0 && used &&
+                      run_options(line + used, &rate, &skip, &o);
             capture_stats_t s = {0};
+            memset(&run, 0, sizeof run);
             quiet = true;
-            esp_err_t e = rate ? replay_run(modcod, rate, skip, &r, &s) : ESP_ERR_INVALID_ARG;
+            esp_err_t e = ok ? replay_run(modcod, rate, skip, &o, &run, &s) : ESP_ERR_INVALID_ARG;
             quiet = false;
-            print_receive("replay", e, modcod, rate, &r);
+            print_receive("replay", e, modcod, rate, &run);
+            if (o.ts) print_ts(&run);
             print_capture(&s);
+            print_memory();
             printf(",\"push_words\":%u}\n@{\"cmd\":\"replay\",\"push_log\":[", CAPTURE_UNIT);
-            for (unsigned k = 0; k < r.pushes && k < RECEIVE_LOG; ++k) printf("%s%lu", k ? "," : "", (unsigned long)r.log[k]);
+            for (unsigned k = 0; k < run.pushes && k < RECEIVE_LOG; ++k) printf("%s%lu", k ? "," : "", (unsigned long)run.log[k]);
             printf("]}\n");
         } else if (fields == 4 && !strcmp(cmd, "dump")) {
             dump(mhz, gain, seconds);
@@ -264,13 +336,13 @@ void app_main(void)
             uint32_t r[16];
             capture_stats_t s;
             capture_bench(&c, r, &s);
-            printf("@{\"cmd\":\"membench\",\"words\":4096,\"running\":{\"bank\":[%lu,%lu,%lu,%lu],"
-                   "\"dram\":[%lu,%lu]},\"stopped\":{\"bank\":[%lu,%lu,%lu,%lu],\"dram\":[%lu,%lu]}",
-                   r[0], r[1], r[2], r[3], r[4], r[5], r[8], r[9], r[10], r[11], r[12], r[13]);
+            printf("@{\"cmd\":\"membench\",\"words\":4096,\"running\":{\"bank\":[%lu,%lu,%lu],"
+                   "\"dram\":[%lu,%lu]},\"stopped\":{\"bank\":[%lu,%lu,%lu],\"dram\":[%lu,%lu]}",
+                   r[0], r[1], r[2], r[4], r[5], r[8], r[9], r[10], r[12], r[13]);
             print_capture(&s);
             printf("}\n");
         } else {
-            printf("@{\"error\":\"use info, rxprobe MHz gain seconds, rx MHz gain seconds MODCOD [5m], dump MHz gain pairs, upload bytes, replay MODCOD [skip] [5m], membench MHz gain\"}\n");
+            printf("@{\"error\":\"use info, rxprobe MHz gain seconds, rx MHz gain seconds MODCOD [5m] [ts [pattern] [nonull]], dump MHz gain pairs, upload bytes, replay MODCOD [skip] [5m] [ts [pattern] [nonull]], membench MHz gain\"}\n");
         }
         printf("@{\"done\":true}\n");
     }

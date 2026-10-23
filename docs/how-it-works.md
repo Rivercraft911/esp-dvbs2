@@ -232,7 +232,7 @@ them into frames of hard bits, checks or decodes each frame and sends a record o
 core 1: dump banks, 16 MS/s -> int8 I/Q -> matched filter at each symbol time
         -> header and pilot blocks: timing, carrier, DC, leak -> raw data symbols -> symbol ring
 core 0: release: DC, derotation, leak, PL descrambling, demapping -> hard and weak bits
-        check: re-encode -> BCH and BBHEADER -> USB record
+        check: re-encode -> BCH and BBHEADER -> USB record (-> TS deframer -> egress)
         decode (frames that fail the check): layered min-sum LDPC, state in PSRAM
 ```
 
@@ -243,13 +243,14 @@ re-anchors, so handoffs land within a few samples. The task then processes relea
 may trail by a unit. If it trails by two, the interrupt takes back the newest bank it has not
 started; the loss reaches the demodulator as a jump in the sample index.
 
-Wi-Fi starts only to power and calibrate the PHY. The run holds the PHY through the
-Bluetooth modem bit, as `physolo` does for the transmitter, keeps the Wi-Fi clock domain
-referenced and deinitializes Wi-Fi. Stopping Wi-Fi also clears bit 1 of
-`SYSCON_WIFI_BB_CFG_REG`, which the dump needs: without it the samples hold a constant.
-The receiver sets it again; a diff of the radio registers with Wi-Fi up and stopped found it.
-No Wi-Fi interrupt or periodic work runs during a capture. Run memory is allocated after
-the teardown, and every task stack is static in internal RAM.
+The receiver never starts Wi-Fi. At boot it powers the modem domain and enables the PHY
+under the Bluetooth modem bit, which calibrates it in full; ESP-IDF turns the Wi-Fi and
+Bluetooth clocks on for that itself, as for a Bluetooth-only application. It keeps the Wi-Fi
+clock domain referenced, since the dump engine is part of the Wi-Fi baseband, and each run
+sets bit 1 of `SYSCON_WIFI_BB_CFG_REG`, which a running Wi-Fi sets and the dump needs: without
+it the samples hold a constant (a diff of the radio registers with Wi-Fi up and stopped found
+it). No Wi-Fi code is linked. The receiver's own tasks use static stacks in internal RAM;
+ESP-IDF's main and IPC tasks are created once at boot.
 
 **Front end.** Each 10-bit word becomes int8 I and Q, floor(s10/4), at 1.55 cycles per
 sample. A root-raised-cosine matched filter is evaluated only at symbol times.
@@ -286,7 +287,9 @@ after it is measured, so the carrier phase is known at both ends. On core 0, thr
   between the blocks, takes off the leak, descrambles and demaps. For 8PSK it writes each
   symbol's three bits to three bit planes, which undoes the column interleaver. If it falls
   behind, core 1 drops a frame rather than wait.
-- The check task re-encodes each frame's hard bits.
+- The check task re-encodes each frame's hard bits. When it holds all three frame slots, the
+  release task waits up to 2 ms for one before it drops a frame: after a lock the first frames
+  come in a burst while the first check runs with cold caches.
 - The decode task (lowest priority) runs the LDPC decoder on frames that fail the check, one
   at a time.
 
@@ -308,7 +311,27 @@ iterations and failing checks (`firmware/rx/main/receive.h`). At 1 Msym/s the pa
 At 5 Msym/s, 12.64 Mb/s is more than the 12 Mb/s signalling rate of the S3's full-speed USB
 port, so the payload's CRC-32 follows instead, and `host/rx.py` compares it with the model
 frame the sequence implies. A failed frame carries its 8-byte header sample index, 2,025 bytes
-of hard bits and 2,025 of weak bits. The console takes `rx MHz gain seconds MODCOD [5m]`.
+of hard bits and 2,025 of weak bits. The console takes
+`rx MHz gain seconds MODCOD [5m] [ts [pattern] [nonull]]`.
+
+**Dummy frames.** A transmitter whose input runs dry sends dummy PLFRAMEs: a header with MODCOD
+0, then 3,240 symbols of unmodulated carrier and no pilots (EN 302 307-1 5.5.1). While locked,
+the receiver takes a dummy's header as one more known block, runs the matched filter through its
+carrier (the DC estimate goes on, the symbols are not kept) and expects the next header 3,330
+symbols later. Acquisition locks only on a frame's header: when the header it lands on is a
+dummy's, it hops 3,330 symbols to the next header and tries again.
+
+**Transport streams.** In TS mode (`ts`) the check task also turns each good frame back into
+188-byte MPEG transport stream packets (`dvbs2rx` `rx_ts.c`, EN 302 307-1 5.1.4 to 5.1.6). The
+transmitter replaced each packet's sync byte with the CRC-8 of the packet before it and cut the
+stream into data fields regardless of packet boundaries, so the deframer carries a packet across
+frames, checks each packet when the next one's first byte arrives, marks a mismatch with the
+transport_error_indicator and restarts at SYNCD after a lost frame. It checks continuity
+counters for up to 16 PIDs. Packets go to a TS egress (`firmware/rx/main/ts_egress.h`) for an
+Ethernet sender; `pattern` checks every packet against the transmitter's test input instead.
+Frames the LDPC decoder repairs arrive too late for the stream and count as lost.
+[TS link results](../results/2026-10-23-ts-link/README.md): 1.74 million packets exact at up to
+12.64 Mb/s, and 95,810 dummy frames ridden through.
 
 | Measured, e379dfb, 2420 MHz | QPSK 3/4, 1 Msym/s | QPSK 3/4, 5 Msym/s | 8PSK 8/9, 5 Msym/s |
 |---|---:|---:|---:|
@@ -320,10 +343,23 @@ of hard bits and 2,025 of weak bits. The console takes `rx MHz gain seconds MODC
 | Core 0 check per frame (wall clock) | 47.2k | 63.0k | 75.6k |
 | Pilot MER, median | 30.4 dB | 29.8 dB | 29.9 dB |
 
-The lock unit is absorbed by one unit of capture lag; no unit was dropped. With Wi-Fi gone,
-about 90 KB of internal RAM is free before a run. The demodulator (about 14 KB), symbol ring
-(16 KB), clean-path FEC (about 12 KB) and three frame slots (12 KB) leave 34 KB, and at
-least 24.8 KB stayed free during runs.
+The lock unit is absorbed by one unit of capture lag; no unit was dropped.
+
+**Memory.** Nothing the receiver runs allocates after boot. Each run takes its memory from three
+regions reserved when the firmware links and gives it back when the next run starts
+(`firmware/rx/main/arena.c`):
+- 30 KB of static internal RAM below the capture banks: the demodulator (15 KB), the clean-path
+  FEC (10 to 12 KB) and the TS deframer (0.8 KB).
+- 28 KB of internal RAM just above the banks: the symbol ring (16 KB) and three frame slots
+  (12 KB).
+- 96 KB of static PSRAM for the LDPC decoder, and a 7 MB PSRAM store for a replay's capture or a
+  dump.
+
+Queues and semaphores are made once at boot from static storage; ESP-IDF allocates the capture
+timer and its interrupt once at boot. After boot, ESP-IDF's heap hooks count successful
+allocations and reallocations and frees of non-null pointers, and a callback counts failed
+allocations; runs report the counts, and they are zero. About 51 KB of heap stays free for
+ESP-IDF. [Results without Wi-Fi or malloc](../results/2026-10-23-rx-no-wifi/README.md).
 [5 Msym/s results](../results/2026-10-23-rx-5m-margin/README.md),
 [1 Msym/s qualification](../results/2026-10-22-rx-continuous/README.md),
 [demodulator measurements](../results/2026-10-22-rx-demod/README.md).

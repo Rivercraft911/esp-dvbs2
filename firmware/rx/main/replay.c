@@ -4,20 +4,26 @@
 #include "replay.h"
 
 #include "driver/usb_serial_jtag.h"
-#include "esp_heap_caps.h"
 #include "esp_rom_crc.h"
 #include "freertos/FreeRTOS.h"
 
-static int8_t *capture;
+#include "arena.h"
+
+/* The capture lives in the static store (arena.h), which a dump overwrites. */
+static int8_t *const capture = arena_store;
 static size_t pairs;
+
+void replay_forget(void)
+{
+    pairs = 0;
+}
 
 void replay_upload(size_t bytes)
 {
-    heap_caps_free(capture);
-    capture = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM);
     pairs = 0;
-    if (!capture || bytes % 2) {
-        printf("@{\"cmd\":\"upload\",\"error\":\"need an even size that fits in PSRAM\"}\n");
+    if (!bytes || bytes % 2 || bytes > ARENA_STORE_BYTES) {
+        printf("@{\"cmd\":\"upload\",\"error\":\"need an even size up to %u bytes\"}\n",
+               (unsigned)ARENA_STORE_BYTES);
         return;
     }
     printf("@{\"cmd\":\"upload\",\"ready\":true,\"bytes\":%u}\n", (unsigned)bytes);
@@ -31,9 +37,9 @@ void replay_upload(size_t bytes)
            (unsigned long)esp_rom_crc32_le(0, (const uint8_t *)capture, bytes));
 }
 
-esp_err_t replay_run(unsigned modcod, unsigned rate, unsigned skip, receive_stats_t *s,
-                     capture_stats_t *cs)
+esp_err_t replay_run(unsigned modcod, unsigned rate, unsigned skip, const receive_options_t *options,
+                     receive_stats_t *s, capture_stats_t *cs)
 {
     if (!pairs) return ESP_ERR_INVALID_STATE;
-    return receive_replay(capture, pairs, modcod, rate, skip, s, cs);
+    return receive_replay(capture, pairs, modcod, rate, skip, options, s, cs);
 }

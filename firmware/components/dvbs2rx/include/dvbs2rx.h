@@ -5,7 +5,8 @@
 #include <stdint.h>
 
 /* DVB-S2 receiver for the S3's own radio. Short FECFRAMEs (16,200 bits), QPSK or 8PSK at
- * 1 or 5 Msym/s, pilots on, roll-off 0.35, PL scrambling code 0, GCS input, one MODCOD per run.
+ * 1 or 5 Msym/s, pilots on, roll-off 0.35, PL scrambling code 0, GCS or TS input, one MODCOD
+ * per run, dummy PLFRAMEs between frames.
  * Portable C builds on the host; S3 PIE kernels must give identical integers.
  *
  * Input is the radio's dump stream: 16e6 complex samples/s, one 32-bit word each,
@@ -66,6 +67,7 @@ typedef struct {
     int32_t cfo_hz, clock_ppb;  /* current estimates, as in rx_frame_t */
     uint32_t rejects;       /* acquisition detections that failed the header checks */
     uint32_t dropped;       /* frames lost because the release fell behind */
+    uint32_t dummies;       /* dummy PLFRAMEs: ridden through when locked, hopped over to lock */
 } rx_demod_stats_t;
 
 typedef struct rx_demod rx_demod_t;
@@ -107,8 +109,60 @@ size_t rx_fec_check_size(unsigned modcod);  /* enough when work is NULL */
 size_t rx_fec_work_size(unsigned modcod);
 int rx_fec_init(rx_fec_t *f, unsigned modcod, void *work);
 /* Returns the data field length in bytes and points payload at it (valid
- * until the frame's buffers are reused), or -1 if the frame fails. */
+ * until the frame's buffers are reused), or -1 if the frame fails. The BBHEADER, descrambled,
+ * is the 10 bytes before it. Accepted streams: generic continuous (TS/GS = 01, UPL, SYNCD 0)
+ * and transport stream (TS/GS = 11, UPL 188 x 8, SYNC 0x47, SYNCD a byte offset inside the data
+ * field or 65,535), single stream, ISSY and null-packet deletion off for TS. */
 int rx_fec_frame(rx_fec_t *f, rx_frame_t *frame, const uint8_t **payload,
                  rx_fec_stats_t *stats);
+
+/* TS deframer: single transport stream BBFRAMEs (EN 302 307-1 5.1.4 to 5.1.6) back into
+ * 188-byte packets, in order, each checked by the CRC-8 that the next packet's sync position
+ * carries. Packets that straddle frames are carried over. A packet whose CRC-8 fails goes on
+ * with its transport_error_indicator set. A sequence gap, a late frame, a frame that is not TS
+ * or a SYNCD that disagrees with the carried packet restarts at the frame's SYNCD: a complete
+ * packet waiting for its CRC-8 then goes on unchecked, a partial one is dropped. Continuity
+ * counters (ISO/IEC 13818-1 2.4.3.3) are checked for the first RX_TS_PIDS PIDs. */
+#define RX_TS_PACKET 188u
+#define RX_TS_PIDS 16u
+
+typedef struct {
+    uint32_t frames;        /* TS data fields taken */
+    uint32_t packets;       /* handed to emit */
+    uint32_t crc_errors;    /* CRC-8 mismatches, handed on with transport_error_indicator set */
+    uint32_t unchecked;     /* handed on at a gap or the end, before their CRC-8 arrived */
+    uint32_t null_packets;  /* PID 0x1fff, whether dropped or not */
+    uint32_t cc_errors;     /* continuity counter jumps over all PIDs */
+    uint32_t resyncs;       /* restarts at a SYNCD after the first start */
+    uint32_t syncd_errors;  /* ... of them because SYNCD disagreed with the carried packet */
+    uint32_t not_ts;        /* frames that were not single-TS BBFRAMEs */
+    uint32_t late;          /* frames not newer than the last one taken: ignored */
+    uint32_t dropped_bytes; /* data field bytes before a first packet start, or partial packets */
+    uint32_t untracked;     /* packets of PIDs past the first RX_TS_PIDS: no continuity check */
+} rx_ts_stats_t;
+
+typedef struct {
+    uint16_t pid;
+    uint32_t packets, cc_errors;
+} rx_ts_pid_t;
+
+/* One packet, 188 bytes from its 0x47, valid only during the call. */
+typedef void (*rx_ts_emit_fn)(void *ctx, const uint8_t *packet);
+
+typedef struct rx_ts rx_ts_t;
+size_t rx_ts_size(void);
+/* drop_null: null packets are counted but not handed on. */
+void rx_ts_init(rx_ts_t *t, int drop_null, rx_ts_emit_fn emit, void *ctx);
+/* One frame that rx_fec_frame accepted: bbframe is its descrambled BBHEADER, followed by the
+ * data field of `bytes` bytes, and sequence is rx_frame_t.sequence. The packets it completes go
+ * to emit before it returns: from the data field itself where they lie inside it (their sync
+ * bytes restored in place, so the field changes) or from the deframer's own copy. Returns the
+ * number handed on. */
+unsigned rx_ts_frame(rx_ts_t *t, uint8_t *bbframe, unsigned bytes, uint32_t sequence);
+/* The end of the stream: a complete packet waiting for its CRC-8 goes on unchecked. */
+void rx_ts_flush(rx_ts_t *t);
+void rx_ts_stats(const rx_ts_t *t, rx_ts_stats_t *stats);
+/* The i-th PID seen, in order of first appearance; 0 if there are fewer. */
+int rx_ts_pid(const rx_ts_t *t, unsigned i, rx_ts_pid_t *pid);
 
 #endif

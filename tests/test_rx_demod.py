@@ -79,6 +79,18 @@ def fast(so):
     loss = np.mean(ref[2:]) - np.mean([R.data_mer(f, t["codeword"], 16) for f, t in pairs[1:6]])
     assert loss < 0.5, loss
 
+    # Dummy PLFRAMEs (MODCOD 0, 3,330 symbols, no pilots) from a transmitter whose input ran dry:
+    # one, two, and 400 in a row (0.27 s) while the carrier drifts 2 kHz/s. The lock holds, every
+    # data frame is exact and the sequence counts data frames only.
+    dummies = (2, 4, 4) + (7,) * 400
+    link = T.Link(rate=5e6, modcod=16, frames=12, mer_db=24, seed=8, dummies=dummies, drift_hz_s=-2000)
+    d, _, truth = run_twin(so, link)
+    pairs = matched(d, truth)
+    s = d.stats()
+    assert [truth.index(t) for _, t in pairs] == list(range(1, 12)) and s["dummies"] == 403, s
+    assert all(np.array_equal(f["hard"], t["codeword"]) for f, t in pairs)
+    assert [f["sequence"] for f, _ in pairs] == list(range(11)) and s["relocks"] == s["lost"] == 0, s
+
     # Push boundaries do not change the output while the release keeps up.
     d2, _, _ = run_twin(so, link, chunk=3001)
     assert len(d2.frames) == len(d.frames)
@@ -95,6 +107,44 @@ def fast(so):
     pairs = matched(d, truth)
     assert d.stats()["dropped"] > 0 and all(np.array_equal(f["hard"], t["codeword"]) for f, t in pairs)
     return loss
+
+
+def mf5_plan(so):
+    """The 5 Msym/s batch plan (demod_mf5_plan, which the S3 build's demod_mf5_run uses) is the
+    same whatever multiple of 2^26 samples the time carries, also where the five centres straddle
+    2^27 samples, where 32-bit times in 1/32 sample wrap. The old 32-bit plan took that wrap for a
+    window advance: two frames lost a batch of symbols on the board (results/2026-10-23-rx-no-wifi-ab)."""
+    so.demod_mf5_plan.restype = R.ct.c_uint
+    so.demod_mf5_plan.argtypes = [R.ct.c_uint64, R.ct.c_uint32, R.ct.POINTER(R.ct.c_uint32 * 5),
+                                  R.ct.POINTER(R.ct.c_uint64)]
+
+    def plan(t, step):
+        c, b0 = (R.ct.c_uint32 * 5)(), R.ct.c_uint64()
+        s = so.demod_mf5_plan(t, step, R.ct.byref(c), R.ct.byref(b0))
+        return s, list(c), b0.value
+
+    def old(t, step):                        # the 32-bit arithmetic it replaced
+        c, b0, s = [], 0, 0
+        for j in range(5):
+            tq = ((t + j * step) >> 19) & 0xffffffff
+            b = (((tq >> 5) - 8) & 0xffffffff) & ~15 & 0xffffffff
+            b0 = b if j == 0 else b0
+            s = j if not s and b != b0 else s
+            c.append((tq - (b << 5)) & 0xffffffff)
+        return s, c
+
+    shift = (1 << 26) << 24                  # samples, Q24: a multiple of 16 and of the ring
+    old_wrong = 0
+    for step in (53687091, 53687091 + 160, 53687091 - 160):     # 3.2 samples, +-3 ppm
+        for wrap in (1 << 27, 1 << 28, 3 << 27):
+            for d in range(-14 << 24, 2 << 24, 1 << 21):      # first centre 14 samples before to 2 after
+                t = (wrap << 24) + d
+                s, c, b0 = plan(t, step)
+                s2, c2, b2 = plan(t - shift, step)
+                assert (s, c) == (s2, c2) and b0 - b2 == 1 << 26, (step, wrap, d)
+                old_wrong += old(t, step) != (s, c)
+    assert old_wrong > 0
+    return old_wrong
 
 
 def main():
@@ -159,6 +209,27 @@ def main():
         assert all(np.array_equal(f["hard"], t["codeword"]) for f, t in pairs)
         assert d.stats()["rejects"] == 1, d.stats()
 
+        # Dummy PLFRAMEs between data frames ride through at 1 Msym/s too: one, two, then 100 in
+        # a row (0.33 s), at 18 dB. The search finds frame 0 and defers the lock to the next
+        # header, a dummy's: the lock hops over it to frame 1.
+        link = T.Link(frames=10, dummies=(0, 1, 3, 5, 5) + (8,) * 100, seed=9)
+        d, _, truth = run_twin(so, link)
+        pairs = matched(d, truth)
+        s = d.stats()
+        assert [truth.index(t) for _, t in pairs] == list(range(1, 10)), [truth.index(t) for _, t in pairs]
+        assert all(np.array_equal(f["hard"], t["codeword"]) for f, t in pairs)
+        assert s["dummies"] == 105 and s["relocks"] == s["lost"] == s["rejects"] == 0, s
+        assert [f["sequence"] for f, _ in pairs] == list(range(9))
+
+        # A transmitter starved to an eighth of its rate (seven dummies after every frame) at
+        # 15 dB: the lock hops from dummy to dummy to the next frame and every frame is exact.
+        link = T.Link(frames=8, dummies=tuple(k for k in range(8) for _ in range(7)), mer_db=15, seed=11)
+        d, _, truth = run_twin(so, link)
+        pairs = matched(d, truth)
+        assert [truth.index(t) for _, t in pairs] == list(range(1, 8)), [truth.index(t) for _, t in pairs]
+        assert all(np.array_equal(f["hard"], t["codeword"]) for f, t in pairs)
+        assert d.stats()["rejects"] == d.stats()["relocks"] == 0, d.stats()
+
         # Normal frames, as in the recorded corpus (QPSK 1/2, 2245 MHz offsets).
         link = T.Link(modcod=4, short=False, frames=3, cfo_hz=-11800, carrier_hz=2245e6, seed=5)
         d, _, truth = run_twin(so, link)
@@ -166,9 +237,11 @@ def main():
         assert len(pairs) == 2 and all(np.array_equal(f["hard"], t["codeword"]) for f, t in pairs)
 
         loss5 = fast(so)
+        wrong = mf5_plan(so)
 
     print("rx demodulator passed: real excerpts locked, twin frames exact, "
-          f"implementation loss {loss:.2f} dB at 1 Msym/s QPSK, {loss5:.2f} dB at 5 Msym/s 8PSK")
+          f"implementation loss {loss:.2f} dB at 1 Msym/s QPSK, {loss5:.2f} dB at 5 Msym/s 8PSK, "
+          f"5 Msym/s plan unchanged across 2^27-sample wraps (the old one wrong at {wrong} times)")
 
 
 if __name__ == "__main__":
