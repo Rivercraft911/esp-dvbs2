@@ -165,7 +165,7 @@
       ],
       "min_margin_frames": 4,
       "file": {
-        "file": "/Users/river/Documents/stanford/SSI/esp-dvbs2-work/file-ota/notes/file-ota-2/received-fill-history.png",
+        "file": "local file: received-fill-history.png",
         "name": "fill-history.png",
         "bytes": 237171,
         "sha256": "cc9b3d12ae39182c7a808691c09ea8166915619de8b2ec3fe9a074ef84044828"
@@ -228,7 +228,7 @@
       ],
       "min_margin_frames": 3,
       "file": {
-        "file": "/Users/river/Documents/stanford/SSI/esp-dvbs2-work/file-ota/notes/file-ota-2/dropped-fill-history.png",
+        "file": "local file: dropped-fill-history.png",
         "name": "fill-history.png",
         "bytes": 237171,
         "sha256": "cc9b3d12ae39182c7a808691c09ea8166915619de8b2ec3fe9a074ef84044828"
@@ -394,7 +394,7 @@
     "rolloff": 0.35,
     "rrc_rej_db": 20,
     "command": [
-      "/Users/river/Documents/stanford/SSI/esp-dvbs2/notes/leansdr/src/apps/leandvb",
+      "local LeanDVB build",
       "--standard",
       "DVB-S2",
       "--f32",
