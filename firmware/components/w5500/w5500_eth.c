@@ -405,9 +405,9 @@ static void status(void)
            mac[1], mac[2], mac[3], mac[4], mac[5], w5500_eth_status(phy < 0 ? phy : W5500_OK),
            version, w5500_port.name, w5500_port.khz, (unsigned)w5500_port.heap_bytes);
     if (phy >= 0)
-        printf(",\"link\":%s,\"link_mbps\":%d,\"duplex\":\"%s\"",
+        printf(",\"link\":%s,\"link_mbps\":%d,\"duplex\":\"%s\",\"phycfgr\":\"0x%02x\"",
                phy & W5500_PHY_LINK ? "true" : "false", phy & W5500_PHY_100M ? 100 : 10,
-               phy & W5500_PHY_FULL ? "full" : "half");
+               phy & W5500_PHY_FULL ? "full" : "half", phy);
     if (e == W5500_ERR_BUS) printf(",\"esp_err\":\"%s\"", esp_err_to_name(w5500_port.err));
     printf("}\n");
     w5500_eth_stop();
