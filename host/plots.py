@@ -236,43 +236,23 @@ def rf_figures(out, *, iq_dir=None, check=False):
         assert waterfall.shape == (256, 1024) and np.isfinite(waterfall).all()
         if check:
             continue
-        style = {'font.family': 'DejaVu Sans', 'text.color': '#dce5ee',
-                 'axes.labelcolor': '#a1b0c2', 'axes.edgecolor': '#40516a',
-                 'xtick.color': '#a1b0c2', 'ytick.color': '#a1b0c2',
-                 'figure.facecolor': '#080e19', 'axes.facecolor': '#080e19',
-                 'xtick.top': False, 'ytick.right': False, 'xtick.direction': 'out',
-                 'ytick.direction': 'out', 'savefig.facecolor': '#080e19'}
-        with plt.rc_context(style):
-            fig, (ax, bx) = plt.subplots(2, 1, figsize=(11, 6.6), sharex=True,
-                                        gridspec_kw={'height_ratios': [1.25, 1]})
-            mode = 'QPSK 9/10' if row['modcod'] == 11 else '8PSK 9/10'
-            fig.text(.085, .94, f"{row['bandwidth_mhz']:g} MHz", fontsize=25)
-            fig.text(.085, .893, f"{mode}  /  {row['symbol_rate_hz']/1e6:.2f} Msym/s  /  "
-                     f"{row['payload_mbps']:g} Mb/s", fontsize=11, color='#a1b0c2')
-            fig.text(.965, .94, 'esp-dvbs2', ha='right', fontsize=12, color='#a1b0c2')
-            ax.plot(frequency, psd, color='#50deef', linewidth=1)
-            ax.fill_between(frequency, -135, psd, color='#50deef', alpha=.08)
-            ax.set(ylim=(-135, -80), ylabel='PSD (dBFS/Hz)')
-            ax.set_yticks([-130, -110, -90])
-            ax.grid(alpha=.18)
-            span = row['sample_rate_hz']/2e6
-            bx.imshow(waterfall, origin='lower', aspect='auto',
-                              extent=(row['center_mhz']-span, row['center_mhz']+span,
-                                      0, row['seconds']*1000),
-                              cmap='magma', vmin=-130, vmax=-85, interpolation='nearest')
-            bx.set(xlabel='Frequency (MHz)', ylabel='Time (ms)',
-                   xlim=(row['center_mhz']-span, row['center_mhz']+span))
-            bx.set_yticks([0, 10, 20, 30, 40])
-            for axis in (ax, bx):
-                axis.spines[['top', 'right']].set_visible(False)
-                axis.ticklabel_format(axis='x', style='plain', useOffset=False)
-            fig.subplots_adjust(left=.085, right=.965, top=.85, bottom=.095, hspace=.1)
-            out.mkdir(parents=True, exist_ok=True)
-            target = out/('rf-40mhz.png' if row['modcod'] == 11 else 'rf-36mhz.png')
-            fig.savefig(target, dpi=170, bbox_inches=None,
-                        metadata={'Software': 'esp-dvbs2 / Matplotlib'})
-            plt.close(fig)
-            print(target)
+        fig, (ax, bx) = plt.subplots(2, 1, figsize=(11, 6.2), sharex=True,
+                                    gridspec_kw={'height_ratios': [1, 1.15], 'hspace': 0.22})
+        mode = 'QPSK 9/10' if row['modcod'] == 11 else '8PSK 9/10'
+        ax.plot(frequency, psd, color=BLUE, linewidth=0.9)
+        ax.set(ylim=(-135, -80), ylabel='PSD (dBFS/Hz)',
+               title=f"Transmitted by an ESP32-S3, {mode} at {row['symbol_rate_hz']/1e6:.2f} Msym/s "
+                     f"({row['bandwidth_mhz']:g} MHz, {row['payload_mbps']:g} Mb/s)")
+        ax.set_yticks([-130, -120, -110, -100, -90, -80])
+        span = row['sample_rate_hz']/2e6
+        bx.imshow(waterfall, origin='lower', aspect='auto', vmin=-130, vmax=-85, interpolation='nearest',
+                  extent=(row['center_mhz']-span, row['center_mhz']+span, 0, row['seconds']*1000))
+        bx.grid(False)
+        bx.set(xlabel='Frequency (MHz)', ylabel='Time (ms)', title='Spectrogram, B200 at 50 MS/s',
+               xlim=(row['center_mhz']-span, row['center_mhz']+span))
+        bx.set_yticks([0, 10, 20, 30, 40])
+        bx.ticklabel_format(axis='x', style='plain', useOffset=False)
+        save_figure(fig, out/('rf-40mhz.png' if row['modcod'] == 11 else 'rf-36mhz.png'))
 
 
 def rx_summary(row, capture):
