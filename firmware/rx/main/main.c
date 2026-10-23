@@ -156,7 +156,7 @@ static void print_receive(const char *cmd, esp_err_t e, unsigned modcod, unsigne
                           const receive_stats_t *r)
 {
     printf("@{\"cmd\":\"%s\",\"result\":\"%s\",\"modcod\":%u,\"symbol_rate\":%u,\"frames\":%lu,"
-           "\"good\":%lu,\"failed\":%lu,\"decoded\":%lu,\"dropped\":%lu,\"max_iterations\":%lu,"
+           "\"good\":%lu,\"failed\":%lu,\"decoded\":%lu,\"frames_dropped\":%lu,\"max_iterations\":%lu,"
            "\"pushes\":%lu,\"max_push_cycles\":%lu,\"max_push_at\":%llu,\"push_cycles\":%llu,"
            "\"max_release_cycles\":%lu,\"release_cycles\":%llu,\"max_fec_cycles\":%lu,\"fec_cycles\":%llu,"
            "\"stack_free\":[%lu,%lu,%lu],\"free_internal\":%lu,\"largest_internal\":%lu,"

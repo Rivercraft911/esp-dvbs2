@@ -22,7 +22,7 @@ typedef struct __attribute__((packed)) {
 
 #define RECEIVE_LOG 256
 typedef struct {
-    uint32_t frames, good, failed, dropped, decoded, max_iterations;
+    uint32_t frames, good, failed, dropped, decoded, max_iterations;  /* dropped: no free slot */
     uint32_t max_push_cycles, max_release_cycles, max_fec_cycles;
     uint32_t release_stack_free, check_stack_free, decode_stack_free;
     uint32_t free_internal, largest_internal;   /* after the receiver's allocations */

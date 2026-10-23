@@ -228,10 +228,12 @@ def main() -> int:
     else:
         command, timeout = f"rx {a.mhz} {a.gain} {a.seconds} {a.modcod}{token}", a.seconds + 60
     with board.reserve_port(port):
+        firmware = next((r.get("firmware") for r in board.run(port, "info", 10) if "firmware" in r), None)
         if a.replay:
             upload(port, data)
         before, frames, after = receive(port, command, timeout)
-    summary = dict(command=command, replay=str(a.replay) if a.replay else None, board=before + after,
+    summary = dict(firmware=firmware, command=command, replay=str(a.replay) if a.replay else None,
+                   board=before + after,
                    check=check(frames, a.modcod, a.callsign,
                                a.tx_frames or int(60 * SYMBOL_RATE[a.rate] / frame_symbols(a.modcod)) + 100,
                                SYMBOL_RATE[a.rate]),
