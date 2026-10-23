@@ -39,3 +39,6 @@ void dvbtx_pace(unsigned modcod, uint32_t seconds, unsigned level, unsigned stal
 // Reports internal heap before and after each step and the low-water mark.
 // The probe never plays samples.
 void dvbtx_wifi(unsigned modcod, unsigned sps, uint32_t dac_rate);
+
+// Experimental: `nowifi on` makes later runs skip Wi-Fi; the PHY is held from the first run.
+extern bool dvbtx_no_wifi;

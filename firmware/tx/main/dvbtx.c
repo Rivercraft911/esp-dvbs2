@@ -537,6 +537,9 @@ static void synthetic_payload(encoder_t *e, size_t bytes, uint32_t *seed)
 
 static radio_s3_fill_fn encoder_fill(void) { return vcm_enc.vcm ? fill_vcm : fill; }
 
+// Experimental session switch: runs bring the PHY up once without ever starting Wi-Fi.
+bool dvbtx_no_wifi;
+
 // Core 0: frame after frame into the ring, waiting while every slot is still needed.
 typedef struct {
     stream_mark_t clock;
@@ -1511,8 +1514,8 @@ void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, 
     radio_s3_stats_t s = {0};
     // RRC support B = Rs * (1 + alpha), alpha = 0.20 or 0.35. Round upward in integer Hz.
     const uint32_t bandwidth = ((uint64_t)dac_rate * dvb.den * (dvb.den == 5 ? 120 : 135) + sps * 100 - 1) / (sps * 100);
-    const radio_s3_options_t options = {.phy_solo=phy_solo};
-    const esp_err_t err = phy_solo ?
+    const radio_s3_options_t options = {.phy_solo=phy_solo && !dvbtx_no_wifi, .no_wifi=dvbtx_no_wifi};
+    const esp_err_t err = phy_solo || dvbtx_no_wifi ?
         radio_s3_run_options(freq,(uint8_t)gain,seconds,dac_rate,bandwidth,encoder_fill(),NULL,&options,&s) :
         radio_s3_run_bandwidth(freq,(uint8_t)gain,seconds,dac_rate,bandwidth,encoder_fill(),NULL,&s);
     print_mode("dvb", modcod, symbols, level);
@@ -1539,8 +1542,9 @@ void dvbtx_pace(unsigned modcod, uint32_t seconds, unsigned level, unsigned stal
     if (!symbols) return;
     radio_s3_stats_t s;
     const bool wifi = dvb.moon || phy_solo || vcm_enc.vcm;
-    const radio_s3_options_t options = {.phy_solo=phy_solo, .startup=dvb.lofty ? lofty_startup() : NULL};
-    const esp_err_t err = phy_solo || dvb.lofty ? radio_s3_paced_wifi_options(seconds,dac_rate,encoder_fill(),NULL,&options,&s) :
+    const radio_s3_options_t options = {.phy_solo=phy_solo && !dvbtx_no_wifi, .no_wifi=dvbtx_no_wifi,
+                                        .startup=dvb.lofty ? lofty_startup() : NULL};
+    const esp_err_t err = phy_solo || dvb.lofty || dvbtx_no_wifi ? radio_s3_paced_wifi_options(seconds,dac_rate,encoder_fill(),NULL,&options,&s) :
         (wifi ? radio_s3_paced_wifi_rate : radio_s3_paced_run_rate)(seconds,dac_rate,encoder_fill(),NULL,&s);
     print_mode("dvbpace", modcod, symbols, level);
     printf(",\"prepared_fixture\":%s,\"paced_wifi_up\":%s",fixture ? "true" : "false",wifi ? "true" : "false");

@@ -87,6 +87,8 @@ typedef struct {
 
 typedef struct {
     bool phy_solo;
+    // Experimental: never start Wi-Fi. The PHY comes up once, held under the BT bit.
+    bool no_wifi;
     // Optional radio-off diagnostic. Collected on the existing worker stack;
     // copied here after playback, so this destination may live in PSRAM.
     radio_s3_startup_t *startup;

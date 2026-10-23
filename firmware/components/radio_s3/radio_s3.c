@@ -30,6 +30,8 @@
 #include "physolo.h"
 #include "esp_timer.h"
 #include "esp_private/phy.h"
+#include "esp_private/periph_ctrl.h"
+#include "esp_phy_init.h"
 #include "station_id.h"
 #include "station_store.h"
 #include "esp_heap_caps.h"
@@ -481,6 +483,21 @@ static void watch_end(bool watch_idle, bool watch_worker)
     }
 }
 
+/* Bring the PHY up once without Wi-Fi, as a BLE-only application does: esp_phy_enable()
+ * turns the clocks on for the first full calibration (ESP-IDF v6.1 phy_init.c). The PHY stays
+ * held under the BT modem bit; the Wi-Fi clock domain stays referenced for the baseband. */
+static bool phy_up;
+static esp_err_t phy_bring_up(void)
+{
+    if (phy_up) return ESP_OK;
+    if (phy_get_modem_flag() != 0) return ESP_ERR_INVALID_STATE;
+    esp_wifi_bt_power_domain_on();
+    esp_phy_enable(PHY_MODEM_BT);
+    wifi_module_enable();
+    phy_up = phy_get_modem_flag() == PHY_MODEM_BT;
+    return phy_up ? ESP_OK : ESP_ERR_INVALID_STATE;
+}
+
 static void worker(void *arg)
 {
     run_t *run = arg;
@@ -508,7 +525,8 @@ static void worker(void *arg)
         error = ESP_ERR_INVALID_STATE;
         goto cleanup;
     }
-    if (run->options.phy_solo && (error = physolo_available()) != ESP_OK) goto cleanup;
+    if (!run->options.no_wifi && phy_up) { error = ESP_ERR_INVALID_STATE; goto cleanup; }
+    if (run->options.phy_solo && !run->options.no_wifi && (error = physolo_available()) != ESP_OK) goto cleanup;
 #if CONFIG_PM_ENABLE
     error = esp_pm_lock_create(ESP_PM_CPU_FREQ_MAX, 0, "radio_cpu", &cpu_lock);
     if (error != ESP_OK) {
@@ -533,6 +551,13 @@ static void worker(void *arg)
     }
     radio_s3_wifi_heap_t *heap = &run->stats->wifi;
     heap_now(&heap->free_before, &heap->largest_before);
+    if (run->options.no_wifi) {
+        error = phy_bring_up();
+        heap_now(&heap->free_up, &heap->largest_up);
+        heap->min_free = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+        if (error != ESP_OK) goto cleanup;
+        goto ready;
+    }
     wifi_init_config_t config = WIFI_INIT_CONFIG_DEFAULT();
     config.nvs_enable = 0; /* Wi-Fi configuration stays in RAM. */
     error = esp_wifi_init(&config);
@@ -583,6 +608,7 @@ static void worker(void *arg)
             goto cleanup;
         }
     }
+ready:
     // Admit stream memory only after the optional teardown, before any RF setup.
     error = radio_s3_stream_ready();
     if (error == ESP_OK && run->wifi_pace) {

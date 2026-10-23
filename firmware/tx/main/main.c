@@ -335,6 +335,10 @@ void app_main(void)
                    strncmp(line, "spisend ", 8) == 0 || strncmp(line, "spirx ", 6) == 0) {
             char *args = strchr(line, ' '); *args++ = 0;
             spi_input_command(line, args);
+        } else if (!strcmp(line, "nowifi on")) {
+            dvbtx_no_wifi = true;
+            printf("@{\"cmd\":\"nowifi\",\"enabled\":true}\n");
+            strcpy(line, "nowifi");
         } else if (strncmp(line, "rflo ", 5) == 0) {
             radio_s3_lo_command(line + 5);
             strcpy(line, "rflo");
