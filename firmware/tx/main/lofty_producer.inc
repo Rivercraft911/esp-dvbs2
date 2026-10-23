@@ -111,7 +111,8 @@ static IRAM_ATTR __attribute__((noinline)) int lofty_pages(bool warmup)
         const uint16_t *words = dvbs2_fast_lofty_read(enc.fast,&dvb.mapper,&n);
         const uint32_t read = esp_cpu_get_cycle_count();
         if (!n) break;
-        dvb.last_word = lofty_prepare(lp->words,words,n,dvb.last_word);
+        dvb.last_word = n == LOFTY_BLOCKS ? lofty_prepare_page(lp->words,words,dvb.last_word) :
+                                            lofty_prepare(lp->words,words,n,dvb.last_word);
         if (warmup) continue;
         const uint32_t cycles = esp_cpu_get_cycle_count()-before;
         read_sum += read-before;
