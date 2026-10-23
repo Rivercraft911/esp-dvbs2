@@ -35,17 +35,17 @@ static int log_filter(const char *format, va_list args)
     return quiet ? 0 : vprintf(format, args);
 }
 
-/* Memory since boot: the arenas' use and every heap call anyone made (there should be none). */
+/* Memory since boot: the arenas' use and the heap use arena.h counts (there should be none). */
 static void print_memory(void)
 {
     arena_heap_t h;
     arena_heap(&h);
     printf(",\"arena\":{\"low\":[%u,%u],\"high\":[%u,%u],\"psram\":[%u,%u]},"
-           "\"heap_after_boot\":{\"allocs\":%lu,\"frees\":%lu,\"bytes\":%u,\"last_size\":%lu,"
+           "\"heap_after_boot\":{\"allocs\":%lu,\"frees\":%lu,\"failed\":%lu,\"bytes\":%u,\"last_size\":%lu,"
            "\"last_caps\":%lu},\"min_free_internal\":%u,\"min_free_psram\":%u",
            (unsigned)arena_low.peak, (unsigned)arena_low.size, (unsigned)arena_high.peak,
            (unsigned)arena_high.size, (unsigned)arena_psram.peak, (unsigned)arena_psram.size,
-           (unsigned long)h.allocs, (unsigned long)h.frees, (unsigned)h.bytes,
+           (unsigned long)h.allocs, (unsigned long)h.frees, (unsigned long)h.failed, (unsigned)h.bytes,
            (unsigned long)h.last_size, (unsigned long)h.last_caps,
            (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
            (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM));

@@ -249,7 +249,8 @@ Bluetooth clocks on for that itself, as for a Bluetooth-only application. It kee
 clock domain referenced, since the dump engine is part of the Wi-Fi baseband, and each run
 sets bit 1 of `SYSCON_WIFI_BB_CFG_REG`, which a running Wi-Fi sets and the dump needs: without
 it the samples hold a constant (a diff of the radio registers with Wi-Fi up and stopped found
-it). No Wi-Fi code is linked, and every task stack is static in internal RAM.
+it). No Wi-Fi code is linked. The receiver's own tasks use static stacks in internal RAM;
+ESP-IDF's main and IPC tasks are created once at boot.
 
 **Front end.** Each 10-bit word becomes int8 I and Q, floor(s10/4), at 1.55 cycles per
 sample. A root-raised-cosine matched filter is evaluated only at symbol times.
@@ -354,9 +355,11 @@ regions reserved when the firmware links and gives it back when the next run sta
 - 96 KB of static PSRAM for the LDPC decoder, and a 7 MB PSRAM store for a replay's capture or a
   dump.
 
-Queues, semaphores and the capture timer are made once at boot from static storage. ESP-IDF's
-heap hooks count every heap call after boot, and runs report the count: zero. About 51 KB of
-heap stays free for ESP-IDF. [Results without Wi-Fi or malloc](../results/2026-10-23-rx-no-wifi/README.md).
+Queues and semaphores are made once at boot from static storage; ESP-IDF allocates the capture
+timer and its interrupt once at boot. After boot, ESP-IDF's heap hooks count successful
+allocations and reallocations and frees of non-null pointers, and a callback counts failed
+allocations; runs report the counts, and they are zero. About 51 KB of heap stays free for
+ESP-IDF. [Results without Wi-Fi or malloc](../results/2026-10-23-rx-no-wifi/README.md).
 [5 Msym/s results](../results/2026-10-23-rx-5m-margin/README.md),
 [1 Msym/s qualification](../results/2026-10-22-rx-continuous/README.md),
 [demodulator measurements](../results/2026-10-22-rx-demod/README.md).
