@@ -419,9 +419,60 @@ static bool lofty_dummy_init(void)
 
 #include "lofty_consumer.inc"
 
+// The synthetic payload is one xorshift32 byte stream. xorshift32 is linear over GF(2), so a
+// state K steps ahead is M^K x for the 32x32 matrix M^K, stored by columns. For one frame
+// length, eight PIE lanes then generate eight contiguous K-byte blocks at once
+// (payload_pie.S); the scalar loop keeps the remainder, other lengths and the host build.
+static struct { size_t bytes; unsigned k; uint32_t jump[32]; } xorshift;
+
+static uint32_t xorshift_step(uint32_t x)
+{
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    return x;
+}
+
+static void xorshift_prepare(size_t bytes)
+{
+    xorshift.bytes = xorshift.k = 0;
+    const unsigned k = (unsigned)(bytes/8) & ~3u;
+    if (k < 64) return;
+    for (unsigned i = 0; i < 32; ++i) {
+        uint32_t v = 1u << i;
+        for (unsigned s = 0; s < k; ++s) v = xorshift_step(v);
+        xorshift.jump[i] = v;
+    }
+    xorshift.bytes = bytes;
+    xorshift.k = k;
+}
+
+#ifdef __XTENSA__
+void payload_xorshift8(uint8_t *dst, unsigned quads, uint32_t *lanes, unsigned stride);
+#endif
+
 // Amortize loop control across four bytes of the same synthetic reference stream.
 static __attribute__((noinline)) void payload_fill(uint8_t *dst, size_t n, uint32_t *x)
 {
+    if (n && n == xorshift.bytes) {
+        uint32_t lanes[8] __attribute__((aligned(16)));
+        lanes[0] = *x;
+        for (unsigned j = 1; j < 8; ++j) {
+            uint32_t y = 0, v = lanes[j-1];
+            for (unsigned i = 0; v; ++i, v >>= 1) if (v & 1) y ^= xorshift.jump[i];
+            lanes[j] = y;
+        }
+#ifdef __XTENSA__
+        payload_xorshift8(dst,xorshift.k/4,lanes,xorshift.k);
+#else
+        // The host runs the same lane decomposition one lane at a time.
+        for (unsigned j = 0; j < 8; ++j)
+            for (unsigned i = 0; i < xorshift.k; ++i)
+                dst[j*xorshift.k+i] = (uint8_t)(lanes[j] = xorshift_step(lanes[j]));
+#endif
+        *x = lanes[7];
+        dst += 8*xorshift.k, n -= 8*xorshift.k;
+    }
     uint32_t state = *x;
     for (; n >= 4; n -= 4, dst += 4) {
         dst[0] = next_byte(&state);
@@ -784,6 +835,7 @@ static size_t start_encoder_options(const char *cmd, unsigned modcod, unsigned l
     for (unsigned i = 0; i < 7; ++i) {
         enc.stage[i].counters = 1;
     }
+    xorshift_prepare(0); // VCM and failed setups keep the scalar generator
     if (vcm.enabled) {
         if (!vcm_memory(cmd,mode,sps,level)) {
             release(); return 0;
@@ -792,6 +844,7 @@ static size_t start_encoder_options(const char *cmd, unsigned modcod, unsigned l
     }
     const uint32_t internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     const size_t payload_bytes = (mode->kbch - 80) / 8;
+    xorshift_prepare(payload_bytes);
     size_t store_used = shaper_table_words(sps, mode->bits_per_symbol) * 4;
     enc.packed = sps != 40;
     enc.quads = quads;

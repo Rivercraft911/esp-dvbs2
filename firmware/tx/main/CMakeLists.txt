@@ -1,4 +1,4 @@
-idf_component_register(SRCS "main.c" "spi_input.c" "usb_input.c" "station_commands.c" "dvbtx.c" "fecbench.c" "ring.c"
+idf_component_register(SRCS "main.c" "spi_input.c" "usb_input.c" "station_commands.c" "dvbtx.c" "fecbench.c" "ring.c" "payload_pie.S"
                        INCLUDE_DIRS "."
                        LDFRAGMENTS "stream.lf"
                        PRIV_REQUIRES esp_driver_usb_serial_jtag esp_hal_usb vfs esp_psram esp_app_format
