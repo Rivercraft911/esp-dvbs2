@@ -27,6 +27,7 @@ typedef struct {
     uint32_t max_send_cycles;       /* slowest w5500_udp_send, wall time in CPU cycles */
     uint64_t send_cycles;
     uint32_t stack_free;            /* the sender's least free stack, bytes */
+    int esp_err;                    /* the ESP-IDF error behind a "spi" status */
 } eth_egress_stats_t;
 
 /* At boot, before arena_booted: the SPI port and the sender task. */

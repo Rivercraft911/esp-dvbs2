@@ -163,6 +163,7 @@ static void sender(void *arg)
         e.link_mbps = s->phy >= 0 && !(s->phy & W5500_PHY_100M) ? 10 : 100;
         s->status = pump();
         esp_timer_stop(e.kick);
+        s->esp_err = w5500_eth_error();
         const w5500_stats *st = w5500_udp_stats(w, 0);
         s->sent = st->sent;
         s->arp_dropped = st->dropped;
@@ -220,6 +221,7 @@ void eth_egress_end(eth_egress_stats_t *s)
 void eth_egress_print(const eth_egress_stats_t *s)
 {
     printf(",\"eth\":{\"status\":\"%s\",\"spi\":\"" SPI "\"", w5500_eth_status(s->status));
+    if (s->status == W5500_ERR_BUS) printf(",\"esp_err\":\"%s\"", esp_err_to_name(s->esp_err));
     if (s->phy >= 0)
         printf(",\"link\":%s,\"link_mbps\":%d", s->phy & W5500_PHY_LINK ? "true" : "false",
                s->phy & W5500_PHY_100M ? 100 : 10);

@@ -258,13 +258,14 @@ static struct {
 static inline void put(uint32_t a, uint32_t v) { *(volatile uint32_t *)a = v; }
 static inline uint32_t get(uint32_t a) { return *(volatile uint32_t *)a; }
 
-/* Spin until the mask bits of a register clear, or give up after us microseconds. */
+/* Spin until the mask bits of a register clear, or give up after us microseconds. The task can
+ * be preempted past the deadline while the hardware finishes, so the register gets a last look. */
 static bool cleared(uint32_t reg, uint32_t mask, uint32_t us)
 {
     const uint32_t t0 = esp_cpu_get_cycle_count();
     const uint32_t limit = us * (uint32_t)CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
     while (get(reg) & mask)
-        if (esp_cpu_get_cycle_count() - t0 > limit) return false;
+        if (esp_cpu_get_cycle_count() - t0 > limit) return !(get(reg) & mask);
     return true;
 }
 
@@ -343,7 +344,8 @@ static bool finish(void)
         const uint32_t limit = DMA_FRAME_US * (uint32_t)CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
         uint32_t raw;
         while (!((raw = get(d.ch + IN_INT_RAW)) & (IN_SUC_EOF | IN_DSCR_ERR)))
-            if (esp_cpu_get_cycle_count() - t0 > limit) return false;
+            if (esp_cpu_get_cycle_count() - t0 > limit &&
+                !((raw = get(d.ch + IN_INT_RAW)) & (IN_SUC_EOF | IN_DSCR_ERR))) return false;
         if (raw & IN_DSCR_ERR) return false;
     }
     d.busy = false;
