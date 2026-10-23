@@ -1001,7 +1001,10 @@ static size_t start_encoder_options(const char *cmd, unsigned modcod, unsigned l
     if (enc.packed) enc.payload = dvbs2_fast_payload(enc.fast);
     if (!moon) dvb.win = enc.ws_borrowed && sps == 3 ? (uint8_t *)enc.ws+DVBS2_FAST_WORKSPACE_USED : resident ? (enc.ws ? (uint8_t *)enc.ws + DVBS2_FAST_WORKSPACE_USED : NULL) :
                         run_take(dvb.win_bytes, 16, internal);
-    if (!moon && resident && mode->t > 8 && !input && !input_bch)
+    // QPSK at 80 MS/s keeps byte/pair BCH with input too: nibble BCH cost QPSK 9/10 at
+    // 33.33 Msym/s 27k cycles a frame. 33m333 caches its tables with the rest.
+    const bool input_byte_bch = input && quads;
+    if (!moon && resident && mode->t > 8 && (!input || input_byte_bch) && !input_bch)
         enc.bch = run_take(DVBS2_BCH_CACHE_BYTES, 16, internal);
     if (!enc.packed) {
         // QPSK: main's order and sizes, so the PSRAM addresses, and with them the data cache
@@ -1016,11 +1019,11 @@ static size_t start_encoder_options(const char *cmd, unsigned modcod, unsigned l
     // At 8-sps 8PSK the PSRAM workspace needs the sparse mapper's smaller
     // cache footprint. Its temporary phases reuse the existing context scratch.
     if ((!moon && (!dvb.win || !enc.filler)) || !enc.fast || !enc.ws || !enc.payload || !taps ||
-            (!moon && resident && mode->t > 8 && !input && !enc.bch) || (!enc.packed && !enc.slots) ||
+            (!moon && resident && mode->t > 8 && (!input || input_byte_bch) && !enc.bch) || (!enc.packed && !enc.slots) ||
             (!moon && quads && !enc.slot[nslots-1]) ||
             dvbs2_fast_prepare(enc.fast, mode, PILOTS,
                               15 | (fractional ? DVBS2_RO_20 : 0) | (quads ? DVBS2_MAP_QUADS : 0) |
-                              (input && !input_bch && !lofty ? DVBS2_BCH_NIBBLE : 0) |
+                              (input && !input_bch && !lofty && !input_byte_bch ? DVBS2_BCH_NIBBLE : 0) |
                               (!moon && mode->t == 8 && mode->bits_per_symbol == 2 && !quads ? DVBS2_BCH_NIBBLE : 0) |
                               (resident ? 0 : (mode->t == 8 && !input ? 0 : DVBS2_BCH_NIBBLE) | DVBS2_MAP_SPARSE)) ||
             (enc.bch && dvbs2_fast_cache_bch(enc.fast, enc.bch))) {
