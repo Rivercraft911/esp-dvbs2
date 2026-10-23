@@ -65,20 +65,22 @@ python3 host/board.py "dvb 2420 16 5m 55 0 128 --short" --port TX_PORT   # keys 
 
 Every row was keyed for 30 s with a payload that never repeats and decoded by LeanDVB, an
 independent receiver, from B200 captures, with every frame exact
-([keyed table](results/2026-10-23-tx-table/README.md)). Spare is the share of each core left
+([keyed table](results/2026-10-23-tx-table/README.md), [8PSK re-key](results/2026-10-23-tx-table-8psk-rekey/README.md)). Spare is the share of each core left
 over: the encoder on core 0 against the frame period, the bank fill on core 1 against its
 deadline.
 
 | Mode | Symbol rate | Bandwidth | Payload | Exact frames | Spare, encoder / fill |
 |---|---:|---:|---:|---:|---:|
-| 8PSK 9/10 | 26.67 Msym/s | 36 MHz | **69.8 Mb/s** | 702 | 11.1% / 16.4% |
-| 8PSK 5/6 | 26.67 Msym/s | 36 MHz | **64.6 Mb/s** | 948 | 2.4% / 12.4% |
+| 8PSK 9/10 | 26.67 Msym/s | 36 MHz | **69.8 Mb/s** | 948 | 21.4% / 20.2% |
+| 8PSK 5/6 | 26.67 Msym/s | 36 MHz | **64.6 Mb/s** | 711 | 16.5% / 19.8% |
 | QPSK 9/10, roll-off 0.20 | 33.33 Msym/s | **40 MHz** | **58.2 Mb/s** | 587 | 26.1% / 14.2% |
-| 8PSK 2/3 | 26.67 Msym/s | 36 MHz | **51.6 Mb/s** | 711 | 6.9% / 16.1% |
+| 8PSK 9/10 | 20 Msym/s | 27 MHz | **52.4 Mb/s** | 707 | 53.7% / 15.7% |
+| 8PSK 2/3 | 26.67 Msym/s | 36 MHz | **51.6 Mb/s** | 943 | 20.2% / 20.4% |
 | 8PSK 5/6 | 20 Msym/s | 27 MHz | 48.4 Mb/s | 531 | 38.9% / 15.5% |
 | QPSK 9/10 | 26.67 Msym/s | 36 MHz | 46.6 Mb/s | 476 | 58.1% / 18.6% |
 | 8PSK 2/3 | 20 Msym/s | 27 MHz | 38.7 Mb/s | 506 | 47.5% / 15.5% |
 | QPSK 9/10 | 20 Msym/s | 27 MHz | 34.9 Mb/s | 227 | 68.5% / 23.5% |
+| 8PSK 9/10 | 10 Msym/s | 13.5 MHz | 26.2 Mb/s | 529 | 77.0% / 50.0% |
 | 8PSK 5/6 | 10 Msym/s | 13.5 MHz | 24.2 Mb/s | 406 | 69.5% / 50.1% |
 | QPSK 9/10 | 10 Msym/s | 13.5 MHz | 17.5 Mb/s | 353 | 80.1% / 49.7% |
 | 8PSK 9/10 | 5 Msym/s | 6.75 MHz | 13.1 Mb/s | 337 | 73.7% / 55.3% |
