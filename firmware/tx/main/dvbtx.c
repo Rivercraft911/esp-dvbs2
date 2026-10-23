@@ -17,7 +17,6 @@
 #include "spi_input.h"
 
 #include <inttypes.h>
-#include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1456,23 +1455,65 @@ static void print_startup(void)
 // command task prints it on core 0 while it waits for the run; the encoder and the fills never
 // print. Counts run from the start of the run; encoder_* and fill_* cover the time since the
 // previous line. A line the USB buffer has no room for is dropped, never waited for.
+// Probe: plain appends instead of vsnprintf, to test whether printf's flash code is what slows
+// the encoder's next frame after each line (results/2026-10-23-tx-status).
 static struct {
     const char *cmd;
     uint32_t freq_mhz;              // keyed runs only
     int64_t start_us;
     uint32_t frames, pages, dropped; // encoder frames and consumed pages at the previous line
     uint64_t cycles;                // and the encoder's summed cycles
-    char line[1024];                // static: the command task's stack is small
+    char line[1024];                // static: the command task's stack is small. Lines < 800 B
 } live;
 
-static __attribute__((format(printf,2,3))) size_t live_add(size_t at, const char *format, ...)
+static char *put_text(char *p, const char *text)
 {
-    if (at >= sizeof live.line) return at;
-    va_list args;
-    va_start(args,format);
-    const int n = vsnprintf(live.line+at,sizeof live.line-at,format,args);
-    va_end(args);
-    return n < 0 ? sizeof live.line : at+(size_t)n;
+    while (*text) *p++ = *text++;
+    return p;
+}
+
+static char *put_u32(char *p, uint32_t value)
+{
+    char digits[10];
+    unsigned n = 0;
+    do digits[n++] = (char)('0'+value%10); while (value /= 10);
+    while (n) *p++ = digits[--n];
+    return p;
+}
+
+// value/10^places with that many decimals (1 or 2): (215,1) is 21.5 and (-7,1) is -0.7.
+static char *put_fixed(char *p, int32_t value, unsigned places)
+{
+    const uint32_t scale = places == 2 ? 100 : 10, v = value < 0 ? 0u-(uint32_t)value : (uint32_t)value;
+    if (value < 0) *p++ = '-';
+    p = put_u32(p,v/scale);
+    *p++ = '.';
+    for (uint32_t d = scale/10; d; d /= 10) *p++ = (char)('0'+v/d%10);
+    return p;
+}
+
+// ,"key": and then the value's own append.
+static char *put_key(char *p, const char *key)
+{
+    *p++ = ',', *p++ = '"';
+    p = put_text(p,key);
+    *p++ = '"', *p++ = ':';
+    return p;
+}
+
+static char *put_word(char *p, const char *key, const char *word)
+{
+    p = put_key(p,key);
+    *p++ = '"';
+    p = put_text(p,word);
+    *p++ = '"';
+    return p;
+}
+
+// Spare as tenths of a percent: 1000 - 1000*used/budget.
+static int32_t spare_tenths(uint64_t used, uint64_t budget)
+{
+    return (int32_t)(1000-(int64_t)(1000*used/budget));
 }
 
 // Every function here runs in the command task. The encoder shares its core at a higher priority:
@@ -1508,39 +1549,54 @@ static void live_print(const radio_s3_stats_t *s, uint32_t slowest_fill)
         (uint32_t)((uint64_t)pages*MACHINE_PAGE_SAMPLES*5/(12*dvb.ring.frame_symbols)) : dvb.ring.next_frame;
     const uint32_t dummies = dvb.lofty ? lofty_mux.startup+lofty_mux.steady : dvb.ring.underruns;
     const uint32_t count = frames-live.frames;
-    const uint64_t mean = count ? (cycles-live.cycles)/count : 0;
+    const uint32_t mean = count ? (uint32_t)((cycles-live.cycles)/count) : 0;
     live.frames = frames, live.cycles = cycles;
     // Cycles at 240 MHz: a frame at this MODCOD's symbol rate, and the new samples of one bank.
-    const uint64_t period = (uint64_t)dvbs2_frame_symbols(mode,PILOTS)*240000000u*dvb.table.n/
-                            ((uint64_t)dvb.dac_rate*dvb.den);
+    const uint32_t period = (uint32_t)((uint64_t)dvbs2_frame_symbols(mode,PILOTS)*240000000u*dvb.table.n/
+                                       ((uint64_t)dvb.dac_rate*dvb.den));
     const uint32_t deadline = RADIO_S3_STEP_FOR(dvb.dac_rate)*(240000000u/dvb.dac_rate);
     const unsigned input = spi_input_type();
 
-    size_t at = live_add(0,"@{\"cmd\":\"status\",\"run\":\"%s\",\"elapsed_s\":%.2f",live.cmd,
-                         (double)(esp_timer_get_time()-live.start_us)/1e6);
-    if (live.freq_mhz) at = live_add(at,",\"freq_mhz\":%" PRIu32,live.freq_mhz);
-    at = live_add(at,",\"modcod\":%u,\"rate\":\"%s\",\"symbol_rate\":%" PRIu32 ",\"short\":%s,\"frames\":%" PRIu32
-                  ",\"frames_encoded\":%" PRIu32 ",\"dummies\":%" PRIu32 ",\"late_fills\":%" PRIu32
-                  ",\"late_switches\":%" PRIu32 ",\"input\":\"%s\"",
-                  mode->modcod,mode->rate,(uint32_t)((uint64_t)dvb.dac_rate*dvb.den/dvb.table.n),
-                  mode->short_frame ? "true" : "false",played,frames,dummies,s->late_fills,s->late_switches,
-                  input == PV_TS ? "ts" : input == PV_GCS ? "gcs" : "synthetic");
-    if (ring) at = live_add(at,",\"input_wire\":\"%s\",\"input_bytes\":%" PRIu32 ",\"input_messages\":%" PRIu32
-                            ",\"input_rejected\":%" PRIu32 ",\"input_crc_errors\":%" PRIu32 ",\"input_lost\":%" PRIu32
-                            ",\"input_overruns\":%" PRIu32 ",\"input_waits\":%" PRIu32 ",\"input_pending\":%" PRIu32,
-                            spi_input_source(),in.bytes,in.msgs,
-                            in.err_short+in.err_long+in.err_header+in.err_crc+in.err_sync+wrong_type,
-                            in.err_crc,in.lost,in.overruns,waits,pending);
-    if (count) at = live_add(at,",\"encoder_mean_cycles\":%" PRIu64 ",\"encoder_max_cycles\":%" PRIu32
-                             ",\"encoder_spare_pct\":%.1f",mean,slowest,100.0-100.0*(double)mean/(double)period);
-    else at = live_add(at,",\"encoder_mean_cycles\":null,\"encoder_max_cycles\":null,\"encoder_spare_pct\":null");
-    if (slowest_fill) at = live_add(at,",\"fill_max_cycles\":%" PRIu32 ",\"fill_spare_pct\":%.1f",
-                                    slowest_fill,100.0-100.0*slowest_fill/deadline);
-    else at = live_add(at,",\"fill_max_cycles\":null,\"fill_spare_pct\":null");
-    at = live_add(at,",\"frame_period_cycles\":%" PRIu64 ",\"fill_deadline_cycles\":%" PRIu32
-                  ",\"lines_dropped\":%" PRIu32 "}\n",period,deadline,live.dropped);
+    char *p = put_text(live.line,"@{\"cmd\":\"status\"");
+    p = put_word(p,"run",live.cmd);
+    p = put_fixed(put_key(p,"elapsed_s"),(int32_t)((esp_timer_get_time()-live.start_us)/10000),2);
+    if (live.freq_mhz) p = put_u32(put_key(p,"freq_mhz"),live.freq_mhz);
+    p = put_u32(put_key(p,"modcod"),mode->modcod);
+    p = put_word(p,"rate",mode->rate);
+    p = put_u32(put_key(p,"symbol_rate"),(uint32_t)((uint64_t)dvb.dac_rate*dvb.den/dvb.table.n));
+    p = put_text(put_key(p,"short"),mode->short_frame ? "true" : "false");
+    const struct { const char *key; uint32_t value; } counts[] = {
+        {"frames",played}, {"frames_encoded",frames}, {"dummies",dummies},
+        {"late_fills",s->late_fills}, {"late_switches",s->late_switches},
+    };
+    for (unsigned i = 0; i < sizeof counts/sizeof *counts; ++i) p = put_u32(put_key(p,counts[i].key),counts[i].value);
+    p = put_word(p,"input",input == PV_TS ? "ts" : input == PV_GCS ? "gcs" : "synthetic");
+    if (ring) {
+        const struct { const char *key; uint32_t value; } inputs[] = {
+            {"input_bytes",in.bytes}, {"input_messages",in.msgs},
+            {"input_rejected",in.err_short+in.err_long+in.err_header+in.err_crc+in.err_sync+wrong_type},
+            {"input_crc_errors",in.err_crc}, {"input_lost",in.lost}, {"input_overruns",in.overruns},
+            {"input_waits",waits}, {"input_pending",pending},
+        };
+        p = put_word(p,"input_wire",spi_input_source());
+        for (unsigned i = 0; i < sizeof inputs/sizeof *inputs; ++i) p = put_u32(put_key(p,inputs[i].key),inputs[i].value);
+    }
+    if (count) {
+        p = put_u32(put_key(p,"encoder_mean_cycles"),mean);
+        p = put_u32(put_key(p,"encoder_max_cycles"),slowest);
+        p = put_fixed(put_key(p,"encoder_spare_pct"),spare_tenths(mean,period),1);
+    } else p = put_text(p,",\"encoder_mean_cycles\":null,\"encoder_max_cycles\":null,\"encoder_spare_pct\":null");
+    if (slowest_fill) {
+        p = put_u32(put_key(p,"fill_max_cycles"),slowest_fill);
+        p = put_fixed(put_key(p,"fill_spare_pct"),spare_tenths(slowest_fill,deadline),1);
+    } else p = put_text(p,",\"fill_max_cycles\":null,\"fill_spare_pct\":null");
+    p = put_u32(put_key(p,"frame_period_cycles"),period);
+    p = put_u32(put_key(p,"fill_deadline_cycles"),deadline);
+    p = put_u32(put_key(p,"lines_dropped"),live.dropped);
+    p = put_text(p,"}\n");
     // One whole line or none: the driver's ring buffer takes a write entirely or not at all.
-    if (at >= sizeof live.line || usb_serial_jtag_write_bytes(live.line,at,0) != (int)at) ++live.dropped;
+    const int length = (int)(p-live.line);
+    if (usb_serial_jtag_write_bytes(live.line,length,0) != length) ++live.dropped;
 }
 
 void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, unsigned level,
