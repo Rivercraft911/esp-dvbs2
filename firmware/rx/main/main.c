@@ -52,11 +52,20 @@ static void print_capture(const capture_stats_t *s)
 }
 
 /* First n samples as separate I and Q planes in PSRAM, floor(s10/4), for host analysis. */
-typedef struct { int8_t *i, *q; size_t n; } dump_t;
+typedef struct {
+    int8_t *i, *q;
+    size_t n, next;             /* next expected sample */
+    uint32_t gaps, gap_at[4], gap_len[4];
+} dump_t;
 
 static esp_err_t IRAM_ATTR dump_unit(const uint32_t *w, size_t count, uint64_t first, void *ctx)
 {
     dump_t *d = ctx;
+    if (first > d->next && d->next < d->n && d->gaps < 4) {
+        d->gap_at[d->gaps] = d->next;
+        d->gap_len[d->gaps++] = first - d->next;
+    }
+    d->next = first + count;
     if (first < d->n) rx_unpack_span(w, first + count > d->n ? d->n - first : count,
                                      d->i + first, d->q + first);
     return ESP_OK;
@@ -64,7 +73,7 @@ static esp_err_t IRAM_ATTR dump_unit(const uint32_t *w, size_t count, uint64_t f
 
 static void dump(unsigned mhz, unsigned gain, unsigned pairs)
 {
-    dump_t d = {heap_caps_aligned_alloc(16, 2 * (size_t)pairs, MALLOC_CAP_SPIRAM), NULL, pairs};
+    dump_t d = {.i = heap_caps_aligned_alloc(16, 2 * (size_t)pairs, MALLOC_CAP_SPIRAM), .n = pairs};
     if (!d.i || !pairs) {
         printf("@{\"cmd\":\"dump\",\"error\":\"no memory for %u pairs\"}\n", pairs);
         return;
@@ -73,8 +82,16 @@ static void dump(unsigned mhz, unsigned gain, unsigned pairs)
     capture_config_t c = {.mhz = mhz, .gain = gain, .seconds = 1 + pairs / CAPTURE_RATE};
     capture_stats_t s;
     capture_run(&c, dump_unit, &d, &s);
-    printf("@{\"cmd\":\"dump\",\"mhz\":%u,\"gain\":%u,\"pairs\":%u,\"layout\":\"i plane, q plane\"",
+    /* Units dropped under overload: zero them and say where they were. */
+    printf("@{\"cmd\":\"dump\",\"mhz\":%u,\"gain\":%u,\"pairs\":%u,\"layout\":\"i plane, q plane\",\"gaps\":[",
            mhz, gain, pairs);
+    for (unsigned k = 0; k < d.gaps; ++k) {
+        size_t len = d.gap_at[k] + d.gap_len[k] > pairs ? pairs - d.gap_at[k] : d.gap_len[k];
+        memset(d.i + d.gap_at[k], 0, len);
+        memset(d.q + d.gap_at[k], 0, len);
+        printf("%s[%lu,%lu]", k ? "," : "", (unsigned long)d.gap_at[k], (unsigned long)d.gap_len[k]);
+    }
+    printf("]");
     print_capture(&s);
     if (s.error == ESP_OK) printf(",\"binary_bytes\":%u", 2 * pairs);
     printf("}\n");

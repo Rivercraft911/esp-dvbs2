@@ -195,8 +195,9 @@ from generating the default contiguous xorshift stream.
 the existing renderer, Wi-Fi lifetime, queue sizing and payload stream stay selected.
 `--phy-solo` starts and calibrates Wi-Fi, holds the PHY independently, then stops and
 deinitializes Wi-Fi before playback. It releases that hold on every exit. Solo paces
-are limited to 60 seconds. **RF quality without Wi-Fi's periodic recalibration is
-unverified**; use the [E200 A/B plan](../examples/over-the-air/README.md#phy-solo-ab).
+are limited to 60 seconds. Into the S3 receiver at 1 Msym/s, PHY-solo keying gave 0 failed
+frames in 103,453, against 2 in 51,791 with Wi-Fi up: Wi-Fi's activity caused rare short
+disturbances of the transmitted signal ([records](../results/2026-10-23-tx-phy-solo/README.md)).
 
 At 8PSK `26m667`, `--fused` automatically tries six table reads instead of eight.
 It preserves independent rounding and DAC words. The extra 12 KiB of tables displaces
