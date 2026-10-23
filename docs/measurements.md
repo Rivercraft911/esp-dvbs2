@@ -93,6 +93,16 @@ pins the retained captures and reports; it does not include raw RF or the receiv
 
 ## Receiver experiments
 
+**5 Msym/s receive.** Short-frame 8PSK 8/9 at 5 Msym/s, S3 to S3 through 30 dB of coax at
+2420 MHz, decoded entirely on the receiving S3 (firmware e379dfb). In three 38.3 s runs, with
+the receiver started before the transmitter, every frame's CRC-32 matched the transmitter's:
+34,232, 34,199 and 34,196 frames, 12.64 Mb/s, no capture unit dropped, median pilot MER
+29.9 dB. One QPSK 3/4 run at 5 Msym/s (22,892 frames, 6.95 Mb/s) and one at 1 Msym/s (4,576
+frames) were also exact. An earlier build (b144c70) also passed three runs but dropped about
+259 units before each lock while searching.
+[Records](../results/2026-10-23-rx-5m-margin/README.md),
+[earlier build](../results/2026-10-23-rx-5m/README.md).
+
 **Continuous receive.** Short-frame QPSK 3/4 at 1 Msym/s, S3 to S3 through 30 dB of coax at
 2420 MHz, decoded entirely on the receiving S3. In three 38 s runs, with the receiver started
 before the transmitter, every frame was exact: 4,581, 4,578 and 4,577 frames, 1.39 Mb/s.
