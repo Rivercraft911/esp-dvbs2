@@ -611,13 +611,13 @@ static void dry_worker(void *arg)
         error = fill_bank(run, 1, step - lead);
     }
     for (uint64_t j = 0; error == ESP_OK && j * step < samples; ++j) {
-        // Let IDLE1 run now and then. A sink that rarely blocks (iddump keeps 1 sample in
-        // 4000) otherwise starves it past the 5 s task watchdog, whose log lands in the dump.
+        // Feed the watchdog every bank: a dump's USB sink can take 80 ms per bank, and a
+        // watchdog report would land in the dump. Let other core-1 work run now and then.
+        if (watched) {
+            (void)esp_task_wdt_reset();
+        }
         if ((j & 63) == 63) {
             vTaskDelay(1);
-            if (watched) {
-                (void)esp_task_wdt_reset();
-            }
         }
         const uint32_t *now = radio_s3_bank(j & 1), *next = radio_s3_bank((j + 1) & 1);
         const uint64_t edge = (j + 1) * step;
