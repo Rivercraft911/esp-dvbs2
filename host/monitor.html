@@ -1,0 +1,528 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>S3 receiver</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&display=swap" rel="stylesheet">
+<style>
+:root {
+  --housing: #1c1f22;
+  --well: #16191c;
+  --rule: #2a2e33;
+  --ink: #ede8de;
+  --ink-2: #a6aaae;
+  --ink-3: #6c7277;
+  --brass: #e7c273;
+  --good: #8bc59a;
+  --warn: #f0934f;
+  --bad: #ff6a5c;
+  --u: clamp(1px, 0.0625vw, 1.5px);
+  --gutter: clamp(16px, 2.2vw, 56px);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; margin: 0; }
+html, body { height: 100%; }
+body {
+  background: var(--housing);
+  color: var(--ink);
+  font: 400 calc(15 * var(--u))/1.35 "Archivo", "Avenir Next", "Helvetica Neue", sans-serif;
+  font-variant-numeric: tabular-nums;
+  font-variation-settings: "wdth" 100;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: clamp(14px, 2.2vh, 28px);
+  padding: clamp(14px, 2.6vh, 32px) var(--gutter);
+  min-height: 100vh;
+}
+
+/* Header: what is being received, and whether it is */
+.head { display: flex; align-items: baseline; gap: clamp(16px, 3vw, 56px); flex-wrap: wrap; }
+.title {
+  font-size: calc(21 * var(--u)); font-weight: 620; font-variation-settings: "wdth" 120;
+  letter-spacing: 0.005em; margin-right: auto;
+}
+.tune { display: flex; align-items: baseline; gap: 14px; }
+.freq { font-size: calc(28 * var(--u)); font-weight: 340; font-variation-settings: "wdth" 84; }
+.freq small { font-size: calc(15 * var(--u)); color: var(--ink-2); margin-left: 3px; }
+.mode { color: var(--ink-2); }
+.status { display: inline-flex; align-items: center; gap: 9px; font-weight: 500; min-width: 15em; justify-content: flex-end; }
+.status svg { width: calc(15 * var(--u)); height: calc(15 * var(--u)); flex: none; }
+.status[data-state="track"] { color: var(--good); }
+.status[data-state="acquire"] { color: var(--warn); }
+.status[data-state="none"] { color: var(--ink-3); }
+
+/* Main: the constellation, then what the radio hears */
+.main {
+  display: grid; min-height: 0;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: clamp(18px, 2.4vw, 44px);
+}
+.scope { display: grid; grid-template-rows: minmax(0, 1fr) auto; gap: 10px; min-height: 0; height: 100%; }
+.scope .well { aspect-ratio: 1; height: 100%; max-width: 46vw; }
+.rf { display: grid; grid-template-rows: minmax(0, 33fr) minmax(0, 67fr) auto; gap: 6px; min-height: 0; }
+.well { position: relative; background: var(--well); border-radius: 3px; overflow: hidden; min-height: 0; }
+.well canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.caption { display: flex; justify-content: space-between; gap: 16px; color: var(--ink-3); font-size: calc(13.5 * var(--u)); }
+.caption b { color: var(--ink-2); font-weight: 500; }
+.axis { position: relative; height: calc(18 * var(--u)); color: var(--ink-3); font-size: calc(12.5 * var(--u)); }
+.axis span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+.readout {
+  position: absolute; pointer-events: none; padding: 5px 8px; border-radius: 3px;
+  background: rgba(28, 31, 34, 0.92); color: var(--ink); font-size: calc(13 * var(--u)); white-space: nowrap;
+  border: 1px solid var(--rule); display: none; z-index: 2;
+}
+.empty {
+  position: absolute; inset: 0; display: grid; place-content: center; text-align: center;
+  gap: 6px; padding: 24px; color: var(--ink-2); z-index: 1;
+}
+.empty p:first-child { color: var(--ink); font-size: calc(17 * var(--u)); font-weight: 500; }
+.empty[hidden] { display: none; }
+
+/* The signal path, left to right, under the core that runs each stage */
+.path { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); column-gap: clamp(12px, 1.6vw, 28px); }
+.core { grid-row: 1; display: flex; align-items: baseline; gap: 8px; padding-bottom: 9px; color: var(--ink-2); font-size: calc(13.5 * var(--u)); border-bottom: 1px solid var(--rule); }
+.core b { color: var(--ink); font-weight: 560; }
+.core.c1 { grid-column: 1 / span 2; }
+.core.c0 { grid-column: 3 / span 4; }
+.stage { grid-row: 2; position: relative; padding-top: 16px; min-width: 0; }
+.stage::before {
+  content: ""; position: absolute; top: -4.5px; left: 0; width: 8px; height: 8px;
+  border-radius: 50%; background: var(--housing); border: 1.5px solid var(--ink-3);
+  transition: background 300ms, border-color 300ms;
+}
+.stage[data-flow="on"]::before { background: var(--brass); border-color: var(--brass); }
+.stage[data-flow="fault"]::before { background: var(--bad); border-color: var(--bad); }
+.stage .name { color: var(--ink-2); font-size: calc(14 * var(--u)); font-weight: 500; }
+.stage .value {
+  display: block; font-size: calc(clamp(26px, 2.5vw, 40px) * var(--u) / 1px); line-height: 1.12; font-weight: 320;
+  font-variation-settings: "wdth" 78; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.stage .value small { font-size: 0.48em; color: var(--ink-2); font-weight: 400; margin-left: 4px; font-variation-settings: "wdth" 100; }
+.stage .detail { color: var(--ink-3); font-size: calc(13.5 * var(--u)); margin-top: 3px; }
+.stage .detail .bad { color: var(--bad); }
+.spark { display: block; width: 100%; height: calc(30 * var(--u)); margin-top: 8px; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .path.sweep .stage::before { animation: sweep 900ms ease-out both; animation-delay: calc(var(--i) * 110ms); }
+  @keyframes sweep { 0% { transform: scale(1); } 40% { transform: scale(1.9); background: var(--brass); border-color: var(--brass); } 100% { transform: scale(1); } }
+}
+@media (max-width: 1100px) {
+  .main { grid-template-columns: 1fr; }
+  .scope .well { height: auto; width: min(100%, 520px); max-width: none; }
+  .rf { min-height: 480px; }
+  .path { grid-template-columns: repeat(3, minmax(0, 1fr)); row-gap: 22px; }
+  .core { display: none; }
+  .stage { grid-row: auto; border-top: 1px solid var(--rule); }
+}
+</style>
+</head>
+<body>
+<header class="head">
+  <h1 class="title">Receiving on an ESP32-S3</h1>
+  <div class="tune"><span class="freq" id="freq">&ndash;<small>MHz</small></span><span class="mode" id="mode">Waiting for the first report</span></div>
+  <div class="status" id="status" data-state="none" role="status">
+    <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.6"/><circle id="statusDot" cx="8" cy="8" r="3" fill="currentColor" opacity="0"/></svg>
+    <span id="statusText">No data from the receiver</span>
+  </div>
+</header>
+
+<main class="main">
+  <section class="scope" aria-label="Constellation">
+    <div class="well" id="constWell">
+      <canvas id="constellation"></canvas>
+      <div class="empty" id="emptyConst"><p>Waiting for the receiver</p><p>Start a run with <b>ts eth</b>. Its monitor reports arrive on UDP port 1235.</p></div>
+    </div>
+    <div class="caption"><span><b>Demodulator output</b></span><span id="constNote"></span></div>
+  </section>
+
+  <section class="rf" aria-label="Spectrum and waterfall">
+    <div class="well" id="specWell"><canvas id="spectrum"></canvas><div class="readout" id="specRead"></div></div>
+    <div class="well" id="fallWell"><canvas id="waterfall"></canvas><div class="readout" id="fallRead"></div></div>
+    <div class="axis" id="freqAxis"></div>
+  </section>
+</main>
+
+<footer class="path" id="path" aria-label="Signal path">
+  <div class="core c1"><b>Core 1</b><span id="core1">captures and demodulates every sample</span></div>
+  <div class="core c0"><b>Core 0</b><span id="core0">checks, deframes and sends</span></div>
+  <div class="stage" style="--i:0" id="sRadio"><span class="name">Radio</span><span class="value" id="vRadio">&ndash;</span><div class="detail" id="dRadio">&nbsp;</div></div>
+  <div class="stage" style="--i:1" id="sSync"><span class="name">Sync</span><span class="value" id="vSync">&ndash;</span><div class="detail" id="dSync">&nbsp;</div></div>
+  <div class="stage" style="--i:2" id="sDemap"><span class="name">Demap</span><span class="value" id="vDemap">&ndash;</span><div class="detail" id="dDemap">&nbsp;</div><canvas class="spark" id="merSpark"></canvas></div>
+  <div class="stage" style="--i:3" id="sCheck"><span class="name">Check</span><span class="value" id="vCheck">&ndash;</span><div class="detail" id="dCheck">&nbsp;</div></div>
+  <div class="stage" style="--i:4" id="sTs"><span class="name">Transport stream</span><span class="value" id="vTs">&ndash;</span><div class="detail" id="dTs">&nbsp;</div></div>
+  <div class="stage" style="--i:5" id="sEth"><span class="name">Ethernet</span><span class="value" id="vEth">&ndash;</span><div class="detail" id="dEth">&nbsp;</div><canvas class="spark" id="rateSpark"></canvas></div>
+</footer>
+
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const ui = () => Math.min(1.5, Math.max(1, innerWidth / 1600));
+const gutter = () => 62 * ui();            // CSS px left of the spectrum and waterfall plots
+const nf = new Intl.NumberFormat('en-US');
+const css = getComputedStyle(document.documentElement);
+const token = name => css.getPropertyValue(name).trim();
+
+// One brass ramp for both densities: received power over time, and symbols over the I/Q plane.
+const RAMP = ['#16191c', '#241f17', '#4e3f22', '#8a6a31', '#c29546', '#e7c273', '#fff0c8'];
+const LUT = (() => {
+  const rgb = RAMP.map(h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16)));
+  const lut = new Uint8ClampedArray(256 * 4);
+  for (let i = 0; i < 256; i++) {
+    const x = i / 255 * (rgb.length - 1), k = Math.min(Math.floor(x), rgb.length - 2), f = x - k;
+    for (let c = 0; c < 3; c++) lut[i * 4 + c] = rgb[k][c] + (rgb[k + 1][c] - rgb[k][c]) * f;
+    lut[i * 4 + 3] = 255;
+  }
+  return lut;
+})();
+
+function fit(canvas) {
+  const r = canvas.getBoundingClientRect(), d = devicePixelRatio || 1;
+  const w = Math.max(1, Math.round(r.width * d)), h = Math.max(1, Math.round(r.height * d));
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+  return [w, h, d];
+}
+
+const state = { stats: null, rate: 16e6, center: null, lastStats: 0, lockedAt: null, prev: {}, history: [] };
+
+// ---- Constellation: a two-second exposure of the demodulator's output ----------------------
+const N = 512, SPAN = 84;                         // grid cells, and the I/Q half-width shown
+const density = new Float32Array(N * N);
+let densityPeak = 1, bitsPerSymbol = 3, shown = 0;
+const constImg = new ImageData(N, N);
+const constOff = new OffscreenCanvas(N, N);
+
+function addSymbols(iq, bits) {
+  bitsPerSymbol = bits;
+  for (let i = 0; i < density.length; i++) density[i] *= 0.9;
+  shown = shown * 0.9;
+  for (let k = 0; k + 1 < iq.length; k += 2) {
+    const i = iq[k] + Math.random() - 0.5, q = iq[k + 1] + Math.random() - 0.5;
+    const x = Math.round((i + SPAN) / (2 * SPAN) * (N - 1));
+    const y = Math.round((SPAN - q) / (2 * SPAN) * (N - 1));
+    if (x >= 1 && x < N - 1 && y >= 1 && y < N - 1) {
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++)
+        density[(y + dy) * N + x + dx] += (dx ? 0.5 : 1) * (dy ? 0.5 : 1);
+    }
+    shown++;
+  }
+  let peak = 0;
+  for (let i = 0; i < density.length; i++) if (density[i] > peak) peak = density[i];
+  densityPeak = densityPeak * 0.8 + peak * 0.2;
+  const scale = 255 / Math.log1p(densityPeak);
+  for (let i = 0; i < density.length; i++) {
+    const v = Math.min(255, Math.log1p(density[i]) * scale) | 0;
+    constImg.data.set(LUT.subarray(v * 4, v * 4 + 4), i * 4);
+  }
+  constOff.getContext('2d').putImageData(constImg, 0, 0);
+  $('constNote').textContent = `${nf.format(Math.round(shown / 100) * 100)} symbols, fading over 2 s`;
+}
+
+function drawConstellation() {
+  const c = $('constellation'), [w, h, d] = fit(c), g = c.getContext('2d');
+  g.imageSmoothingEnabled = true;
+  g.imageSmoothingQuality = 'high';
+  g.drawImage(constOff, 0, 0, w, h);
+  const cx = w / 2, cy = h / 2, r = 64 / SPAN * w / 2;
+  g.lineWidth = d;
+  g.strokeStyle = 'rgba(166,170,174,0.16)';
+  g.beginPath(); g.moveTo(0, cy); g.lineTo(w, cy); g.moveTo(cx, 0); g.lineTo(cx, h); g.stroke();
+  g.setLineDash([2 * d, 5 * d]);
+  g.beginPath(); g.arc(cx, cy, r, 0, 2 * Math.PI); g.stroke();
+  g.setLineDash([]);
+  const points = bitsPerSymbol === 3 ? 8 : 4, offset = bitsPerSymbol === 3 ? 0 : Math.PI / 4;
+  g.strokeStyle = 'rgba(237,232,222,0.22)';            // where each symbol should land
+  for (let k = 0; k < points; k++) {
+    const a = offset + k * 2 * Math.PI / points, x = cx + r * Math.cos(a), y = cy - r * Math.sin(a);
+    g.beginPath(); g.arc(x, y, 0.13 * r, 0, 2 * Math.PI); g.stroke();
+  }
+  g.fillStyle = token('--ink-3');
+  g.font = `${12.5 * d * ui()}px Archivo, sans-serif`;
+  g.fillText('I', w - 16 * d, cy - 8 * d);
+  g.fillText('Q', cx + 8 * d, 18 * d);
+}
+
+// ---- Spectrum and waterfall: 16 MHz around the carrier, ten rows a second -------------------
+const ROWS = 420, BINS = 512;
+const fallOff = new OffscreenCanvas(BINS, ROWS);
+const fallCtx = fallOff.getContext('2d');
+fallCtx.fillStyle = RAMP[0]; fallCtx.fillRect(0, 0, BINS, ROWS);
+const rowImg = new ImageData(BINS, 1);
+let avg = null, peak = null, floorDb = -90, topDb = -30, rows = 0;
+
+function addSpectrum(db, rate) {
+  state.rate = rate;
+  const lin = db.map(v => Math.pow(10, v / 10));
+  avg = avg ? avg.map((a, i) => a * 0.75 + lin[i] * 0.25) : lin;
+  const avgDb = avg.map(v => 10 * Math.log10(v));
+  peak = peak ? peak.map((p, i) => Math.max(p - 0.15, avgDb[i])) : avgDb.slice();
+  const sorted = avgDb.slice().sort((a, b) => a - b);
+  floorDb = floorDb * 0.95 + (sorted[Math.floor(BINS * 0.1)] - 4) * 0.05;
+  topDb = topDb * 0.95 + (sorted[BINS - 3] + 3) * 0.05;
+  for (let i = 0; i < BINS; i++) {
+    const t = 0.8 * Math.max(0, Math.min(1, (db[i] - floorDb) / (topDb - floorDb)));
+    rowImg.data.set(LUT.subarray((t * 255 | 0) * 4, (t * 255 | 0) * 4 + 4), i * 4);
+  }
+  fallCtx.drawImage(fallOff, 0, 1);
+  fallCtx.putImageData(rowImg, 0, 0);
+  rows++;
+}
+
+function niceTicks(lo, hi, step) {
+  const out = [];
+  for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) out.push(v);
+  return out;
+}
+
+function drawSpectrum() {
+  const c = $('spectrum'), [w, h, d] = fit(c), g = c.getContext('2d');
+  g.clearRect(0, 0, w, h);
+  const lo = Math.floor((floorDb - 6) / 10) * 10, hi = Math.ceil((topDb + 6) / 10) * 10;
+  const top = 34 * d * ui(), y = v => h - (v - lo) / (hi - lo) * (h - top);
+  const gx = gutter() * d, X = f => gx + f * (w - gx);
+  g.font = `${12 * d * ui()}px Archivo, sans-serif`;
+  g.lineWidth = d;
+  for (const v of niceTicks(lo, hi, 10)) {
+    g.strokeStyle = 'rgba(166,170,174,0.09)';
+    g.beginPath(); g.moveTo(gx, y(v)); g.lineTo(w, y(v)); g.stroke();
+  }
+  const labels = () => {
+    g.fillStyle = token('--ink-3');
+    g.textAlign = 'right';
+    for (const v of niceTicks(lo, hi, 10)) {
+      if (y(v) < top || y(v) > h - 4 * d) continue;
+      g.fillText(`${v} dB`, gx - 10 * d, y(v) + 4 * d);
+    }
+    g.textAlign = 'left';
+  };
+  if (!avg) { labels(); return; }
+  const s = state.stats;
+  if (s && s.rate) {                                // the DVB-S2 channel, 1.35 x the symbol rate
+    const rs = s.rate === '5m' ? 5e6 : 1e6, half = rs * 1.35 / 2 / state.rate * (w - gx), mid = X(0.5);
+    g.strokeStyle = 'rgba(237,232,222,0.35)';
+    const by = 10 * d * ui();
+    g.beginPath(); g.moveTo(mid - half, by + 6 * d); g.lineTo(mid - half, by); g.lineTo(mid + half, by); g.lineTo(mid + half, by + 6 * d); g.stroke();
+    g.fillStyle = token('--ink-2');
+    const label = `${(rs * 1.35 / 1e6).toFixed(2)} MHz channel`;
+    g.fillText(label, mid + half + 8 * d, by + 8 * d);
+  }
+  const trace = (arr, style, width) => {
+    g.strokeStyle = style; g.lineWidth = width * d; g.lineJoin = 'round';
+    g.beginPath();
+    arr.forEach((v, i) => { const x = X((i + 0.5) / BINS); i ? g.lineTo(x, y(v)) : g.moveTo(x, y(v)); });
+    g.stroke();
+  };
+  trace(peak, 'rgba(166,170,174,0.28)', 1);
+  trace(avg.map(v => 10 * Math.log10(v)), token('--brass'), 1.6);
+  labels();
+}
+
+function drawWaterfall() {
+  const c = $('waterfall'), [w, h, d] = fit(c), g = c.getContext('2d');
+  g.imageSmoothingEnabled = true;
+  const visible = Math.min(ROWS, Math.round(h / d / 1.0)), gx = gutter() * d;
+  g.clearRect(0, 0, gx, h);
+  g.drawImage(fallOff, 0, 0, BINS, visible, gx, 0, w - gx, h);
+  g.fillStyle = token('--ink-3');
+  g.textAlign = 'right';
+  g.font = `${12 * d * ui()}px Archivo, sans-serif`;
+  const secs = visible / 10;
+  for (const t of niceTicks(0, secs, 10)) {
+    const yy = t / secs * h;
+    g.strokeStyle = 'rgba(237,232,222,0.18)';
+    g.beginPath(); g.moveTo(gx - 6 * d, yy); g.lineTo(gx, yy); g.stroke();
+    if (t && yy < h - 8 * d) g.fillText(`${t} s`, gx - 10 * d, yy + 4 * d);
+  }
+  g.fillText('now', gx - 10 * d, 13 * d * ui());
+  g.textAlign = 'left';
+}
+
+function drawAxis() {
+  const axis = $('freqAxis'), s = state.stats;
+  const center = s && s.freq_mhz ? s.freq_mhz : null;
+  const key = `${center}|${state.rate}|${axis.clientWidth}|${gutter()}`;
+  if (axis.dataset.key === key) return;
+  axis.dataset.key = key;
+  axis.textContent = '';
+  const half = state.rate / 2e6;
+  for (const off of niceTicks(-half, half, 2)) {
+    const el = document.createElement('span');
+    el.style.left = `calc(${gutter()}px + ${(off + half) / (2 * half)} * (100% - ${gutter()}px))`;
+    el.textContent = center === null ? `${off > 0 ? '+' : ''}${off} MHz` : `${(center + off).toFixed(0)}`;
+    if (Math.abs(off) < half) axis.appendChild(el);
+  }
+  const unit = document.createElement('span');
+  unit.style.left = '100%'; unit.style.transform = 'translateX(-100%)';
+  unit.textContent = 'MHz';
+  axis.appendChild(unit);
+}
+
+// Hover readouts: frequency and level, and on the waterfall how long ago.
+function hover(wellId, readId, fn) {
+  const well = $(wellId), read = $(readId);
+  well.addEventListener('pointermove', e => {
+    const r = well.getBoundingClientRect(), gx = gutter();
+    const fx = (e.clientX - r.left - gx) / (r.width - gx), fy = (e.clientY - r.top) / r.height;
+    if (fx < 0) { read.style.display = 'none'; return; }
+    const text = fn(fx, fy);
+    if (!text) { read.style.display = 'none'; return; }
+    read.textContent = text;
+    read.style.display = 'block';
+    read.style.left = `${Math.min(e.clientX - r.left + 14, r.width - read.offsetWidth - 6)}px`;
+    read.style.top = `${Math.max(6, e.clientY - r.top - 34)}px`;
+  });
+  well.addEventListener('pointerleave', () => { read.style.display = 'none'; });
+}
+const freqAt = fx => {
+  const center = state.stats && state.stats.freq_mhz, off = (fx - 0.5) * state.rate / 1e6;
+  return center ? `${(center + off).toFixed(3)} MHz` : `${off >= 0 ? '+' : ''}${off.toFixed(3)} MHz`;
+};
+hover('specWell', 'specRead', fx => avg && `${freqAt(fx)}, ${(10 * Math.log10(avg[Math.min(BINS - 1, fx * BINS | 0)])).toFixed(1)} dBFS`);
+hover('fallWell', 'fallRead', (fx, fy) => {
+  if (!rows) return null;
+  const h = $('waterfall').clientHeight, ago = fy * Math.min(ROWS, h) / 10;
+  return ago * 10 > rows ? null : `${freqAt(fx)}, ${ago.toFixed(1)} s ago`;
+});
+
+// ---- Stats: the header and the six stages ---------------------------------------------------
+const MODCODS = { 4: 'QPSK 1/2', 5: 'QPSK 3/5', 6: 'QPSK 2/3', 7: 'QPSK 3/4', 8: 'QPSK 4/5', 9: 'QPSK 5/6', 10: 'QPSK 8/9',
+  11: 'QPSK 9/10', 12: '8PSK 3/5', 13: '8PSK 2/3', 14: '8PSK 3/4', 15: '8PSK 5/6', 16: '8PSK 8/9', 17: '8PSK 9/10' };
+
+function duration(s) {
+  if (s < 60) return `${Math.floor(s)} s`;
+  const m = Math.floor(s / 60);
+  return m < 60 ? `${m} min ${Math.floor(s % 60)} s` : `${Math.floor(m / 60)} h ${m % 60} min`;
+}
+
+function flow(id, advanced, fault) {
+  $(id).dataset.flow = fault ? 'fault' : advanced ? 'on' : 'off';
+}
+
+function setStatus(kind, text) {
+  const el = $('status');
+  el.dataset.state = kind;
+  $('statusText').textContent = text;
+  $('statusDot').setAttribute('opacity', kind === 'track' ? 1 : 0);
+}
+
+function compact(n) {
+  return n >= 1e6 ? `${(n / 1e6).toFixed(2)} M` : n >= 1e4 ? `${(n / 1e3).toFixed(1)} k` : nf.format(n);
+}
+
+function onStats(s) {
+  const p = state.prev, now = performance.now();
+  state.lastStats = now;
+  if (s.state === 'track' && (!state.stats || state.stats.state !== 'track')) {
+    state.lockedAt = Date.now();
+    const path = $('path');
+    path.classList.remove('sweep'); void path.offsetWidth; path.classList.add('sweep');
+  }
+  if (s.state !== 'track') state.lockedAt = null;
+  state.stats = s;
+  $('emptyConst').hidden = true;
+
+  if (s.freq_mhz) $('freq').innerHTML = `${s.freq_mhz.toFixed(3)}<small>MHz</small>`;
+  const rs = s.rate === '5m' ? '5 Msym/s' : '1 Msym/s';
+  $('mode').textContent = `${MODCODS[s.modcod] || 'MODCOD ' + s.modcod}${s.short ? ', short frames' : ''}, ${rs}`;
+
+  const has = k => s[k] !== undefined && s[k] !== null;
+  const grew = k => has(k) && p[k] !== undefined && s[k] > p[k];
+
+  $('vRadio').innerHTML = `16<small>MS/s</small>`;
+  $('dRadio').innerHTML = `${has('gain') ? `gain ${s.gain} dB, ` : ''}${has('capture_drops') ? (s.capture_drops ? `<span class="bad">${nf.format(s.capture_drops)} drops</span>` : 'no samples dropped') : ''}`;
+  flow('sRadio', s.state === 'track' || s.state === 'acquire', s.capture_drops > (p.capture_drops || 0));
+
+  $('vSync').textContent = s.state === 'track' ? 'Locked' : 'Searching';
+  const sync = [];
+  if (has('cfo_hz')) sync.push(`carrier ${(s.cfo_hz / 1000).toFixed(1)} kHz`);
+  if (has('clock_ppm')) sync.push(`clock ${s.clock_ppm.toFixed(1)} ppm`);
+  if (s.relocks) sync.push(`${s.relocks} relocks`);
+  $('dSync').textContent = sync.join(', ') || ' ';
+  flow('sSync', s.state === 'track', false);
+
+  const mer = has('mer_med_db') ? s.mer_med_db : s.mer_db;
+  $('vDemap').innerHTML = mer !== undefined ? `${mer.toFixed(1)}<small>dB MER</small>` : '&ndash;';
+  $('dDemap').textContent = has('mer_med_db') ? 'median over the last second' : 'pilots of the last frame';
+  flow('sDemap', s.state === 'track', false);
+
+  $('vCheck').textContent = has('frames') ? nf.format(s.frames) : '\u2013';
+  const failed = s.failed || 0, repaired = s.ldpc || 0;
+  $('dCheck').innerHTML = failed ? `<span class="bad">${nf.format(failed)} failed</span>${repaired ? `, ${nf.format(repaired)} repaired` : ''}`
+    : `frames, every one exact${repaired ? `, ${nf.format(repaired)} repaired` : ''}`;
+  flow('sCheck', grew('frames'), failed > (p.failed || 0));
+
+  $('vTs').textContent = has('packets') ? nf.format(s.packets) : '\u2013';
+  const tsErrors = (s.crc8 || 0) + (s.cc || 0);
+  $('dTs').innerHTML = has('packets') ? (tsErrors
+    ? `<span class="bad">${nf.format(s.crc8 || 0)} CRC, ${nf.format(s.cc || 0)} continuity errors</span>`
+    : 'packets, none corrupt or missing') : '&nbsp;';
+  flow('sTs', grew('packets'), tsErrors > (p.crc8 || 0) + (p.cc || 0));
+
+  $('vEth').innerHTML = has('mbps') ? `${s.mbps.toFixed(2)}<small>Mb/s</small>` : '&ndash;';
+  $('dEth').innerHTML = has('eth_sent') ? (s.eth_dropped
+    ? `<span class="bad">${nf.format(s.eth_dropped)} packets dropped</span>`
+    : `${compact(s.eth_sent)} datagrams, none dropped`) : '&nbsp;';
+  flow('sEth', grew('eth_sent'), (s.eth_dropped || 0) > (p.eth_dropped || 0));
+
+  if (has('core0_pct')) $('core0').textContent = `${s.core0_pct.toFixed(0)}% busy: checks, deframes and sends`;
+  if (has('core1_pct')) $('core1').textContent = `${s.core1_pct.toFixed(0)}% busy: captures and demodulates`;
+
+  state.history.push([Date.now() / 1000, mer, s.mbps]);
+  if (state.history.length > 3000) state.history.shift();
+  state.prev = s;
+}
+
+function sparkline(id, idx, digits, unit) {
+  const c = $(id), [w, h, d] = fit(c), g = c.getContext('2d');
+  g.clearRect(0, 0, w, h);
+  const pts = state.history.filter(p => p[idx] !== undefined && p[idx] !== null);
+  if (pts.length < 2) return;
+  const t1 = pts[pts.length - 1][0], t0 = Math.max(pts[0][0], t1 - 600);
+  const vals = pts.filter(p => p[0] >= t0).map(p => p[idx]);
+  let lo = Math.min(...vals), hi = Math.max(...vals);
+  const pad = Math.max((hi - lo) * 0.15, Math.abs(hi) * 0.01, 0.05);
+  lo -= pad; hi += pad;
+  const X = t => (t - t0) / Math.max(1, t1 - t0) * (w - 6 * d), Y = v => h - 3 * d - (v - lo) / (hi - lo) * (h - 6 * d);
+  g.strokeStyle = token('--ink-2'); g.lineWidth = 1.5 * d; g.lineJoin = 'round';
+  g.beginPath();
+  pts.filter(p => p[0] >= t0).forEach((p, i) => { i ? g.lineTo(X(p[0]), Y(p[idx])) : g.moveTo(X(p[0]), Y(p[idx])); });
+  g.stroke();
+  const last = pts[pts.length - 1];
+  g.fillStyle = token('--ink');
+  g.beginPath(); g.arc(X(last[0]), Y(last[idx]), 2.6 * d, 0, 2 * Math.PI); g.fill();
+  c.title = `${(t1 - t0 < 60 ? `last ${Math.round(t1 - t0)} s` : `last ${Math.round((t1 - t0) / 60)} min`)}: ${lo.toFixed(digits)} to ${hi.toFixed(digits)} ${unit}`;
+}
+
+// ---- Events ---------------------------------------------------------------------------------
+const events = new EventSource('/events');
+events.addEventListener('hello', e => {
+  const h = JSON.parse(e.data);
+  state.rate = h.rate;
+  state.history = h.history.map(p => [p[0], p[1], p[2]]);
+  if (h.stats && h.stats.state) onStats(h.stats);
+});
+events.addEventListener('stats', e => onStats(JSON.parse(e.data)));
+events.addEventListener('spectrum', e => { const m = JSON.parse(e.data); addSpectrum(m.db, m.rate); });
+events.addEventListener('symbols', e => {
+  const m = JSON.parse(e.data), raw = atob(m.iq), iq = new Int8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) iq[i] = raw.charCodeAt(i) << 24 >> 24;
+  addSymbols(iq, m.bits);
+});
+
+function frame() {
+  drawConstellation(); drawSpectrum(); drawWaterfall(); drawAxis();
+  sparkline('merSpark', 1, 1, 'dB'); sparkline('rateSpark', 2, 2, 'Mb/s');
+  const s = state.stats, stale = !s || performance.now() - state.lastStats > 2000;
+  if (events.readyState === EventSource.CLOSED) setStatus('none', 'Lost the monitor server');
+  else if (stale) setStatus('none', 'No data from the receiver');
+  else if (s.state === 'track') setStatus('track', `Locked for ${duration((Date.now() - state.lockedAt) / 1000)}`);
+  else setStatus('acquire', 'Searching for the signal');
+  if (stale) for (const id of ['sRadio', 'sSync', 'sDemap', 'sCheck', 'sTs', 'sEth']) $(id).dataset.flow = 'off';
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
