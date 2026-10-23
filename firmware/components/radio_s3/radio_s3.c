@@ -185,6 +185,11 @@ static uint32_t cw_backoff(unsigned gain)
     return (RADIO_S3_GAIN_MAX - gain) * 8;
 }
 static StaticSemaphore_t done_storage;
+/* Run memory is static: the core-1 worker's stack and TCB, and the station ID state.
+ * A heap stack could land in slow RTC FAST memory; this one is internal SRAM. */
+static StackType_t worker_stack[6144 / sizeof(StackType_t)];
+static StaticTask_t worker_tcb;
+static station_id_t worker_id;
 
 // Final stream preparation after the worker exists, before either paced deadlines or the
 // first keyed register access.
@@ -547,7 +552,7 @@ static void worker(void *arg)
         goto cleanup;
     }
     /* One PLL and temperature tracking pass before keying, as Wi-Fi's 1 s timer used to run.
-     * It returns a 16-byte front-end table to its Wi-Fi-up values (W9's register diff,
+     * It returns a 16-byte front-end table to its Wi-Fi-up values (the receiver's register diff,
      * results/2026-10-23-rx-no-wifi-ab) and takes about 44,000 cycles. */
     _lock_t phy_lock = phy_get_lock();
     _lock_acquire(&phy_lock);
@@ -604,7 +609,7 @@ cleanup:
     }
     run->error = error;
     xSemaphoreGive(run->done);
-    vTaskDelete(NULL);
+    vTaskSuspend(NULL); /* on_core1 deletes the task; its stack is static */
 }
 
 /* The dry run: the fill sequence of stream() and the samples the DAC would play. */
@@ -642,7 +647,7 @@ static void dry_worker(void *arg)
     stats->max_fill_cycles = run->stats->max_fill_cycles;
     run->error = error;
     xSemaphoreGive(run->done);
-    vTaskDelete(NULL);
+    vTaskSuspend(NULL); /* on_core1 deletes the task; its stack is static */
 }
 
 /* Run one task on core 1 and wait for it. One run at a time. */
@@ -657,11 +662,8 @@ static esp_err_t on_core1(TaskFunction_t task, run_t *run)
     portEXIT_CRITICAL(&state_lock);
     station_id_t *id = NULL;
     if (run->identify) {
-        id = heap_caps_calloc(1, sizeof *id, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-        if (!id) {
-            run->error = ESP_ERR_NO_MEM;
-            goto finished;
-        }
+        id = &worker_id;
+        memset(id, 0, sizeof *id);
         if (!station_id_init_rate(id, station_store_get(), run->samples, run->geo.rate,
                                   run->fill, run->ctx)) {
             run->error = ESP_ERR_INVALID_STATE;
@@ -690,15 +692,17 @@ static esp_err_t on_core1(TaskFunction_t task, run_t *run)
         run->stats->planned_samples = id->total_samples;
     }
     run->done = xSemaphoreCreateBinaryStatic(&done_storage);
-    BaseType_t created = xTaskCreatePinnedToCore(task, "radio", 6144, run,
-                                                configMAX_PRIORITIES - 2, NULL, 1);
-    if (created == pdPASS) {
+    TaskHandle_t worker_task = xTaskCreateStaticPinnedToCore(task, "radio", sizeof worker_stack, run,
+                                                             configMAX_PRIORITIES - 2, worker_stack,
+                                                             &worker_tcb, 1);
+    if (worker_task) {
         xSemaphoreTake(run->done, portMAX_DELAY);
+        while (eTaskGetState(worker_task) != eSuspended) vTaskDelay(1);
+        vTaskDelete(worker_task); /* not running, so deleted now and the stack is free */
     } else {
         run->error = ESP_ERR_NO_MEM;
     }
 finished:
-    heap_caps_free(id);
     portENTER_CRITICAL(&state_lock);
     running = false;
     portEXIT_CRITICAL(&state_lock);

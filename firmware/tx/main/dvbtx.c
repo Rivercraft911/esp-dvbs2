@@ -288,6 +288,20 @@ static inline __attribute__((always_inline)) lofty_page *lofty_page_at(unsigned 
 }
 
 static StaticSemaphore_t exited_storage;
+// The encoder's stack is static internal SRAM: a heap stack could land in slow RTC FAST memory.
+static StackType_t encoder_stack[ENCODER_STACK / sizeof(StackType_t)];
+static StaticTask_t encoder_tcb;
+
+// Stop the encoder and delete its task once suspended: a task that is not running is deleted at
+// once, so the static stack and TCB are free for the next run.
+static void end_encoder(void)
+{
+    enc.stop = true;
+    xTaskNotifyGive(enc.task);
+    xSemaphoreTake(enc.exited, portMAX_DELAY);
+    while (eTaskGetState(enc.task) != eSuspended) vTaskDelay(1);
+    vTaskDelete(enc.task);
+}
 static uint32_t cache_ranges[4];
 static bool cache_configured;
 
@@ -1137,8 +1151,10 @@ encoder_ready:;
     enc.priority = moon ? MOON_PRIORITY : ENCODER_PRIORITY;
     enc.exited = xSemaphoreCreateBinaryStatic(&exited_storage);
     // Measured 8PSK stack use stayed below 1072 bytes at all three keyed rates.
-    if (xTaskCreatePinnedToCore(vcm_enc.vcm ? encoder_task_vcm : encoder_task, "encoder", lofty ? ENCODER_STACK-256 : ENCODER_STACK, &enc, enc.priority, &enc.task, 0)
-            != pdPASS) {
+    enc.task = xTaskCreateStaticPinnedToCore(vcm_enc.vcm ? encoder_task_vcm : encoder_task, "encoder",
+                                             sizeof encoder_stack, &enc, enc.priority, encoder_stack,
+                                             &encoder_tcb, 0);
+    if (!enc.task) {
         if (vcm_enc.vcm) vcm_allocation_error(cmd,"encoder task",ENCODER_STACK,MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT);
         else printf("@{\"cmd\":\"%s\",\"error\":\"encoder task failed\"}\n", cmd);
         release();
@@ -1152,10 +1168,7 @@ encoder_ready:;
            (int32_t)(xTaskGetTickCount()-limit) < 0) vTaskDelay(1);
     if (enc.failed || (external ? !enc.input_started : moon ? dvb.produced-dvb.consumed < dvb.queue_pages :
             __atomic_load_n(&dvb.ring.published,__ATOMIC_ACQUIRE) < ready_slots)) {
-        enc.stop = true;
-        xTaskNotifyGive(enc.task);
-        xSemaphoreTake(enc.exited, portMAX_DELAY);
-        vTaskDelete(enc.task);
+        end_encoder();
         printf("@{\"cmd\":\"%s\",\"error\":\"encoder did not fill the queue\"}\n",cmd);
         release();
         return 0;
@@ -1267,10 +1280,7 @@ static void stop_encoder(void)
     const size_t internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     const size_t lowest = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
-    enc.stop = true;
-    xTaskNotifyGive(enc.task);
-    xSemaphoreTake(enc.exited, portMAX_DELAY);
-    vTaskDelete(enc.task);
+    end_encoder();
     if (vcm_enc.vcm) {
         printf(",\"vcm_axes\":%s",vcm_enc.vcm_axes ? "true" : "false");
         printf(",\"vcm\":true,\"vcm_changes\":%u,\"last_modcod\":%u,"
@@ -1389,7 +1399,7 @@ static void stop_encoder(void)
            enc.bch && !enc.bch_borrowed ? (unsigned)heap_caps_get_allocated_size(enc.bch) : 0,
            enc.bch || enc.tables ? DVBS2_BCH_CACHE_BYTES : 0, bch_variant,
            !enc.packed ? "none" : dvb.lofty ? "words" : dvb.moon ? "signs" : enc.quads ? "quads" : enc.mode->bits_per_symbol == 2 || dvb.table.n == 4 ? "direct" : "sparse");
-    printf(",\"encoder_stack_bytes\":%u,\"encoder_stack_min_free\":%u", dvb.lofty ? ENCODER_STACK-256 : ENCODER_STACK, (unsigned)enc.stack_min_free);
+    printf(",\"encoder_stack_bytes\":%u,\"encoder_stack_min_free\":%u", (unsigned)sizeof encoder_stack, (unsigned)enc.stack_min_free);
     printf(",\"ring_memory\":\"%s\",\"ring_format\":\"%s\",\"ring_heap_bytes\":%u,"
            "\"payload_memory\":\"%s\",\"slot_waits\":%" PRIu32,
            (vcm_enc.vcm ? enc.packed && !enc.block : enc.packed) ? "internal" : "psram", dvb.lofty ? "words" : dvb.moon ? "signs" : enc.quads ? "quads" : enc.packed ? "packed" : "raw",

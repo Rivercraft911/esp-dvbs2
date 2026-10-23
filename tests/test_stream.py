@@ -115,6 +115,7 @@ static inline int heap_caps_monitor_local_minimum_free_size_stop(void) { return 
 typedef struct {
     pthread_t thread; pthread_mutex_t mutex; pthread_cond_t cond;
     unsigned notifications, notifications_sent, priority; void (*fn)(void *); void *arg;
+    int suspended;
 } native_task;
 typedef native_task *TaskHandle_t;
 static _Thread_local TaskHandle_t current;
@@ -141,7 +142,15 @@ static inline unsigned ulTaskNotifyTake(int clear, unsigned timeout) {
     unsigned n = t->notifications; t->notifications = 0;
     pthread_mutex_unlock(&t->mutex); return n;
 }
-static inline void vTaskSuspend(TaskHandle_t t) { (void)t; pthread_exit(NULL); }
+static inline void vTaskSuspend(TaskHandle_t t) {
+    (void)t; __atomic_store_n(&current->suspended, 1, __ATOMIC_RELEASE); pthread_exit(NULL);
+}
+typedef enum { eRunning, eReady, eBlocked, eSuspended, eDeleted } eTaskState;
+static inline eTaskState eTaskGetState(TaskHandle_t t) {
+    return __atomic_load_n(&t->suspended, __ATOMIC_ACQUIRE) ? eSuspended : eRunning;
+}
+typedef unsigned char StackType_t;
+typedef struct { int unused; } StaticTask_t;
 static inline void vTaskDelete(TaskHandle_t t) {
     pthread_join(t->thread, NULL);
     pthread_mutex_destroy(&t->mutex); pthread_cond_destroy(&t->cond); free(t);
@@ -157,6 +166,11 @@ static inline int xTaskCreatePinnedToCore(void (*fn)(void *), const char *name,
     pthread_mutex_init(&worker->mutex, NULL); pthread_cond_init(&worker->cond, NULL);
     *handle = worker; assert(!pthread_create(&worker->thread, NULL, native_entry, worker));
     return pdPASS;
+}
+static inline TaskHandle_t xTaskCreateStaticPinnedToCore(void (*fn)(void *), const char *name,
+    unsigned stack, void *arg, unsigned priority, StackType_t *buffer, StaticTask_t *tcb, int core) {
+    (void)buffer; (void)tcb; TaskHandle_t handle = NULL;
+    return xTaskCreatePinnedToCore(fn, name, stack, arg, priority, &handle, core) == pdPASS ? handle : NULL;
 }
 typedef struct { pthread_mutex_t mutex; pthread_cond_t cond; unsigned ready; } StaticSemaphore_t;
 typedef StaticSemaphore_t *SemaphoreHandle_t;

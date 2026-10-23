@@ -7,12 +7,20 @@
 uint32_t native_ranges[4];
 static int checked_window(ring_t *, uint8_t *, size_t, uint64_t, size_t, unsigned, unsigned, unsigned);
 static int checked_task(void (*)(void *), const char *, unsigned, void *, unsigned, TaskHandle_t *, int);
+static TaskHandle_t checked_static_task(void (*fn)(void *), const char *name, unsigned stack, void *arg,
+                                        unsigned priority, StackType_t *buffer, StaticTask_t *tcb, int core)
+{
+    (void)buffer; (void)tcb; TaskHandle_t handle = NULL;
+    return checked_task(fn, name, stack, arg, priority, &handle, core) == pdPASS ? handle : NULL;
+}
 static uint32_t checked_load(const volatile uint32_t *, int);
 #define __atomic_load_n checked_load
 #define xTaskCreatePinnedToCore checked_task
+#define xTaskCreateStaticPinnedToCore checked_static_task
 #define ring_window checked_window
 #include "dvbtx.c"
 #undef ring_window
+#undef xTaskCreateStaticPinnedToCore
 #undef xTaskCreatePinnedToCore
 #undef __atomic_load_n
 
