@@ -52,6 +52,7 @@ struct dvbs2_fast {
     const dvbs2_mode *mode;
     unsigned pilots, pie, ldxq_bias;
     unsigned bch_bytes, groups, q, data_symbols, pilot_blocks;
+    void (*pack)(const uint8_t *, uint32_t *, uint32_t); // unrolled LDPC pack, or NULL
     uint8_t scratch[] __attribute__((aligned(16)));
 };
 #ifdef __XTENSA__
@@ -198,6 +199,7 @@ int dvbs2_fast_prepare(dvbs2_fast *f, const dvbs2_mode *mode, int pilots, unsign
     f->pie = pie & (PIE_MASK | DVBS2_BCH_NIBBLE | DVBS2_MAP_SPARSE | DVBS2_MAP_QUADS | DVBS2_RO_20 | DVBS2_VCM);
     f->ldxq_bias = 0;
     f->pair_bch = NULL;
+    f->pack = NULL;
 #ifdef DVBS2_PIE
     if (f->pie & DVBS2_PIE_MAP) {
         /* The TRM gives EE.LDXQ.32 the address as + 4 index; Espressif's QEMU
@@ -276,6 +278,25 @@ int dvbs2_fast_cache_bch_pair(dvbs2_fast *f, uint8_t *pair)
 #undef T0
     f->pair_bch = pair;
     return 0;
+}
+
+/* Normal frames at 2/3, 5/6 and 9/10 pack their parity with an unrolled kernel: q even,
+ * so every 16 columns repeat the same shifts, and a fixed start fill (nbch mod 32). Only a
+ * caller that wants it links the kernels in. */
+int dvbs2_fast_cache_pack(dvbs2_fast *f)
+{
+    if (!f || !f->mode || f->mode->short_frame) return -1;
+#ifdef DVBS2_PIE
+    void dvbs2_pie_pack18(const uint8_t *, uint32_t *, uint32_t);
+    void dvbs2_pie_pack30(const uint8_t *, uint32_t *, uint32_t);
+    void dvbs2_pie_pack60(const uint8_t *, uint32_t *, uint32_t);
+    const unsigned have = 8*(f->mode->nbch/8%4);
+    f->pack = f->q == 18 && have == 16 ? dvbs2_pie_pack18 : f->q == 30 && have == 16 ? dvbs2_pie_pack30 :
+              f->q == 60 && have == 0 ? dvbs2_pie_pack60 : NULL;
+    return f->pack ? 0 : -1;
+#else
+    return -1;
+#endif
 }
 
 const char *dvbs2_fast_bch_variant(const dvbs2_fast *f, const void **table, const void **pair)
@@ -801,7 +822,8 @@ HOT void dvbs2_fast_ldpc(dvbs2_fast *f, dvbs2_workspace *ws)
         uint32_t pending;
         const unsigned have = pack_start(ws->bits, start, &pending);
         uint32_t *packed = (uint32_t *)f->scratch;
-        dvbs2_pie_pack(f->p, f->cols, f->q, packed, pending, have);
+        if (f->pack) f->pack(f->p, packed, pending);
+        else dvbs2_pie_pack(f->p, f->cols, f->q, packed, pending, have);
         uint8_t *dst = ws->bits + base;
         const uintptr_t at = (uintptr_t)dst;
         uint8_t *block = (uint8_t *)((at - 1) & ~(uintptr_t)15);

@@ -1053,6 +1053,7 @@ static size_t start_encoder_options(const char *cmd, unsigned modcod, unsigned l
             return 0;
         }
     }
+    if (lofty) (void)dvbs2_fast_cache_pack(enc.fast); // unrolled LDPC pack at 2/3, 5/6, 9/10
     if (lofty && mode->t > 8) {
         // T1 is read every two bytes: keep it internal, beside T0.
         enc.pair_bch = heap_caps_aligned_alloc(16,DVBS2_BCH_PAIR_BYTES,internal);

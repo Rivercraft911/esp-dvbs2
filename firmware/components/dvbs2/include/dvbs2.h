@@ -137,6 +137,9 @@ int dvbs2_fast_cache_bch(dvbs2_fast *f, uint8_t *table);
  * place; both buffers live until prepare/cache_bch. No internal allocation. */
 #define DVBS2_BCH_PAIR_BYTES 8192
 int dvbs2_fast_cache_bch_pair(dvbs2_fast *, uint8_t *pair);
+/* Optional unrolled LDPC parity packing (normal 2/3, 5/6, 9/10 on the S3): 0 when
+ * selected, -1 otherwise. Kept until the next prepare. */
+int dvbs2_fast_cache_pack(dvbs2_fast *f);
 /* The BCH path dvbs2_fast_bch takes after prepare/cache: "pair" (two bytes per step, t = 8),
  * "split-pair" (two bytes, T1's low half separate), "byte" or "nibble". table and pair receive
  * the table addresses that path reads (pair is NULL unless split-pair). */

@@ -1129,6 +1129,104 @@ dvbs2_pie_pack:
     retw
     .size dvbs2_pie_pack, . - dvbs2_pie_pack
 
+/* Unrolled LDPC packing for one code: q even (so 16 q = 0 mod 32 and the
+ * shifts repeat every 16 columns) and a fixed start fill have0 (nbch mod 32).
+ * Column t of block b is the word at p + 4 (t/32) + 48 (31 - ((t%32)^7))
+ * + 1536 b (fast_cols), so each column is one immediate-offset load and every
+ * SAR an immediate. 11 groups of 32 columns, then 8 more; q words per group.
+ * a2 p, a5 out, a6 pending; a8/a9 block 0 rows 0..15/16..31 of this group,
+ * a10/a11 block 1. void name(const uint8_t *p, uint32_t *out, uint32_t pending) */
+    .macro pk_sar n
+    .if (\n) != pk_cur
+    ssai \n
+    .set pk_cur, (\n)
+    .endif
+    .endm
+
+    .macro pk_load lo, hi
+    .if pk_r < 16
+    l32i a15, \lo, 48*pk_r
+    .else
+    l32i a15, \hi, 48*(pk_r-16)
+    .endif
+    .endm
+
+    .macro pk_part lo, hi, part
+    pk_load \lo, \hi
+    .if pk_have + \part >= 32
+    pk_sar pk_have
+    src a4, a6, a15
+    s32i a4, a5, 4*pk_out
+    .set pk_out, pk_out+1
+    srli a6, a15, 32-\part             /* 32 - part <= 15 for every q here */
+    .set pk_have, pk_have+\part-32
+    .else
+    pk_sar 32-\part
+    src a6, a6, a15
+    .set pk_have, pk_have+\part
+    .endif
+    .endm
+
+    .macro pk_columns q, n
+    .set pk_c, 0
+    .set pk_out, 0
+    .set pk_cur, -1
+    .rept \n
+    .set pk_r, 31-(pk_c^7)
+    .if \q > 32
+    pk_load a8, a9
+    .if pk_have
+    pk_sar pk_have
+    src a4, a6, a15
+    s32i a4, a5, 4*pk_out
+    .else
+    s32i a15, a5, 4*pk_out
+    .endif
+    .set pk_out, pk_out+1
+    mov a6, a15
+    pk_part a10, a11, (\q-32)
+    .else
+    pk_part a8, a9, \q
+    .endif
+    .set pk_c, pk_c+1
+    .endr
+    .endm
+
+    .macro pk_kernel name, q, have0
+    .section .iram1.\name,"ax"
+    .align 4
+    .global \name
+    .type \name, @function
+\name:
+    entry a1, 32
+    mov a5, a3
+    mov a6, a4
+    addmi a9, a2, 768
+    addmi a10, a2, 1536
+    addmi a11, a2, 2304
+    mov a8, a2
+    movi a7, 11
+1:
+    .set pk_have, \have0
+    pk_columns \q, 32
+    addi a8, a8, 4
+    addi a9, a9, 4
+    addi a10, a10, 4
+    addi a11, a11, 4
+    addi a5, a5, 4*\q
+    addi a7, a7, -1
+    bnez a7, 1b
+    .set pk_have, \have0
+    pk_columns \q, 8
+    retw
+    .size \name, . - \name
+    .endm
+
+    pk_kernel dvbs2_pie_pack18, 18, 16
+    pk_kernel dvbs2_pie_pack30, 30, 16
+    pk_kernel dvbs2_pie_pack60, 60, 0
+
+    .section .iram1, "ax"
 /* Byte-reverse 32-bit words and store them at any address: vectors x 16
  * bytes from src (aligned) to dst, given as block = (dst - 1) & ~15 and
  * sar_byte = -dst & 15. Bytes from block to dst are overwritten; the last
