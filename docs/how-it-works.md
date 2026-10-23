@@ -9,8 +9,9 @@ The design has two limits: enough encoder work per frame and enough fill work pe
 
 The encoder follows [ETSI EN 302 307-1 V1.4.1](https://www.etsi.org/deliver/etsi_en/302300_302399/30230701/01.04.01_60/en_30230701v010401p.pdf).
 Firmware uses normal frames by default, pilots enabled and physical-layer scrambling code zero.
-QPSK MODCODs 4..10 at 1 Msym/s can instead use short frames (`--short`): 16,200-bit FEC frames,
-BCH with t = 12 over GF(2^14) (168 parity bits), 8,370 symbols with pilots (Tables 5b, 6b, 7b, Annex C).
+QPSK MODCODs 4..10 (1 or 5 Msym/s) and 8PSK MODCODs 12..16 (5 Msym/s) can instead use short frames
+(`--short`): 16,200-bit FEC frames, BCH with t = 12 over GF(2^14) (168 parity bits), 8,370 QPSK or
+5,598 8PSK symbols with pilots (Tables 5b, 6b, 7b, Annex C). The 8PSK bit interleaver has 5,400 rows.
 A MODCOD number selects a modulation and error-correction rate (Table 12).
 
 1. A baseband (BB) frame holds an 80-bit header and payload. The header records the input

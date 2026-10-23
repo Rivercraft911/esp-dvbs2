@@ -13,7 +13,7 @@ def check(out):
     out.mkdir(parents=True,exist_ok=True)
     source = (ROOT/'firmware/main/main.c').read_text()
     functions = '\n'.join(re.search(r'static (?:bool|void) '+name+r'\([^\n]*[\s\S]*?\n}',source).group()
-                          for name in ('number','tx_mode','take_option','cmd_dvb','cmd_dvbpace'))
+                          for name in ('number','tx_mode','short_scope','take_option','cmd_dvb','cmd_dvbpace'))
     parser = out/'parser.c'
     parser.write_text('''#define _POSIX_C_SOURCE 200809L
 #include <assert.h>

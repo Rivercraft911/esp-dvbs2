@@ -64,7 +64,10 @@ size_t dvbs2_fast_mode_size(const dvbs2_mode *mode)
     const unsigned symbols = dvbs2_fec_bits(mode) / mode->bits_per_symbol;
     const size_t index = mode->bits_per_symbol == 3 ? (size_t)((symbols + 127) / 128) * 64
                                                     : (size_t)((symbols + 63) / 64) * 32;
-    return sizeof(dvbs2_fast) + (ldpc > index ? ldpc : index);
+    /* The sparse 8PSK mapper keeps one 1,440-symbol run, plus the 16 bytes the kernel writes before it,
+     * after the index. Normal frames already have more room than this from the LDPC area. */
+    const size_t window = mode->bits_per_symbol == 3 ? index + 16 + 1440 : index;
+    return sizeof(dvbs2_fast) + (ldpc > window ? ldpc : window);
 }
 
 size_t dvbs2_fast_size(void)
@@ -162,8 +165,8 @@ static void prepare_map(dvbs2_fast *f)
     f->gold = f->mode->bits_per_symbol == 3
                   ? (f->pilots ? fast_gold_3_1 : fast_gold_3_0)
                   : (f->pilots ? fast_gold_2_1 : fast_gold_2_0);
-    f->header = fast_headers + 90 * (2 * (f->mode->modcod - 4) + f->pilots +
-                                     (f->mode->short_frame ? 28 : 0));
+    f->header = fast_headers + 90 * (f->mode->short_frame ? 28 + 2 * (f->mode - dvbs2_modes_short) + f->pilots
+                                                          : 2 * (f->mode->modcod - 4) + f->pilots);
     if (f->pie & DVBS2_MAP_QUADS) {
         dvbs2_pack_quads(f->header, f->packed_header, 90);
         dvbs2_pack_quads(fast_pilots, f->packed_pilots, 36 * f->pilot_blocks);
@@ -216,7 +219,7 @@ int dvbs2_fast_prepare(dvbs2_fast *f, const dvbs2_mode *mode, int pilots, unsign
     f->cols = fast_cols;
     f->crc8 = fast_crc8;
     /* QPSK and 8PSK share their code-rate program. */
-    f->prog = mode->short_frame ? fast_prog_short[mode->modcod - 4U] :
+    f->prog = mode->short_frame ? fast_prog_short[dvbs2_short_rate(mode)] :
               fast_prog[mode->bits_per_symbol == 2 ? mode->modcod - 4U :
                         (unsigned[]){1, 2, 3, 5, 6, 7}[mode->modcod - 12]];
     f->p = f->scratch + f->groups * U2;
@@ -271,7 +274,7 @@ static size_t cache_prog_bytes(const dvbs2_fast *f)
         sizeof fast_prog_3, sizeof fast_prog_4, sizeof fast_prog_5, sizeof fast_prog_6, sizeof fast_prog_7};
     const size_t short_bytes[] = {sizeof fast_prog_s0, sizeof fast_prog_s1, sizeof fast_prog_s2,
         sizeof fast_prog_s3, sizeof fast_prog_s4, sizeof fast_prog_s5, sizeof fast_prog_s6};
-    if (f->mode->short_frame) return (short_bytes[f->mode->modcod-4U]+15) & ~(size_t)15;
+    if (f->mode->short_frame) return (short_bytes[dvbs2_short_rate(f->mode)]+15) & ~(size_t)15;
     const unsigned rate = f->mode->bits_per_symbol == 2 ? f->mode->modcod-4U :
         (unsigned[]){1,2,3,5,6,7}[f->mode->modcod-12];
     return (bytes[rate]+15) & ~(size_t)15;
@@ -884,6 +887,12 @@ static __attribute__((noinline)) void map_c(const dvbs2_fast *f, const uint8_t *
 
 HOT void dvbs2_fast_pl(const dvbs2_fast *f, uint8_t *output)
 {
+#if defined(DVBS2_IRAM) && defined(__XTENSA__)
+    /* The 8PSK column offsets are computed now, not literals, which shrank this file's IRAM literal
+     * pool by 8 bytes. stream_assert.ld pins the default vector renderer's address to main's: two
+     * unused literals restore it. */
+    __asm__ volatile("" :: "r"(0x5a5a1234u), "r"(0xa5a54321u));
+#endif
     memcpy(output, f->header, 90);
     for (unsigned b = 0; b < f->pilot_blocks; ++b) {
         memcpy(output + 90 + 1440 * (b + 1) + 36 * b, fast_pilots + 36 * b, 36);
@@ -897,12 +906,13 @@ static HOT void map_pie(dvbs2_fast *f, const uint8_t *bits, uint8_t *output)
     const unsigned d = f->data_symbols;
     uint16_t *index = (uint16_t *)f->scratch;
     if (f->mode->bits_per_symbol == 3) {
-        const uint8_t *a = bits, *c = bits + 5400;
+        const unsigned column = d / 8;
+        const uint8_t *a = bits, *c = bits + 2 * column;
         if (f->mode->modcod == 12) {
-            a = bits + 5400;
+            a = bits + 2 * column;
             c = bits;
         }
-        dvbs2_pie_index8(a, bits + 2700, c, f->gold, index, (d + 127) / 128);
+        dvbs2_pie_index8(a, bits + column, c, f->gold, index, (d + 127) / 128);
     } else {
         dvbs2_pie_index4(bits, f->gold, index, (d + 63) / 64);
     }
@@ -965,8 +975,10 @@ static HOT void pack_c(const uint8_t *raw, uint8_t *packed, unsigned symbols)
 static __attribute__((noinline)) int map_packed_runs(dvbs2_fast *f,
                                                    const dvbs2_workspace *ws, uint8_t *packed)
 {
-    /* Short contexts are smaller than PACK_TEMP; their QPSK fallback has no index to protect. */
-    uint8_t *temp = f->scratch + (f->mode->short_frame ? 0 : PACK_TEMP);
+    /* Short QPSK contexts are smaller than PACK_TEMP; their fallback has no index to protect.
+     * 8PSK puts the run after its index, whose size depends on the frame (PACK_TEMP for normal). */
+    uint8_t *temp = f->scratch + (f->mode->bits_per_symbol == 3 ? (f->data_symbols + 127) / 128 * 64 + 16 :
+                                  f->mode->short_frame ? 0 : PACK_TEMP);
 #ifdef DVBS2_PIE
     const int pie = (f->pie & DVBS2_PIE_MAP) != 0;
     uint16_t *index = (uint16_t *)f->scratch;
@@ -1484,12 +1496,13 @@ HOT int dvbs2_fast_map_packed(dvbs2_fast *f, const dvbs2_workspace *ws, uint8_t 
     uint16_t *index = (uint16_t *)f->scratch;
     if (pie) {
         if (f->mode->bits_per_symbol == 3) {
-            const uint8_t *a = ws->bits, *c = ws->bits + 5400;
+            const unsigned column = f->data_symbols / 8;
+            const uint8_t *a = ws->bits, *c = ws->bits + 2 * column;
             if (f->mode->modcod == 12) {
-                a = ws->bits + 5400;
+                a = ws->bits + 2 * column;
                 c = ws->bits;
             }
-            dvbs2_pie_index8(a, ws->bits + 2700, c, f->gold, index, (f->data_symbols + 127) / 128);
+            dvbs2_pie_index8(a, ws->bits + column, c, f->gold, index, (f->data_symbols + 127) / 128);
         } else {
             dvbs2_pie_index4(ws->bits, f->gold, index, (f->data_symbols + 63) / 64);
         }
