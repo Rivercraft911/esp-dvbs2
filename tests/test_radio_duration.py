@@ -86,6 +86,13 @@ static void wait_until(uint32_t deadline) {
     if (left > 0) clock_cycles += (uint32_t)left;
 }
 static int esp_task_wdt_reset(void) { return 0; }
+// Core 1's tick is off during runs; schedule() runs its tick hooks (the interrupt watchdog's).
+static unsigned tick_hooks;
+static uint64_t tick_last, tick_gap_max;
+static void esp_vApplicationTickHook(void) {
+    if (tick_hooks++ && clock_cycles-tick_last > tick_gap_max) tick_gap_max = clock_cycles-tick_last;
+    tick_last = clock_cycles;
+}
 '''
 
 WORKERS = r'''
@@ -309,7 +316,10 @@ int main(void) {
         run_t run = {.samples=540ULL*rate,.stats=&stats,.geo=geometry(rate)};
         clock_cycles = UINT32_MAX-1000;
         uint64_t epoch = clock_cycles;
+        tick_hooks = 0; tick_gap_max = 0;
         assert(!schedule(&run,(uint32_t)epoch,0,true));
+        // Every 1,024 banks: within the interrupt watchdog's 800 ms at either DAC rate.
+        assert(tick_hooks == stats.switches/1024 && tick_gap_max < 800ULL*240000);
         assert(stats.elapsed_cycles >= 540ULL*240000000);
         assert(stats.elapsed_cycles < 540ULL*240000000+100);
         assert(stats.elapsed_samples >= 540ULL*rate);
