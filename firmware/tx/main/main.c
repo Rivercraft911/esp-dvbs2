@@ -157,8 +157,9 @@ static void cmd_dvbdump(char *args)
 
 static void cmd_dvbpace(char *args)
 {
-    bool phy_solo;
+    bool phy_solo, fixture;
     const bool options_ok = take_option(args,"--phy-solo",&phy_solo);
+    const bool source_ok = take_option(args,"--fixture",&fixture);
     bool short_frames;
     const bool short_ok = take_option(args,"--short",&short_frames);
     char *save, *code = strtok_r(args, " \t", &save);
@@ -169,15 +170,16 @@ static void cmd_dvbpace(char *args)
     char *pause = strtok_r(NULL, " \t", &save);
     char *extra = strtok_r(NULL, " \t", &save);
     uint32_t seconds, top = 128, stall = 0;
-    if (!options_ok || !short_ok || !mode_ok || (short_frames && !short_scope(modcod, sps)) || !number(duration, 1, phy_solo ? RADIO_S3_PHY_SOLO_MAX_SECONDS : 600, &seconds) ||
+    if (!options_ok || !source_ok || !short_ok || !mode_ok || (short_frames && (!short_scope(modcod, sps) || fixture)) ||
+        (fixture && !(sps == DVB_SPS_12_5 || (sps == 3 && modcod >= 12))) || !number(duration, 1, 600, &seconds) ||
         (peak && !number(peak, 16, 508, &top)) || (pause && !number(pause, 0, 2000, &stall)) ||
         extra) {
         printf("@{\"cmd\":\"dvbpace\",\"error\":\"usage: dvbpace <modcod 4..17> [5m|10m|20m|26m667|33m333] <1..600 seconds> "
-               "[16..508 peak] [0..2000 ms encoder stall] [--phy-solo (<=60 s)] [--short (QPSK 4..10 at 1m or 5m, 8PSK 12..16 at 5m)]\"}\n");
+               "[16..508 peak] [0..2000 ms encoder stall] [--phy-solo] [--fixture (26m667 8PSK, 33m333)] [--short (QPSK 4..10 at 1m or 5m, 8PSK 12..16 at 5m)]\"}\n");
         return;
     }
     dvbtx_set_short(short_frames);
-    dvbtx_pace(modcod,seconds,top,stall,sps,rate,phy_solo);
+    dvbtx_pace(modcod,seconds,top,stall,sps,rate,fixture,phy_solo);
 }
 
 void fecbench_command(unsigned modcod, bool short_frame);

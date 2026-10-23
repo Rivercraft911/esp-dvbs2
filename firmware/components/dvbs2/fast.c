@@ -265,6 +265,27 @@ int dvbs2_fast_cache_bch_pair(dvbs2_fast *f, uint8_t *low)
     return 0;
 }
 
+const char *dvbs2_fast_bch_variant(const dvbs2_fast *f, const void **table, const void **pair)
+{
+    *table = f->bch;
+    *pair = NULL;
+    const int nibble = !!(f->pie & DVBS2_BCH_NIBBLE);
+#ifdef DVBS2_PIE
+    if (f->pie & DVBS2_PIE_BCH) {
+        if (nibble || f->bch_bytes < 16) return "nibble";
+        *table = f->byte_bch;
+        if (f->bch_bytes == 16) return "pair";
+        *pair = f->pair_bch;
+        return f->pair_bch ? "split-pair" : "byte";
+    }
+#endif
+    (void)nibble;
+    if (!f->pair_bch) return "nibble";
+    *table = f->byte_bch;
+    *pair = f->pair_bch;
+    return "split-pair";
+}
+
 /* QPSK quad streams have no mapping lookup table. Cache their complete hot
  * data set in caller-owned internal RAM; no stage then depends on flash data
  * bandwidth alongside the other core. Header/pilots already live in f. */

@@ -71,7 +71,7 @@ def check(out, receiver=None):
         r = dumps[0]
         assert r['profile']['fill_phase_cycles'] and r['profile']['fill']['whole']['calls'] > 0
         assert r['fill_kernel'] == 'lofty-queue' and r['ring_format'] == 'words'
-        assert r['warmup_frames'] == 3 and r['bch_variant'] == ('resident-pair' if mc == 17 else 'split-pair')
+        assert r['warmup_frames'] == 3 and r['bch_variant'] == ('nibble' if mc == 17 else 'split-pair')
         assert r['queue_wake_policy'] == 'bank' and r['queue_wakes'] > 0
         assert r['bch_pair_psram_bytes'] == (0 if mc == 17 else 4096)
         assert r['encoder_priority'] == 24

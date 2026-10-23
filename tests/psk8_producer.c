@@ -67,7 +67,8 @@ int main(int argc, char **argv)
     assert(argc == 2 || argc == 3);
     unsigned mc = atoi(argv[1]);
     callsign = "N0CALL";
-    assert(start_encoder(argc == 3 ? "dvbdump" : "dvbpace",mc,128,0,3,80000000));
+    // The pace repeats its prepared frame (--fixture); the dump encodes the xorshift stream.
+    assert(start_encoder_options(argc == 3 ? "dvbdump" : "dvbpace",mc,128,0,3,80000000,false,argc == 2));
     pthread_mutex_lock(&gate);
     while (!paused) pthread_cond_wait(&changed,&gate);
     assert(dvb.produced-dvb.consumed == dvb.queue_pages);

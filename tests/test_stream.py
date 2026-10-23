@@ -298,8 +298,8 @@ def test_stream(output=None, receiver=None, input_only=False):
                 assert r["bch_cache_bytes"] == (8192 if cached else 0)
                 borrowed_bch = mc >= 12 and sps == 4 and (short or mc == 13) and cached
                 assert r["bch_cache_heap_bytes"] == (0 if borrowed_bch else r["bch_cache_bytes"])
-                pair = packed and (quads or mc >= 12 and sps == 4) and mc in (10,11,16,17)
-                assert r["bch_variant"] == ("resident-byte" if cached else "flash-pair" if pair else "nibble")
+                # The host build has no PIE kernels: dvbs2_fast_bch takes the C nibble rows.
+                assert r["bch_variant"] == "nibble" and r["bch_pair_memory"] == "none"
                 assert r["packed_mapper"] == ("none" if not packed else "quads" if quads else "direct" if mc < 12 or sps == 4 else "sparse")
                 assert bool(int(r["layout"]["bch"], 16)) == cached
                 slots = [int(a, 16) for a in r["layout"]["slots"]]

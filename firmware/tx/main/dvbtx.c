@@ -24,6 +24,7 @@
 #include "esp_attr.h"
 #include "esp_cpu.h"
 #include "esp_heap_caps.h"
+#include "esp_memory_utils.h"
 #include "esp_rom_crc.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -101,7 +102,7 @@ typedef struct {
     bool wake_pending;             // released storage; notify only after the whole bank
     uint32_t prepare_max;
     uint32_t prepare_tail_max;
-    uint64_t prepare_cycles;
+    uint64_t prepare_cycles, read_cycles; // page loop: all work, and its framed-word reads
     uint32_t prepare_pages;
     uint32_t dac_rate;             // the run's bank geometry
     size_t cached_words;           // active sample cache length
@@ -207,7 +208,7 @@ typedef struct {
     uint32_t work_live_max;
     uint64_t frame_work_cycles;     // measured input copy + kernel, excluding backpressure
     uint32_t frame_work_live_max;
-    stream_profile_t stage[6];      // payload, BB, BCH, LDPC, map, PL
+    stream_profile_t stage[7];      // payload, BB, BCH, LDPC, map, PL, queue pages
     uint32_t slot_waits;
     uint32_t stack_min_free;
 } encoder_t;
@@ -780,7 +781,7 @@ static size_t start_encoder_options(const char *cmd, unsigned modcod, unsigned l
     if (dvb.profile) cache_profile_start();
     enc.stall_ms = stall_ms;
     enc.min_cycles = UINT32_MAX;
-    for (unsigned i = 0; i < 6; ++i) {
+    for (unsigned i = 0; i < 7; ++i) {
         enc.stage[i].counters = 1;
     }
     if (vcm.enabled) {
@@ -811,7 +812,7 @@ static size_t start_encoder_options(const char *cmd, unsigned modcod, unsigned l
         memset(&dvb.queue_fault,0,sizeof dvb.queue_fault);
         dvb.prepare_max = 0;
         dvb.prepare_tail_max = 0;
-        dvb.prepare_cycles = 0;
+        dvb.prepare_cycles = dvb.read_cycles = 0;
         dvb.prepare_pages = 0;
         if (lofty) {
             if (lofty_resident(1)) {
@@ -1048,7 +1049,7 @@ static size_t start_encoder_options(const char *cmd, unsigned modcod, unsigned l
     }
     ring_filler_length(&dvb.ring, DVBS2_DUMMY_SYMBOLS);
 
-    if (moon && !input && (fixture || !strcmp(cmd,"dvbpace"))) {
+    if (moon && !input && fixture) {
         const size_t at = (store_used+15) & ~(size_t)15;
         enc.input_borrowed = at+payload_bytes <= sizeof shaper_store;
         enc.input = enc.input_borrowed ? (uint8_t *)shaper_store+at :
@@ -1107,6 +1108,15 @@ encoder_ready:;
     }
     enc.prefill_frames = moon ? enc.frames : __atomic_load_n(&dvb.ring.published,__ATOMIC_ACQUIRE);
     return symbols;
+}
+
+// Where a table lives: internal SRAM (data bus), PSRAM or flash, both through the cache.
+static const char *memory_class(const void *p)
+{
+    const uintptr_t a = (uintptr_t)p;
+    if (!p) return "none";
+    if (a >= 0x3fc88000u && a < 0x3fd00000u) return "internal";
+    return esp_ptr_external_ram(p) ? "psram" : "flash";
 }
 
 // Stop the encoder after a run and print the stream part of the result record.
@@ -1300,16 +1310,20 @@ static void stop_encoder(void)
                          (unsigned)dvb.max_bank_cycles,(unsigned)dvb.max_bank_whole,(unsigned)dvb.max_bank_calls);
     if (dvb.moon) printf(",\"queue_pages\":%u,\"queue_low_pages\":%u,\"queue_empty\":%u,"
                          "\"queue_wake_max_cycles\":%u,\"queue_wakes\":%u,\"prepare_pages\":%u,"
-                         "\"prepare_max_cycles\":%u,\"prepare_tail_max_cycles\":%u,\"prepare_cycles\":%" PRIu64 ","
+                         "\"prepare_max_cycles\":%u,\"prepare_tail_max_cycles\":%u,\"prepare_cycles\":%" PRIu64 ",\"page_read_cycles\":%" PRIu64 ","
                          "\"table_bytes\":%u,\"table_heap_bytes\":0,\"encoder_cache_bytes\":%u",
                          dvb.queue_pages,(unsigned)dvb.queue_low,(unsigned)dvb.queue_empty,(unsigned)dvb.wake_max,(unsigned)dvb.queue_wakes,
-                         (unsigned)dvb.prepare_pages,(unsigned)dvb.prepare_max,(unsigned)dvb.prepare_tail_max,dvb.prepare_cycles,(dvb.lofty ? LOFTY_TABLE_WORDS : MACHINE_TABLE_WORDS)*4,
+                         (unsigned)dvb.prepare_pages,(unsigned)dvb.prepare_max,(unsigned)dvb.prepare_tail_max,dvb.prepare_cycles,dvb.read_cycles,(dvb.lofty ? LOFTY_TABLE_WORDS : MACHINE_TABLE_WORDS)*4,
                          (unsigned)(dvbs2_fast_cache_size(enc.fast)+(dvb.lofty ? DVBS2_LOFTY_CACHE_BYTES : 0)));
     if (dvb.moon) {
         const size_t heap = heap_caps_get_allocated_size(enc.tables);
         printf(",\"encoder_cache_heap_bytes\":%u,\"encoder_cache_store_bytes\":0,\"encoder_cache_psram_bytes\":%u",
                (unsigned)heap,enc.table_tail ? (unsigned)dvbs2_fast_cache_tail_size(enc.fast) : 0);
     }
+    const void *bch_table, *bch_pair;
+    const char *bch_variant = dvbs2_fast_bch_variant(enc.fast,&bch_table,&bch_pair);
+    printf(",\"bch_table_memory\":\"%s\",\"bch_pair_memory\":\"%s\"",
+           memory_class(bch_table),memory_class(bch_pair));
     printf(",\"workspace_memory\":\"%s\",\"workspace_bytes\":%u,\"fast_bytes\":%u,"
            "\"workspace_heap_bytes\":%u,\"fast_heap_bytes\":%u,\"bch_cache_heap_bytes\":%u,"
            "\"bch_cache_bytes\":%u,\"bch_variant\":\"%s\",\"packed_mapper\":\"%s\"",
@@ -1319,9 +1333,7 @@ static void stop_encoder(void)
            enc.ws_borrowed ? 0 : (unsigned)heap_caps_get_allocated_size(enc.ws),
            (unsigned)heap_caps_get_allocated_size(enc.fast),
            enc.bch && !enc.bch_borrowed ? (unsigned)heap_caps_get_allocated_size(enc.bch) : 0,
-           enc.bch || enc.tables ? DVBS2_BCH_CACHE_BYTES : 0,
-           vcm_enc.vcm ? "nibble" : enc.tables ? (enc.pair_bch ? "split-pair" : enc.mode->t == 8 ? "resident-pair" : "resident-byte") : enc.bch ? "resident-byte" : enc.packed && (dvb.moon || enc.mode->bits_per_symbol == 2 || dvb.table.n == 4)
-                                      && enc.mode->t == 8 && (enc.quads || enc.mode->bits_per_symbol == 3) && !spi_input_type() ? "flash-pair" : "nibble",
+           enc.bch || enc.tables ? DVBS2_BCH_CACHE_BYTES : 0, bch_variant,
            !enc.packed ? "none" : dvb.lofty ? "words" : dvb.moon ? "signs" : enc.quads ? "quads" : enc.mode->bits_per_symbol == 2 || dvb.table.n == 4 ? "direct" : "sparse");
     printf(",\"encoder_stack_bytes\":%u,\"encoder_stack_min_free\":%u", dvb.lofty ? ENCODER_STACK-256 : ENCODER_STACK, (unsigned)enc.stack_min_free);
     printf(",\"ring_memory\":\"%s\",\"ring_format\":\"%s\",\"ring_heap_bytes\":%u,"
@@ -1358,8 +1370,8 @@ static void stop_encoder(void)
         print_profile("partial", &dvb.partial); printf(",");
         print_profile("save", &dvb.save); printf(",");
         print_profile("notify", &dvb.notify); printf("},\"encoder\":{");
-        static const char *const names[] = {"payload", "bb", "bch", "ldpc", "map", "pl"};
-        for (unsigned i = 0; i < 6; ++i) {
+        static const char *const names[] = {"payload", "bb", "bch", "ldpc", "map", "pl", "pages"};
+        for (unsigned i = 0; i < (dvb.moon ? 7u : 6u); ++i) {
             if (i) printf(",");
             print_profile(names[i], &enc.stage[i]);
         }
@@ -1467,9 +1479,9 @@ void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, 
 }
 
 void dvbtx_pace(unsigned modcod, uint32_t seconds, unsigned level, unsigned stall_ms,
-                 unsigned sps, uint32_t dac_rate, bool phy_solo)
+                 unsigned sps, uint32_t dac_rate, bool fixture, bool phy_solo)
 {
-    const size_t symbols = start_encoder_options("dvbpace",modcod,level,stall_ms,sps,dac_rate,true,false);
+    const size_t symbols = start_encoder_options("dvbpace",modcod,level,stall_ms,sps,dac_rate,true,fixture);
     if (!symbols) return;
     radio_s3_stats_t s;
     const bool wifi = dvb.moon || phy_solo || vcm_enc.vcm;
@@ -1477,7 +1489,7 @@ void dvbtx_pace(unsigned modcod, uint32_t seconds, unsigned level, unsigned stal
     const esp_err_t err = phy_solo || dvb.lofty ? radio_s3_paced_wifi_options(seconds,dac_rate,encoder_fill(),NULL,&options,&s) :
         (wifi ? radio_s3_paced_wifi_rate : radio_s3_paced_run_rate)(seconds,dac_rate,encoder_fill(),NULL,&s);
     print_mode("dvbpace", modcod, symbols, level);
-    printf(",\"paced_wifi_up\":%s",wifi ? "true" : "false");
+    printf(",\"prepared_fixture\":%s,\"paced_wifi_up\":%s",fixture ? "true" : "false",wifi ? "true" : "false");
     if (wifi) print_wifi(&s.wifi);
     print_session(phy_solo,&s);
     printf(",\"seconds\":%" PRIu32 ",\"dac_rate\":%" PRIu32 ",\"step_words\":%u", seconds,

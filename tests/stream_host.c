@@ -518,7 +518,8 @@ int main(int argc, char **argv)
             dvbs2_map(&ws,mode,phases+f*length+90); dvbs2_plframe(mode,1,phases+f*length);
         }
         allocation_count = 0;
-        assert(start_encoder("dvbpace",mc,128,0,sps,rate));
+        // Queued paces here use the prepared-frame fixture (dvbpace --fixture).
+        assert(start_encoder_options("dvbpace",mc,128,0,sps,rate,false,moon));
         const int pace_allocations = allocation_count;
         const bool heap_input = enc.input && !enc.input_borrowed;
         assert(pace_allocations == allocations+(int)heap_input);
@@ -554,14 +555,14 @@ int main(int argc, char **argv)
             native_keyed_fixture = false;
         }
         if (moon && !dvb.lofty && mc == 11) {
-            assert(start_encoder("dvbpace",mc,128,0,sps,rate));
+            assert(start_encoder_options("dvbpace",mc,128,0,sps,rate,false,true));
             id_handoff_check(rate);
             stop_encoder(); printf("}\n");
             assert(live_allocations == 0);
         }
         if (heap_input) {
             fail_after = pace_allocations-1;
-            assert(!start_encoder("dvbpace",mc,128,0,sps,rate));
+            assert(!start_encoder_options("dvbpace",mc,128,0,sps,rate,false,moon));
             assert(live_allocations == 0);
             fail_after = -1;
         }

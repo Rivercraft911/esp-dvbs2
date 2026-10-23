@@ -32,7 +32,7 @@ static void ENCODER_TASK(void *arg)
             if (dvbs2_fast_bb_gcs(e->fast,e->ws,payload,bytes*8)) { e->failed = true; goto done; }
             dvbs2_fast_bch(e->fast,e->ws);
             dvbs2_fast_ldpc(e->fast,e->ws);
-            if (moon_map(true)) { e->failed = true; goto done; }
+            if (moon_start() || moon_map(true)) { e->failed = true; goto done; }
             ++e->warmup_frames;
         }
         e->warmup_cycles = esp_cpu_get_cycle_count()-before;
@@ -104,7 +104,10 @@ static void ENCODER_TASK(void *arg)
                 before = encoder_record(&e->stage[3],before);
                 if (dvb.moon) {
                     __atomic_store_n(&dvb.producer_phase,QUEUE_MAP,__ATOMIC_RELEASE);
-                    rc = moon_map(false);
+                    rc = moon_start();
+                    before = encoder_record(&e->stage[4],before);
+                    if (!rc) rc = moon_map(false);
+                    before = encoder_record(&e->stage[6],before);
                 } else if (e->packed) {
                     dvbs2_fast_map_packed(e->fast, e->ws, out);
                 } else {

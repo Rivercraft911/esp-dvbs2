@@ -30,8 +30,9 @@ void dvbtx_dump(unsigned modcod, unsigned frames, unsigned level, unsigned decim
 // dvbpace command: the same encoder, fills and bank deadlines as dvb for `seconds`, timed against
 // the cycle counter, at 40 or 80 MS/s. Queued, VCM and PHY-solo paces start Wi-Fi as a keyed run
 // does (radio_s3_paced_wifi_options); other fixed modes leave Wi-Fi off. No DAC or TX keying.
+// fixture repeats one prepared frame, as for dvb; otherwise the payload is the xorshift stream.
 void dvbtx_pace(unsigned modcod, uint32_t seconds, unsigned level, unsigned stall_ms,
-                unsigned sps, uint32_t dac_rate, bool phy_solo);
+                unsigned sps, uint32_t dac_rate, bool fixture, bool phy_solo);
 
 // wifimem command: radio_s3_wifi_probe (Wi-Fi start-up and shutdown, no keying), with the
 // transmitter's memory for modcod/sps allocated as before a dvb run, or nothing for modcod 0.

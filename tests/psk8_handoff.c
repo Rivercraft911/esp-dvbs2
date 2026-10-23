@@ -51,7 +51,7 @@ int main(int argc, char **argv)
     unsigned mc = atoi(argv[1]);
     callsign = "N0CALL";
     assert(!posix_memalign((void **)&banks,65536,2*sizeof *banks));
-    assert(start_encoder("dvbpace",mc,128,0,3,80000000));
+    assert(start_encoder_options("dvbpace",mc,128,0,3,80000000,false,true)); // prepared frame
     station_id_t id;
     assert(station_id_init_rate(&id,callsign,80000000,80000000,fill,NULL));
     assert(id.length == 417600000);

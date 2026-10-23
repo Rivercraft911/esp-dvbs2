@@ -838,7 +838,6 @@ esp_err_t radio_s3_paced_wifi_options(uint32_t seconds, uint32_t dac_rate, radio
                                       void *ctx, const radio_s3_options_t *options, radio_s3_stats_t *stats)
 {
     if (!fill || !stats || seconds == 0 || seconds > 600 || !known_rate(dac_rate) ||
-            (options && options->phy_solo && seconds > RADIO_S3_PHY_SOLO_MAX_SECONDS) ||
             !station_store_get()[0]) return ESP_ERR_INVALID_ARG;
     memset(stats,0,sizeof *stats);
     stats->min_fill_slack_cycles = UINT32_MAX;

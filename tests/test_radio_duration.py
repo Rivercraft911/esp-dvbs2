@@ -309,7 +309,9 @@ int main(void) {
         assert(stats.id_count == 3); // existing nine-minute paced ID is preserved
         assert(!radio_s3_paced_wifi_options(600,rate,payload,NULL,NULL,&stats));
         assert(stats.id_count == 3);
-        assert(radio_s3_paced_wifi_options(61,rate,payload,NULL,&solo,&stats) == ESP_ERR_INVALID_ARG);
+        assert(!radio_s3_paced_wifi_options(600,rate,payload,NULL,&solo,&stats)); // paces: no keyed cap
+        assert(stats.id_count == 3);
+        assert(radio_s3_paced_wifi_options(601,rate,payload,NULL,&solo,&stats) == ESP_ERR_INVALID_ARG);
         // Execute every production bank deadline over 540 s, from an epoch
         // near wrap, with a synthetic clock. No radio/register implementation.
         memset(&stats,0,sizeof stats);

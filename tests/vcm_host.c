@@ -117,7 +117,7 @@ int main(int argc, char **argv)
         dvbtx_dump(initial,frames,128,sps == 40 ? 10 : 1,0,sps,40000000);
         fclose(capture); assert(!live_allocations);
     }
-    if (!control) dvbtx_pace(initial,1,128,0,sps,40000000,false);
+    if (!control) dvbtx_pace(initial,1,128,0,sps,40000000,false,false);
     if (native_wire) fclose(native_wire);
     // Admission is explicit, including TS and high-rate rejection.
     native_input=PV_TS;

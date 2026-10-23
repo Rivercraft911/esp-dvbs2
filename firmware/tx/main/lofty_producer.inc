@@ -92,11 +92,17 @@ static __attribute__((noinline)) int lofty_finish(void)
     return 0;
 }
 
-static IRAM_ATTR __attribute__((noinline)) int moon_map(bool warmup)
+// Map this frame's FEC bits for the page loop: the first 8PSK chunks or the QPSK sign planes.
+static inline int moon_start(void)
 {
     if (dvb.lofty) lofty_mux.skip = 3*dvb.mapper.pending;
-    if ((dvb.lofty ? dvbs2_fast_lofty_start(enc.fast,enc.ws,&dvb.mapper) :
-                     dvbs2_fast_axis_start(enc.fast,enc.ws,&dvb.mapper))) return -1;
+    return dvb.lofty ? dvbs2_fast_lofty_start(enc.fast,enc.ws,&dvb.mapper) :
+                       dvbs2_fast_axis_start(enc.fast,enc.ws,&dvb.mapper);
+}
+
+// The page loop: read framed words (8PSK frames the rest on its second read), prepare, publish.
+static IRAM_ATTR __attribute__((noinline)) int moon_map(bool warmup)
+{
     while (!enc.stop && dvb.mapper.at < dvb.ring.frame_symbols) {
         while (!warmup && !enc.stop && dvb.produced-__atomic_load_n(&dvb.consumed,__ATOMIC_ACQUIRE) == dvb.queue_pages)
             moon_wait();
@@ -107,17 +113,21 @@ static IRAM_ATTR __attribute__((noinline)) int moon_map(bool warmup)
         const uint32_t before = esp_cpu_get_cycle_count();
         const unsigned room = MACHINE_PAGE_BLOCKS-dvb.page_blocks;
         unsigned n = room;
+        uint32_t read;
         if (lp) {
             const uint16_t *words = dvbs2_fast_lofty_read(enc.fast,&dvb.mapper,&n);
+            read = esp_cpu_get_cycle_count();
             if (n) dvb.last_word = lofty_prepare(lp->words+dvb.page_blocks,words,n,dvb.last_word);
         } else {
             n = dvbs2_fast_axis_read(enc.fast,&dvb.mapper,page->axes+dvb.page_words,
                                      MACHINE_PAGE_AXIS_WORDS-dvb.page_words);
+            read = esp_cpu_get_cycle_count();
         }
         // Warm the same mapper/prepare kernels without publishing or advancing
         // the stream. One owned queue page is enough for every discarded chunk.
         if (warmup) { dvb.page_blocks = dvb.page_words = 0; continue; }
         const uint32_t cycles = esp_cpu_get_cycle_count()-before;
+        dvb.read_cycles += read-before;
         if (cycles > dvb.prepare_max) {
             dvb.prepare_max = cycles;
             dvb.prepare_ticks = xTaskGetTickCount()-tick;

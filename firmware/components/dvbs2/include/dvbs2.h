@@ -137,6 +137,10 @@ int dvbs2_fast_cache_bch(dvbs2_fast *f, uint8_t *table);
  * both buffers live until prepare/cache_bch. No internal allocation. */
 #define DVBS2_BCH_PAIR_BYTES 4096
 int dvbs2_fast_cache_bch_pair(dvbs2_fast *, uint8_t *low);
+/* The BCH path dvbs2_fast_bch takes after prepare/cache: "pair" (two bytes per step, t = 8),
+ * "split-pair" (two bytes, T1's low half separate), "byte" or "nibble". table and pair receive
+ * the table addresses that path reads (pair is NULL unless split-pair). */
+const char *dvbs2_fast_bch_variant(const dvbs2_fast *f, const void **table, const void **pair);
 /* Optional complete hot-data cache (PRBS, Gold, BCH, LDPC
  * program/columns and GCS header CRC). After prepare, allocate cache_size()
  * aligned internal bytes, then cache_tables(). Buffer remains owned by caller
