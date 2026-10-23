@@ -51,3 +51,8 @@ acquisition, timing and the carrier estimate on it.
 frames, TX peak 128, 2420 MHz, coax, RX gain 32, 2026-10-22 (notes capture
 normal13-5m-peak128, samples 110,935 to 117,334, from 150 symbols before a PLHEADER through
 the first pilot block), same format.
+
+`file-payload.png` is the 237,171-byte PNG (SHA-256 cc9b3d12…4044828) sent in the file-transfer
+run docs/measurements/ota/file-png-5m. It was docs/img/fill-history.png at the time; the copy
+here keeps the bytes fixed when figures are regenerated. tests/test_file_ota.py expects 60 coded
+frames from it.
