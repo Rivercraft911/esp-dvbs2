@@ -85,8 +85,8 @@ stage digests, numerical symbol comparisons and file-loopback evidence are docum
   second board.
 - **LeanDVB's short 3/4 table:** its `ldpc_sf_fec34` table lists 12 addresses in the first row
   but sets `ncols` to 3, which costs about 292 LDPC bit flips per clean frame. My table row
-  matches the standard and gr-dtv; with `ncols` 12 the same samples decode with zero flips. Short-frame
-  decodes here use that one-line local fix
+  matches the standard and gr-dtv; with `ncols` 12 the same samples decode with zero flips.
+  Short-frame decodes here use that one-line local fix
   ([short frames](../results/2026-10-22-short-frames/README.md#leandvb-short-34-table-error)).
 
 ## MER, theirs and mine

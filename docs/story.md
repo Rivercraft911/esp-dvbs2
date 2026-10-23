@@ -2,8 +2,8 @@
 
 The [README](../README.md) shows where the transceiver stands today: one ESP32-S3 transmits
 DVB-S2 at up to 69.8 Mb/s with a prepared payload, and a second one receives and decodes
-12.64 Mb/s entirely on the chip, both over coax. This page is the long way round. It is what I measured, in the order I measured it, and
-everything that broke along the way.
+12.64 Mb/s entirely on the chip, both over coax. This page is the long way round. It is what I
+measured, in the order I measured it, and everything that broke along the way.
 
 Three words come up a lot:
 
@@ -154,11 +154,11 @@ for 30 s each with every deadline met. The tightest fill left 1,842 cycles to sp
 
 ## QPSK at 26.67 Msym/s
 
-A packed QPSK ring and a new 3-samples-per-symbol fill took QPSK 9/10 to 80/3 Msym/s. The radio-off run's
-worst bank took 39,139 of 47,220 cycles, and every dumped sample decoded bit for bit. Keyed in the
-box for 30 s, every deadline held while carrying 46.6 Mb/s in 36 MHz. The encoder's slowest frame,
-524k cycles with Wi-Fi active against a 299,538-cycle frame, vanished into a lead of 32,155 queued
-symbols.
+A packed QPSK ring and a new 3-samples-per-symbol fill took QPSK 9/10 to 80/3 Msym/s. The
+radio-off run's worst bank took 39,139 of 47,220 cycles, and every dumped sample decoded bit for
+bit. Keyed in the box for 30 s, every deadline held while carrying 46.6 Mb/s in 36 MHz. The
+encoder's slowest frame, 524k cycles with Wi-Fi active against a 299,538-cycle frame, vanished
+into a lead of 32,155 queued symbols.
 ([radio off](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/results/2026-10-17-qpsk-goal/README.md),
 [keyed](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/results/2026-10-17-keyed-qpsk/README.md))
 
@@ -223,9 +223,9 @@ and their samples had only been decoded from USB dumps. RF came later.
 
 The E200 finally went into the closed Faraday box with the S3, receive only, running Pluto
 firmware. At 2420 MHz, QPSK 1/2 at 1 Msym/s came back as 587 frames, every payload byte matching
-the host model, at 16.7 dB MER (LeanDVB's header MER). QPSK 3/4 at 5 Msym/s followed with 1,436 frames, then a 124-frame
-burst at 10 Msym/s with zero LDPC flips. The samples had made it through the radio.
-([runs](measurements.md#over-the-air))
+the host model, at 16.7 dB MER (LeanDVB's header MER). QPSK 3/4 at 5 Msym/s followed with 1,436
+frames, then a 124-frame burst at 10 Msym/s with zero LDPC flips. The samples had made it through
+the radio. ([runs](measurements.md#over-the-air))
 
 At 80 MS/s, turning it up made it worse. QPSK 9/10 at 20 Msym/s would not decode at peak 128,
 even though the chip's samples were correct: the radio was being overdriven. (Peak is the
@@ -278,10 +278,10 @@ not sustained wideband video. [Capture and plotting details](../results/2026-10-
 
 On October 19 the transmitter carried real pictures. A CM5 sent two camera streams as a 9 Mb/s
 MPEG transport stream (TS: the 188-byte packets broadcast video travels in) over 16 MHz SPI to a
-XIAO S3. The S3 sent 8PSK 2/3 at 5 Msym/s, 9.68 Mb/s of capacity in 6.75 MHz. A B200 behind
-40 dB of coax attenuation, at 20 dB of receive gain, fed LeanDVB, which recovered both streams with no TS continuity gaps in
-a 111 s interval. A completed 140 s run accepted 106,227 SPI messages with no protocol errors and
-no late bank events. ([live RF](../results/2026-10-19-live-rf/README.md),
+XIAO S3. The S3 sent 8PSK 2/3 at 5 Msym/s, 9.68 Mb/s of capacity in 6.75 MHz. A B200 behind 40 dB
+of coax attenuation, at 20 dB of receive gain, fed LeanDVB, which recovered both streams with no
+TS continuity gaps in a 111 s interval. A completed 140 s run accepted 106,227 SPI messages with
+no protocol errors and no late bank events. ([live RF](../results/2026-10-19-live-rf/README.md),
 [example](../examples/live-video/README.md))
 
 Not every run was that clean. With 60 dB of attenuation and 40 dB of receive gain, the same setup
@@ -320,9 +320,10 @@ The bug was in the receiver. Its `ldpc_sf_fec34` table lists 12 addresses in the
 sets `ncols` to 3. With 12, the same dump decodes with zero flips. My table row matches the
 standard and GNU Radio's gr-dtv. Later short-frame decodes use that one-line fix.
 
-Over RF the B200 and LeanDVB delivered between 2,764 of 3,552 and 3,389 of 3,575 short frames (78%
-to 95%), every delivered frame exact; a normal-frame control in the same setup delivered 64%. Many failed attempts in the receiver log
-were wrong-MODCOD header guesses, so the losses look like lost lock, not payload errors.
+Over RF the B200 and LeanDVB delivered between 2,764 of 3,552 and 3,389 of 3,575 short frames
+(78% to 95%), every delivered frame exact; a normal-frame control in the same setup delivered
+64%. Many failed attempts in the receiver log were wrong-MODCOD header guesses, so the losses
+look like lost lock, not payload errors.
 
 ## The receiver
 
