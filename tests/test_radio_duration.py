@@ -69,7 +69,22 @@ static const char *call = "N0CALL";
 static const char *station_store_get(void) { return call; }
 static bool station_require(const char *cmd) { (void)cmd; return call[0] != 0; }
 static int xSemaphoreCreateBinaryStatic(int *p) { (void)p; return 1; }
-static void xSemaphoreTake(int s, unsigned t) { assert(s == 1 && t == portMAX_DELAY); }
+typedef uint32_t TickType_t;
+#define pdTRUE 1
+#define pdFALSE 0
+#define pdMS_TO_TICKS(ms) (ms)
+// The run is over once xSemaphoreGive returns, but with a status hook the first
+// pending_status one-second waits time out, as they would during a run.
+static unsigned pending_status, status_waits;
+static TickType_t ticks;
+static TickType_t xTaskGetTickCount(void) { return ticks; }
+static int xSemaphoreTake(int s, TickType_t t) {
+    assert(s == 1);
+    if (t == portMAX_DELAY) return pdTRUE;
+    assert(t <= 1000); ++status_waits;
+    if (!pending_status) return pdTRUE;
+    --pending_status; ticks += t; return pdFALSE;
+}
 // The persistent core-1 worker (radio_s3_init): giving it a job runs the job.
 typedef void *TaskHandle_t;
 static int worker_tcb, job_ready = 2;
@@ -136,6 +151,7 @@ static void worker(void *arg) {
         assert(!station_id_fill(dst,id->total_samples,7,id));
         for (unsigned i=0; i<7; ++i) assert(!dst[i]);
     }
+    run->stats->status_fill_cycles = 4321; // one fill for the status hook to take
     run->error = ESP_OK;
 }
 static esp_err_t fill_bank(run_t *run, unsigned bank, uint64_t start) {
@@ -211,6 +227,12 @@ static void counters(void) {
 '''
 
 MAIN = r'''
+static unsigned status_calls;
+static uint32_t status_slowest[4];
+static void status_hook(const radio_s3_stats_t *s, uint32_t slowest) {
+    assert(s && status_calls < 4);
+    status_slowest[status_calls++] = slowest;
+}
 static void command(const char *text, bool accepted, bool solo) {
     (void)solo; // --phy-solo is accepted from old scripts and has no effect
     char args[160]; snprintf(args,sizeof args,"%s",text);
@@ -329,6 +351,17 @@ int main(void) {
         assert(stats.switches == (run.samples-1)/run.geo.step);
         assert(!stats.fatal_late && clock_cycles-epoch == stats.elapsed_cycles+1);
     }
+    // A status hook runs once per timed-out one-second wait of the command task and takes the
+    // slowest fill since the previous call; without a hook the task waits without a timeout.
+    const radio_s3_options_t status = {.status = status_hook};
+    pending_status = 3, status_waits = 0;
+    assert(!radio_s3_paced_run(10,RADIO_S3_DAC_RATE,payload,NULL,&status,&stats));
+    assert(status_calls == 3 && status_waits == 4 && !stats.status_fill_cycles);
+    assert(status_slowest[0] == 4321 && !status_slowest[1] && !status_slowest[2]);
+    pending_status = 3, status_waits = 0;
+    assert(!radio_s3_run_options(2412,0,30,RADIO_S3_DAC_RATE,6750000,payload,NULL,NULL,&stats));
+    assert(status_calls == 3 && !status_waits && pending_status == 3);
+    pending_status = 0;
     call = "";
     unsigned before = tasks;
     assert(radio_s3_run_options(2412,0,530,RADIO_S3_DAC_RATE,6750000,payload,NULL,NULL,&stats) == ESP_ERR_INVALID_STATE);

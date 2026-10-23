@@ -8,7 +8,7 @@ import sys
 import tempfile
 import zlib
 import numpy as np
-from test_stream import compile_stream
+from test_stream import compile_stream, status_check
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'host'))
@@ -66,6 +66,7 @@ def check(out, receiver=None):
         keyed, = [r for r in rows if r.get('cmd') == 'dvb']
         assert keyed['prepared_fixture'] and keyed['payload_source'] == 'psram-frame'
         assert keyed['queue_pages'] == 54 and not keyed['encoder_failed'] and keyed['status'] == 'ESP_OK'
+        status_check(rows, keyed, 199746)  # 22,194 symbols at 9 cycles
         dumps = [r for r in rows if 'crc32' in r]
         assert len(dumps) == 2 and dumps[0]['crc32'] == dumps[1]['crc32']
         r = dumps[0]

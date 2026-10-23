@@ -229,6 +229,7 @@ void spi_input_stop(void) {
 void spi_input_print(void) {
     printf(",\"input\":\"%s\"", native_input == PV_TS ? "ts" : native_input ? "gcs" : "synthetic");
 }
+const ingress_ring *spi_input_ring(void) { return input_sim ? sim_ring(input_sim) : NULL; }
 
 // Station store and command gate: the stored callsign without NVS.
 const char *station_store_get(void) { return callsign; }
@@ -375,13 +376,14 @@ esp_err_t radio_s3_paced_run(uint32_t sec, uint32_t rate, radio_s3_fill_fn fn, v
 static bool native_keyed_fixture;
 static unsigned native_keyed_frames;
 static esp_err_t discard(const uint32_t *, uint64_t, size_t, void *);
-esp_err_t radio_s3_run_bandwidth(uint32_t freq, uint8_t gain, uint32_t sec, uint32_t rate,
-                                 uint32_t bandwidth, radio_s3_fill_fn fn, void *ctx, radio_s3_stats_t *stats)
+esp_err_t radio_s3_run_options(uint32_t freq, uint8_t gain, uint32_t sec, uint32_t rate,
+                               uint32_t bandwidth, radio_s3_fill_fn fn, void *ctx,
+                               const radio_s3_options_t *options, radio_s3_stats_t *stats)
 {
     // Public keyed API, with the radio replaced by the actual dry fill/oracle.
     assert(native_keyed_fixture && freq == 2412 && !gain && sec == 30 && rate == 80000000);
     assert(bandwidth == (dvb.lofty ? 36000000u : 40000000u));
-    assert(enc.input && !spi_input_type());
+    assert(enc.input && !spi_input_type() && options && options->status && !options->startup);
     uint32_t x = SEED;
     for (size_t i = 0; i < (enc.mode->kbch-80U)/8; ++i) assert(enc.input[i] == next_byte(&x));
     if (dvb.lofty) assert(radio_s3_stream_ready() == ESP_OK);
@@ -390,6 +392,14 @@ esp_err_t radio_s3_run_bandwidth(uint32_t freq, uint8_t gain, uint32_t sec, uint
     memset(stats,0,sizeof *stats);
     const esp_err_t err = radio_s3_dry_run_rate(fn,ctx,samples,rate,discard,NULL,&dry);
     stats->fills = dry.fills;
+    // One status line after the frames played, as the waiting command task would print it,
+    // to stdout (the dump capture is closed by now). The test reads it with the run record.
+    stats->late_fills = 1;
+    FILE *dump = capture;
+    capture = stdout;
+    options->status(stats,23610);
+    capture = dump;
+    stats->late_fills = 0;
     return err;
 }
 void radio_filter_print(const radio_filter_stats_t *stats) { (void)stats; }

@@ -77,11 +77,6 @@ typedef struct {
 } radio_s3_startup_t;
 
 typedef struct {
-    // Optional radio-off diagnostic. Collected on the existing worker stack;
-    // copied here after playback, so this destination may live in PSRAM.
-    radio_s3_startup_t *startup;
-} radio_s3_options_t;
-typedef struct {
     uint64_t elapsed_samples; /* Nominal timeline at the run's rate, not an RF measurement. */
     uint64_t elapsed_cycles;
     uint32_t fills;
@@ -102,7 +97,19 @@ typedef struct {
     uint32_t requested_rf_khz, requested_pll_khz; /* requests, not RF readbacks */
     int32_t lo_offset_khz;
     bool lo_divided;
+    uint32_t status_fill_cycles; /* slowest fill since the last status call (options.status) */
 } radio_s3_stats_t;
+
+typedef struct {
+    // Optional radio-off diagnostic. Collected on the existing worker stack;
+    // copied here after playback, so this destination may live in PSRAM.
+    radio_s3_startup_t *startup;
+    // Optional live report, called about once a second by the task that started the run, while
+    // it waits for the run (core 0), never on core 1. Core 1 is still writing stats: read only
+    // its 32-bit fields. slowest_fill is the slowest bank fill, in CPU cycles, since the last
+    // call (0 if none). It must not block.
+    void (*status)(const radio_s3_stats_t *stats, uint32_t slowest_fill);
+} radio_s3_options_t;
 
 /* Append requested tuning to an open keyed-run JSON record. No PHY access. */
 void radio_s3_tuning_print(const radio_s3_stats_t *stats);

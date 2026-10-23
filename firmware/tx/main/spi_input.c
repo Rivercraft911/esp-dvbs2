@@ -256,6 +256,11 @@ void spi_input_stop(void)
     saved=rx->st; wrong_type=rx->wrong_type; next_seq=rx->seq_next; rx=NULL;
 }
 
+const ingress_ring *spi_input_ring(void)
+{
+    return !session ? NULL : usb_mode ? usb_input_ring() : rx;
+}
+
 void spi_input_print(void)
 {
     printf(",\"input\":\"%s\"", input_type==PV_TS ? "ts" : input_type==PV_GCS ? "gcs" : "synthetic");

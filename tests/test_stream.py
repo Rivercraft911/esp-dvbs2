@@ -51,6 +51,8 @@ static inline int64_t esp_timer_get_time(void) {
     return (int64_t)t.tv_sec*1000000+t.tv_nsec/1000;
 }
 static inline uint32_t esp_cpu_get_cycle_count(void) { return 17; }
+#define portSET_INTERRUPT_MASK_FROM_ISR() 0u
+#define portCLEAR_INTERRUPT_MASK_FROM_ISR(x) ((void)(x))
 static inline unsigned uxTaskGetStackHighWaterMark(void *task) { (void)task; return 1024; }
 static int fail_after = -1, live_allocations, allocation_count;
 static struct { void *p; size_t n; unsigned caps; } native_blocks[64];
@@ -237,6 +239,18 @@ def compile_stream(folder, source="stream_host.c", defines=()):
                     str(ROOT / "firmware/components/station_id/station_id.c"),
                     "-lm", "-o", str(exe)], check=True)
     return exe
+
+
+def status_check(records, run, period):
+    """The keyed stub's one status line (stream_host.c) against the run's own record."""
+    status, = [r for r in records if r.get('cmd') == 'status']
+    for key in ('freq_mhz', 'modcod', 'rate', 'symbol_rate', 'short'):
+        assert status[key] == run[key], key
+    assert status['run'] == 'dvb' and status['input'] == 'synthetic' and 'input_bytes' not in status
+    assert status['frames'] == run['frames_played'] and status['frames_encoded'] <= run['frames_encoded']
+    assert status['dummies'] == 0 and status['late_fills'] == 1 and status['lines_dropped'] == 0
+    assert status['frame_period_cycles'] == period and status['fill_deadline_cycles'] == 47220
+    assert status['fill_max_cycles'] == 23610 and status['fill_spare_pct'] == 50.0
 
 
 def test_stream(output=None, receiver=None, input_only=False):

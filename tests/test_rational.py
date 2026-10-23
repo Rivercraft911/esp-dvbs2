@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT/'host'))
 sys.path.insert(0, str(ROOT/"tests/reference"))
 import machine as moon
 import waveforms as onair
-from test_stream import compile_stream
+from test_stream import compile_stream, status_check
 
 
 def test(output=None, receiver=None):
@@ -40,6 +40,7 @@ def test(output=None, receiver=None):
                 r, = keyed
                 assert r['prepared_fixture'] and r['payload_source'] == 'internal-frame'
                 assert r['status'] == 'ESP_OK' and not r['encoder_failed']
+                status_check(records, r, 239630)  # 33,282 symbols at 7.2 cycles
             else: assert not keyed
             dumps = [r for r in records if 'crc32' in r]
             assert len(dumps) == 2 and dumps[0]['crc32'] == dumps[1]['crc32']
