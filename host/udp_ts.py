@@ -10,7 +10,10 @@ packets marked bad by the receiver's CRC-8 (transport_error_indicator), continui
 and the longest gap between datagrams. With --diag the datagrams are `eth send`'s numbered ones
 (w5500_diag_pattern: the number is bytes 4-7 of each, MSB first), and lost or reordered numbers
 are counted too. It stops after --seconds, or once nothing has arrived for --idle seconds after
-the first datagram. --save appends the payloads to a .ts file.
+the first datagram. --save appends the payloads to a .ts file. With --pattern replay every packet
+must equal one of the 56 packets the transmitter's `spiinput ... ts replay` loops
+(host/spi_input.py pattern, sequences 0 to 7); the first bad ones are listed with their datagram
+number and position in it.
 
 Run it under caffeinate: without it this Mac stalls USB and network readers for about 1.25 s
 roughly once a minute.
@@ -28,11 +31,20 @@ import time
 TS = 188
 
 
+def replay_packets() -> set[bytes]:
+    """The 56 packets of the transmitter's TS replay loop."""
+    from spi_input import pattern
+    cycle = b"".join(bytes(pattern(seq, 1)) for seq in range(8))
+    return {cycle[k:k + TS] for k in range(0, len(cycle), TS)}
+
+
 class Check:
     """Counters over a run of datagrams, fed one at a time with their arrival times."""
 
-    def __init__(self, diag: bool = False):
+    def __init__(self, diag: bool = False, packets: set[bytes] | None = None):
         self.diag = diag
+        self.expected = packets
+        self.pattern_bad, self.bad_at = 0, []
         self.datagrams = self.bytes = self.packets = 0
         self.sizes: dict[int, int] = {}
         self.sync_errors = self.tei = self.cc_errors = 0
@@ -52,6 +64,10 @@ class Check:
         self.sizes[len(d)] = self.sizes.get(len(d), 0) + 1
         for k in range(0, len(d) - TS + 1, TS):
             self.packet(d[k:k + TS])
+            if self.expected is not None and d[k:k + TS] not in self.expected:
+                self.pattern_bad += 1
+                if len(self.bad_at) < 40:
+                    self.bad_at.append([self.datagrams - 1, k // TS, len(d), d[k:k + 8].hex()])
         self.sync_errors += len(d) % TS != 0    # a torn datagram counts once
         if self.diag and len(d) >= 8:
             seq = int.from_bytes(d[4:8], "big")
@@ -89,6 +105,8 @@ class Check:
                    sync_errors=self.sync_errors, tei=self.tei, cc_errors=self.cc_errors,
                    pids={f"0x{p:04x}": dict(packets=v[0], cc_errors=v[1]) for p, v in sorted(self.pids.items())},
                    max_gap_ms=round(self.max_gap * 1e3, 2))
+        if self.expected is not None:
+            out |= dict(pattern_bad=self.pattern_bad, bad_at=self.bad_at)
         if self.diag:
             out |= dict(lost=self.lost, reordered=self.reordered, first_seq=self.first_seq,
                         last_seq=self.seq)
@@ -118,6 +136,7 @@ def main() -> int:
     p.add_argument("--seconds", type=float, default=60.0)
     p.add_argument("--idle", type=float, default=3.0, help="stop this long after the last datagram")
     p.add_argument("--diag", action="store_true", help="`eth send` datagrams: count lost numbers")
+    p.add_argument("--pattern", choices=("replay",), help="check every packet against this input")
     p.add_argument("--save", type=pathlib.Path, help="append the payloads to this .ts file")
     p.add_argument("--out", type=pathlib.Path, help="append the summary to this JSON-lines file")
     a = p.parse_args()
@@ -126,7 +145,8 @@ def main() -> int:
     sock.bind(("", a.port))
     save = a.save.open("ab") if a.save else None
     try:
-        summary = receive(sock, a.seconds, a.idle, Check(a.diag), save).summary()
+        packets = replay_packets() if a.pattern == "replay" else None
+        summary = receive(sock, a.seconds, a.idle, Check(a.diag, packets), save).summary()
     finally:
         if save:
             save.close()

@@ -30,6 +30,7 @@ typedef struct {
     uint64_t send_cycles;
     uint32_t stack_free;            /* the sender's least free stack, bytes */
     int esp_err;                    /* the ESP-IDF error behind a "spi" status */
+    uint32_t underflows;            /* payload writes the SPI DMA underran, written again */
 } eth_egress_stats_t;
 
 /* At boot, before arena_booted: the SPI port and the sender task. */

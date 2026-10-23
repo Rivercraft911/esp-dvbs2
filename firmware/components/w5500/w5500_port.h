@@ -13,6 +13,7 @@ typedef struct {
     esp_err_t err;              /* the ESP-IDF error behind a failed start or frame */
     uint32_t polled, queued;    /* frames run by the CPU, frames run by DMA */
     uint32_t sleeps;            /* waits that slept on the SPI interrupt (direct backend) */
+    uint32_t underflows;        /* payload writes the GDMA underran, written again (direct) */
     int khz;                    /* SPI clock */
     size_t heap_bytes;          /* internal RAM taken at start */
 } w5500_port_info;

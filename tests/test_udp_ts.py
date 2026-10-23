@@ -46,6 +46,18 @@ def main():
     assert s["sync_errors"] == 2 and s["tei"] == 1 and s["sizes"] == {"200": 1, "376": 1, "564": 1, "1316": 1}
     assert s["packets"] == 7 + 2 + 1 + 3 and "lost" not in s and "0x1fff" not in s["pids"], s
 
+    # --pattern replay: byte for byte against the transmitter's 56-packet loop.
+    loop = udp_ts.replay_packets()
+    assert len(loop) == 56 and all(p[0] == 0x47 and len(p) == 188 for p in loop)
+    good = sorted(loop)[:7]
+    c = udp_ts.Check(packets=loop)
+    c.add(b"".join(good), 0.0)
+    filled = bytearray(b"".join(good))
+    filled[2 * 188 + 6:] = b"\x47" * (len(filled) - 2 * 188 - 6)   # an underrun's fill, say
+    c.add(bytes(filled), 0.001)
+    s = c.summary()
+    assert s["pattern_bad"] == 5 and s["bad_at"][0][:3] == [1, 2, 1316], s["bad_at"][:2]
+
     # Over a loopback socket, with the counters a run reports.
     rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     rx.bind(("127.0.0.1", 0))

@@ -58,6 +58,9 @@ int w5500_eth_start(w5500_eth_role role);
 /* Owner only: close socket 0, free the SPI port unless reserved, and give up ownership. */
 void w5500_eth_stop(void);
 esp_err_t w5500_eth_error(void);
+/* Payload writes whose DMA underran and were written again, since the port started (direct
+ * backend; 0 with spi_master). */
+uint32_t w5500_eth_underflows(void);
 /* A w5500.h result as a word for JSON: "ok", "full", "spi", "chip", ... */
 const char *w5500_eth_status(int e);
 /* The settings: the defaults with CONFIG_W5500_DEFAULTS over them, then what `eth` changed. */

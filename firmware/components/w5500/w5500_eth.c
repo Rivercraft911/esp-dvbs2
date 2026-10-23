@@ -66,6 +66,11 @@ esp_err_t w5500_eth_error(void)
     return w5500_port.err;
 }
 
+uint32_t w5500_eth_underflows(void)
+{
+    return w5500_port.underflows;
+}
+
 /* The settings: the built-in defaults, then CONFIG_W5500_DEFAULTS (settings separated by ';'),
  * then with CONFIG_W5500_SETTINGS_NVS what `eth` saved; read once, then kept in RAM. */
 static w5500_settings settings;
@@ -295,10 +300,11 @@ static void print_run(int e, int64_t us, double base, double load, int64_t drive
                       uint32_t calls)
 {
     printf(",\"status\":\"%s\",\"spi\":\"%s\",\"us\":%lld,\"driver_us_per_call\":%.1f,"
-           "\"polled\":%" PRIu32 ",\"queued\":%" PRIu32 ",\"sleeps\":%" PRIu32 ",\"sck_khz\":%d,"
-           "\"heap_bytes\":%u", w5500_eth_status(e), w5500_port.name, (long long)us,
-           calls ? (double)driver_us / calls : 0.0, w5500_port.polled, w5500_port.queued,
-           w5500_port.sleeps, w5500_port.khz, (unsigned)w5500_port.heap_bytes);
+           "\"polled\":%" PRIu32 ",\"queued\":%" PRIu32 ",\"sleeps\":%" PRIu32
+           ",\"underflows\":%" PRIu32 ",\"sck_khz\":%d,\"heap_bytes\":%u", w5500_eth_status(e),
+           w5500_port.name, (long long)us, calls ? (double)driver_us / calls : 0.0,
+           w5500_port.polled, w5500_port.queued, w5500_port.sleeps, w5500_port.underflows,
+           w5500_port.khz, (unsigned)w5500_port.heap_bytes);
     if (base >= 0 && load >= 0) printf(",\"core_load\":%.4f,\"core_load_before\":%.4f", load, base);
     if (e == W5500_ERR_BUS) printf(",\"esp_err\":\"%s\"", esp_err_to_name(w5500_port.err));
 }

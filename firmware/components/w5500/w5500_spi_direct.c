@@ -79,6 +79,7 @@
 #define G_DMA_CONF (SPI2_BASE + 0x30)     /* SPI_DMA_CONF_REG */
 #define G_INT_ENA (SPI2_BASE + 0x34)      /* SPI_DMA_INT_ENA_REG */
 #define G_INT_CLR (SPI2_BASE + 0x38)      /* SPI_DMA_INT_CLR_REG */
+#define G_INT_RAW (SPI2_BASE + 0x3C)      /* SPI_DMA_INT_RAW_REG */
 #define G_INT_ST (SPI2_BASE + 0x40)       /* SPI_DMA_INT_ST_REG */
 #define G_W0 (SPI2_BASE + 0x98)           /* SPI_W0_REG .. SPI_W15_REG at 0xD4 */
 #define G_SLAVE (SPI2_BASE + 0xE0)        /* SPI_SLAVE_REG: SPI_SLAVE_MODE [26] */
@@ -101,6 +102,9 @@
 #define DMA_RX_ENA (1u << 27)
 #define FIFO_RST (DMA_AFIFO_RST | BUF_AFIFO_RST | RX_AFIFO_RST)
 #define TRANS_DONE (1u << 12)             /* SPI_TRANS_DONE_INT_{ENA,CLR,RAW,ST} */
+#define OUTFIFO_EMPTY (1u << 1)           /* SPI_DMA_OUTFIFO_EMPTY_ERR_INT_{CLR,RAW}: the GDMA
+                                           * gave less data than the SPI shifted out */
+#define REWRITES 3                        /* tries after an underflow before a frame fails */
 #define CLK_GATE_ON 0x7u                  /* CLK_EN, MST_CLK_ACTIVE, MST_CLK_SEL = PLL_F80M */
 #define SPI_SRC_HZ 80000000u              /* PLL_F80M_CLK (Register 30.14, p.1165) */
 
@@ -166,6 +170,7 @@ _Static_assert(SPI_CMD_REG(2) == G_CMD && SPI_ADDR_REG(2) == G_ADDR && SPI_CTRL_
                SPI_DIN_MODE_REG(2) == G_DIN_MODE && SPI_DIN_NUM_REG(2) == G_DIN_NUM &&
                SPI_DOUT_MODE_REG(2) == G_DOUT_MODE && SPI_DMA_CONF_REG(2) == G_DMA_CONF &&
                SPI_DMA_INT_ENA_REG(2) == G_INT_ENA && SPI_DMA_INT_CLR_REG(2) == G_INT_CLR &&
+               SPI_DMA_INT_RAW_REG(2) == G_INT_RAW &&
                SPI_DMA_INT_ST_REG(2) == G_INT_ST && SPI_W0_REG(2) == G_W0 &&
                SPI_SLAVE_REG(2) == G_SLAVE && SPI_CLK_GATE_REG(2) == G_CLK_GATE, "SPI2 registers");
 _Static_assert(SPI_USR == CMD_USR && SPI_UPDATE == CMD_UPDATE && SPI_USR_ADDR == USER_ADDR &&
@@ -174,6 +179,8 @@ _Static_assert(SPI_USR == CMD_USR && SPI_UPDATE == CMD_UPDATE && SPI_USR_ADDR ==
                SPI_BUF_AFIFO_RST == BUF_AFIFO_RST && SPI_RX_AFIFO_RST == RX_AFIFO_RST &&
                SPI_DMA_TX_ENA == DMA_TX_ENA && SPI_DMA_RX_ENA == DMA_RX_ENA &&
                SPI_TRANS_DONE_INT_ENA == TRANS_DONE &&
+               SPI_DMA_OUTFIFO_EMPTY_ERR_INT_RAW == OUTFIFO_EMPTY &&
+               SPI_DMA_OUTFIFO_EMPTY_ERR_INT_CLR == OUTFIFO_EMPTY &&
                (SPI_CLK_EN | SPI_MST_CLK_ACTIVE | SPI_MST_CLK_SEL) == CLK_GATE_ON, "SPI2 bits");
 _Static_assert(CTRL_MODES == (SPI_WR_BIT_ORDER << SPI_WR_BIT_ORDER_S | SPI_RD_BIT_ORDER <<
                SPI_RD_BIT_ORDER_S | SPI_FREAD_OCT | SPI_FREAD_QUAD | SPI_FREAD_DUAL | SPI_FCMD_OCT |
@@ -247,6 +254,8 @@ static struct {
     uint32_t clock;          /* SPI_CLOCK_REG */
     uint32_t end;            /* CPU cycle count at which the transfer in flight should end */
     uint32_t cycles_per_byte;
+    uint32_t len;            /* bytes of the DMA transfer in flight */
+    unsigned rewrites;       /* of the write in flight, after underflows */
     int8_t pins[4];          /* sclk, mosi, miso, cs */
     bool claimed;            /* GP-SPI2 is ours (spicommon_bus_alloc) */
     bool bus_clock_was_on;   /* SYSTEM_SPI2_CLK_EN before we started */
@@ -333,12 +342,36 @@ static int fail(esp_err_t err)
  * waits for GDMA_IN_SUC_EOF (its data is in memory, TRM Table 30.10-2 note 1). False if a
  * deadline passed or the GDMA reported a descriptor error; d.busy stays set until the caller
  * aborts, so nothing reuses the descriptor or the buffer meanwhile. */
+static bool start_transfer(void);
+
+/* The payload write in flight again, from the same descriptor to the same W5500 offset (SPI_ADDR
+ * and SPI_USER still hold its header and phases). */
+static bool rewrite(void)
+{
+    put(G_DMA_CONF, DMA_TX_ENA | FIFO_RST);
+    put(G_DMA_CONF, DMA_TX_ENA);
+    dma_reset(OUT_CONF0);
+    put(d.ch + OUT_LINK, ((uint32_t)&d.desc & LINK_ADDR) | OUTLINK_START);
+    if (!start_transfer()) return false;
+    d.end = esp_cpu_get_cycle_count() + (3u + d.len) * d.cycles_per_byte;
+    return true;
+}
+
 static bool finish(void)
 {
     if (!d.busy) return true;
     const int32_t left = (int32_t)(d.end - esp_cpu_get_cycle_count());
     if (left > (int32_t)(SLEEP_US * (uint32_t)CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ)) sleep_done();
     if (!cleared(G_CMD, CMD_USR, DMA_FRAME_US)) return false;
+    /* A write whose FIFO ran dry: the GDMA fell behind (internal RAM is busy while the receiver
+     * captures), and the SPI shifted out zeros and then a repeated byte. Nothing has used those
+     * bytes yet (a SEND comes only after this), so they are written again. */
+    if (!d.reading && (get(G_INT_RAW) & OUTFIFO_EMPTY)) {
+        w5500_port.underflows++;
+        if (++d.rewrites > REWRITES || !rewrite()) return false;
+        return finish();
+    }
+    d.rewrites = 0;
     if (d.reading) {
         const uint32_t t0 = esp_cpu_get_cycle_count();
         const uint32_t limit = DMA_FRAME_US * (uint32_t)CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
@@ -355,7 +388,7 @@ static bool finish(void)
 /* Clear SPI_TRANS_DONE_INT, SPI_UPDATE (APB to SPI clock domain, Register 30.1), then SPI_USR. */
 static bool start_transfer(void)
 {
-    put(G_INT_CLR, TRANS_DONE);
+    put(G_INT_CLR, TRANS_DONE | OUTFIFO_EMPTY);
     put(G_CMD, CMD_UPDATE);
     if (!cleared(G_CMD, CMD_UPDATE, UPDATE_US)) return false;
     put(G_CMD, CMD_USR);
@@ -405,7 +438,9 @@ static int frame(void *ctx, uint16_t offset, uint8_t control, const uint8_t *tx,
     }
     put(G_USER, user);
     if (!start_transfer()) return fail(ESP_ERR_TIMEOUT);
-    d.end = esp_cpu_get_cycle_count() + (3u + (uint32_t)n) * d.cycles_per_byte;
+    d.len = (uint32_t)n;
+    d.rewrites = 0;
+    d.end = esp_cpu_get_cycle_count() + (3u + d.len) * d.cycles_per_byte;
     w5500_port.queued++;
     if (post && tx) return 0;
     return finish() ? 0 : fail(ESP_ERR_TIMEOUT);
