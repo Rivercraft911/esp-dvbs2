@@ -50,13 +50,14 @@ static uint16_t get16(const uint8_t *p)
     return (uint16_t)(p[0] << 8 | p[1]);
 }
 
-static int frame(w5500 *w, unsigned bsb, uint16_t offset, const uint8_t *tx, uint8_t *rx, size_t n)
+static int frame(w5500 *w, unsigned bsb, uint16_t offset, const uint8_t *tx, uint8_t *rx, size_t n,
+                 bool post)
 {
     /* DS 2.2.2: BSB[4:0] in bits 7-3, RWB (1 = write) in bit 2, OM = 00. */
     const uint8_t control = (uint8_t)(bsb << 3 | (tx ? 4u : 0u));
     w->frames++;
     w->frame_bytes += (uint32_t)(3 + n);
-    if (w->bus.frame(w->bus.ctx, offset, control, tx, rx, n)) {
+    if (w->bus.frame(w->bus.ctx, offset, control, tx, rx, n, post)) {
         w->bus_errors++;
         return W5500_ERR_BUS;
     }
@@ -65,12 +66,12 @@ static int frame(w5500 *w, unsigned bsb, uint16_t offset, const uint8_t *tx, uin
 
 static int rd(w5500 *w, unsigned bsb, uint16_t offset, uint8_t *p, size_t n)
 {
-    return frame(w, bsb, offset, NULL, p, n);
+    return frame(w, bsb, offset, NULL, p, n, false);
 }
 
 static int wr(w5500 *w, unsigned bsb, uint16_t offset, const uint8_t *p, size_t n)
 {
-    return frame(w, bsb, offset, p, NULL, n);
+    return frame(w, bsb, offset, p, NULL, n, false);
 }
 
 static int wr16(w5500 *w, unsigned s, uint16_t offset, uint16_t v)
@@ -291,14 +292,24 @@ static int kick(w5500 *w, unsigned s)
     return W5500_OK;
 }
 
+bool w5500_busy(const w5500 *w)
+{
+    return w->bus.busy && w->bus.busy(w->bus.ctx);
+}
+
 int w5500_udp_send(w5500 *w, unsigned s, const uint8_t *data, size_t len)
 {
     if (s >= W5500_SOCKETS) return W5500_ERR_ARG;
     w5500_socket *k = &w->sock[s];
     if (!k->open || !len || len > W5500_UDP_MAX || len > k->tx_size) return W5500_ERR_ARG;
+    /* A posting backend leaves this payload clocking out when we return, so the SEND for it is
+     * started by the next call, here first; a blocking backend starts it right after the
+     * payload. Either way one SEND is on the wire while the next payload is written. */
+    const bool posting = w->bus.busy != NULL;
     int e;
+    if (posting && (e = kick(w, s))) return e;
     if (k->q_count == W5500_TXQ || tx_room(k) < len) {
-        if ((e = kick(w, s))) return e;   /* a finished SEND frees its bytes */
+        if (!posting && (e = kick(w, s))) return e;   /* a finished SEND frees its bytes */
         if (k->q_count == W5500_TXQ || tx_room(k) < len) {
             k->st.full++;
             return W5500_FULL;
@@ -306,11 +317,11 @@ int w5500_udp_send(w5500 *w, unsigned s, const uint8_t *data, size_t len)
     }
     /* Stage past the queued data while the chip may still be sending; one frame even across
      * the end of the buffer, since the chip maps the offset modulo the buffer size. */
-    if ((e = wr(w, BSB_TX(s), k->tx_end, data, len))) return e;
+    if ((e = frame(w, BSB_TX(s), k->tx_end, data, NULL, len, posting))) return e;
     k->queue[(k->q_head + k->q_count) % W5500_TXQ] = (uint16_t)len;
     k->q_count++;
     k->tx_end = (uint16_t)(k->tx_end + len);
-    return kick(w, s);
+    return posting ? W5500_OK : kick(w, s);
 }
 
 int w5500_udp_poll(w5500 *w, unsigned s)

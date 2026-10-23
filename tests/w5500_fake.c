@@ -7,14 +7,18 @@
  *   - UDP OPEN, CLOSE, SEND, RECV with free-running 16-bit pointers (DS pp.46-48, 53-56), the
  *     8-byte receive header (WIZnet "W5500 UDP Function" page), ARP for unicast SENDs with the
  *     RTR x (RCR + 1) timeout (DS p.38).
- * Time: every frame advances a clock by a model of the ESP backend's cost (a polled or an
- * interrupt transaction) and then byte by byte at f_SCK, so the chip can act between two bytes of
- * one frame. A SEND holds the wire for its Ethernet frame. Sn_CR clears cmd_us after a command
- * (acceptance, DS p.46) and Sn_SR changes state_us after OPEN or CLOSE (completion, DS pp.46-49),
- * independently. Datagrams can be published in two steps (Sn_RX_WR first covering part of one)
- * and Sn_RX_WR can change between the two bytes of a read. What the datasheet forbids, and what
- * the driver must never do, is counted as a violation with a reason. After a TIMEOUT the model
- * leaves Sn_TX_RD where it was (the datasheet does not say). */
+ * Time: every frame advances a clock by a model of the ESP backend's cost and then byte by byte at
+ * f_SCK, so the chip can act between two bytes of one frame. Two backends are modelled: the
+ * ESP-IDF one (polled frames up to small_max bytes, interrupt DMA transactions above) and the
+ * direct GP-SPI2 one (posting = 1: payload writes are posted and land in the chip when their bits
+ * have clocked out; the next frame waits for them, sleeping on an interrupt when the wait is
+ * longer than sleep_min_us; payload reads sleep the same way). A SEND holds the wire for its
+ * Ethernet frame. Sn_CR clears cmd_us after a command (acceptance, DS p.46) and Sn_SR changes
+ * state_us after OPEN or CLOSE (completion, DS pp.46-49), independently. Datagrams can be
+ * published in two steps (Sn_RX_WR first covering part of one) and Sn_RX_WR can change between the
+ * two bytes of a read. What the datasheet forbids, and what the driver must never do, is counted
+ * as a violation with a reason. After a TIMEOUT the model leaves Sn_TX_RD where it was (the
+ * datasheet does not say). */
 #include "w5500.h"
 
 #include <stdarg.h>
@@ -34,8 +38,17 @@ typedef struct {
 
 typedef struct {
     uint32_t frames, polled, queued, bytes, violations, rx_dropped, arp_requests, resets, logged;
+    uint32_t waits;             /* frames that waited for a posted write to finish */
     double now_us, cpu_us;
 } fake_stats;
+
+typedef struct {                /* a posted payload write still clocking out */
+    const uint8_t *tx;
+    double done;
+    uint16_t offset, n;
+    uint8_t control;
+    bool on;
+} posted_write;
 
 typedef struct {
     uint16_t offset, n;
@@ -59,6 +72,10 @@ typedef struct {
     bool arp_valid[8];
     uint8_t tx[MEM], rx[MEM];
     double sck_hz, poll_us, queue_us, wire_bps, cmd_us, state_us, arp_us, reset_us, reset_until;
+    double wake_us, wake_lat_us, sleep_min_us;
+    unsigned small_max;
+    bool posting;
+    posted_write posted;
     bool arp_reply;
     uint8_t version, phy, mosi_and;
     uint16_t open_ptr;
@@ -150,6 +167,10 @@ fake *fake_new(void)
     f->phy = W5500_PHY_LINK | W5500_PHY_100M | W5500_PHY_FULL;
     f->mosi_and = 0xFF;
     f->fail_in = -1;
+    f->small_max = W5500_SMALL_MAX;
+    f->wake_us = 6;
+    f->wake_lat_us = 2;
+    f->sleep_min_us = 40;
     reset(f);
     return f;
 }
@@ -169,6 +190,11 @@ int fake_set(fake *f, const char *key, double v)
     else if (!strcmp(key, "cmd_us")) f->cmd_us = v;
     else if (!strcmp(key, "state_us")) f->state_us = v;
     else if (!strcmp(key, "churn")) f->churn = (unsigned)v;
+    else if (!strcmp(key, "posting")) f->posting = v != 0;
+    else if (!strcmp(key, "small_max")) f->small_max = (unsigned)v;
+    else if (!strcmp(key, "wake_us")) f->wake_us = v;
+    else if (!strcmp(key, "wake_lat_us")) f->wake_lat_us = v;
+    else if (!strcmp(key, "sleep_min_us")) f->sleep_min_us = v;
     else if (!strcmp(key, "arp_us")) f->arp_us = v;
     else if (!strcmp(key, "arp_reply")) f->arp_reply = v != 0;
     else if (!strcmp(key, "reset_us")) f->reset_us = v;
@@ -228,8 +254,21 @@ static void settle_state(fake *f, unsigned s)
     f->state_to[s] = -1;
 }
 
+static void put(fake *f, unsigned bsb, uint16_t a, uint8_t v);
+
+/* A posted write reaches the chip when its last bit has clocked out; it is read from the
+ * caller's buffer only then, as a DMA would, so a buffer changed too early shows up. */
+static void land(fake *f)
+{
+    posted_write *p = &f->posted;
+    p->on = false;
+    for (unsigned i = 0; i < p->n; ++i)
+        put(f, p->control >> 3, (uint16_t)(p->offset + i), p->tx[i] & f->mosi_and);
+}
+
 static void update(fake *f)
 {
+    if (f->posted.on && f->st.now_us >= f->posted.done) land(f);
     for (unsigned s = 0; s < 8; ++s) {
         if (f->sending[s] && f->st.now_us >= f->send_done[s]) complete(f, s);
         if (f->state_to[s] >= 0 && f->st.now_us >= f->state_at[s]) settle_state(f, s);
@@ -506,8 +545,28 @@ static void put(fake *f, unsigned bsb, uint16_t a, uint8_t v)
     f->tx[base(f, s, true) + (a & (size - 1))] = v;
 }
 
+/* The backend's wait for a posted write: spin for a short remainder, else sleep on an interrupt. */
+static void wait_posted(fake *f)
+{
+    if (!f->posted.on) return;
+    const double left = f->posted.done - f->st.now_us;
+    if (left > 0) {
+        f->st.waits++;
+        f->st.cpu_us += left > f->sleep_min_us ? f->wake_us : left;
+        f->st.now_us = f->posted.done + (left > f->sleep_min_us ? f->wake_lat_us : 0);
+    }
+    update(f);
+}
+
+static bool busy(void *ctx)
+{
+    fake *f = ctx;
+    update(f);
+    return f->posted.on;
+}
+
 static int frame(void *ctx, uint16_t offset, uint8_t control, const uint8_t *tx, uint8_t *rx,
-                 size_t n)
+                 size_t n, bool post)
 {
     fake *f = ctx;
     if (f->fail_in == 0) {
@@ -515,16 +574,14 @@ static int frame(void *ctx, uint16_t offset, uint8_t control, const uint8_t *tx,
         return -1;
     }
     if (f->fail_in > 0) f->fail_in--;
-    const bool polled = n <= W5500_SMALL_MAX;
-    const double byte_us = 8.0 / f->sck_hz * 1e6;
-    f->st.now_us += (polled ? f->poll_us : f->queue_us) + 3 * byte_us;   /* to the data phase */
-    f->st.cpu_us += polled ? f->poll_us + (3 + n) * byte_us : f->queue_us;
+    wait_posted(f);
+    const bool polled = n <= f->small_max;
+    const double byte_us = 8.0 / f->sck_hz * 1e6, bits_us = (3 + n) * byte_us;
     f->st.frames++;
     f->st.polled += polled;
     f->st.queued += !polled;
     f->st.bytes += (uint32_t)(3 + n);
     f->trace[f->trace_count++ % TRACE] = (trace_entry){offset, (uint16_t)n, control};
-    update(f);
 
     const unsigned bsb = control >> 3, write = control >> 2 & 1, om = control & 3;
     if (om) violate(f, "OM %u: only variable length data mode is used", om);
@@ -537,6 +594,27 @@ static int frame(void *ctx, uint16_t offset, uint8_t control, const uint8_t *tx,
         violate(f, "reserved block select %u", bsb);
         return 0;
     }
+    if (post && !write) violate(f, "posted read");
+    if (!polled && post && f->posting) {
+        f->st.now_us += f->queue_us;
+        f->st.cpu_us += f->queue_us;
+        f->posted = (posted_write){tx, f->st.now_us + bits_us, offset, (uint16_t)n, control, true};
+        return 0;
+    }
+    bool sleep = false;
+    if (polled) {
+        f->st.cpu_us += f->poll_us + bits_us;
+        f->st.now_us += f->poll_us;
+    } else if (f->posting) {    /* direct backend: a payload read sleeps until it is done */
+        sleep = bits_us > f->sleep_min_us;
+        f->st.cpu_us += f->queue_us + (sleep ? f->wake_us : bits_us);
+        f->st.now_us += f->queue_us;
+    } else {                    /* ESP-IDF interrupt transaction */
+        f->st.cpu_us += f->queue_us;
+        f->st.now_us += f->queue_us;
+    }
+    f->st.now_us += 3 * byte_us;   /* to the data phase */
+    update(f);
     for (size_t i = 0; i < n; ++i) {
         const uint16_t a = (uint16_t)(offset + i);
         f->st.now_us += byte_us;
@@ -558,6 +636,7 @@ static int frame(void *ctx, uint16_t offset, uint8_t control, const uint8_t *tx,
             inject(f, from, 7777, r16(f->reg[bsb / 4] + 0x04), (const uint8_t *)"tiny", 4);
         }
     }
+    if (sleep) f->st.now_us += f->wake_lat_us;
     return 0;
 }
 
@@ -565,7 +644,7 @@ static int frame(void *ctx, uint16_t offset, uint8_t control, const uint8_t *tx,
 int fake_frame_raw(fake *f, uint16_t offset, uint8_t control, const uint8_t *tx, uint8_t *rx,
                    size_t n)
 {
-    return frame(f, offset, control, tx, rx, n);
+    return frame(f, offset, control, tx, rx, n, false);
 }
 
 /* Raw register and memory access for the test, without side effects or checks. */
@@ -612,7 +691,8 @@ unsigned fake_trace_count(fake *f) { return f->trace_count; }
 /* The driver under test, wired to this fake. */
 int fake_driver_init(fake *f, const uint8_t net[18], const uint8_t kb[4])
 {
-    const w5500_bus bus = {.frame = frame, .delay_us = delay, .ctx = f};
+    const w5500_bus bus = {.frame = frame, .delay_us = delay, .busy = f->posting ? busy : NULL,
+                           .ctx = f};
     w5500_config c;
     memcpy(c.gateway, net, 4);
     memcpy(c.mask, net + 4, 4);

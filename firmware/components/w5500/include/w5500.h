@@ -96,7 +96,7 @@
  *   26 = 75.7 us per datagram; receive: 5 x 11 + 29 x 8 / 26.67 + 26 = 89.7 us. At the 12.64 Mb/s
  *   receiver mode (1,200.6 datagrams/s) that is 9.1% (send) and 10.8% (receive) of one 240 MHz
  *   core, plus 12.5 us for each empty receive poll. Most of it is ESP-IDF's fixed cost per
- *   transaction, so a faster clock barely helps; driving GP-SPI2's registers directly would.
+ *   transaction, so a faster clock barely helps.
  *   tests/test_w5500.py replays these frame sequences through the fake and checks the frame
  *   counts, bytes and times above. */
 
@@ -129,10 +129,14 @@ enum {
 typedef struct {
     /* One SPI frame: the 3-byte header, then n >= 1 data bytes written from tx or read into rx
      * (exactly one is non-NULL). Frames longer than W5500_SMALL_MAX carry a datagram payload and
-     * point straight into the caller's buffer. Return 0 on success. */
+     * point straight into the caller's buffer. With post (only for a payload write) the backend
+     * may return while the bytes are still being read from tx; it finishes them before it starts
+     * any other frame. Return 0 on success. */
     int (*frame)(void *ctx, uint16_t offset, uint8_t control, const uint8_t *tx, uint8_t *rx,
-                 size_t n);
+                 size_t n, bool post);
     void (*delay_us)(void *ctx, uint32_t us);
+    /* Optional: true while a posted write is still running. Backends without it never post. */
+    bool (*busy)(void *ctx);
     void *ctx;
 } w5500_bus;
 
@@ -200,8 +204,14 @@ int w5500_udp_close(w5500 *w, unsigned s);
 void w5500_udp_dest(w5500 *w, unsigned s, const uint8_t ip[4], uint16_t port);
 /* Stage one datagram (1..W5500_UDP_MAX bytes, at most the TX buffer) and start it if the chip
  * is idle. W5500_OK, W5500_FULL (nothing written; retry later) or an error. Payload buffers
- * longer than W5500_SMALL_MAX bytes must be DMA capable, 4-byte aligned internal RAM. */
+ * longer than W5500_SMALL_MAX bytes must be DMA capable, 4-byte aligned internal RAM.
+ * With a backend that posts (bus.busy set), udp_send returns while the
+ * payload is still clocking out of data, so keep data unchanged until the next w5500 call on
+ * this chip returns or w5500_busy() is false; that next call (udp_send or udp_poll) also starts
+ * this datagram's SEND. */
 int w5500_udp_send(w5500 *w, unsigned s, const uint8_t *data, size_t len);
+/* A posted payload write is still running. */
+bool w5500_busy(const w5500 *w);
 /* Finish a completed SEND and start the next staged datagram. Returns the datagrams still
  * staged or on the wire (0 when all are out), or an error. Call it when idle. */
 int w5500_udp_poll(w5500 *w, unsigned s);

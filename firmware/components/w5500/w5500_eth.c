@@ -1,14 +1,14 @@
-/* ESP-IDF backend for the W5500 driver: SPI frames, MAC, NVS settings, `eth` (w5500_eth.h). */
+/* ESP-IDF side of the W5500 driver: ownership, MAC, NVS settings, `eth` (w5500_eth.h). The SPI
+ * is in w5500_spi_idf.c or w5500_spi_direct.c (w5500_port.h). */
 #include "w5500_eth.h"
+#include "w5500_port.h"
 
 #include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
 
-#include "driver/spi_master.h"
 #include "esp_heap_caps.h"
 #include "esp_mac.h"
-#include "esp_rom_sys.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -16,23 +16,12 @@
 #include "nvs.h"
 #include "nvs_flash.h"
 
-#define HOST SPI2_HOST
 #define TS_PACKET 188
 #define DATAGRAM (7 * TS_PACKET)
 #define STORE_VERSION 1
 
-static struct {
-    spi_device_handle_t dev;
-    bool bus, acquired;
-    esp_err_t err;
-    uint32_t polled, queued;
-    int khz;
-    size_t heap_bytes;                  /* internal RAM the SPI driver took at start */
-    spi_transaction_t t;
-    uint8_t small[W5500_SMALL_MAX] __attribute__((aligned(4)));
-} eth;
-
 static w5500 chip;
+static bool running;
 
 /* One task owns the chip from w5500_eth_start to w5500_eth_stop; the driver and the shared
  * transaction above are not reentrant. Others, such as the console, get W5500_ERR_BUSY. */
@@ -52,47 +41,6 @@ static bool own(void)
     return true;
 }
 
-/* One W5500 frame (DS 2.2) as one ESP-IDF half-duplex transaction: the 16-bit offset is the
- * command phase, the control byte the address phase, then the data phase. Short frames are polled
- * through an internal buffer, so callers' stacks may sit in any memory; payload bursts run as
- * interrupt DMA transactions on the caller's buffer, never reallocated (ALIGN_MANUAL). */
-static int frame(void *ctx, uint16_t offset, uint8_t control, const uint8_t *tx, uint8_t *rx,
-                 size_t n)
-{
-    (void)ctx;
-    spi_transaction_t *t = &eth.t;
-    const bool small = n <= W5500_SMALL_MAX;
-    *t = (spi_transaction_t){
-        .flags = SPI_TRANS_DMA_BUFFER_ALIGN_MANUAL, .cmd = offset, .addr = control};
-    if (tx) {
-        t->length = 8 * n;
-        t->tx_buffer = small ? memcpy(eth.small, tx, n) : tx;
-    } else {
-        t->rxlength = 8 * n;
-        t->rx_buffer = small ? eth.small : rx;
-    }
-    esp_err_t err;
-    if (small) {
-        err = spi_device_polling_transmit(eth.dev, t);
-        eth.polled++;
-    } else {
-        err = spi_device_transmit(eth.dev, t);   /* the task sleeps while DMA moves the payload */
-        eth.queued++;
-    }
-    if (err != ESP_OK) {
-        eth.err = err;
-        return 1;
-    }
-    if (small && rx) memcpy(rx, eth.small, n);
-    return 0;
-}
-
-static void delay(void *ctx, uint32_t us)
-{
-    (void)ctx;
-    esp_rom_delay_us(us);   /* reset and command waits only */
-}
-
 w5500 *w5500_eth(void)
 {
     return &chip;
@@ -100,7 +48,7 @@ w5500 *w5500_eth(void)
 
 esp_err_t w5500_eth_error(void)
 {
-    return eth.err;
+    return w5500_port.err;
 }
 
 typedef struct {
@@ -158,12 +106,10 @@ static esp_err_t save(const w5500_settings *s)
 
 static void release(void)
 {
-    if (eth.acquired && chip.sock[0].open) w5500_udp_close(&chip, 0);
-    if (eth.acquired) spi_device_release_bus(eth.dev);
-    if (eth.dev) spi_bus_remove_device(eth.dev);
-    if (eth.bus) spi_bus_free(HOST);
-    eth.dev = NULL;
-    eth.bus = eth.acquired = false;
+    if (!running) return;
+    if (chip.sock[0].open) w5500_udp_close(&chip, 0);
+    w5500_port_stop();
+    running = false;
 }
 
 void w5500_eth_stop(void)
@@ -182,45 +128,12 @@ int w5500_eth_start(w5500_eth_role role)
     release();
     w5500_eth_settings(&s);
     memset(w, 0, sizeof *w);
-    const size_t free_before = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-    eth.err = ESP_OK;
-    eth.polled = eth.queued = 0;
-    eth.khz = 0;
-    eth.heap_bytes = 0;
-    const spi_bus_config_t bus = {
-        .mosi_io_num = s.mosi, .miso_io_num = s.miso, .sclk_io_num = s.sclk,
-        .quadwp_io_num = -1, .quadhd_io_num = -1,
-        .data4_io_num = -1, .data5_io_num = -1, .data6_io_num = -1, .data7_io_num = -1,
-        .max_transfer_sz = W5500_UDP_MAX,
-        .flags = SPICOMMON_BUSFLAG_MASTER | SPICOMMON_BUSFLAG_GPIO_PINS,
-        .isr_cpu_id = ESP_INTR_CPU_AFFINITY_AUTO,   /* the calling core */
-    };
-    const spi_device_interface_config_t dev = {
-        .command_bits = 16, .address_bits = 8,      /* offset and control byte (DS 2.2) */
-        .mode = 0,                                  /* DS p.12 */
-        .clock_speed_hz = s.sck_khz * 1000,
-        .input_delay_ns = 5,                        /* MISO valid 5 ns after SCLK falls (DS p.61) */
-        .spics_io_num = s.cs,
-        .cs_ena_pretrans = 1, .cs_ena_posttrans = 1,
-        .flags = SPI_DEVICE_HALFDUPLEX,
-        .queue_size = 1,
-    };
-    esp_err_t err = spi_bus_initialize(HOST, &bus, SPI_DMA_CH_AUTO);
-    if (err == ESP_OK) {
-        eth.bus = true;
-        err = spi_bus_add_device(HOST, &dev, &eth.dev);
-    }
-    if (err == ESP_OK) err = spi_device_acquire_bus(eth.dev, portMAX_DELAY);
-    if (err == ESP_OK) {
-        eth.acquired = true;
-        spi_device_get_actual_freq(eth.dev, &eth.khz);
-        eth.heap_bytes = free_before - heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-    }
-    if (err != ESP_OK) {
-        eth.err = err;
+    w5500_bus b;
+    if (w5500_port_start(&s, &b) != ESP_OK) {
         w5500_eth_stop();
         return W5500_ERR_BUS;
     }
+    running = true;
     w5500_config c = {0};
     esp_read_mac(c.mac, ESP_MAC_ETH);
     memcpy(c.ip, s.ip, 4);
@@ -228,7 +141,6 @@ int w5500_eth_start(w5500_eth_role role)
     memcpy(c.gateway, s.gateway, 4);
     if (role == W5500_ETH_SEND) c.tx_kb[0] = 16;
     else c.rx_kb[0] = 16;
-    const w5500_bus b = {.frame = frame, .delay_us = delay};
     int e = w5500_init(w, &b, &c);
     if (!e) e = w5500_udp_open(w, 0, s.port);
     if (!e && role == W5500_ETH_SEND) w5500_udp_dest(w, 0, s.dest, s.dest_port);
@@ -268,12 +180,13 @@ static uint64_t idle_us(void)
 
 static void print_run(int e, int64_t us, uint64_t idle, int64_t driver_us, uint32_t calls)
 {
-    printf(",\"status\":\"%s\",\"us\":%lld,\"driver_us_per_call\":%.1f,\"polled\":%" PRIu32
-           ",\"queued\":%" PRIu32 ",\"sck_khz\":%d,\"heap_bytes\":%u", name(e), (long long)us,
-           calls ? (double)driver_us / calls : 0.0, eth.polled, eth.queued, eth.khz,
-           (unsigned)eth.heap_bytes);
+    printf(",\"status\":\"%s\",\"spi\":\"%s\",\"us\":%lld,\"driver_us_per_call\":%.1f,"
+           "\"polled\":%" PRIu32 ",\"queued\":%" PRIu32 ",\"sleeps\":%" PRIu32 ",\"sck_khz\":%d,"
+           "\"heap_bytes\":%u", name(e), w5500_port.name, (long long)us,
+           calls ? (double)driver_us / calls : 0.0, w5500_port.polled, w5500_port.queued,
+           w5500_port.sleeps, w5500_port.khz, (unsigned)w5500_port.heap_bytes);
     if (LOAD && us) printf(",\"core_load\":%.3f", 1.0 - (double)idle / (double)us);
-    if (e == W5500_ERR_BUS) printf(",\"esp_err\":\"%s\"", esp_err_to_name(eth.err));
+    if (e == W5500_ERR_BUS) printf(",\"esp_err\":\"%s\"", esp_err_to_name(w5500_port.err));
 }
 
 /* Seven TS packets on PID 0x100 with running continuity counters; each payload starts with the
@@ -295,7 +208,7 @@ static bool started(int e, uint8_t *buf, const char *what)
 {
     if (e == W5500_OK) return true;
     printf("@{\"cmd\":\"eth\",\"%s\":true,\"status\":\"%s\"", what, name(e));
-    if (e == W5500_ERR_BUS) printf(",\"esp_err\":\"%s\"", esp_err_to_name(eth.err));
+    if (e == W5500_ERR_BUS) printf(",\"esp_err\":\"%s\"", esp_err_to_name(w5500_port.err));
     printf("}\n");
     heap_caps_free(buf);
     return false;
@@ -388,14 +301,14 @@ static void status(void)
     const int phy = e ? e : w5500_phy(&chip);
     const unsigned version = e == W5500_ERR_BUSY ? 0 : chip.version;
     printf("@{\"cmd\":\"eth\",%s,\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\",\"status\":\"%s\","
-           "\"version\":%u,\"sck_khz_actual\":%d,\"heap_bytes\":%u", json, mac[0], mac[1], mac[2],
-           mac[3], mac[4], mac[5], name(phy < 0 ? phy : W5500_OK), version, eth.khz,
-           (unsigned)eth.heap_bytes);
+           "\"version\":%u,\"spi\":\"%s\",\"sck_khz_actual\":%d,\"heap_bytes\":%u", json, mac[0],
+           mac[1], mac[2], mac[3], mac[4], mac[5], name(phy < 0 ? phy : W5500_OK), version,
+           w5500_port.name, w5500_port.khz, (unsigned)w5500_port.heap_bytes);
     if (phy >= 0)
         printf(",\"link\":%s,\"link_mbps\":%d,\"duplex\":\"%s\"",
                phy & W5500_PHY_LINK ? "true" : "false", phy & W5500_PHY_100M ? 100 : 10,
                phy & W5500_PHY_FULL ? "full" : "half");
-    if (e == W5500_ERR_BUS) printf(",\"esp_err\":\"%s\"", esp_err_to_name(eth.err));
+    if (e == W5500_ERR_BUS) printf(",\"esp_err\":\"%s\"", esp_err_to_name(w5500_port.err));
     printf("}\n");
     w5500_eth_stop();
 }

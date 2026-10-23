@@ -23,6 +23,11 @@ OK, FULL, ERR_ARG, ERR_BUS, ERR_CHIP, ERR_SOCKET = 0, 1, -1, -2, -3, -4
 UDP_MAX, TXQ, SMALL_MAX = 1472, 16, 32
 TS_DATAGRAM = 1316
 T_POLL, T_QUEUE = 11.0, 26.0          # us per polled / interrupt transaction (w5500.h)
+# A posting backend (the direct GP-SPI2 one to come), estimated: register setup per polled
+# frame, DMA setup per payload, CPU to sleep on and wake from the SPI interrupt, wake latency.
+D_POLL, D_POST, D_WAKE, D_LAT = 1.0, 1.5, 6.0, 2.0
+DIRECT = dict(posting=1, small_max=64, poll_us=D_POLL, queue_us=D_POST, wake_us=D_WAKE,
+              wake_lat_us=D_LAT, sleep_min_us=40)
 NET = dict(gateway=[192, 168, 77, 1], mask=[255, 255, 255, 0],
            mac=[0x02, 0x00, 0x00, 0x00, 0x55, 0x00], ip=[192, 168, 77, 2])
 LAPTOP = bytes([192, 168, 77, 1])
@@ -32,7 +37,7 @@ SN_MR, SN_SR, SN_PORT, SN_RX_WR = 0x00, 0x03, 0x04, 0x2A
 STATS = ("sent", "sent_bytes", "full", "dropped", "received", "received_bytes", "overruns",
          "discarded", "malformed", "deferred")
 FAKE = ("frames", "polled", "queued", "bytes", "violations", "rx_dropped", "arp_requests",
-        "resets", "logged")
+        "resets", "logged", "waits")
 
 
 class Stats(ct.Structure):
@@ -109,6 +114,7 @@ class Native:
             "w5500_udp_poll": (ct.c_int, [p, ct.c_uint]),
             "w5500_udp_recv": (ct.c_int, [p, ct.c_uint, p, ct.c_size_t, ct.POINTER(Peer)]),
             "w5500_udp_stats": (ct.POINTER(Stats), [p, ct.c_uint]),
+            "w5500_busy": (ct.c_bool, [p]),
             "w5500_settings_default": (None, [ct.POINTER(Settings)]),
             "w5500_settings_parse": (ct.c_int, [ct.POINTER(Settings), b]),
             "w5500_settings_json": (ct.c_int, [ct.POINTER(Settings), b, ct.c_size_t]),
@@ -167,6 +173,7 @@ class Chip:
         self.lib.w5500_udp_dest(self.w, s, bytes(ip), port)
 
     def send(self, s, data):
+        self.keep = [data] + getattr(self, "keep", [])[:40]   # a posted write reads it later
         return self.lib.w5500_udp_send(self.w, s, data, len(data))
 
     def poll(self, s):
@@ -708,6 +715,104 @@ def test_publication(native):
     chip.close()
 
 
+def test_direct(native):
+    """The direct backend posts payload writes: udp_send returns while the payload clocks out,
+    and the next call starts that datagram's SEND."""
+    rng = random.Random(8)
+    for wire in (100e6, 1e11):
+        chip = sender(native, open_ptr=0xFF00, wire_bps=wire, **DIRECT)
+        sizes = [TS_DATAGRAM] * 30 + [rng.randint(65, UDP_MAX) for _ in range(60)] + [UDP_MAX]
+        data = [payload(rng, n) for n in sizes]
+        for d in data:
+            check(chip.send(0, d) == OK, "posted send")
+        check(chip.lib.w5500_udp_poll(chip.w, 0) > 0, "the last datagram waits for a poll")
+        check([d[3] for d in chip.drain(0)] == data, f"posted payloads intact ({wire:g} b/s)")
+        check(chip.fake()["waits"] >= len(data) - 2, "back to back, each call waits for the last")
+        chip.close()
+    # The payload is read after udp_send returns: changing it before the next call changes
+    # what goes out (the documented contract), changing it after does not.
+    chip = sender(native, **DIRECT)
+    buf = ct.create_string_buffer(b"a" * TS_DATAGRAM, TS_DATAGRAM)
+    check(chip.lib.w5500_udp_send(chip.w, 0, buf, TS_DATAGRAM) == OK, "send")
+    check(chip.lib.w5500_busy(chip.w), "still clocking out")
+    ct.memset(buf, ord("b"), TS_DATAGRAM)
+    chip.lib.fake_advance(chip.f, 1000.0)
+    check(not chip.lib.w5500_busy(chip.w), "done")
+    ct.memset(buf, ord("c"), TS_DATAGRAM)
+    check([d[3] for d in chip.drain(0)] == [b"b" * TS_DATAGRAM], "read late, then never again")
+    chip.close()
+    # Receive, command handshake and a full buffer work the same with posting.
+    chip = receiver(native, open_ptr=0xFFF0, cmd_us=200, **DIRECT)
+    sent = [payload(rng, rng.randint(1, UDP_MAX)) for _ in range(120)]
+    got = []
+    for d in sent:
+        check(chip.inject(d) == 1, "inject")
+        got.append(chip.recv(0)[1])
+    check(got == sent, "receive with the direct backend")
+    chip.close()
+    chip = sender(native, cmd_us=200, state_us=300, **DIRECT)
+    check(chip.send(0, b"x" * 200) == OK, "send")
+    check(chip.lib.w5500_udp_close(chip.w, 0) == OK, "close after a posted send")
+    chip.close()
+    chip = sender(native, arp_us=50000, **DIRECT)
+    chip.dest(0, LAPTOP, 5006)
+    data = []
+    while True:
+        d = payload(rng, TS_DATAGRAM)
+        r = chip.send(0, d)
+        if r == FULL:
+            break
+        data.append(d)
+    check(len(data) == 12 and [d[3] for d in chip.drain(0)] == data, "ARP stall fills 16 KB")
+    chip.close()
+
+
+def test_direct_model(native):
+    """Per-datagram frames, bus time and CPU of the direct backend under the w5500.h estimates."""
+    table = {}
+    for mhz in (40.0, 80 / 3):
+        byte = 8 / mhz
+        chip = sender(native, sck_hz=mhz * 1e6, **DIRECT)
+        data = ts_datagram(1)
+        for _ in range(5):
+            chip.send(0, data)
+            chip.lib.fake_advance(chip.f, 833.0)
+        def paced(k):
+            check(chip.send(0, data) == OK, "send")
+            chip.lib.fake_advance(chip.f, 833.0)
+        s = steady_state(chip, paced, 50)
+        check(s["polled"] == 4 and s["queued"] == 1 and s["bytes"] == 1338, f"direct send {s}")
+        cpu_send = 4 * D_POLL + 19 * byte + D_POST
+        check(abs(s["cpu_us"] - cpu_send) < 0.01, f"direct send CPU {s['cpu_us']} vs {cpu_send}")
+        for _ in range(3):
+            chip.send(0, data)
+        b2b = steady_state(chip, lambda k: check(chip.send(0, data) == OK, "send"), 50)
+        t_send = D_POST + 1319 * byte + D_LAT + 4 * D_POLL + 19 * byte
+        check(abs(b2b["now_us"] - t_send) < 0.01, f"direct send period {b2b['now_us']} vs {t_send}")
+        chip.drain(0)
+        chip.close()
+        chip = receiver(native, sck_hz=mhz * 1e6, **DIRECT)
+        buf = ct.create_string_buffer(UDP_MAX)
+
+        def one(k):
+            check(chip.inject(data) == 1, "inject")
+            check(chip.lib.w5500_udp_recv(chip.w, 0, buf, UDP_MAX, None) == TS_DATAGRAM, "recv")
+        r = steady_state(chip, one, 50)
+        cpu_recv = 5 * D_POLL + 29 * byte + D_POST + D_WAKE
+        t_recv = 5 * D_POLL + 29 * byte + D_POST + 1319 * byte + D_LAT
+        check(r["polled"] == 5 and abs(r["cpu_us"] - cpu_recv) < 0.01 and
+              abs(r["now_us"] - t_recv) < 0.01, f"direct receive {r}")
+        chip.close()
+        table[mhz] = (t_send, 8 * TS_DATAGRAM / t_send, cpu_send, t_recv,
+                      8 * TS_DATAGRAM / t_recv, cpu_recv)
+    per_second = 12.64e6 / (8 * TS_DATAGRAM)
+    row = table[80 / 3]
+    check(round(row[1], 1) == 25.7 and round(row[4], 1) == 25.5, "direct rates at 26.67 MHz")
+    check(round(100 * per_second * row[2] / 1e6, 1) == 1.3 and
+          round(100 * per_second * row[5] / 1e6, 1) == 2.5, "direct CPU shares at 12.64 Mb/s")
+    return table
+
+
 def test_settings(native):
     lib = native.lib
     s = Settings()
@@ -748,7 +853,8 @@ def test_settings(native):
                 "defaults now", "speed 10"):
         check(parse(bad) == -1 and bytes(s) == before, f"rejects {bad!r}")
     check(parse("defaults") == 1 and s.port == 5004 and s.sck_khz == 26667, "defaults")
-    lib.w5500_settings_valid.restype, lib.w5500_settings_valid.argtypes = ct.c_bool, [ct.POINTER(Settings)]
+    lib.w5500_settings_valid.restype = ct.c_bool
+    lib.w5500_settings_valid.argtypes = [ct.POINTER(Settings)]
     check(lib.w5500_settings_valid(ct.byref(s)), "defaults are valid")
     s.miso = 25
     check(not lib.w5500_settings_valid(ct.byref(s)), "stored settings are checked too")
@@ -770,12 +876,20 @@ def main():
         test_malformed(native)
         test_handshake(native)
         test_publication(native)
+        test_direct(native)
+        direct = test_direct_model(native)
         test_settings(native)
     print("w5500: fake checks, frames, init, open, send, full, ARP timeout, receive, malformed, "
-          f"command handshake, partial publication, settings: ok (driver state {size} bytes)")
+          f"command handshake, partial publication, posted writes, settings: ok "
+          f"(driver state {size} bytes)")
     for mhz, row in table.items():
-        print(f"  {mhz:5.2f} MHz: send {row[0]:6.1f} us {row[1]:4.1f} Mb/s {row[4]:4.1f} us CPU, "
-              f"receive {row[2]:6.1f} us {row[3]:4.1f} Mb/s {row[5]:4.1f} us CPU")
+        print(f"  ESP-IDF {mhz:5.2f} MHz: send {row[0]:6.1f} us {row[1]:4.1f} Mb/s "
+              f"{row[4]:4.1f} us CPU, receive {row[2]:6.1f} us {row[3]:4.1f} Mb/s "
+              f"{row[5]:4.1f} us CPU")
+    for mhz, row in direct.items():
+        print(f"  direct  {mhz:5.2f} MHz: send {row[0]:6.1f} us {row[1]:4.1f} Mb/s "
+              f"{row[2]:4.1f} us CPU, receive {row[3]:6.1f} us {row[4]:4.1f} Mb/s "
+              f"{row[5]:4.1f} us CPU")
 
 
 if __name__ == "__main__":
