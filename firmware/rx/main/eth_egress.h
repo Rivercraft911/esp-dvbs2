@@ -10,9 +10,10 @@
  * The checker task copies each packet into a queue of 256 in PSRAM and never waits: a packet
  * that finds it full is dropped and counted. A sender task on core 0 drains it, priority 10:
  * below the checker (11), above the decoder (5), whose repairs of failed frames take
- * milliseconds. It wakes after each frame (ts_egress_t.flush), sends every full datagram, and
- * sends what is left as a shorter datagram once it has waited 10 ms, or at the end. Everything
- * is static or made at boot: no heap after boot. */
+ * milliseconds. It wakes after each frame (ts_egress_t.flush), and when the datagram on the wire
+ * should be out (an esp_timer: the chip starts its next SEND only when called), sends every full
+ * datagram, and sends what is left as a shorter datagram once it has waited 10 ms, or at the
+ * end. Everything is static or made at boot: no heap after boot. */
 
 typedef struct {
     int status;                     /* w5500.h result of the start, or the error that stopped it */

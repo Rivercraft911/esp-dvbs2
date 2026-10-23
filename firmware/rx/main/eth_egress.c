@@ -6,6 +6,7 @@
 
 #include "esp_attr.h"
 #include "esp_cpu.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -35,6 +36,8 @@ static struct {
     SemaphoreHandle_t done;
     volatile bool running;      /* the sender has the chip (cleared by the sender) */
     volatile bool ending;       /* the run is over: send the rest and stop */
+    esp_timer_handle_t kick;    /* wakes the sender when the datagram on the wire should be out */
+    unsigned link_mbps;
     bool active;                /* begun and not yet ended (the console task's view) */
     eth_egress_stats_t *stats;
 } e;
@@ -58,6 +61,30 @@ static void flush(void *ctx)
 
 static const ts_egress_t egress = {packet, flush, NULL};
 
+static void kick(void *arg)
+{
+    (void)arg;
+    xTaskNotifyGive(e.task);
+}
+
+/* The chip sends one datagram at a time and starts the next only when the driver is called
+ * (w5500.h). At 10 Mb/s a 1,316-byte datagram is 1.106 ms on the wire, longer than a tick, so
+ * the sender is woken when it should be done: its bytes plus 66 of UDP, IP, Ethernet, preamble
+ * and gap, at the link rate, from when its SEND was given. */
+static void wake_after_send(const w5500_socket *so, uint16_t *last_wr, int64_t *started)
+{
+    const int64_t now = esp_timer_get_time();
+    if (so->tx_wr != *last_wr) {
+        *last_wr = so->tx_wr;
+        *started = now;
+    }
+    if (!so->flight) return;
+    int64_t due = *started + (so->flight + 66) * 8 / e.link_mbps + 10 - now;
+    if (due < 20) due = 20;
+    esp_timer_stop(e.kick);
+    esp_timer_start_once(e.kick, (uint64_t)due);
+}
+
 /* One run: full datagrams as they fill, the rest once it has waited HOLD or at the end, then
  * w5500_udp_poll until the chip has sent everything (bounded by DRAIN). The last error. */
 static int pump(void)
@@ -66,6 +93,8 @@ static int pump(void)
     TickType_t since = 0, end = 0;
     bool waiting = false;       /* fewer than seven packets wait */
     int staged = 0;             /* datagrams in the chip not yet sent */
+    uint16_t last_wr = w->sock[0].tx_wr;
+    int64_t started = 0;
     for (;;) {
         const bool ending = e.ending;   /* read first: every packet was pushed before it was set */
         const uint32_t before = e.t.st.datagrams;
@@ -84,6 +113,7 @@ static int pump(void)
         if (r == W5500_FULL || e.t.st.datagrams != before || staged > 0)
             staged = w5500_udp_poll(w, 0);   /* starts the last datagram's SEND */
         if (staged < 0) return staged;
+        if (staged > 0) wake_after_send(&w->sock[0], &last_wr, &started);
         if (ending) {
             if (!staged && !e.t.held && !w5500_ts_waiting(&e.q)) return W5500_OK;
             if (!end) end = now | 1;
@@ -112,7 +142,9 @@ static void sender(void *arg)
         uint8_t *const buf[2] = {pair, pair + W5500_TS_DATAGRAM};
         w5500_ts_sender_init(&e.t, w, 0, &e.q, buf, cycles);
         xSemaphoreGive(e.done);
+        e.link_mbps = s->phy >= 0 && !(s->phy & W5500_PHY_100M) ? 10 : 100;
         s->status = pump();
+        esp_timer_stop(e.kick);
         const w5500_stats *st = w5500_udp_stats(w, 0);
         s->sent = st->sent;
         s->arp_dropped = st->dropped;
@@ -129,6 +161,7 @@ void eth_egress_init(void)
     static StackType_t stack[STACK / sizeof(StackType_t)];
     static StaticTask_t task;
     e.done = xSemaphoreCreateBinaryStatic(&done);
+    esp_timer_create(&(esp_timer_create_args_t){.callback = kick, .name = "eth"}, &e.kick);
     e.task = xTaskCreateStaticPinnedToCore(sender, "eth", STACK, NULL, PRIORITY, stack, &task, 0);
     w5500_eth_reserve(pair);    /* a failure shows at the first start */
 }
