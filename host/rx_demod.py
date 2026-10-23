@@ -28,6 +28,7 @@ import dvbs2  # noqa: E402
 SRC = ROOT / "firmware/components/dvbs2rx"
 TABLES = SRC / "demod_tables.h"
 UNIT = 12288                     # words per firmware capture unit (768 us)
+RING_BYTES = 16384               # RX_DEMOD_RING_BYTES
 
 # Matched filter: RRC, roll-off 0.35, 96 taps at 16 samples/symbol (6 symbols), 4 fractional
 # phases per sample (1/64 symbol). Sets are padded to 7 vectors of 16 for rx_mf.
@@ -168,7 +169,7 @@ def build(folder, extra=()):
                     str(SRC / "kernels.c"), *map(str, extra), "-o", str(lib)], check=True)
     so = ct.CDLL(str(lib))
     so.rx_demod_size.restype = ct.c_size_t
-    so.rx_demod_init.argtypes = [ct.c_void_p, ct.POINTER(Config)]
+    so.rx_demod_init.argtypes = [ct.c_void_p, ct.POINTER(Config), ct.c_void_p]
     so.rx_demod_push.restype = ct.c_size_t
     so.rx_demod_push.argtypes = [ct.c_void_p, ct.c_void_p, ct.c_uint64, ct.c_size_t]
     so.rx_demod_release.argtypes = [ct.c_void_p, ct.POINTER(Frame)]
@@ -185,8 +186,9 @@ class Demod:
         self.so, self.bits, self.rate = so, 64800 if normal else 16200, rate
         self.mem = np.zeros(so.rx_demod_size() + 16, np.uint8)
         self.ptr = (self.mem.ctypes.data + 15) & ~15
+        self.ring = np.zeros(RING_BYTES + 16, np.uint8)
         cfg = Config(modcod, int(rate), cfo_hint, cfo_span, carrier_khz, int(normal), int(quick_lock))
-        if so.rx_demod_init(ct.c_void_p(self.ptr), ct.byref(cfg)):
+        if so.rx_demod_init(ct.c_void_p(self.ptr), ct.byref(cfg), ct.c_void_p((self.ring.ctypes.data + 15) & ~15)):
             raise ValueError("rx_demod_init rejected the configuration")
         self.next, self.frames = 0, []
         self._new_buffers()

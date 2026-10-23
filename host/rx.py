@@ -2,16 +2,18 @@
 """Run the receiver firmware's `rx` command and check every payload against the transmitter.
 
     python3 host/rx.py 7 --mhz 2420 --gain 32 --seconds 30 --port PORT --callsign KJ5SCH
+    python3 host/rx.py 16 --rate 5m --seconds 30 --port PORT --callsign KJ5SCH
     python3 host/rx.py 7 --replay capture.sc8 --port PORT --callsign KJ5SCH
 
---replay uploads a recorded 16 MS/s int8 capture and runs it through the same demodulator
-and FEC with the radio off, timing every push.
+--replay uploads a recorded 16 MS/s int8 capture and runs it through the same receiver with
+the radio off, paced as the radio would deliver it, timing every push.
 
-The receiver streams one binary record per short frame (firmware/rx/main/receive.h). The
-transmitter's synthetic payload is a continuous xorshift32 stream seeded with 2026, with the
-callsign in the first 40 bytes of every frame (host/decode.py payload_sequence). Each received
-payload must equal the model frame that its sequence number implies. Exits 1 unless every frame
-from the first decoded one to the last is present and exact.
+The receiver streams one binary record per short frame (firmware/rx/main/receive.h): the
+payload at 1 Msym/s, its CRC-32 at 5 Msym/s. The transmitter's synthetic payload is a
+continuous xorshift32 stream seeded with 2026, with the callsign in the first 40 bytes of every
+frame (host/decode.py payload_sequence). Each received payload (or CRC) must equal the model
+frame's that its sequence number implies. Exits 1 unless every frame from the first decoded one
+to the last is present and exact.
 """
 from __future__ import annotations
 
@@ -22,19 +24,27 @@ import pathlib
 import struct
 import sys
 import time
+import zlib
 
 import morse
-from dvbs2 import RATES
+from dvbs2 import PSK8_RATES, RATES
 from dvbs2_tables import BCH_PARAMS
 
 RECORD = struct.Struct("<IIihhHH")
-LLR_BYTES = 16200
+LLR_BYTES, BIT_BYTES = 16200, 2025
 MAGIC, END = 0x46524453, -2
+SYMBOL_RATE = {"1m": 1e6, "5m": 5e6}
 
 
 def frame_bytes(modcod: int) -> int:
-    """Data field bytes of a short QPSK frame: (Kbch - 80) / 8."""
-    return (BCH_PARAMS["short"][RATES[modcod - 1]][0] - 80) // 8
+    """Data field bytes of a short frame: (Kbch - 80) / 8. QPSK MODCODs 4..10, 8PSK 12..16."""
+    rate = PSK8_RATES[modcod - 12] if modcod >= 12 else RATES[modcod - 1]
+    return (BCH_PARAMS["short"][rate][0] - 80) // 8
+
+
+def frame_symbols(modcod: int) -> int:
+    """A short PLFRAME with pilots: 8,370 symbols for QPSK, 5,598 for 8PSK."""
+    return 5598 if modcod >= 12 else 8370
 
 
 def model(size: int, frames: int, callsign: str) -> list[bytes]:
@@ -71,6 +81,7 @@ def receive(port: str, command: str, timeout: float):
         link.write(command.encode() + b"\n")
         deadline = time.monotonic() + timeout
         before, frames, after, streaming, ended, line = [], [], [], False, False, b""
+        crc, bits = False, False
         while time.monotonic() < deadline:
             if streaming:
                 head = RECORD.unpack(read_exact(link, RECORD.size, deadline))
@@ -79,12 +90,19 @@ def receive(port: str, command: str, timeout: float):
                 if head[4] == END:
                     streaming, ended = False, True
                     continue
-                payload = read_exact(link, head[4], deadline) if head[4] > 0 else b""
                 frame = dict(zip(("sequence", "cfo_hz", "mer_cdb", "length", "iterations",
-                                  "failed_checks"), head[1:]), payload=payload)
+                                  "failed_checks"), head[1:]), payload=b"")
+                if head[4] > 0 and crc:
+                    frame["crc"] = struct.unpack("<I", read_exact(link, 4, deadline))[0]
+                elif head[4] > 0:
+                    frame["payload"] = read_exact(link, head[4], deadline)
                 if head[4] == -1:
                     frame["header_sample"] = struct.unpack("<Q", read_exact(link, 8, deadline))[0]
-                    frame["llr"] = read_exact(link, LLR_BYTES, deadline).hex()
+                    if bits:
+                        frame["hard"] = read_exact(link, BIT_BYTES, deadline).hex()
+                        frame["weak"] = read_exact(link, BIT_BYTES, deadline).hex()
+                    else:
+                        frame["llr"] = read_exact(link, LLR_BYTES, deadline).hex()
                 frames.append(frame)
                 continue
             line += link.read(1)
@@ -99,6 +117,8 @@ def receive(port: str, command: str, timeout: float):
             (after if ended else before).append(record)
             if record.get("stream") == "binary":
                 streaming = True
+                crc = record.get("payload") == "crc32"
+                bits = record.get("failed") == "hard+weak"
         raise TimeoutError("no 'done' from the receiver")
     finally:
         link.close()
@@ -134,22 +154,26 @@ def upload(port: str, data: bytes) -> dict:
         link.close()
 
 
-def check(frames, modcod: int, callsign: str, tx_frames: int) -> dict:
+def check(frames, modcod: int, callsign: str, tx_frames: int, symbol_rate: float = 1e6) -> dict:
+    """Frames carry a payload, or at 5 Msym/s its CRC-32 ("crc"); either must match the model
+    frame that the sequence implies. Records arrive in sequence order except decoded ones."""
     size = frame_bytes(modcod)
     expected = model(size, tx_frames, callsign)
-    index = {payload: k for k, payload in enumerate(expected)}
-    good = [f for f in frames if f["length"] == size]
+    key = (lambda f: f["crc"]) if any("crc" in f for f in frames) else (lambda f: f["payload"])
+    index = ({zlib.crc32(p): k for k, p in enumerate(expected)} if any("crc" in f for f in frames)
+             else {p: k for k, p in enumerate(expected)})
+    good = sorted((f for f in frames if f["length"] == size), key=lambda f: f["sequence"])
     report = dict(frame_bytes=size, records=len(frames), decoded=len(good),
                   failed=sum(f["length"] < 0 for f in frames))
     if not good:
         return report | dict(exact=0, passed=False)
-    k0 = index.get(good[0]["payload"])
+    k0 = index.get(key(good[0]))
     s0 = good[0]["sequence"]
-    exact = sum(index.get(f["payload"]) == k0 + f["sequence"] - s0 for f in good) if k0 is not None else 0
+    exact = sum(index.get(key(f)) == k0 + f["sequence"] - s0 for f in good) if k0 is not None else 0
     span = good[-1]["sequence"] - s0 + 1
-    rate = 8 * size * 1e6 / 8370
-    report.update(first_model_frame=k0, sequence_span=span, span_seconds=round(span * 8370 / 1e6, 3),
-                  exact=exact, missing=span - len(good), payload_mbps=round(rate / 1e6, 4),
+    period = frame_symbols(modcod) / symbol_rate
+    report.update(first_model_frame=k0, sequence_span=span, span_seconds=round(span * period, 3),
+                  exact=exact, missing=span - len(good), payload_mbps=round(8 * size / period / 1e6, 4),
                   exact_bytes=exact * size, passed=k0 is not None and exact == span == len(good))
     return report
 
@@ -157,7 +181,8 @@ def check(frames, modcod: int, callsign: str, tx_frames: int) -> dict:
 def main() -> int:
     import board
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("modcod", type=int, help="short-frame QPSK MODCOD, 4..10")
+    p.add_argument("modcod", type=int, help="short-frame MODCOD: QPSK 4..10, 8PSK 12..16")
+    p.add_argument("--rate", choices=SYMBOL_RATE, default="1m", help="symbols per second")
     p.add_argument("--mhz", type=int, default=2420)
     p.add_argument("--gain", type=int, default=32)
     p.add_argument("--seconds", type=int, default=30)
@@ -169,27 +194,29 @@ def main() -> int:
     p.add_argument("--out", type=pathlib.Path, help="append the summary to this JSON-lines file")
     a = p.parse_args()
     port = board.resolve_port(a.port)
+    token = " 5m" if a.rate == "5m" else ""
     if a.replay:
         data = a.replay.read_bytes()
-        command, timeout = f"replay {a.modcod}" + (f" {a.skip}" if a.skip else ""), 60 + len(data) / 1e6
+        command = f"replay {a.modcod}" + (f" {a.skip}" if a.skip else "") + token
+        timeout = 60 + len(data) / 1e6
     else:
-        command, timeout = f"rx {a.mhz} {a.gain} {a.seconds} {a.modcod}", a.seconds + 60
+        command, timeout = f"rx {a.mhz} {a.gain} {a.seconds} {a.modcod}{token}", a.seconds + 60
     with board.reserve_port(port):
         if a.replay:
             upload(port, data)
         before, frames, after = receive(port, command, timeout)
     summary = dict(command=command, replay=str(a.replay) if a.replay else None, board=before + after,
-                   check=check(frames, a.modcod, a.callsign, a.tx_frames),
+                   check=check(frames, a.modcod, a.callsign, a.tx_frames, SYMBOL_RATE[a.rate]),
                    frames=[{k: v for k, v in f.items() if k != "payload"} for f in frames[:3]],
                    failed=[{k: v for k, v in f.items() if k != "payload"} | {"index": n}
                            for n, f in enumerate(frames) if f["length"] < 0],
-                   around_failed=[{k: v for k, v in frames[m].items() if k not in ("payload", "llr")}
+                   around_failed=[{k: v for k, v in frames[m].items() if k not in ("payload", "llr", "hard", "weak")}
                                   for n, f in enumerate(frames) if f["length"] < 0
                                   for m in range(max(0, n - 2), min(len(frames), n + 3))])
     stamp = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
     print(json.dumps(summary["check"]))
     for record in summary["failed"]:
-        print(json.dumps({"failed_frame": {k: v for k, v in record.items() if k != "llr"}}))
+        print(json.dumps({"failed_frame": {k: v for k, v in record.items() if k not in ("llr", "hard", "weak")}}))
     for record in after:
         print(json.dumps(record))
     if a.out:

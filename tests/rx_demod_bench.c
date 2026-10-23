@@ -63,6 +63,59 @@ static void bench_mf(void)
     heap_caps_free(ring);
 }
 
+/* The 5 Msym/s matched filter over a random ring: 3,840 outputs (one capture unit) in
+ * batches of 128 from a random time, wrapping the ring, as the demodulator calls it. */
+static void bench_mf5(void)
+{
+    int8_t *ring = heap_caps_aligned_alloc(16, 2 * DEMOD_STRIDE, INTERNAL);
+    int16_t *o[4];
+    for (int i = 0; i < 4; ++i) o[i] = heap_caps_aligned_alloc(16, 2 * (128 + 16), INTERNAL);
+    int8_t *sets = heap_caps_aligned_alloc(16, 192, INTERNAL);
+    if (!ring || !o[0] || !o[1] || !o[2] || !o[3] || !sets) {
+        printf("@{\"error\":\"allocation failed\"}\n");
+        return;
+    }
+    for (unsigned i = 0; i < 2 * DEMOD_STRIDE; ++i) ring[i] = (int8_t)rnd();
+    memcpy(ring + DEMOD_RING, ring, DEMOD_STRIDE - DEMOD_RING);           /* mirrored heads */
+    memcpy(ring + DEMOD_STRIDE + DEMOD_RING, ring + DEMOD_STRIDE, DEMOD_STRIDE - DEMOD_RING);
+    for (unsigned rep = 0; rep < 3; ++rep) {
+        uint64_t t = ((uint64_t)rnd() << 32 | rnd()) & 0xffffffffffull;
+        uint32_t step = 53687091u + rnd() % 2048 - 1024, key[5] = {0}, cycles[2] = {0, 0};
+        unsigned diff = 0;
+        for (unsigned b = 0; b < 30; ++b, t += 128 * (uint64_t)step) {
+            demod_mf_t m = {ring, ring + DEMOD_STRIDE, rx_mf5, (uint32_t)t, (uint32_t)(t >> 32), step, 0, 0};
+            uint32_t c = now();
+            demod_mf5_c(&m, 128, o[0] + 8, o[1] + 8);
+            cycles[0] += now() - c;
+            c = now();
+            demod_mf5_run(&m, 128, o[2] + 8, o[3] + 8, sets, key);
+            cycles[1] += now() - c;
+            diff += memcmp(o[0] + 8, o[2] + 8, 256) != 0 || memcmp(o[1] + 8, o[3] + 8, 256) != 0;
+        }
+        report("demod_mf5", 3840, cycles[0], cycles[1], diff);
+    }
+    for (int i = 0; i < 4; ++i) heap_caps_free(o[i]);
+    heap_caps_free(sets);
+    heap_caps_free(ring);
+}
+
+/* Sums of 128 int16 outputs per axis. */
+static void bench_sum(void)
+{
+    int16_t *x = heap_caps_aligned_alloc(16, 2 * 256, INTERNAL);
+    if (!x) return;
+    for (unsigned i = 0; i < 256; ++i) x[i] = (int16_t)rnd();
+    int32_t s[2][2] = {{3, -3}, {3, -3}};
+    uint32_t best[2] = {UINT32_MAX, UINT32_MAX};
+    for (int pie = 0; pie < 2; ++pie) {
+        uint32_t c = now();
+        (pie ? demod_sum_pie : demod_sum_c)(x, x + 128, 128, s[pie]);
+        best[pie] = now() - c;
+    }
+    report("demod_sum", 128, best[0], best[1], memcmp(s[0], s[1], sizeof s[0]) != 0);
+    heap_caps_free(x);
+}
+
 /* The search's integrate-and-dump over 512 random samples per axis. */
 static void bench_halves(void)
 {
@@ -136,12 +189,11 @@ static void bench(void)
     int16_t *yi = heap_caps_aligned_alloc(16, 2 * N + 32, INTERNAL), *yq = heap_caps_aligned_alloc(16, 2 * N + 32, INTERNAL);
     int16_t *xi = heap_caps_aligned_alloc(16, 2 * N + 32, INTERNAL), *xq = heap_caps_aligned_alloc(16, 2 * N + 32, INTERNAL);
     int16_t *ci = heap_caps_aligned_alloc(16, 2 * N + 32, INTERNAL), *cq = heap_caps_aligned_alloc(16, 2 * N + 32, INTERNAL);
-    int8_t *llr[2] = {heap_caps_aligned_alloc(16, 2 * N + 32, MALLOC_CAP_SPIRAM),
-                      heap_caps_aligned_alloc(16, 2 * N + 32, MALLOC_CAP_SPIRAM)};
-    uint8_t *hard[2] = {heap_caps_aligned_alloc(16, N / 4 + 16, INTERNAL), heap_caps_aligned_alloc(16, N / 4 + 16, INTERNAL)};
+    uint8_t *hard[2] = {heap_caps_aligned_alloc(16, 4 * (N / 4 + 16), INTERNAL),
+                        heap_caps_aligned_alloc(16, 4 * (N / 4 + 16), INTERNAL)};
     uint8_t *scr = heap_caps_aligned_alloc(16, N / 4 + 16, INTERNAL);
     demod_run_t *k = heap_caps_aligned_alloc(16, sizeof *k, INTERNAL);
-    if (!yi || !yq || !xi || !xq || !ci || !cq || !llr[0] || !llr[1] || !hard[0] || !hard[1] || !scr || !k) {
+    if (!yi || !yq || !xi || !xq || !ci || !cq || !hard[0] || !hard[1] || !scr || !k) {
         printf("@{\"error\":\"allocation failed\"}\n");
         return;
     }
@@ -175,23 +227,30 @@ static void bench(void)
         unsigned diff = 0;
         for (unsigned i = 0; i < N; ++i) diff += (xi[i] != ci[i]) + (xq[i] != cq[i]);
         report("demod_turn", N, best[0], best[1], diff);
-        for (unsigned n = N; n >= 900; n -= 540) {
-            best[0] = best[1] = UINT32_MAX;
-            for (int pie = 0; pie < 2; ++pie) {
-                for (unsigned r = 0; r < RUNS; ++r) {
-                    memset(llr[pie], 0x55, 2 * N + 32);
-                    memset(hard[pie], 0x55, N / 4 + 16);
-                    demod_out_t o = {llr[pie], hard[pie]};
-                    uint32_t t = now();
-                    (pie ? demod_llr_pie : demod_llr_c)(ci, cq, n, scr, k, &o);
-                    t = now() - t;
-                    best[pie] = t < best[pie] ? t : best[pie];
+        for (unsigned psk8 = 0; psk8 < 2; ++psk8) {
+            for (unsigned n = N; n >= 900; n -= 540) {
+                if (psk8 && n % 8) continue;
+                best[0] = best[1] = UINT32_MAX;
+                for (int pie = 0; pie < 2; ++pie) {
+                    for (unsigned r = 0; r < RUNS; ++r) {
+                        memset(hard[pie], 0x55, 4 * (N / 4 + 16));
+                        demod_out_t o = {{hard[pie], hard[pie] + N / 8, hard[pie] + N / 4},
+                                         {hard[pie] + N / 2, hard[pie] + 5 * N / 8, hard[pie] + 3 * N / 4},
+                                         {NULL, NULL, NULL}};
+                        uint32_t t = now();
+                        if (psk8)
+                            (pie ? demod_8psk_pie : demod_8psk_c)(ci, cq, n, scr, k, &o);
+                        else
+                            (pie ? demod_qpsk_pie : demod_qpsk_c)(ci, cq, n, scr, k, &o);
+                        t = now() - t;
+                        best[pie] = t < best[pie] ? t : best[pie];
+                    }
                 }
+                diff = 0;
+                for (unsigned i = 0; i < 4 * (N / 4 + 16); ++i) diff += hard[0][i] != hard[1][i];
+                report(psk8 ? (n == N ? "demod_8psk" : "demod_8psk_tail") : (n == N ? "demod_qpsk" : "demod_qpsk_tail"),
+                       n, best[0], best[1], diff);
             }
-            diff = 0;
-            for (unsigned i = 0; i < 2 * N + 32; ++i) diff += llr[0][i] != llr[1][i];
-            for (unsigned i = 0; i < N / 4 + 16; ++i) diff += hard[0][i] != hard[1][i];
-            report(n == N ? "demod_llr" : "demod_llr_tail", n, best[0], best[1], diff);
         }
     }
     printf("@{\"done\":true}\n");
@@ -202,6 +261,8 @@ void app_main(void)
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(1500));
         bench_mf();
+        bench_mf5();
+        bench_sum();
         bench_halves();
         bench_signs();
         bench();

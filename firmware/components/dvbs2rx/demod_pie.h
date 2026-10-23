@@ -49,6 +49,10 @@ void demod_mf5_c(const demod_mf_t *m, unsigned n, int16_t *oi, int16_t *oq);
  * window: groups windows from x (I) and x + DEMOD_STRIDE (Q), advancing 16 samples a group,
  * against the five 32-byte coefficient sets at sets, outputs five per group. */
 void demod_mf5_pie(const int8_t *x, const int8_t *sets, unsigned groups, int16_t *oi, int16_t *oq);
+/* demod_mf5_c's outputs by demod_mf5_pie: sets (192 bytes, 16-byte aligned) and key (5 words,
+ * zero at first) cache the coefficient sets between calls. Writes oi, oq from index -4. */
+void demod_mf5_run(const demod_mf_t *m, unsigned n, int16_t *oi, int16_t *oq, int8_t *sets,
+                   uint32_t *key);
 
 /* sum[0] += oi[0..n), sum[1] += oq[0..n); n a multiple of 8, both 16-byte aligned. */
 void demod_sum_c(const int16_t *oi, const int16_t *oq, unsigned n, int32_t *sum);

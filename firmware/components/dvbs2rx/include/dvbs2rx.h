@@ -70,7 +70,10 @@ typedef struct {
 
 typedef struct rx_demod rx_demod_t;
 size_t rx_demod_size(void);
-int rx_demod_init(rx_demod_t *d, const rx_config_t *config);
+/* ring: RX_DEMOD_RING_BYTES, 16-byte aligned, internal RAM: raw data symbols, 4,096 of them
+ * (0.82 ms at 5 Msym/s), between push and release. */
+#define RX_DEMOD_RING_BYTES 16384u
+int rx_demod_init(rx_demod_t *d, const rx_config_t *config, void *ring);
 /* Core 1. Consume count consecutive words starting at dump index first (a gap in first
  * forces a relock). Matched-filter outputs of data symbols go to a ring, and each data run
  * is queued for rx_demod_release once the known block after it has fixed its carrier.
@@ -100,6 +103,7 @@ typedef struct {
 
 typedef struct rx_fec rx_fec_t;
 size_t rx_fec_size(unsigned modcod);
+size_t rx_fec_check_size(unsigned modcod);  /* enough when work is NULL */
 size_t rx_fec_work_size(unsigned modcod);
 int rx_fec_init(rx_fec_t *f, unsigned modcod, void *work);
 /* Returns the data field length in bytes and points payload at it (valid

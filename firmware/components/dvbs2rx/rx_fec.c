@@ -151,6 +151,12 @@ size_t rx_fec_size(unsigned modcod)
     return mode ? layout(mode).total : 0;
 }
 
+size_t rx_fec_check_size(unsigned modcod)
+{
+    const dvbs2_mode *mode = short_mode(modcod);
+    return mode ? layout(mode).r : 0;
+}
+
 size_t rx_fec_work_size(unsigned modcod)
 {
     const dvbs2_mode *mode = short_mode(modcod);
@@ -199,7 +205,7 @@ int rx_fec_init(rx_fec_t *f, unsigned modcod, void *work)
         return -1;
     }
     const layout_t l = layout(mode);
-    memset(f, 0, l.total);
+    memset(f, 0, work ? l.total : l.r);
     uint8_t *base = (uint8_t *)f;
     const uint16_t *table = rx_edges[mode->modcod - FIRST_MODCOD];
     unsigned repeats;

@@ -40,6 +40,14 @@
 #define demod_8psk(o) demod_8psk_c
 #endif
 
+#include <stddef.h>
+
+/* Offsets demod_pie.S relies on. */
+_Static_assert(offsetof(demod_run_t, sel) == 96 && offsetof(demod_run_t, gain) == 128 &&
+               offsetof(demod_run_t, weak) == 192 && offsetof(demod_run_t, table) == 256,
+               "demod_run_t layout");
+_Static_assert(offsetof(demod_out_t, weak) == 3 * sizeof(uint8_t *), "demod_out_t layout");
+
 #ifndef RX_DEMOD_NORMAL
 #define RX_DEMOD_NORMAL 0         /* 1: also 64,800-bit frames (host tests on the corpus) */
 #endif
@@ -48,7 +56,7 @@
 #define PAD (DEMOD_STRIDE - RING) /* mirrored head: at least a window plus 16 readable bytes */
 #define CHUNK 2048u               /* words unpacked per pass of the consumers */
 #define BATCH 128u                /* matched-filter outputs per pass */
-#define HOLD 4096u                /* data symbols in the ring shared with the release */
+#define HOLD (RX_DEMOD_RING_BYTES / 4)  /* data symbols in the ring shared with the release */
 #define RUNS 8u                   /* data runs queued for the release */
 #define SEARCH 64u                /* acquisition candidates per block: two phases of 32 */
 #define HDR 90u                   /* PLHEADER symbols */
@@ -105,11 +113,11 @@ typedef struct {
 struct rx_demod {
     int8_t ri[RING + PAD] __attribute__((aligned(16)));
     int8_t rq[RING + PAD] __attribute__((aligned(16)));
-    int16_t yi[HOLD] __attribute__((aligned(16)));   /* data symbols' raw outputs, at data */
-    int16_t yq[HOLD] __attribute__((aligned(16)));   /* count % HOLD; runs start 8-aligned */
+    int16_t *yi, *yq;             /* the ring: data symbols' raw outputs, at data count % HOLD;
+                                   * runs start 8-aligned */
     int16_t oi[BATCH + 16] __attribute__((aligned(16)));  /* one pass's outputs from oi + 8 */
     int16_t oq[BATCH + 16] __attribute__((aligned(16)));
-    int8_t sets[10 * 32] __attribute__((aligned(16)));    /* 5 Msym/s PIE: five sets, twice */
+    int8_t sets[6 * 32] __attribute__((aligned(16)));     /* 5 Msym/s PIE: five sets, then the first */
     demod_mf_t mf;
     union {
         struct {
@@ -444,29 +452,41 @@ static inline unsigned mf_ready(const rx_demod_t *d, uint64_t t, uint32_t step, 
 }
 
 #if DVBS2RX_PIE
-/* The PIE filter's aligned groups: the five centres of a call, mod 16 samples, pick five
- * coefficient sets (kept while the centres stay) in the order the groups meet them. Returns
- * the first output, -4 .. 0, and sets *x to the first group's window. */
-static int mf5_groups(rx_demod_t *d, uint64_t t, uint32_t step, const int8_t **x)
+void demod_mf5_run(const demod_mf_t *m, unsigned n, int16_t *oi, int16_t *oq, int8_t *sets,
+                   uint32_t *key)
 {
+    /* The five centres from t, mod 16 samples, pick five coefficient sets (kept while the
+     * centres stay) in the order the aligned groups meet them; set 5 repeats set 0. */
+    uint64_t t = (uint64_t)m->t_hi << 32 | m->t_lo;
     uint32_t c[5], b0 = 0, s = 0;
     for (unsigned j = 0; j < 5; ++j) {
-        uint32_t tq = (uint32_t)((t + (uint64_t)j * step) >> (Q - 5)), b = ((tq >> 5) - 8) & ~15u;
+        uint32_t tq = (uint32_t)((t + (uint64_t)j * m->step) >> (Q - 5)), b = ((tq >> 5) - 8) & ~15u;
         b0 = j ? b0 : b;
         s = !s && b != b0 ? j : s;               /* the first centre past a window advance */
         c[j] = tq - (b << 5);                    /* centre in its window, 1/32 sample */
     }
     for (unsigned i = 0; i < 5; ++i) {
         unsigned j = (s + i) % 5;
-        if (d->key[i] != c[j] + 1) {
-            d->key[i] = c[j] + 1;
-            const int8_t *h = rx_mf5 + (c[j] & 31) * RX_MF5_SPAN + 24 - (c[j] >> 5);
-            memcpy(d->sets + 32 * i, h, 32);
-            memcpy(d->sets + 32 * (i + 5), h, 32);
+        if (key[i] != c[j] + 1) {
+            key[i] = c[j] + 1;
+            const int8_t *h = m->sets + (c[j] & 31) * RX_MF5_SPAN + 24 - (c[j] >> 5);
+            memcpy(sets + 32 * i, h, 32);
+            if (!i) {
+                memcpy(sets + 160, h, 32);
+            }
         }
     }
-    *x = d->ri + (b0 & (RING - 16));
-    return s ? (int)s - 5 : 0;
+    /* The first group holds the symbols from s - 5 when the window advances at s. Groups
+     * advance 16 samples; the ring wraps between calls. */
+    int k = s ? (int)s - 5 : 0;
+    unsigned at = b0 & (RING - 16);
+    while (k < (int)n) {
+        unsigned groups = (n - k + 4) / 5, room = (RING - at) / 16;
+        groups = groups < room ? groups : room;
+        demod_mf5_pie(m->ri + at, sets, groups, oi + k, oq + k);
+        k += 5 * (int)groups;
+        at = (at + 16 * groups) & (RING - 1);
+    }
 }
 #endif
 
@@ -484,16 +504,7 @@ static void mf(rx_demod_t *d, uint64_t t, uint32_t step, unsigned n)
         return;
     }
 #if DVBS2RX_PIE
-    const int8_t *x;
-    int k = mf5_groups(d, t, step, &x);
-    /* Groups advance 16 samples; the ring wraps between calls. */
-    while (k < (int)n) {
-        unsigned at = (unsigned)(x - d->ri), groups = (n - k + 4) / 5, room = (RING - at) / 16;
-        groups = groups < room ? groups : room;
-        demod_mf5_pie(x, d->sets, groups, oi + k, oq + k);
-        k += 5 * (int)groups;
-        x = d->ri + ((at + 16 * groups) & (RING - 1));
-    }
+    demod_mf5_run(&d->mf, n, oi, oq, d->sets, d->key);
 #else
     demod_mf5_c(&d->mf, n, oi, oq);
 #endif
@@ -1505,14 +1516,16 @@ size_t rx_demod_size(void)
     return sizeof(rx_demod_t);
 }
 
-int rx_demod_init(rx_demod_t *d, const rx_config_t *config)
+int rx_demod_init(rx_demod_t *d, const rx_config_t *config, void *ring)
 {
     const unsigned rate = config ? config->symbol_rate : 0;
-    if (!d || !config || config->modcod < 1 || config->modcod > 17 ||
+    if (!d || !config || !ring || ((uintptr_t)ring & 15) || config->modcod < 1 || config->modcod > 17 ||
         (config->normal && !RX_DEMOD_NORMAL) || (rate && rate != 1000000 && rate != 5000000)) {
         return -1;
     }
     memset(d, 0, sizeof *d);
+    d->yi = ring;
+    d->yq = d->yi + HOLD;
     d->cfg = *config;
     if (!d->cfg.cfo_span_hz) {
         d->cfg.cfo_span_hz = 50000;
