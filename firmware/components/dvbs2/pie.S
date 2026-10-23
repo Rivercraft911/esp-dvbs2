@@ -817,24 +817,24 @@ dvbs2_pie_run8_packed:
  * A byte lookup spreads its bits into two halfwords. No index buffer.
  * A, B, C, Gold, output, 1 KiB spread table (LDXQ bias already applied). */
     .section .text.lofty_mapper,"ax"
+    /* (p2 << 1 | p1) << 1 | p0, doubling by saturating adds: spread bits stay
+     * below bit 28, so no lane saturates and no SAR is needed. */
     .macro lofty_bits p0,p1,p2,first
-    ee.ldxq.32 q6,\p0,a7,0,\first
-    ee.ldxq.32 q6,\p0,a7,1,(\first+1)
-    ee.ldxq.32 q6,\p0,a7,2,(\first+2)
-    ee.ldxq.32 q6,\p0,a7,3,(\first+3)
+    ee.ldxq.32 q6,\p2,a7,0,\first
+    ee.ldxq.32 q6,\p2,a7,1,(\first+1)
+    ee.ldxq.32 q6,\p2,a7,2,(\first+2)
+    ee.ldxq.32 q6,\p2,a7,3,(\first+3)
     ee.ldxq.32 q7,\p1,a7,0,\first
     ee.ldxq.32 q7,\p1,a7,1,(\first+1)
     ee.ldxq.32 q7,\p1,a7,2,(\first+2)
     ee.ldxq.32 q7,\p1,a7,3,(\first+3)
-    ssai 1
-    ee.vsl.32 q7,q7
+    ee.vadds.s32 q6,q6,q6
     ee.orq q6,q6,q7
-    ee.ldxq.32 q7,\p2,a7,0,\first
-    ee.ldxq.32 q7,\p2,a7,1,(\first+1)
-    ee.ldxq.32 q7,\p2,a7,2,(\first+2)
-    ee.ldxq.32 q7,\p2,a7,3,(\first+3)
-    ssai 2
-    ee.vsl.32 q7,q7
+    ee.vadds.s32 q6,q6,q6
+    ee.ldxq.32 q7,\p0,a7,0,\first
+    ee.ldxq.32 q7,\p0,a7,1,(\first+1)
+    ee.ldxq.32 q7,\p0,a7,2,(\first+2)
+    ee.ldxq.32 q7,\p0,a7,3,(\first+3)
     ee.orq q6,q6,q7
     ee.vst.128.ip q6,a6,16
     .endm
