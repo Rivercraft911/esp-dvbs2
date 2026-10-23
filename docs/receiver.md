@@ -108,7 +108,7 @@ next header and tries again.
 Once locked, every header and pilot block is a known block: each one updates the timing, carrier
 phase and frequency, DC and the transmitter's carrier leak. The leak sits about 17 dB below the
 transmitter's own signal, and taking it out after derotation raised MER from about 16 dB to about
-29 dB ([commit](https://github.com/Rivercraft911/esp-dvbs2/commit/d2e977e2144e95f898d7bdc258f3b34c5eda4525)). On captures where the
+29 dB ([commit](https://github.com/Rivercraft911/esp-dvbs2/commit/ec47b06a2d5923f337be6108b8e37a34a0b0a222)). On captures where the
 demodulator measured 26 to 31 dB, LeanDVB, which does not remove the leak, reported 7 to 16 dB
 ([demodulator](../results/2026-10-22-rx-demod/README.md)).
 
