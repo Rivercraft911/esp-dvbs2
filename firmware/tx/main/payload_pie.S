@@ -2,8 +2,9 @@
 // Lane j writes the contiguous block [j*stride, (j+1)*stride) when it starts at M^(j*stride) x.
 // Four steps keep their states S1..S4 in q1..q4; six byte unzips (EE.VUNZIP.8: evens to the
 // first register, odds to the second, TRM v1.8 1.8.209) then gather each lane's four low bytes,
-// oldest first, into the low word of q1, q2, q5 or q6. EE.VSR.32 is arithmetic (1.8.207): mask
-// after the 17-bit right shift. 57 instructions per 16 bytes instead of 67.
+// oldest first, into the low word of q1, q2, q5 or q6. EE.VSR.32 is arithmetic (1.8.191): mask
+// after the 17-bit right shift. 59 instructions per 16 bytes (four 10-instruction steps, a
+// copy, six unzips, four moves, four stores, four pointer steps) instead of 67.
 // void payload_xorshift8(uint8_t *dst, unsigned quads, uint32_t lanes[8], unsigned stride)
 // dst and stride word aligned, quads >= 1, lanes 16-byte aligned and updated.
     .macro xs_step x, y

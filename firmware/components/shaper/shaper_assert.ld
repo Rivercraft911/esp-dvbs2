@@ -38,9 +38,10 @@ ASSERT((machine_axis_render_pie & 31) == 0 && (shaper_short4_pie & 31) == 24 &&
 ASSERT((shaper_axes8_pie & 31) == 8,
        "VCM axis loop fetch alignment must match modswap 154692d")
 
+/* 16 KiB, 8-way instruction cache (lofty.c asserts it): one way is 2,048 bytes. */
 ASSERT((_lofty_text_start & 31) == 0 &&
-       ((_lofty_text_end - _lofty_text_start + 31) & ~31) <= 4096,
-       "lofty control code must fit one aligned instruction-cache way")
+       ((_lofty_text_end - _lofty_text_start + 31) & ~31) <= 2048,
+       "lofty control code must fit one 2 KiB instruction-cache way")
 ASSERT(_lofty_text_start >= 0x42000000 && _lofty_text_end < 0x42800000,
        "lofty control code must have flash backing")
 ASSERT((_lofty_text_start & 4095) == 0x720,

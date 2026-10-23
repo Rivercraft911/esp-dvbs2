@@ -29,6 +29,7 @@ static bool replay, pv_mode, usb_mode;
 static uint8_t *borrowed[INGRESS_SLOTS];
 static unsigned borrowed_count, saved_borrowed;
 static ingress_ring *rx;
+static bool session; // between a successful spi_input_start and spi_input_stop
 // The CRC-32 tables come with the wire from spiinput, in internal heap, so 8PSK 5/6 at
 // 26.67 Msym/s still finds run memory for its pair BCH table and the slots.
 static uint32_t *crc_table;
@@ -204,7 +205,12 @@ void spi_input_buffers(uint8_t *tail, size_t tail_bytes, uint8_t *workspace, siz
 
 esp_err_t spi_input_start(void)
 {
-    if (usb_mode) { borrowed_count=0; return usb_input_start(input_type); }
+    if (usb_mode) {
+        borrowed_count=0;
+        const esp_err_t err=usb_input_start(input_type);
+        session=err==ESP_OK;
+        return err;
+    }
     memset(&saved, 0, sizeof saved); memset(&hw, 0, sizeof hw);
     saved_borrowed=borrowed_count;
     read_bytes=read_calls=read_max=wrong_type=0; read_cycles=copy_cycles=check_cycles=copy_max=0; next_seq=0;
@@ -223,6 +229,7 @@ esp_err_t spi_input_start(void)
     if (err != ESP_OK) return err;
     rx->type=input_type; rx->control=control_handler;
     if (replay) ingress_replay_fill(rx);
+    session=true;
     return ESP_OK;
 }
 
@@ -239,6 +246,7 @@ size_t spi_input_read(uint8_t *dst, size_t n)
 
 void spi_input_stop(void)
 {
+    session=false;
     if (usb_mode) { usb_input_stop(); return; }
     if (!rx) { borrowed_count=0; return; }
     // Stop DMA/interrupts before taking the final counter snapshot.
@@ -333,6 +341,12 @@ static void probe(unsigned ms)
 void spi_input_command(const char *cmd, const char *args)
 {
     char a[16]="", b[16]="", extra;
+    // A live session reads through the selected wire's driver and CRC table: leave both, and
+    // every selection flag, alone until it stops.
+    if (session && (!strcmp(cmd,"spiinput") || !strcmp(cmd,"spirx"))) {
+        printf("@{\"cmd\":\"%s\",\"error\":\"input running: selection unchanged\"}\n",cmd);
+        return;
+    }
     if (!strcmp(cmd,"spipins")) {
         ingress_spi_config cfg=pins;
         if (sscanf(args,"%15s %c",a,&extra)==1 && !strcmp(a,"xiao"))

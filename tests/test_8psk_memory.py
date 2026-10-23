@@ -160,7 +160,7 @@ def check_residency(current):
         if len(fields) == 3: m[fields[2]] = int(fields[0],16)
     first,end = m['_lofty_text_start'],m['_lofty_text_end']
     size = (end-first+31)&~31
-    assert first%32 == 0 and 0 < size <= 4096
+    assert first%32 == 0 and 0 < size <= 2048  # one 2 KiB way of the 16 KiB 8-way cache
     assert 0x42000000 <= first < end < 0x42800000
     for name in ('lofty_shape','lofty_short','lofty_splice','lofty_samples'):
         assert first <= m[name] < end,(name,m[name])

@@ -502,13 +502,19 @@ esp_err_t radio_s3_init(void)
     return worker_task ? e : ESP_ERR_NO_MEM;
 }
 
-/* During a run core 1 runs only this worker, so its FreeRTOS tick (time slicing on core 1;
- * core 0's tick keeps time and wakes core-1 tasks) only costs the fills about 1k cycles a
- * bank once a millisecond. Stop that alarm's interrupt for the run. Re-enabled, the handler
- * (freertos/port_systick.c) runs every skipped tick at once: 29 ms after a 10 s pace, 100 ms
- * after 60 s, so about 0.8 s after the 540 s limit, on core 1 only and with the
- * transmitter already off. Nothing else toggles this enable bit after boot. schedule() runs
- * core 1's tick hooks (the interrupt watchdog's) between fills meanwhile. */
+/* Core 1 is reserved for this worker during a run. The worker is pinned there at
+ * configMAX_PRIORITIES - 2 and never blocks in a run, and no other firmware task is pinned to
+ * core 1 or created without a core (tests/test_radio_duration.py checks the sources). Core 1's
+ * FreeRTOS tick keeps no time; core 0's does and expires every timeout. What core 1's tick
+ * does is time slicing among equal priorities and the deferred preemption core 0 leaves it
+ * (xYieldPending[1]) when a timeout readies a core-1 task. With the tick off, such a task
+ * would wait for the next scheduling event or the end of the run. ipc1, the one task above
+ * the worker, is woken by notification, which still preempts at once.
+ * The tick cost the fills about 1k cycles once a millisecond, so stop that alarm's interrupt
+ * for the run. Re-enabled, the handler (freertos/port_systick.c) replays every skipped tick:
+ * 29 ms after a 10 s pace, 100 ms after 60 s, so about 0.8 s after the 540 s limit, on core 1
+ * only and with the transmitter already off. Nothing else toggles this enable bit after boot.
+ * schedule() runs core 1's tick hooks (the interrupt watchdog's) between fills meanwhile. */
 static void core1_tick(bool on)
 {
     systimer_ll_enable_alarm_int(&SYSTIMER, SYSTIMER_ALARM_OS_TICK_CORE0 + 1, on);

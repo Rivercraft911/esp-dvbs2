@@ -135,6 +135,10 @@ LOFTY_TEXT void lofty_samples(uint32_t *dst, const uint32_t *src, unsigned skip,
 _Static_assert(CONFIG_ESP32S3_INSTRUCTION_CACHE_SIZE == 16384 &&
                CONFIG_ESP32S3_INSTRUCTION_CACHE_LINE_SIZE == 32,
                "lofty residency requires the qualified 16 KiB / 32-byte cache");
+// 16 KiB in 8 ways: a way is 2 KiB, 64 sets of 32 bytes. Locked code up to 2 KiB takes at most
+// one line of each set, which shaper_assert.ld checks.
+_Static_assert(CONFIG_ESP32S3_INSTRUCTION_CACHE_SIZE / CONFIG_ESP32S3_ICACHE_ASSOCIATED_WAYS == 2048,
+               "shaper_assert.ld sizes the locked lofty code to one 2 KiB way");
 _Static_assert(CONFIG_ESP32S3_DATA_CACHE_SIZE >= 32768 &&
                CONFIG_ESP32S3_DATA_CACHE_LINE_SIZE == 32,
                "dummy residency requires at least 32 KiB / 32-byte data cache");
