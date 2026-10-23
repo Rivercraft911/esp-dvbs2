@@ -55,7 +55,9 @@ paths work; a build directory that was configured for another source tree does n
 
 With two boards plugged in, name the port: `idf.py -p PORT ... build flash`. Leave out `flash`
 to build without a board. Both apps stamp the commit into `info`'s `firmware` field, with
-`-dirty` when the tree has uncommitted changes, so every record names the code that made it.
+`-dirty` for uncommitted changes, when CMake configures the build. A rebuild that does not
+reconfigure can keep an old stamp, so run `idf.py reconfigure` before a measurement run and
+record the source revision separately as well.
 
 ### Ports
 
