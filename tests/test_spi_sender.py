@@ -15,6 +15,7 @@ NATIVE = r'''
 #define IRAM_ATTR
 #define ESP_OK 0
 #define ESP_ERR_NO_MEM 1
+#define ESP_ERR_INVALID_STATE 0x103
 #define MALLOC_CAP_INTERNAL 1
 #define MALLOC_CAP_DMA 2
 #define pdFALSE 0
@@ -91,6 +92,14 @@ static inline size_t heap_caps_get_free_size(int caps) { (void)caps; return 1000
 static inline void *heap_caps_malloc(size_t n,int caps) { (void)caps; ++allocations; return malloc(n); }
 static inline void *heap_caps_calloc(size_t n,size_t m,int caps) { (void)caps; ++allocations; return calloc(n,m); }
 static inline void heap_caps_free(void *p) { if(p) { --allocations; free(p); } }
+// Run memory (run_memory.h): counted like the heap above, returned by run_reset.
+static void *native_taken[64];
+static unsigned native_takes;
+static void *run_take(size_t n,size_t align,uint32_t caps) {
+    (void)align; (void)caps; assert(native_takes<64);
+    ++allocations; return native_taken[native_takes++]=calloc(1,n);
+}
+static void run_reset(void) { while (native_takes) { free(native_taken[--native_takes]); --allocations; } }
 static inline int spi_bus_initialize(int h,const spi_bus_config_t *c,int dma) { (void)h;(void)c;(void)dma; return 0; }
 static inline void spi_bus_free(int h) { (void)h; }
 static inline int spi_bus_add_device(int h,const spi_device_interface_config_t *c,spi_device_handle_t *d) {
@@ -141,14 +150,35 @@ int spi_device_polling_start(spi_device_handle_t d,spi_transaction_t *t,unsigned
     }
     last_tx=now_us; ++transfers; return 0;
 }
+// The receiver as ingress_spi.c provisions it: a session needs its wire's driver. A sender
+// replays sealed slots, one per virtual millisecond, so spirx probes have messages to verify.
 static ingress_ring receiver;
-esp_err_t ingress_spi_start(const ingress_spi_config *cfg,ingress_ring **ring) {
-    assert(cfg->received && cfg->ctx); *ring=&receiver; return ESP_OK;
+static int held=-1; // the provisioned driver: -1 none, 0 quad, 1 raw
+static bool fail_provision;
+esp_err_t ingress_spi_provision(bool raw) {
+    if (fail_provision) { held=-1; return ESP_ERR_NO_MEM; }
+    held=raw; return ESP_OK;
 }
-void ingress_spi_stop(void) {}
+void ingress_spi_release(void) { held=-1; }
+static void ready_stub(void *ctx,int level) { (void)ctx; (void)level; }
+static void rearm_stub(void *ctx,ingress_desc *slot,bool restart) {
+    (void)ctx; (void)restart; now_us+=1000; ingress_replay_release(&receiver,slot);
+}
+static const ingress_hw sender_hw={.rearm=rearm_stub,.ready=ready_stub};
+esp_err_t ingress_spi_start(const ingress_spi_config *cfg,ingress_ring **ring) {
+    assert(cfg->received && cfg->ctx);
+    if (held != (cfg->pv ? 1 : 0)) return ESP_ERR_INVALID_STATE;
+    pv_crc32_tables(cfg->crc);
+    ingress_init(&receiver,NULL,&sender_hw);
+    for (unsigned i=0;i<INGRESS_SLOTS;++i) receiver.desc[i].buf=cfg->buffers[i];
+    receiver.type=PV_TS;
+    if (!cfg->replay) ingress_replay_fill(&receiver);
+    *ring=&receiver; return ESP_OK;
+}
+void ingress_spi_stop(void) { pv_crc32_tables(NULL); }
 void ingress_spi_get_stats(ingress_spi_stats *out) { memset(out,0,sizeof *out); }
 int main(void) {
-    // A partially fitting borrowed pool must fall back to heap allocation;
+    // A partially fitting borrowed pool must fall back to run memory;
     // two disjoint regions may supply the complete eight-slot pool.
     uint32_t pool[INGRESS_SLOTS*INGRESS_SLOT_BYTES/4];
     uint8_t *base=(uint8_t *)pool;
@@ -163,71 +193,84 @@ int main(void) {
     for (unsigned test=0;test<12;++test) {
         pv_mode=test>=6;
         now_us=alarms=delays=transfers=sequence=0; ready_at=test?2000:0;
-        assert(tx_init((test/3)%2?PV_GCS:PV_TS,pv_mode?20:40,test%3==2?0:22,0,10)==ESP_OK);
+        assert(tx_init((test/3)%2?PV_GCS:PV_TS,pv_mode?20:40,test%3==2?0:22,10)==ESP_OK);
         tx_run();
         assert(tx.errors==0 && transfers>14 && alarms>10 && first_tx>=ready_at);
         assert(first_tx < ready_at+100 && delays==0); // READY resumes within a poll, no 1 ms sleep
-        tx_free(); assert(allocations==0 && !tx.timer);
+        tx_free(); run_reset(); assert(allocations==0 && !tx.timer);
     }
-    // Reproduce core-0 preemption using the 5 Msym/s PSRAM encoder's ~2.1 ms
-    // kernel. READY is always high: the polling sender alone misses 12 Mb/s.
-    for (unsigned rate=6;rate<=12;rate+=6) {
-        pv_mode=model_encoder=true;
-        now_us=alarms=delays=transfers=sequence=frame_bytes=ready_at=0;
-        assert(tx_init(PV_GCS,20,rate,0,1000)==ESP_OK);
-        tx_run();
-        const double achieved=tx.bytes*8.0/tx.us;
-        assert(!tx.waits && !tx.errors);
-        if (rate==6) assert(achieved>=.98*rate && achieved<=1.02*rate);
-        else assert(achieved<9.678); // below the selected output mode's demand
-        printf("shared-core sender model: target %u, achieved %.3f Mb/s, no READY stalls\n",rate,achieved);
-        tx_free(); assert(allocations==0);
+    pv_mode=false; input_type=PV_TS;
+    assert(spi_input_start()==ESP_ERR_INVALID_STATE); run_reset(); // no driver provisioned
+    spi_input_command("spiinput","quad");
+    assert(spi_input_start()==ESP_OK); spi_input_stop(); run_reset();
+    assert(!rx && allocations==(crc_table!=NULL) && !tasks); // the wire keeps its CRC table
+    // spirx borrows the other wire's driver, then gives the selection its own back, after a
+    // probe and after a failed setup, so the next encoder start finds it.
+    const char *probes[][2]={{"quad ts replay","100 on"},{"on gcs","100 quad"},{"quad","100 quad"},
+                             {"off","100 on"},{"usb","100 quad"}};
+    for (unsigned i=0;i<5;++i) {
+        spi_input_command("spiinput",probes[i][0]);
+        const int before=held;
+        const unsigned type=input_type; const bool pv=pv_mode, rep=replay, usb=usb_mode;
+        spi_input_command("spirx",probes[i][1]);
+        assert(held==before && input_type==type && pv_mode==pv && replay==rep && usb_mode==usb);
+        run_reset(); assert(!rx && allocations==(crc_table!=NULL)); // the probe's memory comes back
+        if (type && !usb) { assert(spi_input_start()==ESP_OK); spi_input_stop(); run_reset(); }
     }
-    model_encoder=false;
-    pv_mode=false; input_type=PV_TS; loop=true;
-    for (sender_core=0;sender_core<2;++sender_core) {
-        assert(spi_input_start()==ESP_OK && tx.task);
-        tx.finished=true; spi_input_stop();
-        assert(!rx && !tx.task && allocations==0);
-    }
-    assert(tasks==2);
-    spi_input_command("spiinput","on loop 9");
-    assert(pv_mode && loop && input_type==PV_TS && target==9);
-    spi_input_command("spiinput","on replay"); // rejected without changing preferences
-    assert(pv_mode && loop && target==9);
-    const char *invalid[]={"on loop garbage","on gcs loop nan","quad ts extra","off ts","on loop 9 7"};
+    spi_input_command("spiinput","quad ts replay");
+    fail_provision=true;
+    spi_input_command("spirx","100 on"); // setup fails; so does the restore, reported
+    fail_provision=false;
+    assert(held==-1);
+    spi_input_command("spirx","100 on");
+    run_reset();
+    assert(held==0 && spi_input_start()==ESP_OK); spi_input_stop(); run_reset();
+    assert(!rx && allocations==(crc_table!=NULL));
+    spi_input_command("spiinput","on");
+    assert(pv_mode && !replay && input_type==PV_TS && held==1);
+    spi_input_command("spiinput","on replay"); // replay is quad only: rejected without changes
+    assert(pv_mode && !replay && input_type==PV_TS);
+    const char *invalid[]={"on loop 9","on garbage","quad ts extra","off ts","quad replay 9","quad gcs loop 22"};
     for (unsigned i=0;i<sizeof invalid/sizeof *invalid;++i) {
         spi_input_command("spiinput",invalid[i]);
-        assert(pv_mode && loop && input_type==PV_TS && target==9);
+        assert(pv_mode && !replay && input_type==PV_TS);
     }
     spi_input_command("spiinput","on gcs");
-    assert(pv_mode && !loop && input_type==PV_GCS);
-    spi_input_command("spiinput","quad gcs loop 22");
-    assert(!pv_mode && loop && input_type==PV_GCS && target==22);
+    assert(pv_mode && !replay && input_type==PV_GCS);
+    spi_input_command("spiinput","quad ts replay");
+    assert(!pv_mode && replay && input_type==PV_TS && held==0);
     spi_input_command("spiinput","quad");
-    assert(!pv_mode && !loop && input_type==PV_TS);
+    assert(!pv_mode && !replay && input_type==PV_TS);
     spi_input_command("spiinput","pv"); // compatible old raw selector
-    assert(pv_mode && !loop && input_type==PV_TS);
+    assert(pv_mode && input_type==PV_TS);
     spi_input_command("spiinput","gcs"); // compatible old quad selector
-    assert(!pv_mode && !loop && input_type==PV_GCS);
+    assert(!pv_mode && input_type==PV_GCS);
     spi_input_command("spiinput","ts");
-    assert(!pv_mode && !loop && input_type==PV_TS);
+    assert(!pv_mode && input_type==PV_TS);
+    // The selected wire keeps its CRC table (one heap block) until spiinput off.
+    assert(crc_table && allocations == 1);
     spi_input_command("spisend","100 on gcs 21"); // no raw clock above 20 MHz
-    assert(!pv_mode && !allocations);
+    assert(!pv_mode && allocations == 1);
+    spi_input_command("spisend","100 quad 40 22 1"); // the fault argument is retired
+    assert(!pv_mode && allocations == 1);
+    spi_input_command("spirx","100 quad loop 22"); // so is the on-chip loopback
+    assert(!pv_mode && allocations == 1);
     spi_input_command("spipins","xiao");
     assert(pins.sclk==7 && pins.cs==1 && pins.d0==2 && pins.ready==8);
     spi_input_command("spipins","devkit");
     assert(pins.sclk==12 && pins.cs==10 && pins.d0==11 && pins.ready==8);
     spi_input_command("spiinput","usb gcs");
-    assert(usb_mode && input_type==PV_GCS && !loop);
+    assert(usb_mode && input_type==PV_GCS && !replay && held==-1);
     spi_input_command("spiinput","usb ts extra");
     assert(usb_mode && input_type==PV_GCS);
     spi_input_command("spiinput","usb");
     assert(usb_mode && input_type==PV_TS);
     spi_input_command("spiinput","on gcs");
     assert(!usb_mode && input_type==PV_GCS);
+    assert(spi_input_start()==ESP_OK && native_takes==1); // slots only: the table is provisioned
+    spi_input_stop(); run_reset();
     spi_input_command("spiinput","off");
-    assert(!pv_mode && !loop && !input_type);
+    assert(!pv_mode && !replay && !input_type && held==-1 && !crc_table && !allocations);
     puts("SPI sender: real scheduler, timer sleeps, 22 Mb/s pacing, fresh READY, CRC and cleanup: ok");
 }
 '''
@@ -244,7 +287,8 @@ def main():
         ingress=ROOT/'firmware/components/ingress'
         exe=folder/'sender'
         subprocess.run(['cc','-std=c11','-O2','-Wall','-Wextra','-Werror','-I'+tmp,
-                        '-I'+str(ROOT/'firmware/main'),'-I'+str(ingress/'include'),
+                        '-I'+str(ROOT/'firmware/tx/main'),'-I'+str(ingress/'include'),
+                        '-I'+str(ROOT/'firmware/components/platform/include'),
                         str(folder/'app.c'),str(ingress/'ingress.c'),str(ingress/'ingress_pattern.c'),
                         '-o',str(exe)],check=True)
         subprocess.run([str(exe)],check=True,timeout=10)

@@ -46,55 +46,22 @@ def record_check(r):
     if r.get('done') or 'cmd' not in r:
         return
     assert 'error' not in r, r
-    if r.get('input_loop') and not r.get('input_fault'):
-        s = r['spi']
-        assert s['messages'] == s['msgs'] > 0, r
-        assert s['payload_bytes'] == s['bytes'] == PAYLOAD*s['messages'], r
-        assert s['next_seq'] == (s['messages'] & 65535), r
-        assert s['ts_packets'] == (7*s['messages'] if r['input'] == 'ts' else 0), r
-        if r['input'] == 'gcs':
-            assert s['crc_chain'] == 0, r
-        elif r.get('input_wire') == 'raw':
-            assert s['crc_chain'] == pv_chain(s['messages']), r
-    if 'sender' in r:
-        assert r['sender']['cpu_timed'] and r['sender']['errors'] == 0, r
-        assert r['sender']['stack_min_free'] >= 256, r
-        assert r['sender']['priority'] < 5, r
-        assert r['sender']['core'] == (1 if r['cmd'] == 'spirx' else 0), r
     if r['cmd'] == 'spirx':
-        f = r.get('input_fault', 0)
         s = r['spi']
         assert r['verified_msgs'] > 0 and r['bad_payload'] == 0, r
         assert r['verified_bytes'] == s['bytes'] == r['verified_msgs']*PAYLOAD, r
         assert s['back'] == s['wrong_type'] == 0, r
-        assert r.get('sender_errors', 0) == 0, r
-        names = ('short', 'long', 'header', 'crc', 'sync')
-        if f in (0, 5, 6):
-            assert all(s[k] == 0 for k in (*names, 'lost', 'overruns')), r
-            want = 0
-            for seq in range(r['verified_msgs']):
-                payload = (pv_pattern(seq) if r.get('input_wire') == 'raw' and r['input'] == 'ts'
-                           else pattern(seq, 1 if r['input'] == 'ts' else 2))
-                want = zlib.crc32(payload, want)
-            assert want == r['crc32'], r
-            if r.get('input_wire') == 'raw' and r['input'] == 'ts' and not r.get('input_loop'):
-                assert s['messages'] == r['verified_msgs'] and s['ts_packets'] == 7*s['messages'], r
-                assert s['payload_bytes'] == s['bytes'] and s['next_seq'] == (s['messages'] & 65535), r
-                assert s['crc_chain'] == pv_chain(s['messages']), r
-        if f in (1, 2, 3):
-            name = {1: 'crc', 2: 'short', 3: 'long'}[f]
-            assert s[name] > 0 and all(s[k] == 0 for k in names if k != name), r
-            assert s['lost'] > 0, r
-            if f != 3:
-                assert s['overruns'] == 0, r
-            elif s['overruns']:
-                assert s['restarts'] > 0, r
-        if f == 4:
-            assert s['overruns'] > 0 and s['restarts'] > 0, r
-        if f == 5:
-            assert s['ready_falls'] > 0 and r['sender_waits'] > 0, r
-        if f == 0 and r.get('input_target', 0):
-            assert r['mbps'] >= .98*r['input_target'], r
+        assert all(s[k] == 0 for k in ('short', 'long', 'header', 'crc', 'sync', 'lost', 'overruns')), r
+        want = 0
+        for seq in range(r['verified_msgs']):
+            payload = (pv_pattern(seq) if r.get('input_wire') == 'raw' and r['input'] == 'ts'
+                       else pattern(seq, 1 if r['input'] == 'ts' else 2))
+            want = zlib.crc32(payload, want)
+        assert want == r['crc32'], r
+        if r.get('input_wire') == 'raw' and r['input'] == 'ts':
+            assert s['messages'] == r['verified_msgs'] and s['ts_packets'] == 7*s['messages'], r
+            assert s['payload_bytes'] == s['bytes'] and s['next_seq'] == (s['messages'] & 65535), r
+            assert s['crc_chain'] == pv_chain(s['messages']), r
     if r['cmd'] in ('dvbdump', 'dvbpace') and 'status' in r:
         assert r['status'] == 'ESP_OK' and not r['encoder_failed'], r
         if 'encoder_stack_min_free' in r:
@@ -111,15 +78,7 @@ def record_check(r):
             if command:
                 assert r['seconds'] == int(command.split()[3]), r
             assert r['late_fills'] == r['late_switches'] == r['fatal_late'] == 0 and r['min_fill_slack_cycles'] > 0, r
-            target = r.get('input_target', 0)*1e6
-            capacity = 8*r['payload_bytes_per_frame']*r['symbol_rate']/r['frame_symbols']
-            source_limited = r.get('input_loop') and 0 < target < capacity
-            if r.get('input_fault') == 6 or source_limited:
-                assert r['underruns'] > 0 and r['frames_encoded'] > 0, r
-            else:
-                assert r['underruns'] == 0, r
-            if source_limited and not r.get('input_fault'):
-                assert r['input_bytes']*8/r['seconds'] >= .98*target, r
+            assert r['underruns'] == 0, r
             budget = 240000000*r['frame_symbols']/r['symbol_rate'] if 'frame_symbols' in r else 299538
             assert r['encode_cycles_live_max'] <= budget, r
 
@@ -168,7 +127,7 @@ def main():
     d.add_argument('iq', type=Path)
     d.add_argument('--kind', choices=('ts','gcs'), required=True)
     d.add_argument('--replay', action='store_true')
-    d.add_argument('--pv', action='store_true', help='raw TS loopback pattern')
+    d.add_argument('--pv', action='store_true', help='raw TS sender pattern')
     d.add_argument('--modcod', type=int, default=11)
     d.add_argument('--sps', type=int, default=3)
     d.add_argument('--rate', type=int, default=80000000)

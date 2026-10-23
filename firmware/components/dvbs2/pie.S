@@ -223,68 +223,63 @@ dvbs2_pie_bch_byte:
     retw
     .size dvbs2_pie_bch_byte, . - dvbs2_pie_bch_byte
 
-/* Two-byte t=10/12 reduction. T0 low/high resident, T1 high in T0's
- * padding and T1 low in the caller's 4 KiB table. High loads preserve their
- * zero upper halves. R' = R>>16 XOR T1[u0] XOR T0[u1] in byte order.
- * msg, pairs, T0, T1-low, remainder. */
-    .section .text.bch_pair32,"ax"
+/* Two-byte t=10/12 reduction, remainder one byte up in q1:q0 (byte 0 unused):
+ * R' = R>>16 XOR T1[u0] XOR T0[u1] with u0, u1 at bytes 1, 2. Both table indices
+ * come from one EXTUI each, with four junk low address bits that VLD ignores
+ * (TRM 1.8.88-89). Tables: 32-byte register images, low halves at 16v, high
+ * halves at 4096 + 16v (fast.c dvbs2_fast_cache_bch_pair).
+ * Message bytes ride above the remainder: each 16-byte group first XORs message
+ * bytes 16g+15 .. 16g+30 into q1, so pair k always finds its input at bytes 1, 2.
+ * The final group reads its lookahead from io (the zero-padded partial vector),
+ * then tail pairs finish, and io receives the 32-byte register.
+ * void dvbs2_pie_bch_shift(msg, groups >= 1, T0, T1, io, tail_pairs) */
+    .section .iram1,"ax"
     .align 4
-    .global dvbs2_pie_bch_pair32
-    .type dvbs2_pie_bch_pair32,@function
-    .macro bch_pair32_step input=0
-    ee.movi.32.a q0,a6,0
-    .if \input
-    l16ui a7,a2,0
-    xor a6,a6,a7
-    .endif
-    extui a8,a6,0,8
-    slli a8,a8,4
-    extui a10,a6,8,8
-    slli a10,a10,4
-    add a12,a8,a5
-    add a8,a8,a11
+    .global dvbs2_pie_bch_shift
+    .type dvbs2_pie_bch_shift,@function
+    .macro bch_shift_step
+    ee.movi.32.a q0,a9,0
+    extui a8,a9,4,12
+    extui a10,a9,12,12
+    add a8,a8,a5
     add a10,a10,a4
     ee.srci.2q q1,q0,1
-    ee.vld.128.ip q2,a12,0
-    ee.vld.l.64.ip q3,a8,0
+    ee.vld.128.xp q2,a8,a13
+    ee.vld.128.ip q3,a8,0
     ee.vld.128.xp q4,a10,a13
-    ee.vld.l.64.ip q5,a10,0
+    ee.vld.128.ip q5,a10,0
     ee.xorq q0,q0,q2
     ee.xorq q1,q1,q3
     ee.xorq q0,q0,q4
     ee.xorq q1,q1,q5
     .endm
-dvbs2_pie_bch_pair32:
-    entry a1,80
-    s32i a6,a1,16
+dvbs2_pie_bch_shift:
+    entry a1,32
     movi a13,4096
-    add a11,a4,a13
-    addi a11,a11,8
-    ee.zero.q q0
+    movi a8,15
+    wur.sar_byte a8
+    ee.zero.q q7
     ee.zero.q q1
-    ee.zero.q q3
-    ee.zero.q q5
-    srli a14,a3,3
-    extui a3,a3,0,3
-    beqz a14,.Lpair32_tail
-.Lpair32_loop:
     ee.vld.128.ip q6,a2,16
-    ee.xorq q0,q0,q6
+    ee.src.q q0,q7,q6                   /* message bytes 0..14 at bytes 1..15 */
+    addi a14,a3,-1
+.Lshift_group:
+    moveqz a2,a6,a14                    /* the final group's lookahead */
+    ee.vld.128.ip q7,a2,16
+    ee.src.q.qup q2,q6,q7               /* message 16g+15 .. 16g+30 */
+    ee.xorq q1,q1,q2
     .rept 8
-    bch_pair32_step
+    bch_shift_step
     .endr
     addi a14,a14,-1
-    bnez a14,.Lpair32_loop
-.Lpair32_tail:
-    loopnez a3,.Lpair32_end
-    bch_pair32_step 1
-    addi a2,a2,2
-.Lpair32_end:
-    l32i a6,a1,16
+    bgez a14,.Lshift_group
+    loopnez a7,.Lshift_tail
+    bch_shift_step
+.Lshift_tail:
     ee.vst.128.ip q0,a6,16
-    ee.vst.128.ip q1,a6,16
+    ee.vst.128.ip q1,a6,0
     retw
-    .size dvbs2_pie_bch_pair32,.-dvbs2_pie_bch_pair32
+    .size dvbs2_pie_bch_shift,.-dvbs2_pie_bch_shift
 
     .section .iram1,"ax"
 
@@ -649,48 +644,6 @@ dvbs2_pie_index8:
     qpsk_codes dvbs2_pie_index4,1
     qpsk_codes dvbs2_pie_quads,0
 
-/* Four five-symbol groups to sign histories. Source is the mapper's own
- * chronological quad bytes, with no PL offset or prefix conversion.
- * Return the rolling history. No source guard needed: exactly five bytes/run.
- * dst, src, runs, lut, history. */
-    .align 4
-    .global dvbs2_pie_signs
-    .type dvbs2_pie_signs,@function
-dvbs2_pie_signs:
-    entry a1,32
-    movi a14,0x7ff07ff0
-    mov a11,a6
-    .macro signbyte off
-    l8ui a9,a3,\off
-    slli a8,a8,8
-    or a8,a8,a9
-    .endm
-    .macro signword shift,off
-    extui a10,a8,\shift,10
-    addx4 a10,a10,a5
-    l32i a10,a10,0
-    slli a11,a11,5
-    and a11,a11,a14
-    or a11,a11,a10
-    s32i a11,a2,\off
-    .endm
-    loopnez a4,.Lsigns_end
-    l8ui a8,a3,0
-    signbyte 1
-    signword 6,0
-    signbyte 2
-    signword 4,4
-    signbyte 3
-    signword 2,8
-    signbyte 4
-    signword 0,12
-    addi a3,a3,5
-    addi a2,a2,16
-.Lsigns_end:
-    mov a2,a11
-    retw
-    .size dvbs2_pie_signs,.-dvbs2_pie_signs
-
 /* Shift a QPSK code run by one nibble: byte i = low(src[i-1]) << 4 |
  * high(src[i]), initially src[-1] = 0. This is the half-byte PL header offset.
  * Source may be unaligned (successive 360-byte data runs alternate by 8).
@@ -817,7 +770,7 @@ dvbs2_pie_run8:
     ee.srcq.128.st.incp q4, q1, a4
     ee.orq q4, q1, q1
 98:
-    /* All 8PSK runs are multiples of 32 symbols (1440 or 21600). */
+    /* Whole pairs only: callers finish runs that are not multiples of 32 symbols. */
     ee.srcq.128.st.incp q4, q1, a7
     retw
     .size dvbs2_pie_run8, . - dvbs2_pie_run8
@@ -864,24 +817,24 @@ dvbs2_pie_run8_packed:
  * A byte lookup spreads its bits into two halfwords. No index buffer.
  * A, B, C, Gold, output, 1 KiB spread table (LDXQ bias already applied). */
     .section .text.lofty_mapper,"ax"
+    /* (p2 << 1 | p1) << 1 | p0, doubling by saturating adds: spread bits stay
+     * below bit 28, so no lane saturates and no SAR is needed. */
     .macro lofty_bits p0,p1,p2,first
-    ee.ldxq.32 q6,\p0,a7,0,\first
-    ee.ldxq.32 q6,\p0,a7,1,(\first+1)
-    ee.ldxq.32 q6,\p0,a7,2,(\first+2)
-    ee.ldxq.32 q6,\p0,a7,3,(\first+3)
+    ee.ldxq.32 q6,\p2,a7,0,\first
+    ee.ldxq.32 q6,\p2,a7,1,(\first+1)
+    ee.ldxq.32 q6,\p2,a7,2,(\first+2)
+    ee.ldxq.32 q6,\p2,a7,3,(\first+3)
     ee.ldxq.32 q7,\p1,a7,0,\first
     ee.ldxq.32 q7,\p1,a7,1,(\first+1)
     ee.ldxq.32 q7,\p1,a7,2,(\first+2)
     ee.ldxq.32 q7,\p1,a7,3,(\first+3)
-    ssai 1
-    ee.vsl.32 q7,q7
+    ee.vadds.s32 q6,q6,q6
     ee.orq q6,q6,q7
-    ee.ldxq.32 q7,\p2,a7,0,\first
-    ee.ldxq.32 q7,\p2,a7,1,(\first+1)
-    ee.ldxq.32 q7,\p2,a7,2,(\first+2)
-    ee.ldxq.32 q7,\p2,a7,3,(\first+3)
-    ssai 2
-    ee.vsl.32 q7,q7
+    ee.vadds.s32 q6,q6,q6
+    ee.ldxq.32 q7,\p0,a7,0,\first
+    ee.ldxq.32 q7,\p0,a7,1,(\first+1)
+    ee.ldxq.32 q7,\p0,a7,2,(\first+2)
+    ee.ldxq.32 q7,\p0,a7,3,(\first+3)
     ee.orq q6,q6,q7
     ee.vst.128.ip q6,a6,16
     .endm
@@ -1032,6 +985,27 @@ dvbs2_pie_lofty_store:
     .endif
     retw
     .endm
+    /* Unaligned destination, two vectors per pass: each source vector loads once and
+     * the current/lower and result registers alternate, so nothing is copied.
+     * cur, low: data registers; out, prev: this and the previous result. */
+    .macro move_plain cur, prev
+    ee.vld.128.ip \cur,a3,-16
+    ee.src.q q3,\cur,\prev
+    ee.vst.128.ip q3,a2,-16
+    .endm
+    .macro move_shift cur, low, out, prev
+    ee.vld.128.ip \low,a3,-16
+    wur.sar_byte a10
+    ee.src.q q2,\low,\cur
+    ee.vsr.32 q3,\cur
+    ee.andq q3,q3,q6
+    ee.vsl.32 q2,q2
+    ee.andq q2,q2,q7
+    ee.orq \out,q2,q3
+    wur.sar_byte a9
+    ee.src.q q3,\out,\prev
+    ee.vst.128.ip q3,a2,-16
+    .endm
 dvbs2_pie_lofty_move:
     entry a1,32
     slli a8,a4,4
@@ -1043,9 +1017,22 @@ dvbs2_pie_lofty_move:
     movi a11,16
     sub a9,a11,a9
     ee.zero.q q4
+    srli a12,a4,1
     bnez a5,.Lmove_shift
     beqi a9,16,.Lmove_aligned
-    lofty_move_loop 0,1,plain
+    wur.sar_byte a9
+    loopnez a12,.Lmove_plain_end
+    move_plain q0,q4
+    move_plain q4,q0
+.Lmove_plain_end:
+    bbci a4,0,.Lmove_plain_flush
+    move_plain q0,q4
+    ee.orq q4,q0,q0
+.Lmove_plain_flush:
+    ee.zero.q q0
+    ee.src.q q3,q0,q4
+    ee.vst.128.ip q3,a2,0
+    retw
 .Lmove_aligned:
     lofty_move_loop 0,0,aligned
 .Lmove_shift:
@@ -1054,7 +1041,19 @@ dvbs2_pie_lofty_move:
     ssai 6
     movi a10,14
     beqi a9,16,.Lmove_shift_aligned
-    lofty_move_loop 1,1,shift
+    ee.vld.128.ip q0,a3,-16
+    loopnez a12,.Lmove_shift_end
+    move_shift q0,q1,q5,q4
+    move_shift q1,q0,q4,q5
+.Lmove_shift_end:
+    bbci a4,0,.Lmove_shift_flush
+    move_shift q0,q1,q5,q4
+    ee.orq q4,q5,q5
+.Lmove_shift_flush:
+    ee.zero.q q0
+    ee.src.q q3,q0,q4
+    ee.vst.128.ip q3,a2,0
+    retw
 .Lmove_shift_aligned:
     lofty_move_loop 1,0,shift_aligned
     .size dvbs2_pie_lofty_move,.-dvbs2_pie_lofty_move
@@ -1176,6 +1175,104 @@ dvbs2_pie_pack:
     retw
     .size dvbs2_pie_pack, . - dvbs2_pie_pack
 
+/* Unrolled LDPC packing for one code: q even (so 16 q = 0 mod 32 and the
+ * shifts repeat every 16 columns) and a fixed start fill have0 (nbch mod 32).
+ * Column t of block b is the word at p + 4 (t/32) + 48 (31 - ((t%32)^7))
+ * + 1536 b (fast_cols), so each column is one immediate-offset load and every
+ * SAR an immediate. 11 groups of 32 columns, then 8 more; q words per group.
+ * a2 p, a5 out, a6 pending; a8/a9 block 0 rows 0..15/16..31 of this group,
+ * a10/a11 block 1. void name(const uint8_t *p, uint32_t *out, uint32_t pending) */
+    .macro pk_sar n
+    .if (\n) != pk_cur
+    ssai \n
+    .set pk_cur, (\n)
+    .endif
+    .endm
+
+    .macro pk_load lo, hi
+    .if pk_r < 16
+    l32i a15, \lo, 48*pk_r
+    .else
+    l32i a15, \hi, 48*(pk_r-16)
+    .endif
+    .endm
+
+    .macro pk_part lo, hi, part
+    pk_load \lo, \hi
+    .if pk_have + \part >= 32
+    pk_sar pk_have
+    src a4, a6, a15
+    s32i a4, a5, 4*pk_out
+    .set pk_out, pk_out+1
+    srli a6, a15, 32-\part             /* 32 - part <= 15 for every q here */
+    .set pk_have, pk_have+\part-32
+    .else
+    pk_sar 32-\part
+    src a6, a6, a15
+    .set pk_have, pk_have+\part
+    .endif
+    .endm
+
+    .macro pk_columns q, n
+    .set pk_c, 0
+    .set pk_out, 0
+    .set pk_cur, -1
+    .rept \n
+    .set pk_r, 31-(pk_c^7)
+    .if \q > 32
+    pk_load a8, a9
+    .if pk_have
+    pk_sar pk_have
+    src a4, a6, a15
+    s32i a4, a5, 4*pk_out
+    .else
+    s32i a15, a5, 4*pk_out
+    .endif
+    .set pk_out, pk_out+1
+    mov a6, a15
+    pk_part a10, a11, (\q-32)
+    .else
+    pk_part a8, a9, \q
+    .endif
+    .set pk_c, pk_c+1
+    .endr
+    .endm
+
+    .macro pk_kernel name, q, have0
+    .section .iram1.\name,"ax"
+    .align 4
+    .global \name
+    .type \name, @function
+\name:
+    entry a1, 32
+    mov a5, a3
+    mov a6, a4
+    addmi a9, a2, 768
+    addmi a10, a2, 1536
+    addmi a11, a2, 2304
+    mov a8, a2
+    movi a7, 11
+1:
+    .set pk_have, \have0
+    pk_columns \q, 32
+    addi a8, a8, 4
+    addi a9, a9, 4
+    addi a10, a10, 4
+    addi a11, a11, 4
+    addi a5, a5, 4*\q
+    addi a7, a7, -1
+    bnez a7, 1b
+    .set pk_have, \have0
+    pk_columns \q, 8
+    retw
+    .size \name, . - \name
+    .endm
+
+    pk_kernel dvbs2_pie_pack18, 18, 16
+    pk_kernel dvbs2_pie_pack30, 30, 16
+    pk_kernel dvbs2_pie_pack60, 60, 0
+
+    .section .iram1, "ax"
 /* Byte-reverse 32-bit words and store them at any address: vectors x 16
  * bytes from src (aligned) to dst, given as block = (dst - 1) & ~15 and
  * sar_byte = -dst & 15. Bytes from block to dst are overwritten; the last

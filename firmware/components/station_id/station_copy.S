@@ -1,5 +1,5 @@
 // Copy complete 40-word tone periods. Aligned 128-bit DAC stores, as in
-// firmware/main/shaper_pie.S; alignment: ESP32-S3 TRM v1.8 1.5.3 pp. 48-49.
+// firmware/components/shaper/shaper_pie.S; alignment: ESP32-S3 TRM v1.8 1.5.3 pp. 48-49.
 // Both pointers must be 16-byte aligned; periods must be positive.
     .section .iram1.station_copy, "ax"
     .global station_repeat40

@@ -55,7 +55,8 @@ def test(output=None, receiver=None):
             assert r['fill_kernel'] == 'moon-queue' and r['prepare_pages'] > 0
             assert r['queue_empty'] == 0 and r['queue_low_pages'] > 0
             assert r['workspace_memory'] == r['payload_memory'] == r['ring_memory'] == 'internal'
-            assert r['workspace_heap_bytes'] == 0 and r['encoder_cache_bytes'] > 23000
+            store = int(r['layout']['table'],16)
+            assert store <= int(r['layout']['workspace'],16) < store+65536 and r['encoder_cache_bytes'] > 23000
             assert not r['encoder_failed'] and r['underruns'] == r['overlap_mismatches'] == 0
             assert r['bch_cache_bytes'] == 8192
             assert r['table_bytes'] == 24576

@@ -11,9 +11,7 @@ and `--fec` with live USB controls are not supported.
 | 1 Msym/s | QPSK phase table | Exact, contiguous E200 OTA code-rate switching |
 | 5 Msym/s | Same-modulation phase table | QPSK 4/7/11 hold 4: 2,938 branch / 2,932 merged OTA frames, exact and contiguous |
 | 5 Msym/s | Mixed QPSK/8PSK, automatic five-level axes | 4/11/13/17 every frame: 3,523 branch / 3,522 merged OTA frames, 21,055,600 bytes exact and contiguous |
-| 10 Msym/s | Same modulation, phase table | Host-model coverage; board timing needs checking |
-| 10 Msym/s mixed | Refused before encoder/radio startup | Earlier branch decoded, but exceeded encoder budget and inserted dummies / lost data |
-| Higher rates | Refused | VCM queues and timing not qualified |
+| 10 Msym/s and higher | Refused before encoder/radio startup | Not qualified on the board; mixed 10m exceeded the encoder budget on an earlier branch |
 
 Measurements used S3 → ANTSDR E200 inside a closed Faraday box. Branch results
 are `exp/vcm` (`b893fa8`) and `exp/modswap` (`154692d`); merged results are
@@ -25,14 +23,14 @@ decode were exact. The placement changes below still need board timing checks.
 The axis table is 10,240 bytes instead of the 65,536-byte mixed phase table at
 5 Msym/s. Both preserve the existing integer pulse rounding and symbol history.
 VCM hot code uses a separate IRAM section, restoring modswap's SRAM instruction
-fetches. The fixed fill/PIE entries and default 1,632-byte lock's cache indices
-match main `7391f86`; linker checks guard placement. Phase profiling stays enabled
+fetches. Every fill kernel keeps its measured fetch alignment and the 8PSK lock keeps
+its cache indices; linker checks guard placement
+([records](../results/2026-10-23-tx-pins/README.md)). Phase profiling stays enabled
 for VCM pace. This consumes about 5 KB internal SRAM; the earlier branch had
 about 77 KB free with Wi-Fi up.
 Same-modulation runs keep their smaller phase tables. Mixed 5m automatically
-uses axes; `vcm axes on` also selects axes explicitly at 5m, and `vcm axes off`
-restores automatic selection. Allocation failures report stage, requested bytes,
-free heap and largest blocks before cleanup.
+uses axes. Run-memory failures report stage, requested bytes
+and the run-memory levels before cleanup.
 
 Console patterns use `vcm <frames per entry> <MODCOD ...>` (1–16 entries,
 hold 1–65535); the run must start at the first MODCOD. For example:
@@ -61,15 +59,13 @@ a radio-off pace. The sender checks scope before sending each update.
 
 These commands are for the operator; the latest placement changes are unmeasured.
 Use fresh output directories. Build/flash separately, store
-N0CALL for radio-off fixtures, close serial clients, and disconnect SPI jumpers
-before the on-chip loopback check. See the [self-check](../examples/self-check/README.md),
+N0CALL for radio-off fixtures and close serial clients. See the [self-check](../examples/self-check/README.md),
 [SPI check](spi-input.md) and [USB check](../examples/usb-send/README.md).
 
 ```sh
 export PORT=/dev/cu.usbmodem1101
 export RX="$PWD/notes/leansdr/src/apps/leandvb"
 python3 examples/self-check/check.py notes/vcm-layout-self --port "$PORT" --receiver "$RX"
-PORT="$PORT" RX="$RX" bash host/spi-board.sh notes/vcm-layout-spi
 PORT="$PORT" RX="$RX" python3 examples/usb-send/check.py notes/vcm-layout-usb
 python3 host/board.py --port "$PORT" 'vcm 1 4 11 13 17'
 python3 host/board.py --port "$PORT" 'dvbpace 4 5m 30'
@@ -79,7 +75,7 @@ python3 host/board.py --port "$PORT" 'vcm off'
 The self-check adds a 32-frame radio-off 4/11/13/17 dump and independent decode:
 CRC and sample geometry must agree, at least 30 contiguous exact full BBFRAMEs
 must include every requested MODCOD, and FEC must need no corrections.
-A 5 s VCM pace checks bank deadlines and the 20 KB Wi-Fi heap floor.
+A 5 s VCM pace checks bank deadlines and that at least 20 KB of heap stays free.
 Existing golden CRCs and paced timing gates remain intact.
 
 ## Two contained OTA reruns

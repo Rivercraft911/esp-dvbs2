@@ -4,13 +4,10 @@
 #include "stream_host.c"
 #undef main
 
-esp_err_t radio_s3_paced_run_rate(uint32_t seconds, uint32_t rate, radio_s3_fill_fn fn,
-                                void *ctx, radio_s3_stats_t *stats)
-{ (void)seconds; (void)rate; (void)fn; (void)ctx; (void)stats; abort(); }
-
-esp_err_t radio_s3_paced_wifi_rate(uint32_t seconds, uint32_t rate, radio_s3_fill_fn fn,
-                                 void *ctx, radio_s3_stats_t *stats)
+esp_err_t radio_s3_paced_run(uint32_t seconds, uint32_t rate, radio_s3_fill_fn fn, void *ctx,
+                             const radio_s3_options_t *options, radio_s3_stats_t *stats)
 {
+    (void)options;
     assert(seconds == 1 && rate == 40000000 && fn == fill_vcm);
     memset(stats,0,sizeof *stats);
     radio_s3_dry_stats_t dry;
@@ -44,6 +41,10 @@ int main(int argc, char **argv)
     if (sps == 8 && initial == 12) {
         native_internal_limit=16384; native_internal_largest=12288;
     }
+    // GCS input takes its slot block from internal run memory too (the CRC table came with spiinput).
+    const size_t ingress=control ? INGRESS_SLOTS*INGRESS_SLOT_BYTES : 0;
+    native_internal_limit+=ingress;
+    if (native_internal_largest < INGRESS_SLOTS*INGRESS_SLOT_BYTES) native_internal_largest=control ? INGRESS_SLOTS*INGRESS_SLOT_BYTES : native_internal_largest;
     const unsigned frames=control || ota ? 32 : 2*modes*hold;
     assert(!posix_memalign((void **)&banks,65536,2*sizeof *banks));
     bank_shift=37; // physical wrap and symbol cuts disagree at both 4/8 sps
@@ -87,37 +88,34 @@ int main(int argc, char **argv)
     size_t internal=0;
     for (unsigned i=0;i<64;++i)
         if (native_blocks[i].p && (native_blocks[i].caps&MALLOC_CAP_INTERNAL)) internal+=native_blocks[i].n;
-    if (!(sps == 8 && initial == 12)) assert(internal == 0);
-    printf("VCM n%u %s: internal heap %zu, store %zu, table %zu, context %zu, slots %u\n",sps,argv[6],internal,
+    if (!(sps == 8 && initial == 12)) assert(internal == ingress);
+    printf("VCM n%u %s: internal run memory %zu, store %zu, table %zu, context %zu, slots %u\n",sps,argv[6],internal,
            vcm_enc.vcm_store_bytes,vcm_enc.vcm_axes ? SHAPER_AXES_BYTES : 4*shaper_table_words(sps,dvb.table.bits),dvbs2_fast_size(),dvb.ring.nslots);
-    stop_encoder(); printf("}\n"); assert(!live_allocations);
+    stop_encoder(); printf("}\n"); assert(run_returned());
     if (control) { rewind(native_wire); }
     // All startup allocations fail cleanly, without touching the radio.
     if (!control) for (int i=0;i<allocations;++i) {
         fail_after=i;
         assert(!start_encoder("dvbdump",initial,128,0,sps,40000000));
-        assert(!live_allocations);
+        assert(run_returned());
     }
     fail_after=-1;
     native_task_fail=1;
     assert(!start_encoder("dvbdump",initial,128,0,sps,40000000));
-    assert(!live_allocations);
+    assert(run_returned());
     native_task_fail=0;
     // Exercise the formerly overflowing command path, including staged stack
     // telemetry. The native high-water value is a stub, not a board measurement.
     if (control) rewind(native_wire);
-    callsign="N0CALL";
-    dvbtx_wifi(initial,sps,40000000);
-    assert(!live_allocations);
     callsign=getenv("VCM_CALLSIGN") ? getenv("VCM_CALLSIGN") : "";
     for (unsigned repeat=0;repeat<2;++repeat) {
         if (control) rewind(native_wire);
         char iq[4096]; snprintf(iq,sizeof iq,"%s.iq",argv[3]);
         capture=fopen(iq,"wb"); assert(capture);
         dvbtx_dump(initial,frames,128,sps == 40 ? 10 : 1,0,sps,40000000);
-        fclose(capture); assert(!live_allocations);
+        fclose(capture); assert(run_returned());
     }
-    if (!control) dvbtx_pace(initial,1,128,0,sps,40000000);
+    if (!control) dvbtx_pace(initial,1,128,0,sps,40000000,false);
     if (native_wire) fclose(native_wire);
     // Admission is explicit, including TS and high-rate rejection.
     native_input=PV_TS;
@@ -127,9 +125,12 @@ int main(int argc, char **argv)
     dvbtx_vcm_command("4 4 13");
     assert(!start_encoder("dvbdump",4,128,0,4,40000000));
     dvbtx_vcm_command("on");
-    native_internal_limit=16384; native_internal_largest=4096;
+    // Internal run memory too small for the overlap cache: a clean, reported failure.
+    native_internal_limit=native_internal_largest=SIZE_MAX;
+    native_run[0].size=4096; native_run[1].size=0;
     assert(!start_encoder("dvbdump",13,128,0,8,40000000));
-    assert(!live_allocations);
+    assert(run_returned());
+    native_run[0].size=RUN_LOW_BYTES; native_run[1].size=RUN_HIGH_BYTES;
     dvbtx_vcm_command("off");
     free(phases); free(banks);
     return 0;

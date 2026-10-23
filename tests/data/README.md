@@ -15,21 +15,29 @@ Decimation is 10 for 1 Msym/s QPSK, 2 for 5 Msym/s QPSK, and 1 otherwise.
 CRCs cover the emitted little-endian int16 I/Q bytes. They include no receiver flush.
 
 `psk8_26m667_crcs.json` pins 16 nominal frame lengths at 80/3 Msym/s, MODCOD
-13/15/17, peak 128, pilots on and N0CALL. `psk8_26m667_frames.json` records the
-zero-based data-frame indices before which standard dummy frames occur; repeated
-indices mean a dummy pair. The five-symbol pulse and its three independent integer
-roundings are checked against `tests/reference/psk8_26m667.py`.
+13/15/17, peak 128, pilots on and N0CALL. The five-symbol pulse and its three independent
+integer roundings are checked against `tests/reference/psk8_26m667.py`.
 
-The 50/46-page dump queues deliberately use dummy fallback: model-regenerated CRCs are 3,631,096,604 (15; pairs before 4/7/10/13) and 1,787,558,147 (17; pairs before 2..12); 13 stays 2,061,900,610 with no dummies.
+A dump is not real time, so its bytes must not depend on how far the encoder got. Its fill
+waits at every frame boundary until the whole next frame is published, and never inserts a
+timing dummy (`lofty_mux.whole_frames`, set for `dvbdump` only; keyed runs and paces keep
+real-time admission). The wait ends when the encoder stops or fails, or after 2 s without a
+new page (no sender, or input that stops mid-frame). The dump then reports `ESP_FAIL`,
+`whole_frame_timeout` and `padded_bytes`: it still sends the announced bytes, zero-padded, so
+the host reads its final record. The pinned CRCs are therefore the data-only ones, computed from the
+host model: 2,061,900,610 (13), 1,873,478,180 (15) and 233,370,528 (17), 16 complete data
+frames each. `psk8_26m667_frames.json` repeats them as `data_only_crc32` with an empty
+`dummy_before`.
 
-These layouts match every sample of the saved 87b17a9 board dumps; the bb8fa84
-MODCOD 17 dump matches the same bytes. The original data-only CRCs remain pinned
-in `psk8_26m667_frames.json`. Native tests replay both data-only and dummy layouts
-and compare every word with the independent Python encoder/convolution, without
-board files. A dump's `frames` means sample duration, not its number of data frames.
-The receiver can only recover complete data frames: 16/14/12 here, with a final
-partial data frame at 15/17. Fill telemetry may also count dummies rendered beyond
-the saved interval, so it must not be subtracted from the nominal frame count.
+Earlier dumps let the fill race the encoder, so their dummy count depended on timing
+(pinned 0+8 for 15 and 2+21 for 17, later 0+3 to 2+14 on the same layout). Those layouts
+stay as `forced_dummy_before`/`forced_crc32` (zero-based data-frame indices before which a
+dummy occurs; repeated indices mean a pair; 3,631,096,604 for 15 with pairs before
+4/7/10/13, 1,787,558,147 for 17 with pairs before 2..12). They matched every sample of the
+87b17a9 board dumps. The native tests force not-ready admissions at those frames and
+compare every word with the independent Python encoder and convolution, so the dummy
+path stays covered without board files. A dump's `frames` means sample duration, not its
+number of data frames.
 
 Together the 76 fixtures cover every supported modulation/rate combination, plus
 several historical frame-count regressions. The stream test also compares every

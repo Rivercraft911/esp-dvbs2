@@ -1,0 +1,176 @@
+// TRM v1.8 1.7, Table 1.7-2: single issue, load-use interlocks.
+// Queue words contain three scaled table offsets.
+    .macro lofty_word offset,advance
+    extui a10,a8,0,13
+    extui a11,a8,9,15
+    extui a12,a8,20,10
+    add a10,a10,a5
+    add a11,a11,a6
+    add a12,a12,a7
+    ee.vld.128.ip q0,a10,0
+    extui a9,a8,0,10
+    ee.vld.128.ip q1,a11,16
+    addx2 a9,a9,a13
+    ee.vadds.s32.ld.incp q2,a9,q0,q0,q1
+    ee.vld.128.ip q3,a11,16
+    ee.vld.128.ip q5,a9,0
+    ee.vld.128.ip q1,a12,1024
+    ee.vadds.s32.ld.incp q3,a11,q6,q2,q3
+    ee.xorq q4,q0,q7
+    ee.vadds.s32.ld.incp q0,a12,q6,q6,q1
+    ee.vadds.s32.st.incp q4,a2,q5,q5,q3
+    ee.xorq q4,q6,q7
+    ee.vadds.s32.st.incp q4,a2,q5,q5,q0
+    .if \advance
+    addi a3,a3,\advance
+    .endif
+    l32i a8,a3,\offset
+    ee.xorq q4,q5,q7
+    ee.vst.128.ip q4,a2,16
+    .endm
+    .section .iram1.lofty,"ax"
+    .global lofty_render_pie
+    .global lofty_render_pages_pie
+    .type lofty_render_pie,@function
+    .type lofty_render_pages_pie,@function
+    // Keep the measured loop fetch position: entry at 4 mod 32 (stream_assert.ld).
+    .balign 32
+    .space 4
+lofty_render_pages_pie:
+    entry a1,32
+    mov a15,a6
+    s32i a4,a1,0
+    beqz a4,.Ldone
+    movi a4,128
+    j .Lsetup
+lofty_render_pie:
+    entry a1,32
+    movi a15,0
+    beqz a4,.Ldone
+.Lsetup:
+    movi a8,0x80200
+    ee.movi.32.q q7,a8,0
+    ee.movi.32.q q7,a8,1
+    ee.movi.32.q q7,a8,2
+    ee.movi.32.q q7,a8,3
+    movi a6,10240
+    add a6,a6,a5
+    movi a7,34816
+    add a7,a7,a5
+    addmi a13,a5,8192
+    l32i a8,a3,0
+.Lpage:
+    // Two words keep the hardware loop short and leave IRAM for the mux.
+    extui a14,a4,0,1
+    srli a4,a4,1
+    loopnez a4,.Lend
+    lofty_word 4,0
+    lofty_word 0,8
+.Lend:
+    loopnez a14,.Ltail
+    lofty_word 0,4
+.Ltail:
+    beqz a15,.Ldone
+    l32i a9,a15,0
+    addi a9,a9,1
+    memw
+    s32i a9,a15,0
+    l32i a9,a1,0
+    addi a9,a9,-1
+    beqz a9,.Ldone
+    s32i a9,a1,0
+    // Skip the guard and three metadata words. The next source is a page.
+    addi a3,a3,16
+    l32i a8,a3,0
+    movi a4,128
+    j .Lpage
+.Ldone:
+    retw
+    .size lofty_render_pie,.-lofty_render_pie
+    .size lofty_render_pages_pie,.-lofty_render_pages_pie
+
+    // Main 7391f86's cache indices; linker aligns this padding, not .iram1.
+    // ldgen sorts .loft0 before the .lofty code mapping.
+    .section .loft0,"ax"
+    .space 0x720
+// Eight four-symbol words -> eight offsets. Output aligned; source has 16 guard bytes.
+// prepare_16 takes an aligned source (every full queue page) and sets SAR_BYTE once.
+    .section .iram1.lofty_prepare,"ax"
+    .macro prepare_setup
+    entry a1,32
+    splat q5,0x01c001c0
+    splat q6,0xff80ff80
+    splat q7,0x003f003f
+    ee.zero.q q4
+    slli a5,a5,16
+    ee.movi.32.q q4,a5,3
+    movi a8,14
+    .endm
+    .macro prepare_body
+    ssai 4
+    ee.vsl.32 q2,q1
+    ee.andq q2,q2,q6
+    ssai 6
+    ee.vsr.32 q3,q0
+    ee.andq q3,q3,q7
+    ee.vsl.32 q1,q1
+    ee.andq q1,q1,q5
+    ee.orq q3,q3,q1
+    ee.vadds.s32 q1,q3,q3
+    ee.vadds.s32 q3,q3,q1
+    ee.vzip.16 q2,q3
+    ssai 3
+    ee.vsr.32 q2,q2
+    ee.vsr.32 q3,q3
+    ee.andq q0,q0,q7
+    ee.zero.q q1
+    ee.vzip.16 q0,q1
+    ssai 24
+    ee.vsl.32 q0,q0
+    ee.vsl.32 q1,q1
+    ee.orq q2,q2,q0
+    ee.orq q3,q3,q1
+    ee.vst.128.ip q2,a2,16
+    ee.vst.128.ip q3,a2,16
+    .endm
+    .macro splat q,value
+    movi a8,\value
+    ee.movi.32.q \q,a8,0
+    ee.movi.32.q \q,a8,1
+    ee.movi.32.q \q,a8,2
+    ee.movi.32.q \q,a8,3
+    .endm
+    .global lofty_prepare_pie
+    .type lofty_prepare_pie,@function
+    .align 4
+lofty_prepare_pie:
+    prepare_setup
+    wur.sar_byte a8
+    loopnez a4,.Lprepare_end
+    ee.ld.128.usar.ip q0,a3,16
+    ee.vld.128.ip q1,a3,0
+    ee.src.q q0,q0,q1
+    wur.sar_byte a8
+    ee.src.q.qup q1,q4,q0
+    prepare_body
+.Lprepare_end:
+    addi a3,a3,-2
+    l16ui a2,a3,0
+    retw
+    .size lofty_prepare_pie,.-lofty_prepare_pie
+
+    .global lofty_prepare_16
+    .type lofty_prepare_16,@function
+    .align 4
+lofty_prepare_16:
+    prepare_setup
+    wur.sar_byte a8
+    loopnez a4,.Lprepare_16_end
+    ee.vld.128.ip q0,a3,16
+    ee.src.q.qup q1,q4,q0
+    prepare_body
+.Lprepare_16_end:
+    addi a3,a3,-2
+    l16ui a2,a3,0
+    retw
+    .size lofty_prepare_16,.-lofty_prepare_16

@@ -1,0 +1,31 @@
+# Only 8PSK 26m667 loads and locks this control code in instruction cache: lofty.c's
+# lofty_samples and the stream mux that the TX app marks LOFTY_TEXT. Keep the vector
+# renderer in IRAM. All custom literals precede the code.
+[sections:lofty_cache_index]
+entries:
+    .loft0
+
+[scheme:lofty_cache_index]
+entries:
+    lofty_cache_index -> flash_text
+
+[mapping:lofty_cache_index]
+archive: *
+entries:
+    * (lofty_cache_index);
+        lofty_cache_index -> flash_text ALIGN(4096, pre) KEEP()
+
+[sections:lofty_text]
+entries:
+    .lofty.literal
+    .lofty
+
+[scheme:lofty_text]
+entries:
+    lofty_text -> flash_text
+
+[mapping:lofty_text]
+archive: *
+entries:
+    * (lofty_text);
+        lofty_text -> flash_text ALIGN(32, pre, post) SURROUND(lofty_text)

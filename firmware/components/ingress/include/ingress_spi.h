@@ -25,9 +25,9 @@ typedef struct {
     int sclk, cs, d0, d1, d2, d3, ready; /* seven distinct GPIO numbers */
     bool (*received)(void *ctx); /* optional EOF ISR notification; return task-woken flag */
     void *ctx;
-    uint8_t *buffers[INGRESS_SLOTS]; /* optional borrowed internal DMA slots, each 1336 B */
+    uint8_t *buffers[INGRESS_SLOTS]; /* internal DMA slots, each 1336 B, owned by the caller */
+    uint32_t *crc; /* 1024-word internal CRC-32 table space, owned by the caller */
     bool replay; /* diagnostic: presealed ring, DMA idle, no external sender */
-    bool loopback;  /* the pads are driven by an on-chip master: only connect the slave inputs */
     bool pv; /* raw PV-SPI v1, single-line, no command/address/dummy prefix; <=20 MHz */
 } ingress_spi_config;
 
@@ -37,7 +37,11 @@ typedef struct {
     uint32_t isr_cycles;    /* CPU cycles inside the interrupt callback (not entry and exit) */
 } ingress_spi_stats;
 
-/* Start on the core that will consume: the GDMA interrupt is allocated on the calling core. */
+/* Once per input mode, on the core that will consume (the interrupt is allocated there):
+ * claim the bus and GDMA channel (quad) or the IDF slave driver (raw). Sessions then make no
+ * heap calls. ingress_spi_release gives them back; it does nothing during a session. */
+esp_err_t ingress_spi_provision(bool raw);
+void ingress_spi_release(void);
 esp_err_t ingress_spi_start(const ingress_spi_config *cfg, ingress_ring **ring);
 void ingress_spi_stop(void);
 void ingress_spi_get_stats(ingress_spi_stats *out);

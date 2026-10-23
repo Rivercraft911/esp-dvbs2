@@ -125,16 +125,6 @@ def test_coordinator():
                        ("underruns", 1), ("encoder_failed", True), ("fatal_late", 1)):
         rejects(ota.board_result, [dict(row, **{key: value})], args, "N0CALL")
 
-    solo = ota.parser().parse_args(["--modcod", "17", "--rate", "10m", "--phy-solo", "--plan"])
-    assert ota.tx_command(solo).endswith(" --phy-solo")
-    # Solo telemetry must prove teardown before playback setup and clean release.
-    solo_row = dict(row, modcod=17, symbol_rate=10000000, phy_solo=True,
-                    wifi_deinit_at_us=2, session=dict(at_us=3, wifi_initialized=False,
-                    wifi_mode_result=0x3001, phy_users=2, wifi_irq_routes=[0,0], irq_sampled_cores=3),
-                    after=dict(wifi_initialized=False, phy_users=0))
-    assert ota.board_result([solo_row], solo, "N0CALL") == row["frames_encoded"]
-    rejects(ota.board_result, [dict(solo_row, session={})], solo, "N0CALL")
-
 
 def test_capture_worker():
     # Exercise the real capture loop against a fake UHD API, including receive

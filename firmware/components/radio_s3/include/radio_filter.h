@@ -21,7 +21,7 @@ typedef struct {
     radio_filter_regs_t before, active, end;
 } radio_filter_stats_t;
 
-/* Configuration only. No PHY access until a keyed radio_s3_run call. AUTO selects
+/* Configuration only. No PHY access until a keyed run. AUTO selects
  * WIDE above 20 MHz total occupied bandwidth, based on the earlier +/-10 MHz
  * over-the-air observation, not a calibrated passband specification. */
 radio_filter_mode_t radio_filter_get(void);

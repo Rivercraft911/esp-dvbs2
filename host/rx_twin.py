@@ -76,7 +76,7 @@ def pulse(rate=1e6, isi=0.0):
     so a stream of unit symbols has unit rms (sum of p^2 on a 16-point grid per symbol = 16).
     isi adds the pulse one symbol either side at that weight: the analog filters' residual ISI
     on the real link at 5 Msym/s."""
-    text = (ROOT / "firmware/main/shaper_taps.h").read_text()
+    text = (ROOT / "firmware/components/shaper/include/shaper_taps.h").read_text()
     taps = np.array([int(v) for v in re.search(TAPS[rate] + r"\[\d+\] = \{([^}]*)\}", text)
                      .group(1).split(",") if v.strip()], float)
     n = 16 * GRID
