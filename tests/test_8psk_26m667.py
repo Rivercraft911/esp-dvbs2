@@ -73,7 +73,7 @@ def check(out, receiver=None):
         assert r['fill_kernel'] == 'lofty-queue' and r['ring_format'] == 'words'
         assert r['warmup_frames'] == 3 and r['bch_variant'] == ('nibble' if mc == 17 else 'split-pair')
         assert r['queue_wake_policy'] == 'bank' and r['queue_wakes'] > 0
-        assert r['bch_pair_bytes'] == (0 if mc == 17 else 4096)
+        assert r['bch_pair_bytes'] == (0 if mc == 17 else 8192)
         assert r['encoder_priority'] == 24
         assert r['dummy_startup'] == r['dummy_steady'] == 0
         assert r['admission_pages'] == 9 and r['admission_wait_pages'] == 26

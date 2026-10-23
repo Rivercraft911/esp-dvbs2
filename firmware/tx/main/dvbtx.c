@@ -1050,7 +1050,7 @@ static size_t start_encoder_options(const char *cmd, unsigned modcod, unsigned l
         }
     }
     if (lofty && mode->t > 8) {
-        // T1's low halves are read every two bytes: keep them internal, beside T0.
+        // T1 is read every two bytes: keep it internal, beside T0.
         enc.pair_bch = heap_caps_aligned_alloc(16,DVBS2_BCH_PAIR_BYTES,internal);
         if (!enc.pair_bch || dvbs2_fast_cache_bch_pair(enc.fast,enc.pair_bch)) {
             printf("@{\"cmd\":\"%s\",\"error\":\"BCH pair allocation failed\"}\n",cmd);

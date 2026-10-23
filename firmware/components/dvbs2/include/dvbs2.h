@@ -132,11 +132,11 @@ int dvbs2_fast_prepare(dvbs2_fast *f, const dvbs2_mode *mode, int pilots, unsign
  * Returns -1 for invalid context/alignment or t = 8. No allocation is hidden. */
 #define DVBS2_BCH_CACHE_BYTES 8192
 int dvbs2_fast_cache_bch(dvbs2_fast *f, uint8_t *table);
-/* Optional t=10/12 pairs, even byte counts only. Call after cache_tables,
- * with a separate aligned low table. Uses the resident table's high padding;
- * both buffers live until prepare/cache_bch. No internal allocation. */
-#define DVBS2_BCH_PAIR_BYTES 4096
-int dvbs2_fast_cache_bch_pair(dvbs2_fast *, uint8_t *low);
+/* Optional t=10/12 pairs, even byte counts only. Call after cache_tables, with a
+ * separate 16-byte-aligned table of this size. Rewrites the resident byte table in
+ * place; both buffers live until prepare/cache_bch. No internal allocation. */
+#define DVBS2_BCH_PAIR_BYTES 8192
+int dvbs2_fast_cache_bch_pair(dvbs2_fast *, uint8_t *pair);
 /* The BCH path dvbs2_fast_bch takes after prepare/cache: "pair" (two bytes per step, t = 8),
  * "split-pair" (two bytes, T1's low half separate), "byte" or "nibble". table and pair receive
  * the table addresses that path reads (pair is NULL unless split-pair). */

@@ -223,68 +223,63 @@ dvbs2_pie_bch_byte:
     retw
     .size dvbs2_pie_bch_byte, . - dvbs2_pie_bch_byte
 
-/* Two-byte t=10/12 reduction. T0 low/high resident, T1 high in T0's
- * padding and T1 low in the caller's 4 KiB table. High loads preserve their
- * zero upper halves. R' = R>>16 XOR T1[u0] XOR T0[u1] in byte order.
- * msg, pairs, T0, T1-low, remainder. */
+/* Two-byte t=10/12 reduction, remainder one byte up in q1:q0 (byte 0 unused):
+ * R' = R>>16 XOR T1[u0] XOR T0[u1] with u0, u1 at bytes 1, 2. Both table indices
+ * come from one EXTUI each, with four junk low address bits that VLD ignores
+ * (TRM 1.8.88-89). Tables: 32-byte register images, low halves at 16v, high
+ * halves at 4096 + 16v (fast.c dvbs2_fast_cache_bch_pair).
+ * Message bytes ride above the remainder: each 16-byte group first XORs message
+ * bytes 16g+15 .. 16g+30 into q1, so pair k always finds its input at bytes 1, 2.
+ * The final group reads its lookahead from io (the zero-padded partial vector),
+ * then tail pairs finish, and io receives the 32-byte register.
+ * void dvbs2_pie_bch_shift(msg, groups >= 1, T0, T1, io, tail_pairs) */
     .section .iram1,"ax"
     .align 4
-    .global dvbs2_pie_bch_pair32
-    .type dvbs2_pie_bch_pair32,@function
-    .macro bch_pair32_step input=0
-    ee.movi.32.a q0,a6,0
-    .if \input
-    l16ui a7,a2,0
-    xor a6,a6,a7
-    .endif
-    extui a8,a6,0,8
-    slli a8,a8,4
-    extui a10,a6,8,8
-    slli a10,a10,4
-    add a12,a8,a5
-    add a8,a8,a11
+    .global dvbs2_pie_bch_shift
+    .type dvbs2_pie_bch_shift,@function
+    .macro bch_shift_step
+    ee.movi.32.a q0,a9,0
+    extui a8,a9,4,12
+    extui a10,a9,12,12
+    add a8,a8,a5
     add a10,a10,a4
     ee.srci.2q q1,q0,1
-    ee.vld.128.ip q2,a12,0
-    ee.vld.l.64.ip q3,a8,0
+    ee.vld.128.xp q2,a8,a13
+    ee.vld.128.ip q3,a8,0
     ee.vld.128.xp q4,a10,a13
-    ee.vld.l.64.ip q5,a10,0
+    ee.vld.128.ip q5,a10,0
     ee.xorq q0,q0,q2
     ee.xorq q1,q1,q3
     ee.xorq q0,q0,q4
     ee.xorq q1,q1,q5
     .endm
-dvbs2_pie_bch_pair32:
-    entry a1,80
-    s32i a6,a1,16
+dvbs2_pie_bch_shift:
+    entry a1,32
     movi a13,4096
-    add a11,a4,a13
-    addi a11,a11,8
-    ee.zero.q q0
+    movi a8,15
+    wur.sar_byte a8
+    ee.zero.q q7
     ee.zero.q q1
-    ee.zero.q q3
-    ee.zero.q q5
-    srli a14,a3,3
-    extui a3,a3,0,3
-    beqz a14,.Lpair32_tail
-.Lpair32_loop:
     ee.vld.128.ip q6,a2,16
-    ee.xorq q0,q0,q6
+    ee.src.q q0,q7,q6                   /* message bytes 0..14 at bytes 1..15 */
+    addi a14,a3,-1
+.Lshift_group:
+    moveqz a2,a6,a14                    /* the final group's lookahead */
+    ee.vld.128.ip q7,a2,16
+    ee.src.q.qup q2,q6,q7               /* message 16g+15 .. 16g+30 */
+    ee.xorq q1,q1,q2
     .rept 8
-    bch_pair32_step
+    bch_shift_step
     .endr
     addi a14,a14,-1
-    bnez a14,.Lpair32_loop
-.Lpair32_tail:
-    loopnez a3,.Lpair32_end
-    bch_pair32_step 1
-    addi a2,a2,2
-.Lpair32_end:
-    l32i a6,a1,16
+    bgez a14,.Lshift_group
+    loopnez a7,.Lshift_tail
+    bch_shift_step
+.Lshift_tail:
     ee.vst.128.ip q0,a6,16
-    ee.vst.128.ip q1,a6,16
+    ee.vst.128.ip q1,a6,0
     retw
-    .size dvbs2_pie_bch_pair32,.-dvbs2_pie_bch_pair32
+    .size dvbs2_pie_bch_shift,.-dvbs2_pie_bch_shift
 
     .section .iram1,"ax"
 
