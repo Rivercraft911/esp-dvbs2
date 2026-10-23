@@ -122,37 +122,48 @@ def check(out, receiver=None):
 
 
 def check_dump_layouts(out, exe, structures):
-    """Reproduce board dump structure without silicon clocks or saved board files."""
+    """Reproduce board dump structure without silicon clocks or saved board files.
+
+    Board dumps wait for whole frames, so the pinned layout has no dummies; the forced
+    layouts replay the dummy path at the same pinned positions as earlier board dumps."""
     golden = json.loads((ROOT/'tests/data/psk8_26m667_crcs.json').read_text())
     for mc in (13,15,17):
         key = f'{mc}/3/80/16'
-        before = tuple(structures[key]['dummy_before'])
-        symbols = onair.symbols(mc,16,dummy_before=before,callsign='N0CALL')
-        phases = np.rint(np.angle(symbols)*4/np.pi).astype(int)%8
-        model = lofty.iq(lofty.shape(phases))[:16*22194*3]
-        model = np.column_stack((model.real,model.imag)).astype('<i2')
-        assert zlib.crc32(model.tobytes()) == golden[key]
-        env = dict(os.environ)
-        if before:
-            starts = sorted(set(before))
-            assert all(before.count(f) == 2 for f in starts)
-            periods = {b-a for a,b in zip(starts,starts[1:])}
-            assert len(periods) == 1
-            env.update(DUMMY_FROM_FRAME=str(starts[0]), DUMMY_FRAME_PERIOD=str(periods.pop()))
-        iq = out/f'layout-{mc}.iq'
-        run = subprocess.run([str(exe),str(mc),'3',str(iq),'N0CALL','80000000','16'],
-                             env=env,capture_output=True,text=True,timeout=90)
-        (out/f'layout-{mc}.log').write_text(run.stdout+run.stderr)
-        assert run.returncode == 0,(run.stdout,run.stderr)
-        actual = np.fromfile(iq,dtype='<i2').reshape(-1,2)
-        np.testing.assert_array_equal(actual,model)
-        rows = [json.loads(l[1:]) for l in run.stdout.splitlines() if l.startswith('@{')]
-        dumps = [r for r in rows if 'crc32' in r]
-        assert len(dumps) == 2 and all(r['crc32'] == golden[key] for r in dumps)
-        assert all(r['queue_empty'] == r['underruns'] == r['overlap_mismatches'] == 0 for r in dumps)
-        layout = decode.stream_layout(mc,16,before)
-        assert layout['expected_payload_frames'] == {13:16,15:14,17:12}[mc]
-        print(mc,'pinned data/dummy layout, every word exact; CRC',golden[key],flush=True)
+        layouts = [(tuple(structures[key]['dummy_before']),golden[key],16)]
+        if 'forced_dummy_before' in structures[key]:
+            layouts.append((tuple(structures[key]['forced_dummy_before']),
+                            structures[key]['forced_crc32'],{15:14,17:12}[mc]))
+        for before,crc,complete in layouts:
+            check_layout(out,exe,mc,before,crc,complete)
+
+
+def check_layout(out, exe, mc, before, crc, complete):
+    symbols = onair.symbols(mc,16,dummy_before=before,callsign='N0CALL')
+    phases = np.rint(np.angle(symbols)*4/np.pi).astype(int)%8
+    model = lofty.iq(lofty.shape(phases))[:16*22194*3]
+    model = np.column_stack((model.real,model.imag)).astype('<i2')
+    assert zlib.crc32(model.tobytes()) == crc
+    env = dict(os.environ)
+    if before:
+        starts = sorted(set(before))
+        assert all(before.count(f) == 2 for f in starts)
+        periods = {b-a for a,b in zip(starts,starts[1:])}
+        assert len(periods) == 1
+        env.update(DUMMY_FROM_FRAME=str(starts[0]), DUMMY_FRAME_PERIOD=str(periods.pop()))
+    iq = out/f'layout-{mc}-{len(before)}.iq'
+    run = subprocess.run([str(exe),str(mc),'3',str(iq),'N0CALL','80000000','16'],
+                         env=env,capture_output=True,text=True,timeout=90)
+    (out/f'layout-{mc}-{len(before)}.log').write_text(run.stdout+run.stderr)
+    assert run.returncode == 0,(run.stdout,run.stderr)
+    actual = np.fromfile(iq,dtype='<i2').reshape(-1,2)
+    np.testing.assert_array_equal(actual,model)
+    rows = [json.loads(l[1:]) for l in run.stdout.splitlines() if l.startswith('@{')]
+    dumps = [r for r in rows if 'crc32' in r]
+    assert len(dumps) == 2 and all(r['crc32'] == crc for r in dumps)
+    assert all(r['queue_empty'] == r['underruns'] == r['overlap_mismatches'] == 0 for r in dumps)
+    layout = decode.stream_layout(mc,16,before)
+    assert layout['expected_payload_frames'] == complete
+    print(mc,'data/dummy layout',before or 'none',': every word exact; CRC',crc,flush=True)
 
 
 def check_dummies(out, receiver=None):

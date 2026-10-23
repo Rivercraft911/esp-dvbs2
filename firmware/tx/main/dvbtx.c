@@ -140,6 +140,7 @@ typedef struct {
     struct { uint32_t words, cycles; } handoff[2];
     uint32_t queue_ready;
     bool queue_auto;
+    bool whole_frames;             // dumps: wait for each whole frame, never a timing dummy
     uint32_t first_dummy_frame;
     unsigned resident_limit;
     uint32_t render_warm_cycles;
@@ -769,6 +770,7 @@ static size_t start_encoder_options(const char *cmd, unsigned modcod, unsigned l
         lofty_mux.admission_gap = UINT32_MAX;
         lofty_mux.admission_pages = LOFTY_FRAME_PAGES | (LOFTY_FRAME_PAGES<<8);
         lofty_mux.queue_auto = auto_pages;
+        lofty_mux.whole_frames = !strcmp(cmd,"dvbdump");
     }
     dvb.queue_pages = lofty ? (modcod == 17 ? 46 : modcod == 13 ? LOFTY_MAX_PAGES : LOFTY_PAGES) : MACHINE_PAGES;
     if (lofty && lofty_mux.queue_auto) dvb.queue_pages = 0; // fixed in radio_s3_stream_ready

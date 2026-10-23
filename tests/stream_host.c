@@ -107,6 +107,9 @@ static int checked_task(void (*fn)(void *), const char *name, unsigned stack, vo
     // page cursors and the 64-bit symbol timeline must remain continuous.
     if (dvb.lofty) {
         assert(priority == MOON_PRIORITY);
+        // Forced not-ready admissions replay the dummy path inside a dump.
+        if (getenv("FORCE_DUMMIES") || getenv("FORCE_DUMMY_FRAME") || getenv("DUMMY_FROM_FRAME"))
+            lofty_mux.whole_frames = false;
 #ifdef QUEUE_TEST_PAGES
         assert(QUEUE_TEST_PAGES <= dvb.queue_pages);
         dvb.queue_pages = QUEUE_TEST_PAGES;

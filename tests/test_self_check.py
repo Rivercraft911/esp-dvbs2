@@ -58,8 +58,12 @@ def test_decode():
 
 def test_dummy_decode():
     structures = json.loads((ROOT/"tests/data/psk8_26m667_frames.json").read_text())
-    for mc, full, dummies in ((13,16,0),(15,14,8),(17,12,22)):
-        before = structures[f"{mc}/3/80/16"]["dummy_before"]
+    # Board dumps wait for whole frames: the pinned layouts have no dummies. The forced
+    # layouts keep the dummy schedule that earlier, timing-dependent dumps produced.
+    for mc, field, full, dummies in ((13,"dummy_before",16,0),(15,"dummy_before",16,0),
+                                     (17,"dummy_before",16,0),(15,"forced_dummy_before",14,8),
+                                     (17,"forced_dummy_before",12,22)):
+        before = structures[f"{mc}/3/80/16"][field]
         layout = decode.stream_layout(mc,16,before)
         assert layout["expected_payload_frames"] == full
         assert layout["expected_dummy_frames"] == dummies
@@ -77,7 +81,7 @@ def test_dummy_decode():
     status = "FRAMELOCK 1\n" + "LDPCCORR = 0\nBCHCORR = 0\n" * 11
     report = decode.summarize(status,frames,got)
     assert report["payload_frames"] == 11 and report["bb_frames"] == 13
-    before = structures["17/3/80/16"]["dummy_before"]
+    before = structures["17/3/80/16"]["forced_dummy_before"]
     with tempfile.TemporaryDirectory() as tmp:
         capture = Path(tmp)/"dump.cfile"
         capture.write_bytes(bytes(8))
