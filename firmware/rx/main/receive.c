@@ -75,6 +75,11 @@ static void decoder(void *arg)
                                 (int16_t)length, fec.iterations, fec.failed_checks};
         usb_serial_jtag_write_bytes(&rec, sizeof rec, portMAX_DELAY);
         if (length > 0) usb_serial_jtag_write_bytes(payload, length, portMAX_DELAY);
+        /* A failed frame carries its first sample and soft bits for host diagnosis. */
+        if (length < 0) {
+            usb_serial_jtag_write_bytes(&f->header_sample, 8, portMAX_DELAY);
+            usb_serial_jtag_write_bytes(f->llr, RX_SHORT_BITS, portMAX_DELAY);
+        }
         xQueueSend(r->empty, &i, portMAX_DELAY);
     }
     s->decoder_stack_free = uxTaskGetStackHighWaterMark(NULL);

@@ -28,6 +28,7 @@ from dvbs2 import RATES
 from dvbs2_tables import BCH_PARAMS
 
 RECORD = struct.Struct("<IIihhHH")
+LLR_BYTES = 16200
 MAGIC, END = 0x46524453, -2
 
 
@@ -79,8 +80,12 @@ def receive(port: str, command: str, timeout: float):
                     streaming, ended = False, True
                     continue
                 payload = read_exact(link, head[4], deadline) if head[4] > 0 else b""
-                frames.append(dict(zip(("sequence", "cfo_hz", "mer_cdb", "length", "iterations",
-                                        "failed_checks"), head[1:]), payload=payload))
+                frame = dict(zip(("sequence", "cfo_hz", "mer_cdb", "length", "iterations",
+                                  "failed_checks"), head[1:]), payload=payload)
+                if head[4] == -1:
+                    frame["header_sample"] = struct.unpack("<Q", read_exact(link, 8, deadline))[0]
+                    frame["llr"] = read_exact(link, LLR_BYTES, deadline).hex()
+                frames.append(frame)
                 continue
             line += link.read(1)
             if not line.endswith(b"\n"):
@@ -175,9 +180,16 @@ def main() -> int:
         before, frames, after = receive(port, command, timeout)
     summary = dict(command=command, replay=str(a.replay) if a.replay else None, board=before + after,
                    check=check(frames, a.modcod, a.callsign, a.tx_frames),
-                   frames=[{k: v for k, v in f.items() if k != "payload"} for f in frames[:3]])
+                   frames=[{k: v for k, v in f.items() if k != "payload"} for f in frames[:3]],
+                   failed=[{k: v for k, v in f.items() if k != "payload"} | {"index": n}
+                           for n, f in enumerate(frames) if f["length"] < 0],
+                   around_failed=[{k: v for k, v in frames[m].items() if k not in ("payload", "llr")}
+                                  for n, f in enumerate(frames) if f["length"] < 0
+                                  for m in range(max(0, n - 2), min(len(frames), n + 3))])
     stamp = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
     print(json.dumps(summary["check"]))
+    for record in summary["failed"]:
+        print(json.dumps({"failed_frame": {k: v for k, v in record.items() if k != "llr"}}))
     for record in after:
         print(json.dumps(record))
     if a.out:

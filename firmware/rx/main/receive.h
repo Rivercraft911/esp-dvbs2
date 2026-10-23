@@ -5,7 +5,8 @@
 #include "dvbs2rx.h"
 
 /* One binary record per frame on USB, followed by length payload bytes when
- * length > 0. A record with length RECEIVE_END closes the stream. */
+ * length > 0, or by the 8-byte header sample index and RX_SHORT_BITS LLRs when the
+ * frame failed (-1). A record with length RECEIVE_END closes the stream. */
 #define RECEIVE_MAGIC 0x46524453U   /* "SDRF" */
 #define RECEIVE_END (-2)
 typedef struct __attribute__((packed)) {

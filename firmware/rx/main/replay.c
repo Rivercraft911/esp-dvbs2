@@ -86,6 +86,11 @@ esp_err_t replay_run(unsigned modcod, unsigned skip, replay_stats_t *s)
                                 (int16_t)length, fec.iterations, fec.failed_checks};
         usb_serial_jtag_write_bytes(&rec, sizeof rec, portMAX_DELAY);
         if (length > 0) usb_serial_jtag_write_bytes(payload, length, portMAX_DELAY);
+        /* A failed frame carries its first sample and soft bits for host diagnosis. */
+        if (length < 0) {
+            usb_serial_jtag_write_bytes(&frame.header_sample, 8, portMAX_DELAY);
+            usb_serial_jtag_write_bytes(frame.llr, RX_SHORT_BITS, portMAX_DELAY);
+        }
     }
     receive_record_t end = {RECEIVE_MAGIC, 0, 0, 0, RECEIVE_END, 0, 0};
     usb_serial_jtag_write_bytes(&end, sizeof end, portMAX_DELAY);
