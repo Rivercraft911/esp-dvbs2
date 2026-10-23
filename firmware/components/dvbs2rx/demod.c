@@ -1366,9 +1366,10 @@ static uint32_t odd_bits(uint64_t x)
 }
 
 /* One timing phase's 32 new signs w (its first candidate in bit 31) against the header:
- * candidate j's register is (r2:r1:r0:w) >> (31 - j). Every candidate whose 3 newest signs
+ * candidate j's register is (r2:r1:r0:w) >> (31 - j). Every candidate whose 8 newest signs
  * match is found at once from the shifted words; only those count misses, on the SOF's 25 and
- * then all 89. Hits append to (k, m) in candidate order. */
+ * then all 89. Eight, not fewer: a tone gives one sign throughout, and the newest three terms
+ * of some headers (MODCOD 16) are equal. Hits append to (k, m) in candidate order. */
 static unsigned match(rx_demod_t *d, unsigned ph, uint32_t w, uint32_t *hit_k, unsigned *hit_m,
                       unsigned hits)
 {
@@ -1381,8 +1382,10 @@ static unsigned match(rx_demod_t *d, unsigned ph, uint32_t w, uint32_t *hit_k, u
     if (fill + 31 < HDR) {
         return hits;                             /* no register is complete yet */
     }
-    uint32_t m = ~(w ^ (0u - (p & 1))) & ~((w >> 1 | r0 << 31) ^ (0u - (p >> 1 & 1))) &
-                 ~((w >> 2 | r0 << 30) ^ (0u - (p >> 2 & 1)));
+    uint32_t m = ~(w ^ (0u - (p & 1)));
+    for (unsigned j = 1; j < 8; ++j) {
+        m &= ~((w >> j | r0 << (32 - j)) ^ (0u - (p >> j & 1)));
+    }
     m &= ~0u >> (fill >= HDR ? 0 : HDR - fill);  /* candidates from HDR - fill */
     while (m) {
         unsigned s = 31 - (unsigned)__builtin_clz(m);
