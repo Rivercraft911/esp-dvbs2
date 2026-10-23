@@ -168,7 +168,7 @@ cannot fragment that block. Cold cache tails, extra BCH data, dummy descriptors
 and prepared input use PSRAM. These allocations exist only for 8PSK `26m667`.
 The vector renderer stays in IRAM. Its small control path is flash-backed and
 locked in instruction cache only while this mode is active, occupying at most
-one 4 KiB way of the configured 16 KiB cache. Setup repeats after Wi-Fi starts;
+one 4 KiB way of the configured 16 KiB cache. Setup repeats once the radio worker is ready;
 cleanup unlocks it. Other modes retain their own memory layouts.
 
 The shared 65,536-byte shaping store holds the complete pulse table, queue and
@@ -181,12 +181,12 @@ stream mux, with no extra queue allocation:
 Each page contains 128 four-symbol descriptors, a prefetch guard and metadata,
 representing up to 1,536 samples. A normal 22,194-symbol frame needs 44 pages.
 Ten spare pages let mapping bursts overlap playback; mean encoder time alone
-was insufficient to choose the depth. After Wi-Fi and worker allocations exist,
+was insufficient to choose the depth. After the worker allocations exist,
 startup samples free internal heap and its command low-water mark. It selects
 all 54 resident pages only with at least 20,000 B minimum free and 22,048 B
 currently free (including a 2,048 B transient guard); otherwise it aborts before
-playback. It then prefills the queue without allocating from Wi-Fi's heap.
-Radio-off dumps use 54/50/46 pages at MODCOD 13/15/17 without Wi-Fi.
+playback. It then prefills the queue without allocating.
+Radio-off dumps use 54/50/46 pages at MODCOD 13/15/17.
 
 Payload, BB, BCH and LDPC for the next frame run before waiting for pages; only
 mapping and PL publication block. Scratch cannot be reused until the mapped
@@ -244,7 +244,7 @@ may trail by a unit. If it trails by two, the interrupt takes back the newest ba
 started; the loss reaches the demodulator as a jump in the sample index.
 
 Wi-Fi starts only to power and calibrate the PHY. The run holds the PHY through the
-Bluetooth modem bit, as `physolo` does for the transmitter, keeps the Wi-Fi clock domain
+Bluetooth modem bit, keeps the Wi-Fi clock domain
 referenced and deinitializes Wi-Fi. Stopping Wi-Fi also clears bit 1 of
 `SYSCON_WIFI_BB_CFG_REG`, which the dump needs: without it the samples hold a constant.
 The receiver sets it again; a diff of the radio registers with Wi-Fi up and stopped found it.
@@ -398,7 +398,7 @@ The compact CI suite tests the Python reference against standard vectors and ind
 stage digests, compares every portable C encoder stage with Python, and runs the actual
 stream lifecycle with host task stubs. All pinned dump CRCs must remain exact. The
 fractional stream is also checked sample by sample against independent integer convolution.
-Allocation failures, post-Wi-Fi heap admission, dummy transitions, repeated commands, frame seams,
+Allocation failures, heap admission, dummy transitions, repeated commands, frame seams,
 bank wraps and counter wrap are covered.
 Host clocks and heaps are synthetic; only [the board example](../examples/self-check/README.md)
 can check deadlines and startup memory. RF decoding and spectral measurements remain separate work.

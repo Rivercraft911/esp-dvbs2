@@ -56,7 +56,7 @@ static const dvbs2_mode *tx_find_mode(unsigned modcod)
 #define TAPS (9 * 40)
 #define WORST_PEAK 718.4            // conservative sqrt(2)*508 LSB axis bound, before rounding
 #define SEED 2026
-#define ENCODER_PRIORITY 5          // above the command loop, below the Wi-Fi and IPC tasks
+#define ENCODER_PRIORITY 5          // above the command loop, below the IPC tasks
 #define MOON_PRIORITY (configMAX_PRIORITIES - 1) // bounded encoder bursts, then queue backpressure
 #define ENCODER_STACK 2048
 // Samples, including the first bank's extra lead. Later banks re-read 2112 words, or 640 on the
@@ -157,7 +157,7 @@ _Static_assert(LOFTY_MUX_AT+sizeof(lofty_mux_t) == sizeof shaper_store, "table, 
 #define LOFTY_PAGE_CYCLES (23*LOFTY_BLOCKS) // single-issue lower bound, renderer trace
 #define LOFTY_MAX_PAGES 54
 #define LOFTY_HEAP_FLOOR 20000u
-#define LOFTY_HEAP_GUARD 2048u // above the measured 1816-byte cold Wi-Fi dip
+#define LOFTY_HEAP_GUARD 2048u
 #define LOFTY_RESERVE_PAGES 9 // 4606 symbols, including the two-symbol prefix
 _Static_assert(LOFTY_BLOCKS == MACHINE_PAGE_BLOCKS,
                "both queues span the same number of samples per page");
@@ -791,7 +791,7 @@ static size_t start_encoder_options(const char *cmd, unsigned modcod, unsigned l
         lofty_mux.queue_auto = auto_pages;
     }
     dvb.queue_pages = lofty ? (modcod == 17 ? 46 : modcod == 13 ? LOFTY_MAX_PAGES : LOFTY_PAGES) : MACHINE_PAGES;
-    if (lofty && lofty_mux.queue_auto) dvb.queue_pages = 0; // fixed after Wi-Fi start
+    if (lofty && lofty_mux.queue_auto) dvb.queue_pages = 0; // fixed in radio_s3_stream_ready
     if (lofty) lofty_mux.resident_limit = dvb.queue_pages < LOFTY_STORED ? dvb.queue_pages : LOFTY_STORED;
     dvb.wake_pages = lofty ? LOFTY_WAKE : MACHINE_WAKE_PAGES;
     dvb.pages = NULL;
@@ -993,7 +993,7 @@ static size_t start_encoder_options(const char *cmd, unsigned modcod, unsigned l
         store_used += DVBS2_BCH_CACHE_BYTES;
     }
     // The slow 8-sps 8PSK path already uses cached PSRAM for its workspace.
-    // Keep its context there too when SPI is selected, reserving internal RAM for Wi-Fi.
+    // Keep its context there too when SPI is selected, leaving internal RAM for the input slots.
     enc.fast = heap_caps_aligned_alloc(16, dvbs2_fast_mode_size(mode),
                                       input && enc.packed && !resident ? MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT : internal);
     enc.ws_borrowed = quads || (moon && !lofty);
@@ -1132,7 +1132,7 @@ static size_t start_encoder_options(const char *cmd, unsigned modcod, unsigned l
 
 encoder_ready:;
     const unsigned ready_slots=dvb.ring.nslots;
-    // Bounded bursts above Wi-Fi, then sleep on the full queue. Startup and
+    // Bounded bursts, then sleep on the full queue. Startup and
     // stop need no controller boost because a full producer always blocks.
     enc.priority = moon ? MOON_PRIORITY : ENCODER_PRIORITY;
     enc.exited = xSemaphoreCreateBinaryStatic(&exited_storage);
@@ -1187,7 +1187,7 @@ static size_t start_encoder(const char *cmd, unsigned modcod, unsigned level, un
                             unsigned sps, uint32_t dac_rate)
 {
     return start_encoder_options(cmd,modcod,level,stall_ms,sps,dac_rate,
-                                 !strcmp(cmd,"dvb") || !strcmp(cmd,"wifimem"),false);
+                                 !strcmp(cmd,"dvb"),false);
 }
 
 static void print_queue_region(unsigned first, unsigned pages, const lofty_page *p)
@@ -1228,7 +1228,7 @@ static void lofty_warm_renderer(void)
 esp_err_t radio_s3_stream_ready(void)
 {
     if (!enc.task || !dvb.lofty) return ESP_OK;
-    // Wi-Fi setup may have suspended/invalidated cache since prepare.
+    // Setup may have suspended/invalidated cache since prepare.
     if (lofty_resident(0) || lofty_resident(1)) return ESP_FAIL;
     if (!lofty_mux.queue_auto || lofty_mux.queue_ready) return ESP_OK;
     const TickType_t started = xTaskGetTickCount()+pdMS_TO_TICKS(100);
@@ -1239,7 +1239,7 @@ esp_err_t radio_s3_stream_ready(void)
     lofty_mux.queue_free_before = free;
     lofty_mux.queue_min_before = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
     if (lofty_mux.queue_min_before < LOFTY_HEAP_FLOOR) return ESP_ERR_NO_MEM;
-    // The queue is static; keep the same floor and guard for Wi-Fi.
+    // The queue is static; keep a heap floor and guard for the run.
     if (free < LOFTY_HEAP_FLOOR+LOFTY_HEAP_GUARD) return ESP_ERR_NO_MEM;
     const unsigned pages = LOFTY_MAX_PAGES;
     lofty_mux.queue_free_after = heap_caps_get_free_size(caps);
@@ -1473,33 +1473,8 @@ static void print_startup(void)
     printf("]}");
 }
 
-static void print_wifi(const radio_s3_wifi_heap_t *w)
-{
-    printf(",\"wifi_free_before\":%" PRIu32 ",\"wifi_largest_before\":%" PRIu32
-           ",\"wifi_free_init\":%" PRIu32 ",\"wifi_largest_init\":%" PRIu32
-           ",\"wifi_free_up\":%" PRIu32 ",\"wifi_largest_up\":%" PRIu32
-           ",\"wifi_min_free\":%" PRIu32, w->free_before, w->largest_before, w->free_init,
-           w->largest_init, w->free_up, w->largest_up, w->min_free);
-}
-
-static void print_session(bool solo, const radio_s3_stats_t *s)
-{
-    printf(",\"phy_solo\":%s",solo ? "true" : "false");
-    if (!solo) return;
-    printf(",\"wifi_stop_at_us\":%"PRId64",\"wifi_deinit_at_us\":%"PRId64,s->wifi_stop_at_us,s->wifi_deinit_at_us);
-    const radio_s3_session_stats_t *states[] = {&s->session,&s->after};
-    for (unsigned i = 0; i < 2; ++i) {
-        const radio_s3_session_stats_t *p = states[i];
-        printf(",\"%s\":{\"at_us\":%"PRId64",\"wifi_initialized\":%s,\"wifi_mode_result\":%"PRId32
-               ",\"phy_users\":%u,\"free_internal\":%u,\"largest_internal\":%u,\"wifi_irq_routes\":[%u,%u],\"irq_sampled_cores\":%u}",
-               i ? "after" : "session",p->at_us,p->wifi_initialized ? "true" : "false",p->wifi_mode_result,
-               (unsigned)p->phy_users,(unsigned)p->free_internal,(unsigned)p->largest_internal,
-               p->wifi_irq_routes[0],p->wifi_irq_routes[1],p->irq_sampled_cores);
-    }
-}
-
 void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, unsigned level,
-                unsigned sps, uint32_t dac_rate, bool fixture, bool phy_solo)
+                unsigned sps, uint32_t dac_rate, bool fixture)
 {
     if (!station_require("dvb")) {
         return;
@@ -1511,10 +1486,7 @@ void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, 
     radio_s3_stats_t s = {0};
     // RRC support B = Rs * (1 + alpha), alpha = 0.20 or 0.35. Round upward in integer Hz.
     const uint32_t bandwidth = ((uint64_t)dac_rate * dvb.den * (dvb.den == 5 ? 120 : 135) + sps * 100 - 1) / (sps * 100);
-    const radio_s3_options_t options = {.phy_solo=phy_solo};
-    const esp_err_t err = phy_solo ?
-        radio_s3_run_options(freq,(uint8_t)gain,seconds,dac_rate,bandwidth,encoder_fill(),NULL,&options,&s) :
-        radio_s3_run_bandwidth(freq,(uint8_t)gain,seconds,dac_rate,bandwidth,encoder_fill(),NULL,&s);
+    const esp_err_t err = radio_s3_run_bandwidth(freq,(uint8_t)gain,seconds,dac_rate,bandwidth,encoder_fill(),NULL,&s);
     print_mode("dvb", modcod, symbols, level);
     printf(",\"prepared_fixture\":%s",fixture ? "true" : "false");
     printf(",\"freq_mhz\":%" PRIu32 ",\"seconds\":%" PRIu32 ",\"gain\":%u,\"dac_rate\":%" PRIu32
@@ -1524,8 +1496,6 @@ void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, 
     printf(",\"fe_gain_index\":%" PRIu32 ",\"chain\":\"cwgain\"", s.fe_gain_index);
     radio_filter_print(&s.filter);
     radio_s3_tuning_print(&s);
-    print_wifi(&s.wifi);
-    print_session(phy_solo,&s);
     stop_encoder();
     printf(",\"status\":\"%s\"%s}\n", esp_err_to_name(err),
            err == ESP_ERR_INVALID_ARG ? ",\"error\":\"RF frequency out of range or duration too short for start/end ID\"" :
@@ -1533,19 +1503,15 @@ void dvbtx_run(uint32_t freq, unsigned modcod, uint32_t seconds, unsigned gain, 
 }
 
 void dvbtx_pace(unsigned modcod, uint32_t seconds, unsigned level, unsigned stall_ms,
-                 unsigned sps, uint32_t dac_rate, bool fixture, bool phy_solo)
+                 unsigned sps, uint32_t dac_rate, bool fixture)
 {
     const size_t symbols = start_encoder_options("dvbpace",modcod,level,stall_ms,sps,dac_rate,true,fixture);
     if (!symbols) return;
     radio_s3_stats_t s;
-    const bool wifi = dvb.moon || phy_solo || vcm_enc.vcm;
-    const radio_s3_options_t options = {.phy_solo=phy_solo, .startup=dvb.lofty ? lofty_startup() : NULL};
-    const esp_err_t err = phy_solo || dvb.lofty ? radio_s3_paced_wifi_options(seconds,dac_rate,encoder_fill(),NULL,&options,&s) :
-        (wifi ? radio_s3_paced_wifi_rate : radio_s3_paced_run_rate)(seconds,dac_rate,encoder_fill(),NULL,&s);
+    const radio_s3_options_t options = {.startup=dvb.lofty ? lofty_startup() : NULL};
+    const esp_err_t err = radio_s3_paced_run(seconds,dac_rate,encoder_fill(),NULL,&options,&s);
     print_mode("dvbpace", modcod, symbols, level);
-    printf(",\"prepared_fixture\":%s,\"paced_wifi_up\":%s",fixture ? "true" : "false",wifi ? "true" : "false");
-    if (wifi) print_wifi(&s.wifi);
-    print_session(phy_solo,&s);
+    printf(",\"prepared_fixture\":%s",fixture ? "true" : "false");
     printf(",\"seconds\":%" PRIu32 ",\"dac_rate\":%" PRIu32 ",\"step_words\":%u", seconds,
            dac_rate, RADIO_S3_STEP_FOR(dac_rate));
     printf(",\"pulse_symbols\":%u", dvb.moon ? dvb.span : dvb.table.parts == 2 ? 6 : 9);
@@ -1631,47 +1597,4 @@ void dvbtx_dump(unsigned modcod, unsigned frames, unsigned level, unsigned decim
            s.overlap_mismatches);
     stop_encoder();
     printf(",\"status\":\"%s\"}\n", esp_err_to_name(err));
-}
-
-void dvbtx_wifi(unsigned modcod, unsigned sps, uint32_t dac_rate)
-{
-    const unsigned stack_before=uxTaskGetStackHighWaterMark(NULL);
-    if (!station_require("wifimem")) {
-        return;
-    }
-    size_t symbols = 0;
-    if (modcod) {
-        symbols = start_encoder("wifimem", modcod, 128, 0, sps, dac_rate);
-        if (!symbols) {
-            return;
-        }
-    } else {
-        (void)heap_caps_monitor_local_minimum_free_size_start();
-    }
-    const unsigned stack_encoder=uxTaskGetStackHighWaterMark(NULL);
-    radio_s3_stats_t s;
-    const esp_err_t err = radio_s3_wifi_probe(&s);
-    const unsigned stack_wifi=uxTaskGetStackHighWaterMark(NULL);
-    if (modcod) {
-        print_mode("wifimem", modcod, symbols, 128);
-        printf(",\"dac_rate\":%" PRIu32 ",\"pulse_symbols\":%u", dac_rate,
-               dvb.moon ? dvb.span : dvb.table.parts == 2 ? 6 : 9);
-    } else {
-        printf("@{\"cmd\":\"wifimem\",\"modcod\":0");
-    }
-    print_wifi(&s.wifi);
-    printf(",\"main_stack_min_free_before\":%u,\"main_stack_min_free_after_encoder\":%u,"
-           "\"main_stack_min_free_after_wifi\":%u",stack_before,stack_encoder,stack_wifi);
-    printf(",\"id_samples\":%" PRIu32 ",\"id_count\":%" PRIu32, s.id_samples, s.id_count);
-    if (modcod) {
-        stop_encoder();
-    } else {
-        printf(",\"free_internal\":%u,\"largest_internal\":%u,\"min_free_internal\":%u",
-               (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-               (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
-               (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
-        (void)heap_caps_monitor_local_minimum_free_size_stop();
-    }
-    printf(",\"status\":\"%s\"%s}\n", esp_err_to_name(err),
-           err != ESP_OK ? ",\"error\":\"wifi probe failed\"" : "");
 }

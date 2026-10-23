@@ -92,7 +92,6 @@ static int esp_task_wdt_reset(void) { return 0; }
 WORKERS = r'''
 static station_id_t observed;
 static uint32_t parsed_seconds, parsed_frequency, observed_frequency;
-static bool parsed_solo;
 static int payload(uint32_t *dst, uint64_t first, size_t count, void *ctx) {
     (void)ctx;
     for (size_t i=0; i<count; ++i) dst[i] = (uint32_t)(first+i)^0x12345678U;
@@ -132,17 +131,15 @@ static void worker(void *arg) {
     }
     run->error = ESP_OK;
 }
-static void paced_worker(void *arg) { worker(arg); }
 static esp_err_t fill_bank(run_t *run, unsigned bank, uint64_t start) {
     assert(bank <= 1 && start < run->samples);
     ++run->stats->fills; return ESP_OK;
 }
 static void dvbtx_set_short(bool enabled) { (void)enabled; }
 static void dvbtx_run(uint32_t f, unsigned m, uint32_t seconds, unsigned g,
-                            unsigned p, unsigned sps, uint32_t rate, bool fixture,
-                            bool solo) {
+                            unsigned p, unsigned sps, uint32_t rate, bool fixture) {
     (void)m; (void)g; (void)p; (void)sps; (void)rate; (void)fixture;
-    ++commands; parsed_frequency = f; parsed_seconds = seconds; parsed_solo = solo;
+    ++commands; parsed_frequency = f; parsed_seconds = seconds;
 }
 '''
 
@@ -208,10 +205,10 @@ static void counters(void) {
 
 MAIN = r'''
 static void command(const char *text, bool accepted, bool solo) {
+    (void)solo; // --phy-solo is accepted from old scripts and has no effect
     char args[160]; snprintf(args,sizeof args,"%s",text);
     unsigned before = commands; cmd_dvb(args);
     assert(commands == before+(unsigned)accepted);
-    if (accepted) assert(parsed_solo == solo);
 }
 int main(void) {
     assert(!lo_divided && !lo_offset_khz);
@@ -260,7 +257,7 @@ int main(void) {
     command("2412 13 5m 0",false,false);
     command("2412 13 5m 4294967295",false,false);
     command("2412 13 5m 60 --phy-solo",true,true);
-    command("2412 13 5m 61 --phy-solo",false,true);
+    command("2412 13 5m 61 --phy-solo",true,true); // no Wi-Fi, so no 60 s PHY-solo limit
     command("1999 13 5m 530",false,false);
     command("2451 13 5m 530",false,false);
     command("2412 13 5m 530 18",false,false);
@@ -285,7 +282,6 @@ int main(void) {
         assert(!radio_s3_run_options(frequencies[i],0,30,RADIO_S3_DAC_RATE,6750000,payload,NULL,NULL,&stats));
         assert(observed_frequency == frequencies[i]);
     }
-    radio_s3_options_t solo = {.phy_solo=true};
     const char *calls[] = {"N0CALL","A0000000000000000000000"};
     for (unsigned c=0; c<2; ++c) for (unsigned scale=1; scale<=2; ++scale) {
         call = calls[c];
@@ -298,20 +294,15 @@ int main(void) {
         }
         unsigned before = tasks;
         assert(radio_s3_run_options(2412,0,541,rate,6750000,payload,NULL,NULL,&stats) == ESP_ERR_INVALID_ARG);
-        assert(radio_s3_run_options(2412,0,61,rate,6750000,payload,NULL,&solo,&stats) == ESP_ERR_INVALID_ARG);
         assert(radio_s3_run_options(1999,0,530,rate,6750000,payload,NULL,NULL,&stats) == ESP_ERR_INVALID_ARG);
         assert(radio_s3_run_options(2451,0,530,rate,6750000,payload,NULL,NULL,&stats) == ESP_ERR_INVALID_ARG);
         assert(radio_s3_run_options(2412,18,530,rate,6750000,payload,NULL,NULL,&stats) == ESP_ERR_INVALID_ARG);
         assert(tasks == before);
         call = "N0CALL";
-        assert(!radio_s3_run_options(2390,17,60,rate,6750000,payload,NULL,&solo,&stats));
-        assert(!radio_s3_paced_run_rate(600,rate,payload,NULL,&stats));
+        assert(!radio_s3_run_options(2390,17,60,rate,6750000,payload,NULL,NULL,&stats));
+        assert(!radio_s3_paced_run(600,rate,payload,NULL,NULL,&stats));
         assert(stats.id_count == 3); // existing nine-minute paced ID is preserved
-        assert(!radio_s3_paced_wifi_options(600,rate,payload,NULL,NULL,&stats));
-        assert(stats.id_count == 3);
-        assert(!radio_s3_paced_wifi_options(600,rate,payload,NULL,&solo,&stats)); // paces: no keyed cap
-        assert(stats.id_count == 3);
-        assert(radio_s3_paced_wifi_options(601,rate,payload,NULL,&solo,&stats) == ESP_ERR_INVALID_ARG);
+        assert(radio_s3_paced_run(601,rate,payload,NULL,NULL,&stats) == ESP_ERR_INVALID_ARG);
         // Execute every production bank deadline over 540 s, from an epoch
         // near wrap, with a synthetic clock. No radio/register implementation.
         memset(&stats,0,sizeof stats);
@@ -425,7 +416,7 @@ if __name__ == "__main__":
     source += function(radio,"schedule") + function(radio,"on_core1") + function(radio,"known_rate")
     for name in ("radio_s3_lo_command","requested_rf_khz","radio_s3_tuning_print","tune","direct_lo","cw_channel"):
         source += function(radio,name)
-    for name in ("radio_s3_run_options","radio_s3_paced_run_rate","radio_s3_paced_wifi_options"):
+    for name in ("radio_s3_run_options","radio_s3_paced_run"):
         source += function(radio,name)
     for name in ("number","tx_mode","short_scope","take_option","cmd_dvb"):
         source += function(console,name)

@@ -109,7 +109,7 @@ def settings(a):
 
 def tx_command(a):
     rate = "" if a.rate == "1m" else a.rate + " "
-    return f"dvb {a.mhz} {a.modcod} {rate}{a.seconds} {a.gain} {a.peak}" + (" --phy-solo" if a.phy_solo else "")
+    return f"dvb {a.mhz} {a.modcod} {rate}{a.seconds} {a.gain} {a.peak}"
 
 
 def capture_command(a, settings_path):
@@ -203,14 +203,6 @@ def board_result(rows, a, call):
                 (axes and r.get("fill_kernel") != "pie-axes5") or
                 any(r.get(k) != 0 for k in ("fatal_late", "late_fills", "late_switches"))):
             raise ValueError("board VCM renderer/deadline mismatch; see board.jsonl")
-    if a.phy_solo:
-        state, after = r.get("session", {}), r.get("after", {})
-        if (not r.get("phy_solo") or state.get("wifi_initialized") is not False or
-                state.get("wifi_mode_result") != 0x3001 or state.get("phy_users") != 2 or
-                state.get("wifi_irq_routes") != [0, 0] or state.get("irq_sampled_cores") != 3 or
-                after.get("wifi_initialized") is not False or after.get("phy_users") != 0 or
-                not 0 < r.get("wifi_deinit_at_us", 0) < state.get("at_us", 0)):
-            raise ValueError("PHY-solo handoff/cleanup mismatch; see board.jsonl")
     if r.get("fatal_late", 0) or r.get("frames_played", 0) < 1:
         raise ValueError("board failed to play healthy DVB frames")
     if not isinstance(r.get("frames_encoded"), int) or r["frames_encoded"] < r["frames_played"]:
@@ -427,7 +419,6 @@ def recheck(a):
     a.modcod = a.pattern[0]
     a.rate = next(name for name, rate in RATES.items() if abs(rate-settings["symbol_rate"]) < 1)
     a.mhz, a.seconds, a.gain, a.peak = (board[k] for k in ("freq_mhz", "seconds", "gain", "peak_level"))
-    a.phy_solo = board.get("phy_solo", False)
     call = board["callsign"]
     frames = decode.parse_bbframes((source / "frames.bbf").read_bytes())
     r = decode.summarize((source / "leandvb.log").read_text(), frames, b"".join(f["payload"] for f in frames))
@@ -488,7 +479,6 @@ def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("out", type=Path, nargs="?", help="new evidence directory (default notes/ota-TIMESTAMP)")
     p.add_argument("--plan", action="store_true")
-    p.add_argument("--phy-solo", action="store_true", help="experimental Wi-Fi teardown during playback")
     p.add_argument("--key", action="store_true", help="explicitly authorize contained hardware run")
     p.add_argument("--recheck", type=Path, help="offline audit of saved VCM BBFRAMEs/logs; no IQ or devices")
     p.add_argument("--dry-run", type=Path, metavar="USB_DUMP", help="offline int16 IQ, never opens devices")

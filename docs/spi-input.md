@@ -131,7 +131,7 @@ quad:        H = 24, L = 4   -> 136 Mb/s at 40 MHz
 | `spirx ms on\|quad [ts\|gcs]` | Receive diagnostic from an external sender, radio off |
 | `spisend ms on\|quad [ts\|gcs] [MHz [Mb/s]]` | Test sender on a second S3 |
 
-Input selection applies to the next `dvbdump`, `dvbpace`, `wifimem` or `dvb`; it does not
+Input selection applies to the next `dvbdump`, `dvbpace` or `dvb`; it does not
 start reception or the radio. Settings last until changed or reset.
 
 ## Diagnostics

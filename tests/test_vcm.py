@@ -132,15 +132,11 @@ def run(receiver=None, output=None):
                                     capture_output=True, text=True, timeout=90)
             assert result.returncode == 0, result.stdout[-2000:]+result.stderr
             records = [json.loads(line[1:]) for line in result.stdout.splitlines() if line.startswith('@')]
-            probes = [row for row in records if row.get('cmd') == 'wifimem' and 'status' in row]
-            assert len(probes) == 1 and probes[0]['status'] == 'ESP_OK'
-            for name in ('before', 'after_encoder', 'after_wifi'):
-                assert probes[0]['main_stack_min_free_'+name] == 1024
             dumps = [row for row in records if row.get('cmd') == 'dvbdump' and 'crc32' in row]
             assert len(dumps) == 2 and all(row['status'] == 'ESP_OK' and not row['encoder_failed'] for row in dumps)
             if hold:
                 pace = next(row for row in records if row.get('cmd') == 'dvbpace' and 'status' in row)
-                assert pace['status'] == 'ESP_OK' and pace['paced_wifi_up'] and not pace['encoder_failed']
+                assert pace['status'] == 'ESP_OK' and not pace['encoder_failed']
             assert Path(str(symbols)+'.iq').stat().st_size > 0
             failures = [json.loads(line[1:]) for line in result.stdout.splitlines() if line.startswith('@') and 'VCM allocation failed' in line]
             assert failures

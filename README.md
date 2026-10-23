@@ -35,7 +35,7 @@ median pilot MER of 29.9 dB. One QPSK 3/4 run at 5 Msym/s (6.95 Mb/s) and one at
 ```sh
 (. ~/.espressif/tools/activate_idf_v6.1.sh && cd firmware/rx && idf.py build flash)
 python3 host/rx.py 16 --rate 5m --mhz 2420 --gain 32 --seconds 45 --port RX_PORT --callsign KJ5SCH
-python3 host/board.py "dvb 2420 16 5m 55 0 128 --short --phy-solo" --port TX_PORT   # transmitter, keyed
+python3 host/board.py "dvb 2420 16 5m 55 0 128 --short" --port TX_PORT   # transmitter, keyed
 ```
 
 ## Live video
@@ -136,8 +136,7 @@ python3 host/decode.py fast.iq --rate 80000000 --symbol-rate 20000000 \
 ```
 
 The [self-check](examples/self-check/README.md) runs the full radio-off regression in about
-five minutes: six dumps and decodes, a real-time pace of every modulation and rate path, and a
-Wi-Fi memory check. All console commands are in [transmitting](docs/transmitting.md#console).
+five minutes: seven dumps and decodes and a real-time pace of every modulation and rate path. All console commands are in [transmitting](docs/transmitting.md#console).
 
 Opt-in [VCM](docs/vcm.md) switches MODCOD per frame, including mixed QPSK/8PSK at 5 Msym/s.
 The laptop can change it mid-transmission: QPSK 1/2 → 3/4 → 9/10 → 1/2 over USB decoded

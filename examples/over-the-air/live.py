@@ -34,7 +34,7 @@ def parser():
 
 def settings(a):
     if (a.rate != '5m' or a.backend != 'libiio' or a.burst or a.upsample != 1 or
-            a.pattern or a.dry_run or a.phy_solo or a.modcod != a.schedule[0][1] or
+            a.pattern or a.dry_run or a.modcod != a.schedule[0][1] or
             any(mc not in (4, 7, 11) for _, mc in a.schedule)):
         raise ValueError('live demo needs libiio streaming at 5m, QPSK MODCODs 4/7/11, and --modcod matching schedule start')
     if a.schedule[-1][0]+3 >= a.seconds:

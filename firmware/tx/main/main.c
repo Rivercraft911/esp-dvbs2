@@ -100,8 +100,9 @@ static void cmd_dvb(char *args)
     if (!station_require("dvb")) {
         return;
     }
-    bool fixture, phy_solo;
-    const bool options_ok = take_option(args,"--phy-solo",&phy_solo);
+    // Wi-Fi never runs now, so --phy-solo is always the case; old scripts may still pass it.
+    bool fixture, legacy_solo;
+    const bool options_ok = take_option(args,"--phy-solo",&legacy_solo);
     const bool source_ok = take_option(args,"--fixture",&fixture);
     bool short_frames;
     const bool short_ok = take_option(args,"--short",&short_frames);
@@ -117,17 +118,16 @@ static void cmd_dvb(char *args)
     if (!source_ok || !options_ok || !short_ok || (short_frames && (!short_scope(modcod, sps) || fixture)) ||
         !number(mhz, RADIO_S3_FREQ_MIN_MHZ, RADIO_S3_FREQ_MAX_MHZ, &freq) || !mode_ok ||
         (fixture && !(sps == DVB_SPS_12_5 || (sps == 3 && modcod >= 12))) ||
-        !number(duration, 1, phy_solo ? RADIO_S3_PHY_SOLO_MAX_SECONDS : RADIO_S3_MAX_SECONDS, &seconds) ||
+        !number(duration, 1, RADIO_S3_MAX_SECONDS, &seconds) ||
         (level && !number(level, 0, RADIO_S3_GAIN_MAX, &gain)) ||
         (peak && !number(peak, 16, 508, &top)) || extra) {
         printf("@{\"cmd\":\"dvb\",\"error\":\"usage: dvb <%u..%u MHz> <modcod 4..17> [5m|10m|20m|26m667|33m333] "
-               "<1..%u seconds> [0..17 gain] [16..508 peak] [--fixture] [--phy-solo (<=%u s)] [--short (QPSK 4..10 at 1m or 5m, 8PSK 12..16 at 5m)]\"}\n",
-               RADIO_S3_FREQ_MIN_MHZ, RADIO_S3_FREQ_MAX_MHZ,
-               RADIO_S3_MAX_SECONDS, RADIO_S3_PHY_SOLO_MAX_SECONDS);
+               "<1..%u seconds> [0..17 gain] [16..508 peak] [--fixture (26m667 8PSK, 33m333)] [--short (QPSK 4..10 at 1m or 5m, 8PSK 12..16 at 5m)]\"}\n",
+               RADIO_S3_FREQ_MIN_MHZ, RADIO_S3_FREQ_MAX_MHZ, RADIO_S3_MAX_SECONDS);
         return;
     }
     dvbtx_set_short(short_frames);
-    dvbtx_run(freq,modcod,seconds,gain,top,sps,rate,fixture,phy_solo);
+    dvbtx_run(freq,modcod,seconds,gain,top,sps,rate,fixture);
 }
 
 static void cmd_dvbdump(char *args)
@@ -157,8 +157,8 @@ static void cmd_dvbdump(char *args)
 
 static void cmd_dvbpace(char *args)
 {
-    bool phy_solo, fixture;
-    const bool options_ok = take_option(args,"--phy-solo",&phy_solo);
+    bool legacy_solo, fixture;
+    const bool options_ok = take_option(args,"--phy-solo",&legacy_solo);
     const bool source_ok = take_option(args,"--fixture",&fixture);
     bool short_frames;
     const bool short_ok = take_option(args,"--short",&short_frames);
@@ -175,11 +175,11 @@ static void cmd_dvbpace(char *args)
         (peak && !number(peak, 16, 508, &top)) || (pause && !number(pause, 0, 2000, &stall)) ||
         extra) {
         printf("@{\"cmd\":\"dvbpace\",\"error\":\"usage: dvbpace <modcod 4..17> [5m|10m|20m|26m667|33m333] <1..600 seconds> "
-               "[16..508 peak] [0..2000 ms encoder stall] [--phy-solo] [--fixture (26m667 8PSK, 33m333)] [--short (QPSK 4..10 at 1m or 5m, 8PSK 12..16 at 5m)]\"}\n");
+               "[16..508 peak] [0..2000 ms encoder stall] [--fixture (26m667 8PSK, 33m333)] [--short (QPSK 4..10 at 1m or 5m, 8PSK 12..16 at 5m)]\"}\n");
         return;
     }
     dvbtx_set_short(short_frames);
-    dvbtx_pace(modcod,seconds,top,stall,sps,rate,fixture,phy_solo);
+    dvbtx_pace(modcod,seconds,top,stall,sps,rate,fixture);
 }
 
 void fecbench_command(unsigned modcod, bool short_frame);
@@ -195,24 +195,6 @@ static void cmd_fecbench(char *args)
         return;
     }
     fecbench_command(modcod, short_frames);
-}
-
-static void cmd_wifimem(char *args)
-{
-    char *save, *code = strtok_r(args, " \t", &save);
-    char *rate = strtok_r(NULL, " \t", &save);
-    uint32_t modcod = 0, sps = 0, dac_rate = RADIO_S3_DAC_RATE;
-    if (code) {
-        const bool ok = tx_mode(code, &rate, &save, &modcod, &sps, &dac_rate);
-        // QPSK may omit the rate. Nothing may follow the selected rate.
-        if (!ok || rate) {
-            printf("@{\"cmd\":\"wifimem\",\"error\":\"usage: wifimem [<modcod 4..17> ["
-                   "5m|10m|20m|26m667|33m333]]\"}\n");
-            return;
-        }
-    }
-    dvbtx_set_short(false);
-    dvbtx_wifi(modcod, sps, dac_rate);
 }
 
 static void cmd_tx(char *args)
@@ -268,16 +250,18 @@ static void cmd_tx(char *args)
            (unsigned long)s.id_samples, (unsigned long long)s.planned_samples);
 }
 
+static esp_err_t radio = ESP_ERR_INVALID_STATE;
+
 static void cmd_info(void)
 {
     esp_chip_info_t chip;
     esp_chip_info(&chip);
     const esp_app_desc_t *app = esp_app_get_description();
     printf("@{\"callsign\":\"%s\",\"cmd\":\"info\",\"firmware\":\"%s\",\"idf\":\"%s\",\"cores\":%d,"
-           "\"revision\":%d,\"cpu_mhz\":%d,\"psram_bytes\":%u,\"free_internal\":%u,"
+           "\"revision\":%d,\"cpu_mhz\":%d,\"radio\":\"%s\",\"psram_bytes\":%u,\"free_internal\":%u,"
            "\"largest_internal\":%u,\"free_psram\":%u,\"uptime_ms\":%lld}\n",
            station_store_get(), app->version, app->idf_ver, chip.cores, chip.revision,
-           CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ, (unsigned)esp_psram_get_size(),
+           CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ, esp_err_to_name(radio), (unsigned)esp_psram_get_size(),
            (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
            (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
            (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM), esp_timer_get_time() / 1000);
@@ -294,6 +278,7 @@ void app_main(void)
     stdout = &output;
     setvbuf(stdin, NULL, _IONBF, 0);
 
+    radio = radio_s3_init(); // PHY calibration, once
     const esp_err_t storage = station_store_init();
     if (storage != ESP_OK) {
         printf("@{\"cmd\":\"callsign\",\"error\":\"NVS unavailable or invalid callsign\","
@@ -353,9 +338,6 @@ void app_main(void)
         } else if (strncmp(line, "fecbench ", 9) == 0) {
             cmd_fecbench(line + 9);
             strcpy(line, "fecbench");
-        } else if (strcmp(line, "wifimem") == 0 || strncmp(line, "wifimem ", 8) == 0) {
-            cmd_wifimem(line + 7);
-            strcpy(line, "wifimem");
         } else {
             printf("@{\"error\":\"unknown command\",\"line\":\"%.40s\"}\n", line);
         }

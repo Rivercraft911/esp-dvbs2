@@ -4,13 +4,10 @@
 #include "stream_host.c"
 #undef main
 
-esp_err_t radio_s3_paced_run_rate(uint32_t seconds, uint32_t rate, radio_s3_fill_fn fn,
-                                void *ctx, radio_s3_stats_t *stats)
-{ (void)seconds; (void)rate; (void)fn; (void)ctx; (void)stats; abort(); }
-
-esp_err_t radio_s3_paced_wifi_rate(uint32_t seconds, uint32_t rate, radio_s3_fill_fn fn,
-                                 void *ctx, radio_s3_stats_t *stats)
+esp_err_t radio_s3_paced_run(uint32_t seconds, uint32_t rate, radio_s3_fill_fn fn, void *ctx,
+                             const radio_s3_options_t *options, radio_s3_stats_t *stats)
 {
+    (void)options;
     assert(seconds == 1 && rate == 40000000 && fn == fill_vcm);
     memset(stats,0,sizeof *stats);
     radio_s3_dry_stats_t dry;
@@ -106,9 +103,6 @@ int main(int argc, char **argv)
     // Exercise the formerly overflowing command path, including staged stack
     // telemetry. The native high-water value is a stub, not a board measurement.
     if (control) rewind(native_wire);
-    callsign="N0CALL";
-    dvbtx_wifi(initial,sps,40000000);
-    assert(!live_allocations);
     callsign=getenv("VCM_CALLSIGN") ? getenv("VCM_CALLSIGN") : "";
     for (unsigned repeat=0;repeat<2;++repeat) {
         if (control) rewind(native_wire);
@@ -117,7 +111,7 @@ int main(int argc, char **argv)
         dvbtx_dump(initial,frames,128,sps == 40 ? 10 : 1,0,sps,40000000);
         fclose(capture); assert(!live_allocations);
     }
-    if (!control) dvbtx_pace(initial,1,128,0,sps,40000000,false,false);
+    if (!control) dvbtx_pace(initial,1,128,0,sps,40000000,false);
     if (native_wire) fclose(native_wire);
     // Admission is explicit, including TS and high-rate rejection.
     native_input=PV_TS;

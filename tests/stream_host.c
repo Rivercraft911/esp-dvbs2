@@ -300,11 +300,9 @@ esp_err_t radio_s3_dry_run_rate(radio_s3_fill_fn fn, void *ctx, uint64_t samples
 }
 
 #ifndef NATIVE_PACE_TEST
-esp_err_t radio_s3_paced_run_rate(uint32_t sec, uint32_t rate, radio_s3_fill_fn fn, void *ctx,
-                                  radio_s3_stats_t *stats)
-{ (void)sec; (void)rate; (void)fn; (void)ctx; (void)stats; abort(); }
-esp_err_t radio_s3_paced_wifi_rate(uint32_t sec, uint32_t rate, radio_s3_fill_fn fn, void *ctx, radio_s3_stats_t *stats)
-{ (void)sec; (void)rate; (void)fn; (void)ctx; (void)stats; abort(); }
+esp_err_t radio_s3_paced_run(uint32_t sec, uint32_t rate, radio_s3_fill_fn fn, void *ctx,
+                             const radio_s3_options_t *options, radio_s3_stats_t *stats)
+{ (void)sec; (void)rate; (void)fn; (void)ctx; (void)options; (void)stats; abort(); }
 #endif
 static bool native_keyed_fixture;
 static unsigned native_keyed_frames;
@@ -326,22 +324,8 @@ esp_err_t radio_s3_run_bandwidth(uint32_t freq, uint8_t gain, uint32_t sec, uint
     stats->fills = dry.fills;
     return err;
 }
-esp_err_t radio_s3_run_options(uint32_t freq, uint8_t gain, uint32_t sec, uint32_t rate,
-                               uint32_t bandwidth, radio_s3_fill_fn fn, void *ctx,
-                               const radio_s3_options_t *options, radio_s3_stats_t *stats)
-{
-    assert(options && (options->phy_solo || options->startup));
-    return radio_s3_run_bandwidth(freq,gain,sec,rate,bandwidth,fn,ctx,stats);
-}
-esp_err_t radio_s3_paced_wifi_options(uint32_t sec, uint32_t rate, radio_s3_fill_fn fn,
-                                      void *ctx, const radio_s3_options_t *options, radio_s3_stats_t *stats)
-{
-    assert(options && (options->phy_solo || options->startup));
-    return radio_s3_paced_wifi_rate(sec,rate,fn,ctx,stats);
-}
 void radio_filter_print(const radio_filter_stats_t *stats) { (void)stats; }
 void radio_s3_tuning_print(const radio_s3_stats_t *stats) { (void)stats; }
-static unsigned wifi_probes;
 static esp_err_t discard(const uint32_t *bank, uint64_t first, size_t count, void *ctx)
 { (void)bank; (void)first; (void)count; (void)ctx; return ESP_OK; }
 
@@ -370,14 +354,6 @@ static void id_handoff_check(uint32_t rate)
         assert(banks[0][(id.length+j)%RADIO_S3_BANK_WORDS] == reference[j]);
 }
 
-esp_err_t radio_s3_wifi_probe(radio_s3_stats_t *stats)
-{
-    assert(enc.fast && enc.ws && enc.payload && (dvb.moon || dvb.win));
-    assert(!enc.packed || dvb.samples); // the heap probe must own the playback cache
-    memset(stats, 0, sizeof *stats);
-    ++wifi_probes;
-    return radio_s3_stream_ready();
-}
 
 int main(int argc, char **argv)
 {
@@ -493,11 +469,6 @@ int main(int argc, char **argv)
         assert(!live_allocations);
         native_task_fail = 0;
     }
-    if (*callsign) {
-        dvbtx_wifi(mc, sps, rate);
-        assert(wifi_probes == 1 && live_allocations == 0);
-        assert((dvb.table.parts == 2) == short_pulse);
-    }
     for (unsigned repeat = 0; repeat < 2; ++repeat) {
         capture = fopen(argv[3], "wb"); assert(capture);
         dvbtx_dump(mc, frames, 128, sps == 40 ? 10 : mc < 12 && sps == 8 ? 2 : 1, 0, sps, rate);
@@ -550,7 +521,7 @@ int main(int argc, char **argv)
         if (moon) {
             native_keyed_fixture = true;
             native_keyed_frames = frames;
-            dvbtx_run(2412,mc,30,0,128,sps,rate,true,false);
+            dvbtx_run(2412,mc,30,0,128,sps,rate,true);
             assert(!live_allocations && !enc.failed);
             native_keyed_fixture = false;
         }

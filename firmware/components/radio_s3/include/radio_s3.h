@@ -41,7 +41,6 @@ void radio_s3_lo_command(const char *args);
 #define RADIO_S3_GAIN_DEFAULT 0U
 #define RADIO_S3_GAIN_MAX 17U
 #define RADIO_S3_MAX_SECONDS 540U /* RF wall-time bound, including station IDs */
-#define RADIO_S3_PHY_SOLO_MAX_SECONDS 60U
 
 /* Fill consecutive timeline samples, packed signed I[9:0], Q[19:10]. dst needs
  * aligned 32-bit stores. Calls split at a bank wrap, so sample n always lives
@@ -59,23 +58,14 @@ void radio_s3_lo_command(const char *args);
 typedef esp_err_t (*radio_s3_fill_fn)(uint32_t *dst, uint64_t first_sample,
                                     size_t count, void *ctx);
 
-/* Internal heap around Wi-Fi start-up, bytes: free MALLOC_CAP_INTERNAL and the largest free
- * 8-bit internal block. min_free is the heap's low-water mark (since the command started its
- * local monitor, otherwise since boot), refreshed after playback and cleanup. */
-typedef struct {
-    uint32_t free_before, largest_before;   /* before esp_wifi_init */
-    uint32_t free_init, largest_init;       /* after esp_wifi_init */
-    uint32_t free_up, largest_up;           /* after start, power save off, promiscuous, channel */
-    uint32_t min_free;
-} radio_s3_wifi_heap_t;
+/* Bring the PHY up once, at boot, without Wi-Fi: it is calibrated then and held under the
+ * Bluetooth modem bit for good. Keyed runs need it; no Wi-Fi or Bluetooth stack may coexist. */
+esp_err_t radio_s3_init(void);
 
-/* Optional stream-owned allocation/prefill after Wi-Fi start, before timing or
- * keyed register access. Also called by the Wi-Fi-only memory probe. A failure
- * aborts before playback/TX setup. The default implementation returns ESP_OK. */
+/* Optional stream preparation on the worker, before timing or keyed register access. A
+ * failure aborts before playback/TX setup. The default implementation returns ESP_OK. */
 esp_err_t radio_s3_stream_ready(void);
 
-/* Experimental Wi-Fi teardown while an independent PHY lifetime remains held.
- * No BT controller may coexist. RF quality without Wi-Fi recalibration is unverified. */
 #define RADIO_S3_STARTUP_BANKS 32
 typedef struct {
     uint64_t first_sample;
@@ -86,19 +76,10 @@ typedef struct {
 } radio_s3_startup_t;
 
 typedef struct {
-    bool phy_solo;
     // Optional radio-off diagnostic. Collected on the existing worker stack;
     // copied here after playback, so this destination may live in PSRAM.
     radio_s3_startup_t *startup;
 } radio_s3_options_t;
-typedef struct {
-    int64_t at_us;
-    int32_t wifi_mode_result;
-    bool wifi_initialized;
-    uint32_t phy_users, free_internal, largest_internal;
-    uint8_t wifi_irq_routes[2], irq_sampled_cores;
-} radio_s3_session_stats_t;
-
 typedef struct {
     uint64_t elapsed_samples; /* Nominal timeline at the run's rate, not an RF measurement. */
     uint64_t elapsed_cycles;
@@ -117,9 +98,6 @@ typedef struct {
     uint32_t id_count;        /* planned start, periodic and end segments */
     uint64_t planned_samples; /* payload + all IDs */
     radio_filter_stats_t filter; /* keyed runs only; snapshots before playback and cleanup */
-    radio_s3_wifi_heap_t wifi; /* run and paced_wifi */
-    int64_t wifi_stop_at_us, wifi_deinit_at_us;
-    radio_s3_session_stats_t session, after; /* opt-in handoff / cleanup */
     uint32_t requested_rf_khz, requested_pll_khz; /* requests, not RF readbacks */
     int32_t lo_offset_khz;
     bool lo_divided;
@@ -130,10 +108,9 @@ void radio_s3_tuning_print(const radio_s3_stats_t *stats);
 
 /* Synchronous, exclusive run on core 1, 240 MHz. Valid requests are integer MHz
  * 2000..2450; actual RF including the optional offset must remain in that range.
- * Seconds 1..540 (PHY-solo: 1..60), gain 0..17 (vendor ladder, weakest first). Gain is
- * uncalibrated, not dBm. The component owns Wi-Fi for the session; it must not
- * coexist with another Wi-Fi/BT user. Every return after startup stops the DAC,
- * returns both banks to the CPU, unkeys TX, and stops/deinitializes Wi-Fi.
+ * Seconds 1..540, gain 0..17 (vendor ladder, weakest first). Gain is uncalibrated, not dBm.
+ * Needs radio_s3_init. Every return after startup stops the DAC, returns both banks to the
+ * CPU and unkeys TX.
  * No RF operation happens until this function is called. A persisted callsign is
  * required before any radio access. Start/end CW segments are
  * inserted by a sample-index wrapper INSIDE the requested seconds. Too-short
@@ -163,12 +140,13 @@ esp_err_t radio_s3_dry_run_rate(radio_s3_fill_fn fill, void *ctx, uint64_t sampl
 
 /* Radio off: a keyed run's bank schedule on core 1 for 1..600 seconds at dac_rate (240e6 /
  * dac_rate cycles per sample), the same fills into the same bank memory against the same
- * cycle-counter deadlines, with no Wi-Fi, PHY, DAC or bank-ownership register access. Nothing
- * is transmitted, so the DAC's own reads of the bank memory are absent. Stats as for a keyed
+ * cycle-counter deadlines, with no PHY, DAC or bank-ownership register access. Nothing is
+ * transmitted, so the DAC's own reads of the bank memory are absent. Stats as for a keyed
  * run; the fe_* fields stay 0. With a configured callsign, inserts the same start/periodic/end
- * IDs as RF; otherwise keeps the original unwrapped run. seconds counts payload time. */
-esp_err_t radio_s3_paced_run_rate(uint32_t seconds, uint32_t dac_rate, radio_s3_fill_fn fill,
-                                  void *ctx, radio_s3_stats_t *stats);
+ * IDs as RF; otherwise keeps the original unwrapped run. seconds counts payload time.
+ * options may be NULL. */
+esp_err_t radio_s3_paced_run(uint32_t seconds, uint32_t dac_rate, radio_s3_fill_fn fill, void *ctx,
+                             const radio_s3_options_t *options, radio_s3_stats_t *stats);
 
 /* One of the two 64 KiB DAC bank regions (n = 0 or 1), reserved at startup. Between
  * runs the CPU may use them as plain internal RAM; a run overwrites both. */
@@ -181,21 +159,7 @@ esp_err_t radio_s3_run_bandwidth(uint32_t freq_mhz, uint8_t gain, uint32_t secon
                                  uint32_t dac_rate, uint32_t occupied_hz, radio_s3_fill_fn fill,
                                  void *ctx, radio_s3_stats_t *stats);
 
-/* Wi-Fi memory probe: a keyed run's set-up on core 1 (the 30 s run's station ID, the worker
- * task and stack) and its Wi-Fi start-up (init, NULL mode, start with the PHY's calibration,
- * power save off, promiscuous receive, channel 1), then the same stop and deinit. It stops
- * before a keyed run's first register access: no retune, keying, gain, tone, bank grant or
- * DAC. NULL mode sends no frames. Fills stats->wifi; needs a stored callsign. */
-esp_err_t radio_s3_wifi_probe(radio_s3_stats_t *stats);
-
-/* The paced schedule with Wi-Fi NULL/promiscuous RX up. No PHY retune,
- * tone, TX keying, DAC or bank-ownership register writes; no MAC frames. */
-esp_err_t radio_s3_paced_wifi_rate(uint32_t seconds, uint32_t dac_rate, radio_s3_fill_fn fill,
-                                   void *ctx, radio_s3_stats_t *stats);
-
-/* Explicit opt-in variants; NULL options retain the original lifetime. */
+/* The same with options (may be NULL). */
 esp_err_t radio_s3_run_options(uint32_t freq_mhz, uint8_t gain, uint32_t seconds,
                                uint32_t dac_rate, uint32_t occupied_hz, radio_s3_fill_fn fill,
                                void *ctx, const radio_s3_options_t *options, radio_s3_stats_t *stats);
-esp_err_t radio_s3_paced_wifi_options(uint32_t seconds, uint32_t dac_rate, radio_s3_fill_fn fill,
-                                      void *ctx, const radio_s3_options_t *options, radio_s3_stats_t *stats);

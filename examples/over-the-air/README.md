@@ -199,15 +199,6 @@ sample burst saves 128 MB. `capture.json`, `iio.log` / `uhd.log`, `board.jsonl`,
 `settings.json`, `plan.json`, `revision.json`, `leandvb.log` and `payload.bin`
 retain settings, readbacks and evidence. Failures exit nonzero and preserve files.
 
-## PHY-solo A/B
-
-Use fresh directories and alternate the same mode with / without
-`--phy-solo`, then reverse order, keeping containment, path, gain and callsign
-fixed. Require exact payload recovery in every arm and compare FEC, MER, carrier
-offset and spectrum. Solo records must show Wi-Fi absent, PHY users 2 and both
-cores' IRQ routes zero before setup, then PHY users 0 after cleanup. A 10m result
-does not validate the full-bandwidth 26m667 emission.
-
 Saved VCM BBFRAMEs/logs can be audited without IQ or devices. The original
 reports stay unchanged; an interior gap remains a failure, with exact segments
 and missing frame indices reported:

@@ -88,7 +88,7 @@ static void counted_samples(uint32_t *dst, const uint32_t *src, unsigned skip, s
     lofty_samples(dst,src,skip,n,table);
 }
 
-static bool expect_wifi;
+static bool expect_ready;
 static unsigned expect_pages, pace_calls;
 static uint32_t pace_crc;
 static esp_err_t pace(bool, uint32_t, uint32_t, radio_s3_fill_fn, void *, radio_s3_stats_t *);
@@ -111,7 +111,7 @@ static uint32_t queue_budget(unsigned mc, bool fixture, bool automatic, size_t a
         if (failure == 2) fail_after = 0;
         const esp_err_t rc = radio_s3_stream_ready();
         fail_after = -1;
-        assert(allocation_count == allocations); // no allocation after Wi-Fi
+        assert(allocation_count == allocations); // the gate allocates nothing
         if (expected) {
             assert(rc == ESP_OK && lofty_mux.queue_ready && dvb.queue_pages == expected);
             assert(dvb.produced-dvb.consumed == expected && !lofty_mux.output && !lofty_mux.frames && !dvb.sample_end);
@@ -125,7 +125,7 @@ static uint32_t queue_budget(unsigned mc, bool fixture, bool automatic, size_t a
     }
     uint32_t crc = 0;
     if (expected) {
-        expect_wifi = automatic; expect_pages = expected;
+        expect_ready = automatic; expect_pages = expected;
         radio_s3_stats_t stats;
         assert(pace(automatic,10,80000000,fill,NULL,&stats) == ESP_OK);
         crc = pace_crc;
@@ -165,11 +165,11 @@ static void fragmented_order(unsigned mc)
     fragmented = false;
 }
 
-static esp_err_t pace(bool wifi, uint32_t sec, uint32_t rate, radio_s3_fill_fn fn,
+static esp_err_t pace(bool ready, uint32_t sec, uint32_t rate, radio_s3_fill_fn fn,
                        void *ctx, radio_s3_stats_t *stats)
 {
-    assert(wifi == expect_wifi && sec == 10 && rate == 80000000 && fn == fill);
-    if (wifi) assert(radio_s3_stream_ready() == ESP_OK);
+    assert(ready == expect_ready && sec == 10 && rate == 80000000 && fn == fill);
+    if (ready) assert(radio_s3_stream_ready() == ESP_OK);
     assert(dvb.queue_pages == expect_pages);
     if (dvb.lofty) {
         assert(enc.table_tail && esp_ptr_external_ram(enc.table_tail));
@@ -199,23 +199,20 @@ static esp_err_t pace(bool wifi, uint32_t sec, uint32_t rate, radio_s3_fill_fn f
     return ESP_OK;
 }
 
-esp_err_t radio_s3_paced_run_rate(uint32_t sec, uint32_t rate, radio_s3_fill_fn fn,
-                                  void *ctx, radio_s3_stats_t *stats)
-{ return pace(false,sec,rate,fn,ctx,stats); }
-esp_err_t radio_s3_paced_wifi_rate(uint32_t sec, uint32_t rate, radio_s3_fill_fn fn,
-                                   void *ctx, radio_s3_stats_t *stats)
-{ return pace(true,sec,rate,fn,ctx,stats); }
+esp_err_t radio_s3_paced_run(uint32_t sec, uint32_t rate, radio_s3_fill_fn fn, void *ctx,
+                             const radio_s3_options_t *options, radio_s3_stats_t *stats)
+{ (void)options; return pace(true,sec,rate,fn,ctx,stats); }
 
 int main(void)
 {
     callsign = "N0CALL";
     assert(!posix_memalign((void **)&banks,65536,2*sizeof *banks));
-    // Public paces choose Wi-Fi and gate the queue after its allocations.
-    expect_wifi = true; expect_pages = 54;
-    dvbtx_pace(17,10,128,0,3,80000000,true,false);
+    // Public paces gate the queue in radio_s3_stream_ready, as the radio worker does.
+    expect_ready = true; expect_pages = 54;
+    dvbtx_pace(17,10,128,0,3,80000000,true);
     assert(!live_allocations);
     expect_pages = MACHINE_PAGES;
-    dvbtx_pace(11,10,128,0,DVB_SPS_12_5,80000000,true,false);
+    dvbtx_pace(11,10,128,0,DVB_SPS_12_5,80000000,true);
     assert(!live_allocations && pace_calls == 2);
     // Fail each setup allocation, including the dummy and PSRAM payload.
     allocation_count = 0;

@@ -29,26 +29,24 @@ def check(out):
 #define RADIO_S3_GAIN_DEFAULT 0
 #define RADIO_S3_GAIN_MAX 17
 #define RADIO_S3_MAX_SECONDS 540u
-#define RADIO_S3_PHY_SOLO_MAX_SECONDS 60u
 static bool station_require(const char *cmd) { (void)cmd; return true; }
 static unsigned keyed_calls;
-static bool expected_solo;
 static void dvbtx_run_check(uint32_t freq, unsigned mc, uint32_t sec, unsigned gain,
-    unsigned peak, unsigned sps, uint32_t rate, bool fixture, bool solo)
+    unsigned peak, unsigned sps, uint32_t rate, bool fixture)
 {
     assert(freq == 2412 && sec == 30 && !gain && peak == 128 && rate == 80000000);
     assert((mc == 11 && sps == DVB_SPS_12_5) || ((mc == 13 || mc == 15 || mc == 17) && sps == 3));
     assert(fixture == (keyed_calls < 4 || keyed_calls >= 5));
-    assert(solo == expected_solo); ++keyed_calls;
+    ++keyed_calls;
 }
 #define dvbtx_run dvbtx_run_check
 static unsigned calls;
 static bool expected_pace_fixture;
 static void dvbtx_pace_check(unsigned mc, uint32_t sec, unsigned peak, unsigned stall,
-    unsigned sps, uint32_t rate, bool fixture, bool solo)
+    unsigned sps, uint32_t rate, bool fixture)
 {
     assert(mc == 17 && (sec == 10 || sec == 600) && peak == 128 && !stall && sps == 3 && rate == 80000000);
-    assert(solo == expected_solo && fixture == expected_pace_fixture); ++calls;
+    assert(fixture == expected_pace_fixture); ++calls;
 }
 #define dvbtx_pace dvbtx_pace_check
 void dvbtx_set_short(bool enabled) { assert(!enabled); }
@@ -73,7 +71,7 @@ int main(void) {
         char text[128]; strcpy(text,keyed[i]); cmd_dvb(text);
         assert(keyed_calls == (i < 5 ? i+1 : 5));
     }
-    expected_solo = true;
+    // --phy-solo is a legacy no-op now that Wi-Fi never starts; it is still parsed once.
     char keyed_option[] = "--fixture 2412 13 26m667 30 --phy-solo";
     char pace_option[] = "17 26m667 10 --phy-solo";
     cmd_dvb(keyed_option); cmd_dvbpace(pace_option);
@@ -84,9 +82,9 @@ int main(void) {
     char too_long[]="17 26m667 601 --phy-solo";
     cmd_dvb(duplicate); cmd_dvbpace(duplicate_solo); cmd_dvb(retired); cmd_dvbpace(too_long);
     assert(keyed_calls == 6 && calls == 3);
-    char long_solo[]="17 26m667 600 --phy-solo"; // paces are not capped at the keyed PHY-solo limit
+    char long_solo[]="17 26m667 600 --phy-solo";
     cmd_dvbpace(long_solo); assert(calls == 4);
-    expected_pace_fixture = true; expected_solo = false;
+    expected_pace_fixture = true;
     char pace_fixture[]="17 26m667 10 --fixture";
     char short_fixture[]="16 5m 10 --fixture --short";
     cmd_dvbpace(pace_fixture); cmd_dvbpace(short_fixture); assert(calls == 5);
@@ -104,7 +102,7 @@ int main(void) {
     assert run.returncode == 0,(run.stdout,run.stderr)
     rows = [json.loads(l[1:]) for l in run.stdout.splitlines() if l.startswith('@{')]
     pace = [r for r in rows if r.get('cmd') == 'dvbpace' and 'status' in r]
-    assert len(pace) == 2 and all(r['status'] == 'ESP_OK' and r['paced_wifi_up'] for r in pace)
+    assert len(pace) == 2 and all(r['status'] == 'ESP_OK' for r in pace)
     assert not pace[0]['profile']['fill_phase_cycles'] and not pace[0]['profile']['fill']['whole']['calls']
     assert pace[1]['profile']['fill_phase_cycles'] and pace[1]['profile']['fill']['whole']['calls'] > 0
     budget = [r for r in rows if r.get('test') == 'queue_budget']

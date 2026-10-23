@@ -17,23 +17,9 @@ CONFIG_FREERTOS_HZ=1000
 # Required vendor force-TX/gain entry points for the radio experiment.
 CONFIG_ESP_PHY_ENABLE_CERT_TEST=y
 
-# Full calibration each run; no PHY cache reads or writes during this experiment.
+# The PHY comes up once at boot without Wi-Fi (radio_s3_init) and calibrates fully then;
+# no PHY cache reads or writes.
 CONFIG_ESP_PHY_CALIBRATION_AND_DATA_STORAGE=n
-
-# Wi-Fi only powers the radio here (NULL mode, no traffic), so give its RAM back to the
-# transmitter: few RX buffers, no aggregation, its code in flash, allocations in PSRAM.
-# Without this, Wi-Fi start-up failed with ESP_ERR_NO_MEM next to the encoder and station ID
-# (results/2026-10-16-keyed-box).
-CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=2
-CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=8
-CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=8
-CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=n
-CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=n
-CONFIG_ESP_WIFI_MGMT_SBUF_NUM=8
-CONFIG_ESP_WIFI_NVS_ENABLED=n
-CONFIG_ESP_WIFI_IRAM_OPT=n
-CONFIG_ESP_WIFI_RX_IRAM_OPT=n
-CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
 
 # Only the spisend test sender uses the SPI master. RX DMA callbacks stay in IRAM.
 CONFIG_SPI_MASTER_ISR_IN_IRAM=n

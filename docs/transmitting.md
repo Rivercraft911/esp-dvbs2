@@ -76,18 +76,17 @@ with a receiver. Tuning selections last until changed or the board restarts.
 | `info` | Firmware revision, clocks, memory and stored callsign |
 | `callsign [CALL\|clear]` | Read, set or clear the station ID |
 | `dvbdump MODCOD [rate] frames [peak] [decimation] [stall_ms] [--short]` | Samples over USB, radio off |
-| `dvbpace MODCOD [rate] seconds [peak] [stall_ms] [--short] [--phy-solo]` | Live encoder and bank deadlines, no playback |
+| `dvbpace MODCOD [rate] seconds [peak] [stall_ms] [--short] [--fixture]` | Live encoder and bank deadlines, no playback |
 | `fecbench MODCOD [--short]` | BCH and LDPC cycles on one frame, radio off |
 | `spiinput on\|quad\|off\|usb [ts\|gcs] [replay]` | Select [SPI or USB payload input](spi-input.md) for the next run |
 | `vcm off\|on\|mixed\|N MODCOD...` | Opt-in [GCS rate switching](vcm.md); repeat each mode for N frames |
 | `spipins devkit\|xiao` | Select the SPI pin preset |
 | `spirx ms on\|quad [ts\|gcs]` | Radio-off SPI receive diagnostic |
 | `spisend ms on\|quad [ts\|gcs] [MHz [Mb/s]]` | SPI test sender on a second S3; no RF |
-| `wifimem MODCOD [rate]` | Radio-off Wi-Fi startup and heap check |
 | `iddump [CALL] [40\|80]` | Morse ID samples at 10 kS/s, radio off |
 | `rflo direct\|five-sixths [kHz]` | Tuning path and offset for the next keyed run |
 | `tx MHz signal seconds [gain] [40\|80]` | Transmit a test tone |
-| `dvb MHz MODCOD [rate] seconds [gain] [peak] [--short] [--phy-solo] [--fixture]` | Transmit DVB-S2 |
+| `dvb MHz MODCOD [rate] seconds [gain] [peak] [--short] [--fixture]` | Transmit DVB-S2 |
 
 MODCOD selects modulation and code rate: QPSK 4..11, 8PSK 12..17. The
 [rate table](how-it-works.md#rates) gives the exact choices. QPSK defaults to 1 Msym/s.
@@ -112,9 +111,7 @@ python3 host/board.py "dvbpace 11 26m667 10" --timeout 120
 ```
 
 Completion records include `main_stack_bytes` and `main_stack_min_free`: the
-main task's configured stack size and minimum unused bytes since boot. The
-`wifimem` result also reports the minimum before setup, after encoder startup
-and after the Wi-Fi probe. A reboot clears the VCM pattern; confirm `vcm:true`
+main task's configured stack size and minimum unused bytes since boot. A reboot clears the VCM pattern; confirm `vcm:true`
 in the result before treating a dump or pace as a VCM check.
 
 ## Station identification
@@ -170,7 +167,7 @@ After setting your assigned callsign, the keyed syntax is:
 
 ```
 tx MHz signal seconds [gain] [40|80]
-dvb MHz MODCOD [5m|10m|20m|26m667|33m333] seconds [gain] [peak] [--fixture] [--phy-solo]
+dvb MHz MODCOD [5m|10m|20m|26m667|33m333] seconds [gain] [peak] [--fixture]
 ```
 
 `tx` signals are `tone`, `tone1`..`tone511`, `two`, `neg`, `low`, `ionly`, `qonly`,
@@ -188,13 +185,14 @@ for signals above 20 MHz occupied bandwidth; B200 captures now decode 36/40 MHz 
 The [RF records](../results/2026-10-20-wide-filter/README.md) identify prepared payloads and receiver limits.
 
 At QPSK 33m333 or 8PSK 26m667, `--fixture` repeats the prepared synthetic frame
-used by `dvbpace`, with the same payload copy. Payload ingress must be off.
+used by `dvbpace --fixture`, with the same payload copy. Payload ingress must be off.
 The record includes `prepared_fixture:true`. This separates encoder/copy time
 from generating the default contiguous xorshift stream.
 
-`dvb` and `dvbpace` accept `--phy-solo`. It starts and calibrates Wi-Fi, holds the PHY independently, then stops and
-deinitializes Wi-Fi before playback. It releases that hold on every exit. Solo paces
-are limited to 60 seconds. Into the S3 receiver at 1 Msym/s, PHY-solo keying gave 0 failed
+The transmitter never starts Wi-Fi. At boot it powers the radio, enables the PHY through its
+Bluetooth modem bit, which runs the full calibration once, and keeps it enabled. No Wi-Fi
+interrupt or task runs during playback. `--phy-solo`, which used to stop Wi-Fi before playback,
+is still accepted and changes nothing. Into the S3 receiver at 1 Msym/s, PHY-solo keying gave 0 failed
 frames in 103,453, against 2 in 51,791 with Wi-Fi up: Wi-Fi's activity caused rare short
 disturbances of the transmitted signal ([records](../results/2026-10-23-tx-phy-solo/README.md)).
 

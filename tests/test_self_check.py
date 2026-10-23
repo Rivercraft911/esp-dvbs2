@@ -115,7 +115,7 @@ def row(mc, token):
                 late_fills=0, late_switches=0, fatal_late=0, min_fill_slack_cycles=1,
                 frames_played=1, encoder_pie=15, frames_encoded=20, prefill_frames=3,
                 encoder_stack_min_free=512, profile=dict(shaped_words=80, reused_words=20, fill_words=100),
-                paced_wifi_up=True, wifi_free_up=22351, wifi_min_free=22351,
+                min_free_internal=22351,
                 queue_empty=0, queue_low_pages=1, positions=0, max_fill_call_cycles=0)
 
 
@@ -158,7 +158,7 @@ def test_8psk_gates():
                            ("dummy_steady", 20 * check.PSK8_DUMMIES_PER_SECOND[mc] + 1),
                            ("dummy_startup", 5), ("queue_stream_bound_misses", 2),
                            ("frames_played", 10), ("queue_pages", 50),
-                           ("wifi_min_free", 19999), ("queue_empty", 1),
+                           ("min_free_internal", 19999), ("queue_empty", 1),
                            ("queue_sizing", dict(automatic=True, ready=False))):
             rejects(check.check_pace, [dict(r, **{key: value})], mc, "26m667", 20)
         # Ten-second self-check runs scale dummy and data limits, not timing ceilings.
@@ -187,12 +187,9 @@ def test_keep_going():
         if command.startswith("vcm"):
             return [dict(cmd="vcm", axes=False, enabled=False, pattern=[4, 11, 13, 17], hold_frames=1)]
         parts = command.split()
-        mc, token = int(parts[1]), parts[2] if len(parts) == 4 or parts[0] == "wifimem" else ""
+        mc, token = int(parts[1]), parts[2] if len(parts) == 4 else ""
         r = row(mc, token)
-        if parts[0] == "wifimem":
-            r["frames_played"] = 0
-        else:
-            r["seconds"] = int(parts[-1])
+        r["seconds"] = int(parts[-1])
         return [r]
     fake = types.SimpleNamespace(run=run, resolve_port=lambda p: p,
                                  reserve_port=lambda *args, **kw: contextlib.nullcontext())
@@ -202,9 +199,9 @@ def test_keep_going():
             patch.object(sys, "argv", ["check.py", str(Path(tmp)/"out")]), contextlib.redirect_stdout(io.StringIO()):
         assert check.main() == 1
         summary = (Path(tmp)/"out/summary.tsv").read_text()
-        assert "PASS\tWi-Fi startup heap" in summary and "FAIL\tdump" in summary
-    assert len(sent) == 1+len(check.DUMPS)+len(check.PACES)+1+3
-    assert all(s.split()[0] in ("info", "vcm", "dvbdump", "dvbpace", "wifimem") for s in sent)
+        assert "PASS\tdvbpace 11 33m333 10" in summary and "FAIL\tdump" in summary
+    assert len(sent) == 1+len(check.DUMPS)+len(check.PACES)+3
+    assert all(s.split()[0] in ("info", "vcm", "dvbdump", "dvbpace") for s in sent)
 
 
 def test_tones():
