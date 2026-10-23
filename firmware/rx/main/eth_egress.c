@@ -18,6 +18,8 @@
 #define HOLD pdMS_TO_TICKS(10)  /* the longest a packet waits for six more */
 #define DRAIN pdMS_TO_TICKS(3000)   /* at the end; a chip ARP gives up after 1.8 s (w5500.h) */
 #define SAT_US 20000            /* a SEND unfinished this long, 18 wire times: give it again */
+#define EARLY_US 40             /* the kick comes this much before the datagram should be out */
+#define SPIN_US 120             /* ... and then polls for SEND_OK for up to this long */
 #define STACK 3072U
 #define PRIORITY 13             /* above the release (12): see eth_egress.h */
 #if CONFIG_W5500_DIRECT_SPI
@@ -38,6 +40,7 @@ static struct {
     volatile bool running;      /* the sender has the chip (cleared by the sender) */
     volatile bool ending;       /* the run is over: send the rest and stop */
     esp_timer_handle_t kick;    /* wakes the sender when the datagram on the wire should be out */
+    volatile bool kicked;       /* the kick, not a frame, woke the sender */
     unsigned link_mbps;
     bool active;                /* begun and not yet ended (the console task's view) */
     eth_egress_stats_t *stats;
@@ -65,6 +68,7 @@ static const ts_egress_t egress = {packet, flush, NULL};
 static void kick(void *arg)
 {
     (void)arg;
+    e.kicked = true;
     xTaskNotifyGive(e.task);
 }
 
@@ -95,7 +99,7 @@ static void wake_after_send(const w5500_socket *so, const send_clock *c)
     if (!so->flight) return;
     const int32_t since = (int32_t)(esp_cpu_get_cycle_count() - c->started) /
                           CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
-    int64_t due = (so->flight + 66) * 8 / e.link_mbps + 10 - since;
+    int64_t due = (so->flight + 66) * 8 / e.link_mbps - EARLY_US - since;
     if (due < 20) due = 20;
     esp_timer_stop(e.kick);
     esp_timer_start_once(e.kick, (uint64_t)due);
@@ -119,6 +123,17 @@ static int pump(void)
     send_clock clock = {w->sock[0].tx_wr, 0};
     for (;;) {
         const bool ending = e.ending;   /* read first: every packet was pushed before it was set */
+        /* Woken by the kick, just before the datagram on the wire should be out: poll until its
+         * SEND_OK, which also gives the next staged datagram its SEND (w5500_udp_poll), so the
+         * wire is idle for microseconds rather than a task switch and a timer's latency. */
+        if (e.kicked && staged > 0) {
+            e.kicked = false;
+            const uint32_t sent0 = w->sock[0].st.sent, t0 = esp_cpu_get_cycle_count();
+            while (w->sock[0].st.sent == sent0 &&
+                   esp_cpu_get_cycle_count() - t0 < SPIN_US * CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ)
+                if ((staged = w5500_udp_poll(w, 0)) < 0) return staged;
+            note_send(&w->sock[0], &clock);
+        }
         const uint32_t before = e.t.st.datagrams;
         const int64_t t = esp_timer_get_time();
         if (backlog) {
