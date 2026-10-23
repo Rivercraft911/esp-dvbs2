@@ -20,10 +20,13 @@ A CM5 drove the single-line wire at 16 MHz with a 9 Mb/s camera mux: 106,227 mes
 140 s run, none rejected, no late banks ([live RF](../results/2026-10-19-live-rf/README.md)).
 The on-chip figures came from a loopback sender, one of the S3's SPI peripherals driving the
 other, which has since been cut from the firmware. The quad run's record is in the
-[development archive](https://github.com/Rivercraft911/esp-dvbs2/tree/archive/dev-2026-10-17/results/2026-10-17-spi-in);
-the 12 Mb/s single-line run left none. Above 46.6 Mb/s only the parser is measured:
-`spiinput quad ts replay` feeds presealed messages through it with no transfers, and keyed
-runs held full rate at 58.2 and 69.8 Mb/s that way
+[development archive](https://github.com/Rivercraft911/esp-dvbs2/tree/archive/dev-2026-10-17/results/2026-10-17-spi-in):
+46.6 Mb/s was the selected test point (46.765 Mb/s verified in one second), and an unpaced
+one-second, receive-only loopback in the same log verified 5,799 GCS messages, 7,631,484 bytes,
+at 61.049 Mb/s with no bad payloads. Neither shows sustained input or input during a keyed run.
+The 12 Mb/s single-line run left no record. With the encoder running, above 46.6 Mb/s only the
+parser is measured: `spiinput quad ts replay` feeds presealed messages through it with no
+transfers, and keyed runs held full rate at 58.2 and 69.8 Mb/s that way
 ([TS input](../results/2026-10-23-tx-ts-input/README.md)). Ideal rates follow from the
 message size and the gap between messages (below).
 
