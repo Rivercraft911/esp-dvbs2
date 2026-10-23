@@ -38,14 +38,17 @@ class Frame(ct.Structure):
                 ("modcod", ct.c_uint8), ("type", ct.c_uint8)]
 
 
-def build(folder):
-    """The deframer, with the FEC check (and the transmitter's encoder it uses) for the link test."""
-    lib, encoder = pathlib.Path(folder) / "rx_ts.so", ROOT / "firmware/components/dvbs2"
+def build(folder, columns=False):
+    """The deframer, with the FEC check (and the transmitter's encoder it uses) for the link test.
+    columns: whole packets take the S3's CRC-8 by columns, here a C model of its kernel with the
+    same reads (tests/ts_crc_model.c), as the receiver firmware does with the kernel itself."""
+    lib, encoder = pathlib.Path(folder) / f"rx_ts{'_columns' if columns else ''}.so", ROOT / "firmware/components/dvbs2"
+    model = ["-DRX_TS_COLUMN_MODEL", str(ROOT / "tests/ts_crc_model.c")] if columns else []
     subprocess.run(shlex.split(os.environ.get("CC", "cc")) + [
         "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-fPIC", "-shared",
         "-I", str(COMPONENT / "include"), "-I", str(COMPONENT), "-I", str(encoder / "include"),
         str(COMPONENT / "rx_ts.c"), str(COMPONENT / "rx_fec.c"), str(encoder / "dvbs2.c"),
-        str(encoder / "fast.c"), "-o", str(lib)], check=True)
+        str(encoder / "fast.c")] + model + ["-o", str(lib)], check=True)
     so = ct.CDLL(str(lib))
     so.rx_fec_check_size.restype = ct.c_size_t
     so.rx_fec_check_size.argtypes = [ct.c_uint]
@@ -404,14 +407,56 @@ def test_pattern(folder):
     print("pattern: the transmitter's packets pass, any flipped bit fails: ok")
 
 
+def test_columns(so):
+    """The CRC-8 by columns takes whole packets whose aligned reads stay inside the frame. Even
+    frames end their data field right at a page with no access, so a read past the field faults
+    (removing that bound fails here); odd ones start at every offset after a page boundary. A read
+    before the BBHEADER could only reach the rest of its 16-byte block, never another page. Every
+    packet comes back exact, with the columns used, and a corrupted packet is still marked."""
+    import mmap
+    page = mmap.PAGESIZE
+    area = mmap.mmap(-1, 6 * page)
+    base = ct.addressof(ct.c_char.from_buffer(area))
+    libc = ct.CDLL(None)
+    libc.mprotect.argtypes = [ct.c_void_p, ct.c_size_t, ct.c_int]
+    assert libc.mprotect(base, page, 0) == 0 and libc.mprotect(base + 5 * page, page, 0) == 0
+    calls = ct.c_uint.in_dll(so, "ts_crc_model_calls")
+    rng = np.random.default_rng(7)
+    packets = ts_stream(300, rng)
+    for dfl in (1769, 1454, 188 * 7, 1000):
+        frames = frames_for(packets, dfl)
+        for bad in (None, 41):
+            if bad is not None:      # a payload byte of a packet inside a frame, CRC-8 now wrong
+                frames = [bytearray(f) for f in frames]
+                frames[3][10 + bad] ^= 4
+            r, before = Deframer(so), calls.value
+            for k, f in enumerate(frames):
+                at = base + page + (k * 5) % 16 if k % 2 else base + 5 * page - len(f)
+                ct.memmove(at, bytes(f), len(f))
+                so.rx_ts_frame(r.mem, ct.c_void_p(at), len(f) - 10, k)
+                ct.memset(at, 0xa5, len(f))
+            s = r.flush().stats()
+            want, _ = expected(packets, dfl, range(len(frames)))
+            if bad is None:
+                assert r.out == want and s["crc_errors"] == 0, (dfl, s)
+            else:
+                assert s["crc_errors"] == 1 and len(r.out) == len(want), (dfl, s)
+            assert calls.value - before > len(want) // 2, (dfl, calls.value - before, len(want))
+    print("columns: whole packets by the kernel's columns, reads inside the frame at guard pages, "
+          "a corrupted packet marked: ok")
+
+
 def main():
     with tempfile.TemporaryDirectory() as tmp:
         test_pattern(tmp)
-        so = build(tmp)
-        for test in (test_exact, test_boundaries, test_gaps, test_crc, test_headers, test_continuity):
-            test(so)
-        test_link(so, tmp)
-    print("rx ts deframer passed")
+        for columns in (False, True):
+            so = build(tmp, columns)
+            for test in (test_exact, test_boundaries, test_gaps, test_crc, test_headers, test_continuity):
+                test(so)
+            test_link(so, tmp)
+            if columns:
+                test_columns(so)
+    print("rx ts deframer passed, with the byte table and with the CRC-8 by columns")
 
 
 if __name__ == "__main__":

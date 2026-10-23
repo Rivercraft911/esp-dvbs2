@@ -34,6 +34,17 @@
 #define HOT
 #endif
 
+/* On the S3, whole packets inside a frame take dvbs2's TS CRC-8 kernel (ts_pie.S): the CRC by
+ * columns, from a 1,552-byte table built here. RX_TS_COLUMN_MODEL: host tests supply a C model of
+ * the kernel with the same reads (tests/ts_crc_model.c). The byte table stays the reference and
+ * covers packets at a frame's edges and those across frames. */
+#if defined(DVBS2RX_PIE) || defined(RX_TS_COLUMN_MODEL)
+#define TS_COLUMNS 1
+uint32_t dvbs2_pie_crc8_packet(const uint8_t *p, const uint8_t *cols);
+#endif
+#define TS_SPAN 224u            /* the kernel's reads: 14 aligned blocks from align_down(p, 16) */
+#define TS_COLUMN_BYTES (12u * 8u * 16u + 16u)
+
 #define NO_SYNCD 0xffffu
 #define NULL_PID 0x1fffu
 
@@ -46,6 +57,11 @@ typedef struct {
 } tracked_t;
 
 struct rx_ts {
+#ifdef TS_COLUMNS
+    /* Chunk c, bit k (top bit first), position 16c + j: the CRC-8 of a packet whose only set bit
+     * is bit k of byte 16c + j; zero past byte 186, and 16 spare bytes the kernel loads. */
+    uint8_t columns[TS_COLUMN_BYTES] __attribute__((aligned(16)));
+#endif
     uint8_t carry[RX_TS_PACKET];  /* the packet across frames, from its sync position */
     unsigned have;                /* bytes of it; RX_TS_PACKET: whole, its CRC-8 comes next */
     uint8_t crc;                  /* CRC-8 of carry[1 .. have) */
@@ -77,6 +93,16 @@ void rx_ts_init(rx_ts_t *t, int drop_null, rx_ts_emit_fn emit, void *ctx)
         }
         t->crc8[v] = (uint8_t)c;
     }
+#ifdef TS_COLUMNS
+    /* Bit k alone at byte i: its CRC is crc8[1 << k] there, then each later zero byte maps it
+     * through the table once more. */
+    uint8_t v[8];
+    for (unsigned k = 0; k < 8; ++k) v[k] = t->crc8[1u << k];
+    for (int i = RX_TS_PACKET - 2; i >= 0; --i) {
+        for (unsigned k = 0; k < 8; ++k) t->columns[(i / 16) * 128 + (7 - k) * 16 + i % 16] = v[k];
+        for (unsigned k = 0; k < 8; ++k) v[k] = t->crc8[v[k]];
+    }
+#endif
 }
 
 /* Four bytes a step: the table lookups chain, the byte loads and the loop count do not. */
@@ -93,6 +119,23 @@ static HOT uint8_t crc8(const uint8_t *table, unsigned c, const uint8_t *p, unsi
         c = table[c ^ *p++];
     }
     return (uint8_t)c;
+}
+
+/* The CRC-8 of a whole packet's 187 bytes after its sync byte (p points at them). By columns where
+ * the kernel's aligned reads lie within [begin, end): the frame from its BBHEADER to the data
+ * field's end. Else, and without the kernel, from the byte table. */
+static uint8_t packet_crc(const rx_ts_t *t, const uint8_t *begin, const uint8_t *end, const uint8_t *p)
+{
+#ifdef TS_COLUMNS
+    const uintptr_t first = (uintptr_t)p & ~(uintptr_t)15;
+    if (first >= (uintptr_t)begin && first + TS_SPAN <= (uintptr_t)end) {
+        return (uint8_t)dvbs2_pie_crc8_packet(p, t->columns);
+    }
+#else
+    (void)begin;
+    (void)end;
+#endif
+    return crc8(t->crc8, 0, p, RX_TS_PACKET - 1);
 }
 
 /* FNV-1a over bytes 1..187 two at a time, the PCR left out: a duplicate packet repeats every
@@ -276,7 +319,7 @@ unsigned rx_ts_frame(rx_ts_t *t, uint8_t *bbframe, unsigned bytes, uint32_t sequ
     }
     for (; p + RX_TS_PACKET < bytes; p += RX_TS_PACKET) {
         uint8_t *q = field + p;
-        deliver(t, q, crc8(t->crc8, 0, q + 1, RX_TS_PACKET - 1) == q[RX_TS_PACKET]);
+        deliver(t, q, packet_crc(t, bbframe, field + bytes, q + 1) == q[RX_TS_PACKET]);
     }
     settle(t);                  /* the frame goes back to the receiver, carry is refilled */
     t->have = bytes - p;

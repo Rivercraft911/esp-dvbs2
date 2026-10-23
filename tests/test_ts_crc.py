@@ -24,20 +24,7 @@ PROGRAM = r"""
 
 #define CHECK(x) do { if (!(x)) { printf("failed: %s (line %d)\n", #x, __LINE__); return 1; } } while (0)
 
-static unsigned model_calls;
-/* The kernel's reads (ts_pie.S), then the CRC by columns, positions 0..191 of the packet. */
-uint32_t dvbs2_pie_crc8_packet(const uint8_t *p, const uint8_t *cols)
-{
-    const volatile uint8_t *first = (const volatile uint8_t *)((uintptr_t)p & ~(uintptr_t)15);
-    uint8_t touched = 0, crc = 0;
-    for (unsigned i = 0; i < 224; ++i) touched ^= first[i];
-    for (unsigned i = 0; i < 192; ++i)
-        for (unsigned k = 0; k < 8; ++k)
-            if ((p[i] >> k) & 1) crc ^= cols[(i / 16) * 128 + (7 - k) * 16 + i % 16];
-    (void)touched;
-    ++model_calls;
-    return crc;
-}
+extern unsigned ts_crc_model_calls;   /* tests/ts_crc_model.c: the kernel's reads and result */
 
 int main(void)
 {
@@ -74,8 +61,8 @@ int main(void)
         free(f);
         ++modes;
     }
-    CHECK(modes == 14 && model_calls > 100);
-    printf("ok %u\n", model_calls);
+    CHECK(modes == 14 && ts_crc_model_calls > 100);
+    printf("ok %u\n", ts_crc_model_calls);
     return 0;
 }
 """
@@ -89,8 +76,8 @@ def main():
         dvbs2 = ROOT / "firmware/components/dvbs2"
         subprocess.run(shlex.split(os.environ.get("CC", "cc")) + [
             "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-DDVBS2_TS_COLUMN_MODEL",
-            "-I", str(dvbs2 / "include"), "-I", str(dvbs2), str(src), str(dvbs2 / "dvbs2.c"),
-            str(dvbs2 / "fast.c"), "-o", str(exe)], check=True)
+            "-I", str(dvbs2 / "include"), "-I", str(dvbs2), str(src), str(ROOT / "tests/ts_crc_model.c"),
+            str(dvbs2 / "dvbs2.c"), str(dvbs2 / "fast.c"), "-o", str(exe)], check=True)
         out = subprocess.run([str(exe)], capture_output=True, text=True)
         assert out.returncode == 0 and out.stdout.startswith("ok"), (out.returncode, out.stdout, out.stderr)
     print(f"TS CRC-8 by columns: 14 modes x 6 frames match the plain encoder; the kernel's reads "
