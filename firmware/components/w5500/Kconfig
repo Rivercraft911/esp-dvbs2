@@ -9,4 +9,19 @@ menu "W5500 Ethernet"
             sent and 21 us received, against 76 us and 90 us; no spi_master code in IRAM. The
             ESP-IDF backend stays the reference until the board shows that both agree.
 
+    config W5500_SETTINGS_NVS
+        bool "Keep the eth settings in NVS"
+        default y
+        help
+            `eth <setting>` saves to NVS, and a start reads them back. Without it the settings
+            live in RAM from boot and last until reset: no NVS code, flash writes or heap after
+            boot (the receiver).
+
+    config W5500_DEFAULTS
+        string "Settings over the built-in defaults"
+        default ""
+        help
+            `eth` settings separated by ';', applied over w5500_settings_default() at boot and by
+            `eth defaults`, for example "ip 192.168.77.3/24;dest 192.168.77.1:1234".
+
 endmenu
