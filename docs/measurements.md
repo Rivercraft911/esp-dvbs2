@@ -15,8 +15,9 @@ Words the records use:
   real SPI parser). **Prepared payload**: one stored payload encoded again for every frame.
 - **Spare** or **reserve**: 1 minus the encoder's mean cycles over the frame period (core 0), or
   1 minus the slowest bank fill over the bank deadline (core 1).
-- All boards ran at 240 MHz. Every RF path here is conducted (coax and attenuators), which says
-  nothing about range or absolute power.
+- All boards ran at 240 MHz. The B200 and S3-to-S3 campaigns in `results/` are conducted: coax
+  and attenuators. The earlier E200 runs used antennas, with the transmitter and receiver both
+  inside a closed Faraday box. Neither kind of path says anything about range or absolute power.
 
 ## Transmit: timing, memory and kernels
 
