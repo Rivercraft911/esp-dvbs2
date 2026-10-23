@@ -87,7 +87,10 @@ def main():
             raise AssertionError(bad)
         except ValueError:
             pass
-    assert board.Monitor('[::1]:1235').target == ('::1', 1235)
+    six = board.Monitor('[::1]:1235')
+    assert six.socket.getpeername()[:2] == ('::1', 1235)
+    # Resolved once and nonblocking, so a send can never stall the serial reader.
+    assert not six.socket.getblocking() and not board.Monitor('127.0.0.1:1235').socket.getblocking()
     print('board --monitor: status records forwarded as PVMN type 4 and kept out of the results; '
           'header, sequence wrap and failed sends checked')
 

@@ -149,8 +149,12 @@ class Monitor:
         host = host.strip('[]')
         if not host or not 0 < int(port) < 65536:
             raise ValueError(f'expected HOST:PORT, got {address!r}')
-        self.target = (host, int(port))
-        self.socket = socket.socket(socket.AF_INET6 if ':' in host else socket.AF_INET, socket.SOCK_DGRAM)
+        # Resolve once, before the command starts, and never block afterwards: a send that would
+        # wait is a failed send, so a slow name lookup or a full buffer cannot stall the serial reader.
+        family, kind, proto, _, target = socket.getaddrinfo(host, int(port), type=socket.SOCK_DGRAM)[0]
+        self.socket = socket.socket(family, kind, proto)
+        self.socket.connect(target)
+        self.socket.setblocking(False)
         self.seq = self.failed = 0
 
     def __call__(self, record: dict) -> None:
@@ -158,7 +162,7 @@ class Monitor:
         head = self.HEADER.pack(b'PVMN', 1, self.TYPE, self.seq & 0xFFFF, stamp & 0xFFFFFFFF)
         self.seq += 1
         try:
-            self.socket.sendto(head + json.dumps(record, separators=(',', ':')).encode(), self.target)
+            self.socket.send(head + json.dumps(record, separators=(',', ':')).encode())
         except OSError:
             self.failed += 1
 
