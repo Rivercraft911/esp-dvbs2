@@ -346,6 +346,7 @@ void spi_input_command(const char *cmd, const char *args)
             if (tokens>2 || (tokens==2 && strcmp(b,"ts") && strcmp(b,"gcs"))) goto usage;
             input_type=tokens==2 && !strcmp(b,"gcs") ? PV_GCS : PV_TS;
             usb_mode=true; replay=pv_mode=false;
+            ingress_spi_release(); // the SPI driver held is always the selected wire's, or none
             printf("@{\"cmd\":\"spiinput\",\"input\":\"%s\",\"wire\":\"usb\"}\n", input_type==PV_TS?"ts":"gcs");
             return;
         }
@@ -397,7 +398,15 @@ void spi_input_command(const char *cmd, const char *args)
         if (err==ESP_OK) err=spi_input_start();
         if (err==ESP_OK) probe(ms);
         else printf("@{\"cmd\":\"spirx\",\"error\":\"setup failed\",\"status\":\"%s\"}\n",esp_err_to_name(err));
-        input_type=old; replay=oldreplay; pv_mode=oldpv; usb_mode=oldusb; return;
+        input_type=old; replay=oldreplay; pv_mode=oldpv; usb_mode=oldusb;
+        // The probe may have swapped quad and raw: give the selection its own driver back.
+        err=ESP_OK;
+        if (input_type && !usb_mode) err=ingress_spi_provision(pv_mode);
+        else ingress_spi_release();
+        if (err!=ESP_OK)
+            printf("@{\"cmd\":\"spirx\",\"error\":\"input driver not restored\",\"status\":\"%s\"}\n",
+                   esp_err_to_name(err));
+        return;
     }
 usage:
     printf("@{\"cmd\":\"%s\",\"error\":\"usage: spipins devkit|xiao|CLK CS D0 D1 D2 D3 READY; "

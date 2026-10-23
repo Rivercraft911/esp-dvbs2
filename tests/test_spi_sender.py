@@ -15,6 +15,7 @@ NATIVE = r'''
 #define IRAM_ATTR
 #define ESP_OK 0
 #define ESP_ERR_NO_MEM 1
+#define ESP_ERR_INVALID_STATE 0x103
 #define MALLOC_CAP_INTERNAL 1
 #define MALLOC_CAP_DMA 2
 #define pdFALSE 0
@@ -149,14 +150,32 @@ int spi_device_polling_start(spi_device_handle_t d,spi_transaction_t *t,unsigned
     }
     last_tx=now_us; ++transfers; return 0;
 }
+// The receiver as ingress_spi.c provisions it: a session needs its wire's driver. A sender
+// replays sealed slots, one per virtual millisecond, so spirx probes have messages to verify.
 static ingress_ring receiver;
-esp_err_t ingress_spi_start(const ingress_spi_config *cfg,ingress_ring **ring) {
-    assert(cfg->received && cfg->ctx); *ring=&receiver; return ESP_OK;
-}
-void ingress_spi_stop(void) {}
 static int held=-1; // the provisioned driver: -1 none, 0 quad, 1 raw
-esp_err_t ingress_spi_provision(bool raw) { held=raw; return ESP_OK; }
+static bool fail_provision;
+esp_err_t ingress_spi_provision(bool raw) {
+    if (fail_provision) { held=-1; return ESP_ERR_NO_MEM; }
+    held=raw; return ESP_OK;
+}
 void ingress_spi_release(void) { held=-1; }
+static void ready_stub(void *ctx,int level) { (void)ctx; (void)level; }
+static void rearm_stub(void *ctx,ingress_desc *slot,bool restart) {
+    (void)ctx; (void)restart; now_us+=1000; ingress_replay_release(&receiver,slot);
+}
+static const ingress_hw sender_hw={.rearm=rearm_stub,.ready=ready_stub};
+esp_err_t ingress_spi_start(const ingress_spi_config *cfg,ingress_ring **ring) {
+    assert(cfg->received && cfg->ctx);
+    if (held != (cfg->pv ? 1 : 0)) return ESP_ERR_INVALID_STATE;
+    pv_crc32_tables(cfg->crc);
+    ingress_init(&receiver,NULL,&sender_hw);
+    for (unsigned i=0;i<INGRESS_SLOTS;++i) receiver.desc[i].buf=cfg->buffers[i];
+    receiver.type=PV_TS;
+    if (!cfg->replay) ingress_replay_fill(&receiver);
+    *ring=&receiver; return ESP_OK;
+}
+void ingress_spi_stop(void) { pv_crc32_tables(NULL); }
 void ingress_spi_get_stats(ingress_spi_stats *out) { memset(out,0,sizeof *out); }
 int main(void) {
     // A partially fitting borrowed pool must fall back to run memory;
@@ -181,8 +200,32 @@ int main(void) {
         tx_free(); run_reset(); assert(allocations==0 && !tx.timer);
     }
     pv_mode=false; input_type=PV_TS;
+    assert(spi_input_start()==ESP_ERR_INVALID_STATE); run_reset(); // no driver provisioned
+    spi_input_command("spiinput","quad");
     assert(spi_input_start()==ESP_OK); spi_input_stop(); run_reset();
     assert(!rx && allocations==0 && !tasks);
+    // spirx borrows the other wire's driver, then gives the selection its own back, after a
+    // probe and after a failed setup, so the next encoder start finds it.
+    const char *probes[][2]={{"quad ts replay","100 on"},{"on gcs","100 quad"},{"quad","100 quad"},
+                             {"off","100 on"},{"usb","100 quad"}};
+    for (unsigned i=0;i<5;++i) {
+        spi_input_command("spiinput",probes[i][0]);
+        const int before=held;
+        const unsigned type=input_type; const bool pv=pv_mode, rep=replay, usb=usb_mode;
+        spi_input_command("spirx",probes[i][1]);
+        assert(held==before && input_type==type && pv_mode==pv && replay==rep && usb_mode==usb);
+        run_reset(); assert(!rx && allocations==0); // the next command returns the probe's memory
+        if (type && !usb) { assert(spi_input_start()==ESP_OK); spi_input_stop(); run_reset(); }
+    }
+    spi_input_command("spiinput","quad ts replay");
+    fail_provision=true;
+    spi_input_command("spirx","100 on"); // setup fails; so does the restore, reported
+    fail_provision=false;
+    assert(held==-1);
+    spi_input_command("spirx","100 on");
+    run_reset();
+    assert(held==0 && spi_input_start()==ESP_OK); spi_input_stop(); run_reset();
+    assert(!rx && allocations==0);
     spi_input_command("spiinput","on");
     assert(pv_mode && !replay && input_type==PV_TS && held==1);
     spi_input_command("spiinput","on replay"); // replay is quad only: rejected without changes
@@ -215,7 +258,7 @@ int main(void) {
     spi_input_command("spipins","devkit");
     assert(pins.sclk==12 && pins.cs==10 && pins.d0==11 && pins.ready==8);
     spi_input_command("spiinput","usb gcs");
-    assert(usb_mode && input_type==PV_GCS && !replay);
+    assert(usb_mode && input_type==PV_GCS && !replay && held==-1);
     spi_input_command("spiinput","usb ts extra");
     assert(usb_mode && input_type==PV_GCS);
     spi_input_command("spiinput","usb");
