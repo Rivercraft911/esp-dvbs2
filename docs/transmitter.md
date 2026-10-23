@@ -263,11 +263,13 @@ everything at once ([run memory](../results/2026-10-23-tx-run-memory/README.md))
 
 | Region | Bytes | Largest use measured |
 |---|---:|---|
-| Internal, just above the DAC banks | 38,672 | 38,640 B |
-| Internal, the DRAM half of the 32 KB data cache | 32,768 | 25,920 B |
-| PSRAM, one block taken at boot | 393,216 | 294,848 B (QPSK 1 Msym/s dump) |
+| Internal, just above the DAC banks | 38,672 | 38,640 B ([run memory](../results/2026-10-23-tx-run-memory/README.md)) |
+| Internal, the DRAM half of the 32 KB data cache | 32,768 | 31,616 B (QPSK 1/4 at 20 Msym/s, TS replayed, [tx-8psk](../results/2026-10-23-tx-8psk/README.md)) |
+| PSRAM, one block taken at boot | 393,216 | 294,848 B (QPSK 1 Msym/s dump, [run memory](../results/2026-10-23-tx-run-memory/README.md)) |
 
-The largest internal total in one run is 57,088 B (an 8PSK 3/4 10 Msym/s dump). Encoder and radio
+The largest internal total recorded in one run is 67,936 B, a `dvbpace 4 20m` with TS input
+replayed (36,320 B low plus 31,616 B high, [tx-8psk](../results/2026-10-23-tx-8psk/README.md));
+the run-memory campaign's own largest was 57,088 B, an 8PSK 3/4 10 Msym/s dump. Encoder and radio
 worker stacks, their task blocks and the Morse ID state are static, and the radio worker lives on
 core 1 from boot. ESP-IDF's heap hooks (successful allocations, reallocations and non-null frees;
 failed allocations counted separately) count zero after boot through paces, keyed runs, dumps,
