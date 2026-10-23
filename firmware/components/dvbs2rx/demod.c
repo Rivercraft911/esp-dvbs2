@@ -55,7 +55,7 @@ _Static_assert(offsetof(demod_out_t, weak) == 3 * sizeof(uint8_t *), "demod_out_
 #define RING DEMOD_RING         /* sample ring per axis, a power of two */
 #define PAD (DEMOD_STRIDE - RING) /* mirrored head: at least a window plus 16 readable bytes */
 #define CHUNK 2048u               /* words unpacked per pass of the consumers */
-#define BATCH 128u                /* matched-filter outputs per pass */
+#define BATCH 256u                /* matched-filter outputs per pass */
 #define HOLD (RX_DEMOD_RING_BYTES / 4)  /* data symbols in the ring shared with the release */
 #define RUNS 8u                   /* data runs queued for the release */
 #define SEARCH 64u                /* acquisition candidates per block: two phases of 32 */
@@ -446,6 +446,9 @@ static inline unsigned mf_ready(const rx_demod_t *d, uint64_t t, uint32_t step, 
     uint64_t last = (t >> Q) + d->reach;         /* past the window's end */
     if (last >= d->written) {
         return 0;
+    }
+    if (((t + (uint64_t)(most - 1) * step) >> Q) + d->reach < d->written) {
+        return most;                             /* the usual case, without a division */
     }
     uint64_t n = (((d->written - last) << Q) - 1) / step + 1;
     return n < most ? (unsigned)n : most;
@@ -1094,8 +1097,8 @@ static void store(rx_demod_t *d, unsigned m)
 static int track(rx_demod_t *d)
 {
     for (;;) {
-        /* At 5 Msym/s a batch's times depend on where it starts: whole batches only (410
-         * samples). At 1 Msym/s every time is exact, and a batch spans half the ring. */
+        /* At 5 Msym/s a batch's times depend on where it starts: whole batches only (819
+         * samples). At 1 Msym/s every time is exact, and a batch would span the ring. */
         unsigned nd, boff, left = layout(d, &nd, &boff), most = left < BATCH ? left : BATCH;
         unsigned n = mf_ready(d, d->t, d->step, most);
         if (!n || (d->fast && n < most)) {

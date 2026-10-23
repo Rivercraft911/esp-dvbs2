@@ -25,8 +25,9 @@ typedef struct {
     uint32_t frames, good, failed, dropped, decoded, max_iterations;
     uint32_t max_push_cycles, max_release_cycles, max_fec_cycles;
     uint32_t release_stack_free, check_stack_free, decode_stack_free;
+    uint32_t free_internal, largest_internal;   /* after the receiver's allocations */
     uint64_t push_cycles, release_cycles, fec_cycles;
-    uint32_t pushes, log[RECEIVE_LOG];  /* cycles per capture unit (replay: per 6,144 words) */
+    uint32_t pushes, log[RECEIVE_LOG];  /* cycles per consumer call (a unit, or its part) */
     uint64_t max_push_at;
     rx_demod_stats_t demod;
 } receive_stats_t;
@@ -37,6 +38,6 @@ void receive_write(const void *data, size_t count);
 esp_err_t receive_run(const capture_config_t *capture, unsigned modcod, unsigned rate,
                       receive_stats_t *stats, capture_stats_t *capture_stats);
 /* Radio off: pairs of int8 I, Q at 16 MS/s (.sc8) through the same receiver, pushed from
- * core 1 in 6,144-word pieces at the real-time pace, every skip-th piece left out. */
+ * core 1 a capture unit at a time at the real-time pace, every skip-th unit left out. */
 esp_err_t receive_replay(const int8_t *sc8, size_t pairs, unsigned modcod, unsigned rate,
                          unsigned skip, receive_stats_t *stats);

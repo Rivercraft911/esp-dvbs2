@@ -12,6 +12,8 @@
 #define CAPTURE_RING 16384U
 #define CAPTURE_UNIT 12288U
 #define CAPTURE_LATE 2000U      /* a later handoff would overwrite its own unit */
+/* Bank n's 64 KiB: reserved SRAM, free while no capture runs (replay stages words there). */
+#define CAPTURE_BANK(n) ((uint32_t *)(0x3fcb0000U + (n) * 65536U))
 
 /* Consecutive samples [first, first + count) from a released bank, on core 1.
  * Called once, or twice when the span wraps the ring. Handoffs run in a timer

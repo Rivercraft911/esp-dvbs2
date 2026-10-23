@@ -157,7 +157,7 @@ static void print_receive(const char *cmd, esp_err_t e, unsigned modcod, unsigne
            "\"good\":%lu,\"failed\":%lu,\"decoded\":%lu,\"dropped\":%lu,\"max_iterations\":%lu,"
            "\"pushes\":%lu,\"max_push_cycles\":%lu,\"max_push_at\":%llu,\"push_cycles\":%llu,"
            "\"max_release_cycles\":%lu,\"release_cycles\":%llu,\"max_fec_cycles\":%lu,\"fec_cycles\":%llu,"
-           "\"stack_free\":[%lu,%lu,%lu],"
+           "\"stack_free\":[%lu,%lu,%lu],\"free_internal\":%lu,\"largest_internal\":%lu,"
            "\"demod\":{\"words\":%llu,\"frames\":%lu,\"lost\":%lu,\"dropped\":%lu,\"relocks\":%lu,"
            "\"rejects\":%lu,\"locked\":%u,\"cfo_hz\":%ld,\"clock_ppb\":%ld,\"acquire_cycles\":%lu,"
            "\"dc\":[%d,%d]}",
@@ -169,6 +169,7 @@ static void print_receive(const char *cmd, esp_err_t e, unsigned modcod, unsigne
            (unsigned long long)r->release_cycles, (unsigned long)r->max_fec_cycles,
            (unsigned long long)r->fec_cycles, (unsigned long)r->release_stack_free,
            (unsigned long)r->check_stack_free, (unsigned long)r->decode_stack_free,
+           (unsigned long)r->free_internal, (unsigned long)r->largest_internal,
            (unsigned long long)r->demod.words, (unsigned long)r->demod.frames,
            (unsigned long)r->demod.lost, (unsigned long)r->demod.dropped,
            (unsigned long)r->demod.relocks, (unsigned long)r->demod.rejects, r->demod.locked,
@@ -232,7 +233,7 @@ void app_main(void)
             esp_err_t e = rate ? replay_run(modcod, rate, skip, &r) : ESP_ERR_INVALID_ARG;
             quiet = false;
             print_receive("replay", e, modcod, rate, &r);
-            printf(",\"push_words\":6144}\n@{\"cmd\":\"replay\",\"push_log\":[");
+            printf(",\"push_words\":%u}\n@{\"cmd\":\"replay\",\"push_log\":[", CAPTURE_UNIT);
             for (unsigned k = 0; k < r.pushes && k < RECEIVE_LOG; ++k) printf("%s%lu", k ? "," : "", (unsigned long)r.log[k]);
             printf("]}\n");
         } else if (fields == 4 && !strcmp(cmd, "dump")) {

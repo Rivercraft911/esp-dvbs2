@@ -25,8 +25,7 @@
 #define PIECE 3072U             /* words per push: the release starts within ~1,000 symbols */
 #define STACK 4096U
 #define STOP 0xffU
-#define CHUNK 6144U             /* replay words per push call, as half a capture unit */
-#define CHUNK_CYCLES (CHUNK * 15U)  /* 240 MHz / 16 MS/s */
+#define UNIT_CYCLES (CAPTURE_UNIT * 15U)   /* 240 MHz / 16 MS/s */
 #define INTERNAL (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)
 
 typedef struct {
@@ -45,7 +44,6 @@ typedef struct {
     const int8_t *sc8;          /* replay */
     size_t pairs;
     unsigned skip;
-    uint32_t *words;
 } receiver_t;
 
 /* The driver's transmit ring holds 8 KB: larger blocks go in pieces. */
@@ -226,6 +224,8 @@ static esp_err_t start(void *ctx)
     r->checker = xTaskCreateStaticPinnedToCore(checker, "check", STACK, r, 11, stacks[1], &tasks[1], 0);
     r->decoder = xTaskCreateStaticPinnedToCore(decoder, "decode", STACK, r, 5, stacks[2], &tasks[2], 0);
     if (!r->release || !r->checker || !r->decoder) return ESP_ERR_NO_MEM;
+    r->stats->free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    r->stats->largest_internal = heap_caps_get_largest_free_block(INTERNAL);
     printf("@{\"cmd\":\"rx\",\"stream\":\"binary\",\"record_bytes\":%u,\"payload\":\"%s\","
            "\"failed\":\"hard+weak\"}\n", (unsigned)sizeof(receive_record_t), r->crc ? "crc32" : "bytes");
     fflush(stdout);
@@ -299,20 +299,20 @@ esp_err_t receive_run(const capture_config_t *capture, unsigned modcod, unsigned
     return error;
 }
 
-/* Core 1: the capture as dump words, CHUNK at a time, each pushed when its samples would have
- * arrived. */
+/* Core 1: the capture as dump words in capture bank 0, a capture unit at a time, each pushed
+ * when its samples would have arrived. */
 static void pusher(void *arg)
 {
     receiver_t *r = arg;
-    uint32_t *words = r->words, t0 = esp_cpu_get_cycle_count();
-    for (size_t first = 0, unit = 1; first < r->pairs; first += CHUNK, ++unit) {
-        size_t n = r->pairs - first < CHUNK ? r->pairs - first : CHUNK;
+    uint32_t *words = CAPTURE_BANK(0), t0 = esp_cpu_get_cycle_count();
+    for (size_t first = 0, unit = 1; first < r->pairs; first += CAPTURE_UNIT, ++unit) {
+        size_t n = r->pairs - first < CAPTURE_UNIT ? r->pairs - first : CAPTURE_UNIT;
         if (r->skip && unit % r->skip == 0) continue;
         /* The dump word's I bits 19:12 and Q bits 9:2 are exactly what was recorded. */
         for (size_t k = 0; k < n; ++k)
             words[k] = (uint32_t)(uint8_t)r->sc8[2 * (first + k)] << 12 |
                        (uint32_t)(uint8_t)r->sc8[2 * (first + k) + 1] << 2;
-        while ((int32_t)(esp_cpu_get_cycle_count() - t0 - (uint32_t)(unit * CHUNK_CYCLES)) < 0) {
+        while ((int32_t)(esp_cpu_get_cycle_count() - t0 - (uint32_t)(unit * UNIT_CYCLES)) < 0) {
         }
         consume(words, n, first, r);
     }
@@ -328,8 +328,7 @@ esp_err_t receive_replay(const int8_t *sc8, size_t pairs, unsigned modcod, unsig
     r.sc8 = sc8;
     r.pairs = pairs;
     r.skip = skip;
-    r.words = heap_caps_aligned_alloc(16, 4 * CHUNK, INTERNAL);
-    esp_err_t error = r.words ? start(&r) : ESP_ERR_NO_MEM;
+    esp_err_t error = start(&r);
     if (error == ESP_OK) {
         static StackType_t stack[STACK / sizeof(StackType_t)];
         static StaticTask_t task;
@@ -343,6 +342,5 @@ esp_err_t receive_replay(const int8_t *sc8, size_t pairs, unsigned modcod, unsig
         }
     }
     finish(&r);
-    heap_caps_free(r.words);
     return error;
 }

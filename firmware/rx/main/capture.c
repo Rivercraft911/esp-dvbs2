@@ -62,7 +62,7 @@ typedef struct {
 
 static inline uint32_t *bank(unsigned n)
 {
-    return (uint32_t *)(0x3fcb0000U + n * 65536U);
+    return CAPTURE_BANK(n);
 }
 
 static void IRAM_ATTR clear(uint32_t *p)
