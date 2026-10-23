@@ -90,7 +90,7 @@ with a receiver. Tuning selections last until changed or the board restarts.
 
 MODCOD selects modulation and code rate: QPSK 4..11, 8PSK 12..17. The
 [rate table](how-it-works.md#rates) gives the exact choices. QPSK defaults to 1 Msym/s.
-`--short` selects 16,200-bit short frames for QPSK MODCOD 4..10 at 1 Msym/s (not VCM; SPI input untested); each frame carries (Kbch - 80) / 8 payload bytes, 1,454 at MODCOD 7.
+`--short` selects 16,200-bit short frames: QPSK MODCOD 4..10 at the default 1 Msym/s or `5m`, and 8PSK MODCOD 12..16 (3/5 .. 8/9, no short 9/10) at `5m` (not VCM, `10m` or faster; SPI input untested). Each frame carries (Kbch - 80) / 8 payload bytes: 1,454 at MODCOD 7 and 1,454 at 8PSK MODCOD 14. A pilot-on short frame has 8,370 QPSK or 5,598 8PSK symbols.
 Both modulations accept `5m`, `10m`, `20m` and `26m667`; `33m333` is QPSK only.
 Dumps are little-endian int16 I/Q with full scale 512. Golden CRCs use peak 128 and N0CALL.
 SPI argument ranges, custom pins and fault/replay options: [diagnostics](spi-input.md#diagnostics).
@@ -195,8 +195,9 @@ from generating the default contiguous xorshift stream.
 the existing renderer, Wi-Fi lifetime, queue sizing and payload stream stay selected.
 `--phy-solo` starts and calibrates Wi-Fi, holds the PHY independently, then stops and
 deinitializes Wi-Fi before playback. It releases that hold on every exit. Solo paces
-are limited to 60 seconds. **RF quality without Wi-Fi's periodic recalibration is
-unverified**; use the [E200 A/B plan](../examples/over-the-air/README.md#phy-solo-ab).
+are limited to 60 seconds. Into the S3 receiver at 1 Msym/s, PHY-solo keying gave 0 failed
+frames in 103,453, against 2 in 51,791 with Wi-Fi up: Wi-Fi's activity caused rare short
+disturbances of the transmitted signal ([records](../results/2026-10-23-tx-phy-solo/README.md)).
 
 At 8PSK `26m667`, `--fused` automatically tries six table reads instead of eight.
 It preserves independent rounding and DAC words. The extra 12 KiB of tables displaces

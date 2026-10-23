@@ -19,6 +19,7 @@ import dvbs2 as d
 MODES = [(k, "qpsk", r) for k, r in enumerate(d.RATES[3:], 4)]
 MODES += [(k, "8psk", r) for k, r in enumerate(d.PSK8_RATES, 12)]
 SHORT_MODES = [(k, "qpsk", r) for k, r in enumerate(d.RATES[3:10], 4)]
+SHORT_MODES += [(k, "8psk", r) for k, r in enumerate(d.PSK8_RATES[:5], 12)]   # no short 9/10
 U8P = ct.POINTER(ct.c_uint8)
 
 
@@ -481,18 +482,20 @@ def test_bch_cache(native):
 
 
 def test_short(native):
-    """Short FECFRAMEs, QPSK MODCOD 4..10: portable and fast stages against the model."""
+    """Short FECFRAMEs, QPSK MODCOD 4..10 and 8PSK 12..16: portable and fast stages against the model."""
     lib, fast = native.lib, native.fast
     rng, frames = np.random.default_rng(16200), 0
-    assert not lib.dvbs2_find_mode_short(3) and not lib.dvbs2_find_mode_short(11)
-    assert not lib.dvbs2_find_mode_short(12)
+    for bad in (0, 3, 11, 17, 18):
+        assert not lib.dvbs2_find_mode_short(bad)
     for modcod, modulation, rate in SHORT_MODES:
         mode, c = lib.dvbs2_find_mode_short(modcod), d.code(rate, True)
         assert mode and mode != lib.dvbs2_find_mode(modcod)
+        assert lib.dvbs2_find_mode_short(modcod) == mode and d.modcod(rate, modulation) == modcod
         assert c.kbch % 8 == 0 and (c.nbch - c.kbch) == 168
         capacity = c.kbch - 80
         for pilots in (1, 0):
-            assert lib.dvbs2_frame_symbols(mode, pilots) == (8370 if pilots else 8190)
+            assert lib.dvbs2_frame_symbols(mode, pilots) == d.plframe_length(True, pilots, modulation) == (
+                {"qpsk": 8370, "8psk": 5598}[modulation] if pilots else {"qpsk": 8190, "8psk": 5490}[modulation])
             assert lib.dvbs2_fast_prepare(fast, mode, pilots, 0) == 0
             for case, length in enumerate((capacity, 0, 13, capacity - 3, capacity, 1)):
                 bits = rng.integers(0, 2, length, dtype=np.uint8)
@@ -579,7 +582,7 @@ def test_short(native):
         np.testing.assert_array_equal(native.bits(c.nbch), d.bch_encode(data, rate, True))
     # A short mode is not the normal mode of the same MODCOD: copies with the wrong size are refused.
     assert lib.dvbs2_fast_mode_size(lib.dvbs2_find_mode_short(7)) < lib.dvbs2_fast_mode_size(lib.dvbs2_find_mode(7))
-    print(f"short frames: {frames} GCS/TS frames, QPSK MODCOD 4..10, pilots on/off, portable and "
+    print(f"short frames: {frames} GCS/TS frames, QPSK MODCOD 4..10 and 8PSK 12..16, pilots on/off, portable and "
           "fast stages, PLFRAME at shifted addresses, LDPC impulses, packed/complete API in "
           "exact-sized buffers")
 

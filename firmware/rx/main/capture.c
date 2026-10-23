@@ -11,6 +11,9 @@
 #include "esp_heap_caps.h"
 #include "esp_private/regi2c_ctrl.h"
 #include "esp_async_memcpy.h"
+#include "esp_phy_init.h"
+#include "esp_private/periph_ctrl.h"
+#include "esp_private/phy.h"
 #include "driver/gptimer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
@@ -18,6 +21,7 @@
 #include "freertos/task.h"
 #include "heap_memory_layout.h"
 #include "soc/soc.h"
+#include "soc/syscon_reg.h"
 
 #define DUMP_CTRL 0x60033d5cU
 #define DUMP_INDEX 0x60033d60U
@@ -388,6 +392,7 @@ static void worker(void *arg)
     rom_pbus_workmode();
     rom_pbus_xpd_tx_off();
     const uint8_t lo_saved = regi2c_ctrl_read_reg(0x65, 0, 0);
+    const uint32_t bb_saved = REG_READ(SYSCON_WIFI_BB_CFG_REG);
     select_lo(false);
     set_chanfreq(2412, 0);
     phy_set_freq(pll_khz / 1000U, pll_khz % 1000U);
@@ -399,6 +404,8 @@ static void worker(void *arg)
     } else {
         force_rx_gain(1, c->gain, 0);
         select_lo(divided);
+        /* Bit 1 is set while Wi-Fi runs; without it the dump holds a constant. */
+        REG_SET_BIT(SYSCON_WIFI_BB_CFG_REG, 1U << 1);
         vTaskDelay(pdMS_TO_TICKS(3));
         s->free_ready = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
         s->largest_ready = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
@@ -415,6 +422,7 @@ static void worker(void *arg)
     rom_pbus_xpd_rx_on(0);
     rom_set_rxclk_en(0);
     select_lo(lo_saved & 0x10U);
+    REG_WRITE(SYSCON_WIFI_BB_CFG_REG, bb_saved);
     xSemaphoreGive(job->done);
     vTaskSuspend(NULL);     /* the launcher deletes it, so its static buffers are free again */
 }
@@ -443,10 +451,12 @@ esp_err_t capture_bench(const capture_config_t *config, uint32_t results[16],
 static esp_err_t launch(job_t *job)
 {
     capture_stats_t *s = job->stats;
-    bool initialized = false, started = false;
-    /* Wi-Fi only powers the PHY. Starting it here, on the console core, keeps its
-     * interrupt off core 1. Deinitializing it (with the PHY held) froze the dump
-     * data at a constant, so it stays up for the whole run. */
+    bool initialized = false, held = false;
+    /* Wi-Fi starts only to power and calibrate the PHY. The run then holds the PHY with
+     * the Bluetooth modem bit, as firmware/components/radio_s3/physolo.c does for the
+     * transmitter, keeps the Wi-Fi clock domain referenced and deinitializes Wi-Fi: no MAC
+     * interrupts or periodic work, and about 44 KB of internal RAM return. The worker
+     * sets the baseband bit that Wi-Fi's stop clears. */
     s->free_before = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     cfg.nvs_enable = 0;
@@ -455,16 +465,19 @@ static esp_err_t launch(job_t *job)
     if ((s->error = esp_wifi_set_storage(WIFI_STORAGE_RAM)) != ESP_OK ||
         (s->error = esp_wifi_set_mode(WIFI_MODE_NULL)) != ESP_OK ||
         (s->error = esp_wifi_start()) != ESP_OK) goto done;
-    started = true;
-    if ((s->error = esp_wifi_set_ps(WIFI_PS_NONE)) != ESP_OK) goto done;
-    if (job->config->promiscuous &&
-        ((s->error = esp_wifi_set_promiscuous(true)) != ESP_OK ||
-         (s->error = esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE)) != ESP_OK)) goto done;
+    if (phy_get_modem_flag() != PHY_MODEM_WIFI) { s->error = ESP_ERR_INVALID_STATE; goto done; }
+    esp_wifi_bt_power_domain_on();
+    esp_phy_modem_init();
+    esp_phy_enable(PHY_MODEM_BT);
+    wifi_module_enable();
+    held = true;
+    if ((s->error = esp_wifi_stop()) != ESP_OK || (s->error = esp_wifi_deinit()) != ESP_OK) goto done;
+    initialized = false;
     s->free_wifi = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     if (job->config->ready && (s->error = job->config->ready(job->ctx)) != ESP_OK) goto done;
     if (!(job->done = xSemaphoreCreateBinary())) { s->error = ESP_ERR_NO_MEM; goto done; }
-    /* A static stack stays in internal SRAM. From the heap, after Wi-Fi, it can land in
-     * RTC FAST memory, where the demodulator's stack traffic ran 3.4 times slower. */
+    /* A static stack stays in internal SRAM; from the heap it could land in slow RTC FAST
+     * memory, where the demodulator's stack traffic once ran 3.4 times slower. */
     static StackType_t stack[CAPTURE_STACK / sizeof(StackType_t)];
     static StaticTask_t task;
     TaskHandle_t handle = xTaskCreateStaticPinnedToCore(worker, "capture", CAPTURE_STACK, job,
@@ -479,11 +492,16 @@ static esp_err_t launch(job_t *job)
 
 done:
     if (job->done) vSemaphoreDelete(job->done);
-    if (started) esp_wifi_set_promiscuous(false);
     if (initialized) {
         esp_err_t e = esp_wifi_stop();
         if (e != ESP_OK && e != ESP_ERR_WIFI_NOT_STARTED) s->cleanup = e;
         if ((e = esp_wifi_deinit()) != ESP_OK && s->cleanup == ESP_OK) s->cleanup = e;
+    }
+    if (held) {
+        esp_phy_disable(PHY_MODEM_BT);
+        esp_phy_modem_deinit();
+        wifi_module_disable();
+        esp_wifi_bt_power_domain_off();
     }
     return s->error;
 }

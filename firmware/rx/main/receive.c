@@ -32,6 +32,16 @@ typedef struct {
     receive_stats_t *stats;
 } receiver_t;
 
+/* The driver's transmit ring holds 8 KB: larger blocks go in pieces. */
+void receive_write(const void *data, size_t count)
+{
+    for (size_t sent = 0; sent < count;) {
+        int n = usb_serial_jtag_write_bytes((const uint8_t *)data + sent,
+                                            count - sent > 4096 ? 4096 : count - sent, portMAX_DELAY);
+        if (n > 0) sent += n;
+    }
+}
+
 /* Core 1, inside the capture loop: bounded work, no blocking. */
 static esp_err_t IRAM_ATTR consume(const uint32_t *words, size_t count, uint64_t first, void *ctx)
 {
@@ -73,12 +83,12 @@ static void decoder(void *arg)
         length >= 0 ? ++s->good : ++s->failed;
         receive_record_t rec = {RECEIVE_MAGIC, f->sequence, f->cfo_hz, f->mer_cdb,
                                 (int16_t)length, fec.iterations, fec.failed_checks};
-        usb_serial_jtag_write_bytes(&rec, sizeof rec, portMAX_DELAY);
-        if (length > 0) usb_serial_jtag_write_bytes(payload, length, portMAX_DELAY);
+        receive_write(&rec, sizeof rec);
+        if (length > 0) receive_write(payload, length);
         /* A failed frame carries its first sample and soft bits for host diagnosis. */
         if (length < 0) {
-            usb_serial_jtag_write_bytes(&f->header_sample, 8, portMAX_DELAY);
-            usb_serial_jtag_write_bytes(f->llr, RX_SHORT_BITS, portMAX_DELAY);
+            receive_write(&f->header_sample, 8);
+            receive_write(f->llr, RX_SHORT_BITS);
         }
         xQueueSend(r->empty, &i, portMAX_DELAY);
     }
@@ -139,7 +149,7 @@ esp_err_t receive_run(const capture_config_t *capture, unsigned modcod, receive_
         while (eTaskGetState(r.task) != eSuspended) vTaskDelay(1);
         vTaskDelete(r.task);
         receive_record_t end = {RECEIVE_MAGIC, 0, 0, 0, RECEIVE_END, 0, 0};
-        usb_serial_jtag_write_bytes(&end, sizeof end, portMAX_DELAY);
+        receive_write(&end, sizeof end);
         rx_demod_stats(r.demod, &s->demod);
     }
     for (unsigned i = 0; i < SLOTS; ++i) {

@@ -15,6 +15,13 @@ static inline unsigned dvbs2_fec_bits(const dvbs2_mode *mode)
 {
     return mode->short_frame ? 16200 : 64800;
 }
+/* Code-rate index 0..6 (1/2 .. 8/9) of a short mode, for the per-rate LDPC tables.
+ * Short modes sit in dvbs2_modes_short: QPSK 1/2..8/9, then 8PSK 3/5, 2/3, 3/4, 5/6, 8/9. */
+static inline unsigned dvbs2_short_rate(const dvbs2_mode *mode)
+{
+    static const uint8_t rate[] = {0, 1, 2, 3, 4, 5, 6, 1, 2, 3, 5, 6};
+    return rate[mode - dvbs2_modes_short];
+}
 /* BB scrambling sequence, one byte per 8 BBFRAME bits (5.2.2). */
 const uint8_t *dvbs2_prbs_table(void);
 

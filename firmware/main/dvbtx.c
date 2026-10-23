@@ -45,7 +45,7 @@
 #define PACKED_SLOTS 3              // fast rates: three packed frames at 4 sps, two at 8, plus a cache
 #define PILOTS 1
 
-// Short FECFRAMEs (16,200 bits) for the next dvb, dvbdump or dvbpace run: QPSK, 1 Msym/s only.
+// Short FECFRAMEs (16,200 bits) for the next dvb, dvbdump or dvbpace run: QPSK at 1 or 5 Msym/s, 8PSK at 5 Msym/s.
 static bool short_frames_enabled;
 void dvbtx_set_short(bool enabled) { short_frames_enabled = enabled; }
 static const dvbs2_mode *tx_find_mode(unsigned modcod)
@@ -731,8 +731,8 @@ static size_t start_encoder_options(const char *cmd, unsigned modcod, unsigned l
         printf("@{\"cmd\":\"%s\",\"error\":\"invalid MODCOD/sps\"}\n", cmd);
         return 0;
     }
-    if (mode->short_frame && (vcm.enabled || sps != 40)) {
-        printf("@{\"cmd\":\"%s\",\"error\":\"short frames need QPSK 1 Msym/s without VCM\"}\n", cmd);
+    if (mode->short_frame && (vcm.enabled || !(sps == 40 || sps == 8) || dac_rate != RADIO_S3_DAC_RATE)) {
+        printf("@{\"cmd\":\"%s\",\"error\":\"short frames need 1m QPSK or 5m, without VCM\"}\n", cmd);
         return 0;
     }
     if (vcm.enabled) {
@@ -916,7 +916,9 @@ static size_t start_encoder_options(const char *cmd, unsigned modcod, unsigned l
             return 0;
         }
     } else if (enc.packed) {
-        const size_t frame = packed_bytes(symbols), dummy = packed_bytes(DVBS2_DUMMY_SYMBOLS);
+        const size_t dummy = packed_bytes(DVBS2_DUMMY_SYMBOLS);
+        // The dummy frame is built unpacked in the second slot: a short 8PSK frame packs into less.
+        const size_t frame = packed_bytes(symbols) > DVBS2_DUMMY_SYMBOLS ? packed_bytes(symbols) : (DVBS2_DUMMY_SYMBOLS + 15) & ~(size_t)15;
         const size_t used = short_pulse ? 16384 : shaper_table_words(sps, mode->bits_per_symbol) * 4;
         const size_t need = 2 * frame + dummy;
         uint8_t *base;
