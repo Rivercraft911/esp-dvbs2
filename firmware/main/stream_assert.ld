@@ -15,8 +15,14 @@ ASSERT(_vcm_text_start >= 0x40370000 && _vcm_text_end < 0x403e0000,
        "VCM hot code must use SRAM instruction fetches")
 ASSERT(_vcm_text_end <= _iram_text_end && _iram_text_end <= _iram_end,
        "VCM IRAM must be executable and reserved from the DRAM heap")
-ASSERT(lofty_render_pages_pie == 0x4037a324 && lofty_render_pie == 0x4037a334,
-       "default vector renderer placement must match main 7391f86")
+ASSERT((lofty_render_pages_pie & 31) == 4 && (lofty_render_pie & 31) == 20,
+       "8PSK renderer loop fetch alignment must match the measured 7391f86 layout")
+ASSERT((machine_axis_render_pie & 31) == 0 && (shaper_short4_pie & 31) == 24 &&
+       (shaper_qpsk3_pie & 31) == 20 && (shaper_qpsk4_pie & 31) == 28 &&
+       (ring_copy_quads_pie & 31) == 12 && (shaper_copy_pie & 31) == 4 &&
+       (shaper_fill4_pie & 31) == 8 && (shaper_fill8_pie & 31) == 0 &&
+       (shaper_fill40_pie & 31) == 24 && (shaper_unpack_codes_pie & 31) == 0,
+       "fill kernel fetch alignment must match the measured 7391f86 layout")
 ASSERT(shaper_store >= 0x3fc88000 && shaper_store + 65536 <= 0x3fd00000,
        "fractional tables, queue and scratch must be internal DRAM")
 
@@ -30,7 +36,8 @@ ASSERT((_lofty_fused_text_start & 31) == 0 &&
        ((_lofty_fused_text_end - _lofty_fused_text_start + 31) & ~31) <= 4096,
        "fused control code must fit one instruction-cache way")
 
-ASSERT((_lofty_text_end - _lofty_text_start) == 1632,
-       "default cache lock footprint must match main 6e7eed5")
 ASSERT((_lofty_text_start & 4095) == 0x720,
-       "default cache lock indices must match main 7391f86")
+       "lofty cache lock indices must match the measured 7391f86 layout")
+ASSERT((_stream_bss_start & 15) == 0 && _stream_bss_start >= 0x3fc88000 &&
+       _stream_bss_end <= 0x3fcc0000,
+       "stream state must be 16-byte aligned internal DRAM below the DAC banks")

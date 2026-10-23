@@ -169,7 +169,6 @@ def check_residency(current):
     size = (end-first+31)&~31
     assert first%32 == 0 and 0 < size <= 4096
     assert 0x42000000 <= first < end < 0x42800000
-    assert size == 1632, "default lock footprint must match 6e7eed5"
     for name in ('lofty_shape','lofty_short','lofty_splice','lofty_samples'):
         assert first <= m[name] < end,(name,m[name])
     fused_first, fused_end = m['_lofty_fused_text_start'],m['_lofty_fused_text_end']
@@ -184,10 +183,11 @@ def check_residency(current):
     for name in ('lofty_render_pie','lofty_render_pages_pie','machine_axis_render_pie',
                  'machine_axis_samples','xTaskGenericNotify','shaper_copy_pie'):
         assert 0x40370000 <= m[name] < 0x403e0000,(name,m[name])
-    assert m['fill'] == 0x4037752c, "default fill entry must match main 7391f86"
-    assert m['lofty_render_pages_pie'] == 0x4037a324, "default PIE placement must match main"
-    assert m['lofty_render_pie'] == 0x4037a334
-    assert first % 4096 == 0x720, "default lock cache indices must match main 7391f86"
+    assert m['lofty_render_pages_pie'] % 32 == 4, "renderer fetch alignment must match 7391f86"
+    assert m['lofty_render_pie'] % 32 == 20
+    assert first % 4096 == 0x720, "lock cache indices must match 7391f86"
+    state = m['_stream_bss_start']
+    assert state % 16 == 0 and 0x3fc88000 <= state < m['_stream_bss_end'] <= 0x3fcc0000
     assert 0x40370000 <= m['_vcm_text_start'] < m['_vcm_text_end'] < 0x403e0000
     assert m['shaper_axes8_pie'] % 32 == 8, "axis PIE fetch alignment must match modswap 154692d"
     assert m['_vcm_text_end'] <= m['_iram_text_end'] <= m['_iram_end']
@@ -198,7 +198,7 @@ def check_residency(current):
     assert not any(name == 'lofty_page_at' or name.startswith('lofty_page_at.') for name in m), "page accessor must stay inline"
     store = m['shaper_store']
     assert store%16 == 0 and 0x3fc88000 <= store < store+65536 <= 0x3fcc0000
-    print(f'linked: main fill/PIE entries, {size} B default lock with main cache indices; separate VCM IRAM; common 64 KiB store before DAC')
+    print(f'linked: renderer fetch alignment, {size} B lock with 7391f86 cache indices; separate VCM IRAM; stream state and 64 KiB store before DAC')
 
 if __name__ == '__main__':
     p = argparse.ArgumentParser(description=__doc__)

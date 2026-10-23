@@ -14,10 +14,11 @@
     add \reg,\reg,a5
     .endm
 
-    .macro kernel name,n
+    .macro kernel name,n,class
     .global \name
     .type \name,@function
-    .align 4
+    .balign 32 // measured fetch position (stream_assert.ld)
+    .space \class
 \name:
     entry a1,32
     beqz a4,.Ldone\@
@@ -81,15 +82,16 @@
     retw
     .size \name,.-\name
     .endm
-    kernel shaper_qpsk3_pie,3
-    kernel shaper_qpsk4_pie,4
+    kernel shaper_qpsk3_pie,3,20
+    kernel shaper_qpsk4_pie,4,28
 
 // Copy sixteen chronological quad bytes, with a 0/2/4/6-bit left shift in each
 // byte and the following byte supplying its low bits. Unaligned source, aligned
 // destination, sixteen readable source guards. TRM v1.8 1.8.17 / 1.8.49.
     .global ring_copy_quads_pie
     .type ring_copy_quads_pie,@function
-    .align 4
+    .balign 32
+    .space 12
 ring_copy_quads_pie:
     entry a1,32
     beqz a4,.Lcopy_done

@@ -4,7 +4,8 @@
     .section .iram1.shaper_short,"ax"
     .global shaper_short4_pie
     .type shaper_short4_pie,@function
-    .align 4
+    .balign 32 // measured fetch position (stream_assert.ld)
+    .space 24
 shaper_short4_pie:
     entry a1,32
     beqz a4,.Ldone

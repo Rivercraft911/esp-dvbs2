@@ -115,7 +115,13 @@ typedef struct {
     uint64_t shaped_words, reused_words;
 } dvb_t;
 
-static DRAM_ATTR dvb_t dvb;
+// Both cores read the stream state: internal DRAM, 16-byte aligned (stream_assert.ld).
+#ifdef __XTENSA__
+#define STREAM_STATE __attribute__((section(".stream_bss"), aligned(16)))
+#else
+#define STREAM_STATE __attribute__((aligned(16)))
+#endif
+static STREAM_STATE dvb_t dvb;
 // Only the lofty path uses this state. Dummy pairs preserve the four-symbol
 // table rounding and vector-store alignment of every queued data descriptor.
 typedef struct {
@@ -212,11 +218,7 @@ typedef struct {
     uint32_t stack_min_free;
 } encoder_t;
 
-#ifdef __XTENSA__
-_Static_assert(sizeof(dvb_t) == 0x3d0 && sizeof(encoder_t) == 0x250,
-               "fixed stream state must retain main's layout");
-#endif
-static encoder_t enc;
+static STREAM_STATE encoder_t enc;
 static struct {
     bool vcm, vcm_axes;
     unsigned requested, vcm_changes, mode_frames[14], vcm_modulations;

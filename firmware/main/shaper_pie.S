@@ -24,6 +24,8 @@
     .endif
     .endm
 
+// Each kernel entry keeps its measured fetch position (.balign 32 plus a fixed
+// offset), so unrelated IRAM changes cannot move its loops (stream_assert.ld).
     .section .iram1.shaper4, "ax"
     .global shaper_fill4_pie
     .type   shaper_fill4_pie, @function
@@ -72,10 +74,11 @@
 
 // void shaper_fill4_pie(uint32_t *dst, const uint8_t *sym, int groups, const uint32_t *blocks)
 // a2 dst, a3 sym, a4 groups >= 0, a5 blocks. Makes 6 * groups + 1 symbols.
-    .macro kernel4 name, raw, bits=3
+    .macro kernel4 name, raw, bits=3, class
     .global \name
     .type \name, @function
-    .align 4
+    .balign 32
+    .space \class
 \name:
     entry           a1, 32
     movi            a8, 0x80200
@@ -139,8 +142,8 @@
     retw
     .size \name, . - \name
     .endm
-    kernel4 shaper_fill4_pie, 0
-    kernel4 shaper_fill4_qpsk_pie, 0, 2
+    kernel4 shaper_fill4_pie, 0, 3, 8
+    kernel4 shaper_fill4_qpsk_pie, 0, 2, 4
 
 
     .section .iram1.shaper8, "ax"
@@ -194,10 +197,11 @@
 
 // void shaper_fill8_pie(uint32_t *dst, const uint8_t *sym, int groups, const uint32_t *blocks)
 // a2 dst, a3 sym, a4 groups, a5 blocks. Makes 6 * groups + 1 symbols.
-    .macro kernel8 name, raw, bits=3
+    .macro kernel8 name, raw, bits=3, class
     .global \name
     .type \name, @function
-    .align 4
+    .balign 32
+    .space \class
 \name:
     entry           a1, 32
     movi            a8, 0x80200
@@ -268,8 +272,8 @@
     retw
     .size \name, . - \name
     .endm
-    kernel8 shaper_fill8_pie, 0
-    kernel8 shaper_fill8_qpsk_pie, 0, 2
+    kernel8 shaper_fill8_pie, 0, 3, 0
+    kernel8 shaper_fill8_qpsk_pie, 0, 2, 12
 
 
     .section .iram1.shaper40, "ax"
@@ -318,10 +322,11 @@
 
 // void shaper_fill40_pie(uint32_t *dst, const uint8_t *sym, int nsym, const uint32_t *blocks)
 // a2 dst, a3 sym, a4 nsym >= 1, a5 blocks.
-    .macro kernel40 name, raw
+    .macro kernel40 name, raw, class
     .global \name
     .type \name, @function
-    .align 4
+    .balign 32
+    .space \class
 \name:
     entry           a1, 32
     movi            a8, 0x80200
@@ -361,8 +366,8 @@
     retw
     .size \name, . - \name
     .endm
-    kernel40 shaper_fill40_pie, 0
-    kernel40 shaper_fill40_raw_pie, 1
+    kernel40 shaper_fill40_pie, 0, 24
+    kernel40 shaper_fill40_raw_pie, 1, 0
 
     .section .iram1.unpack, "ax"
     .global shaper_unpack_pie
@@ -375,10 +380,11 @@
 // after the last block are read. The low nibbles are the even phases, the high nibbles (shifted
 // down, then masked) the odd ones, and EE.VZIP.8 (1.8.212) interleaves them into 32 phases.
 // void shaper_unpack_pie(uint8_t *dst, const uint8_t *src, unsigned blocks), dst 16-byte aligned.
-    .macro unpack name, codes
+    .macro unpack name, codes, class
     .global \name
     .type \name, @function
-    .align 4
+    .balign 32
+    .space \class
 \name:
     entry           a1, 32
     .if \codes == 2
@@ -422,16 +428,17 @@
     retw
     .size \name, . - \name
     .endm
-    unpack shaper_unpack_pie, 0
-    unpack shaper_unpack_codes_pie, 1
-    unpack shaper_unpack_qpsk_pie, 2
+    unpack shaper_unpack_pie, 0, 8
+    unpack shaper_unpack_codes_pie, 1, 0
+    unpack shaper_unpack_qpsk_pie, 2, 24
 
 // Disjoint aligned word buffers, eight words per pair. Independent loads separate each
 // load from its consumer (TRM v1.8 1.7.1, pp65-66; loads 1.8.88 p164, stores 1.8.192 p275).
     .section .iram1.shaper_copy, "ax"
     .global shaper_copy_pie
     .type shaper_copy_pie, @function
-    .align 4
+    .balign 32
+    .space 4
 shaper_copy_pie:
     entry a1, 32
     loopnez a4, .Lcopy_end

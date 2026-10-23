@@ -5,7 +5,7 @@
  * src is five words per run, no guard load; history holds the preceding
  * sixteen I/Q signs, oldest in bits 15/31. dst is 16-byte aligned. */
     .section .iram1.machine_axis,"ax"
-    .align 4
+    .balign 32 // measured fetch position (stream_assert.ld)
     .global machine_axis_render_pie
     .type machine_axis_render_pie,@function
 machine_axis_render_pie:

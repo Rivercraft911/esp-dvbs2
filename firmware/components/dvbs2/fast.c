@@ -887,12 +887,6 @@ static __attribute__((noinline)) void map_c(const dvbs2_fast *f, const uint8_t *
 
 HOT void dvbs2_fast_pl(const dvbs2_fast *f, uint8_t *output)
 {
-#if defined(DVBS2_IRAM) && defined(__XTENSA__)
-    /* The 8PSK column offsets are computed now, not literals, which shrank this file's IRAM literal
-     * pool by 8 bytes. stream_assert.ld pins the default vector renderer's address to main's: two
-     * unused literals restore it. */
-    __asm__ volatile("" :: "r"(0x5a5a1234u), "r"(0xa5a54321u));
-#endif
     memcpy(output, f->header, 90);
     for (unsigned b = 0; b < f->pilot_blocks; ++b) {
         memcpy(output + 90 + 1440 * (b + 1) + 36 * b, fast_pilots + 36 * b, 36);

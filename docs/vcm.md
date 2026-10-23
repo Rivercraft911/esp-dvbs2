@@ -25,8 +25,9 @@ decode were exact. The placement changes below still need board timing checks.
 The axis table is 10,240 bytes instead of the 65,536-byte mixed phase table at
 5 Msym/s. Both preserve the existing integer pulse rounding and symbol history.
 VCM hot code uses a separate IRAM section, restoring modswap's SRAM instruction
-fetches. The fixed fill/PIE entries and default 1,632-byte lock's cache indices
-match main `7391f86`; linker checks guard placement. Phase profiling stays enabled
+fetches. Every fill kernel keeps its measured fetch alignment and the 8PSK lock keeps
+its cache indices; linker checks guard placement
+([records](../results/2026-10-23-tx-pins/README.md)). Phase profiling stays enabled
 for VCM pace. This consumes about 5 KB internal SRAM; the earlier branch had
 about 77 KB free with Wi-Fi up.
 Same-modulation runs keep their smaller phase tables. Mixed 5m automatically
