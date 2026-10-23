@@ -104,7 +104,7 @@
 #define TRANS_DONE (1u << 12)             /* SPI_TRANS_DONE_INT_{ENA,CLR,RAW,ST} */
 #define OUTFIFO_EMPTY (1u << 1)           /* SPI_DMA_OUTFIFO_EMPTY_ERR_INT_{CLR,RAW}: the GDMA
                                            * gave less data than the SPI shifted out */
-#define REWRITES 3                        /* tries after an underflow before a frame fails */
+#define REWRITES 10                       /* tries after an underflow before a frame fails */
 #define CLK_GATE_ON 0x7u                  /* CLK_EN, MST_CLK_ACTIVE, MST_CLK_SEL = PLL_F80M */
 #define SPI_SRC_HZ 80000000u              /* PLL_F80M_CLK (Register 30.14, p.1165) */
 
