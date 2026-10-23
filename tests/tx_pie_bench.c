@@ -11,6 +11,9 @@
 //              shaper_qpsk_c, shaper_copy_words against a word loop
 //   ring       ring.c's unpack and quad-copy kernels against scalar models
 //   ingress    the slot copy (ingress_pie.S) against memcpy, every source offset, reads watched
+//   rx_ts      the receiver's TS deframer (dvbs2rx rx_ts.c), whose whole packets take the TS CRC-8
+//              kernel: dvbs2_bb_ts frames back to their packets, frames at every start offset and
+//              ending at a watched block boundary, one corrupted packet marked
 //   qpsk_axes, shaper_axes, psk8_kernels: the host checks of those names, here on PIE code
 // A region monitor of the debug assistant (soc/esp32s3/register/soc/assist_debug_reg.h) flags any
 // core-0 read in the 256 bytes beyond either end of each BB input, rounded out to 16-byte blocks:
@@ -691,6 +694,68 @@ static void ingress(void)
     end();
 }
 
+/* ------------------------------------------------------------ rx_ts */
+
+#include "dvbs2rx.h"
+
+static const uint8_t *rx_stream;   /* the packets the frames carry, syncs as sent */
+static unsigned rx_emitted, rx_wrong;
+
+static void rx_emit(void *ctx, const uint8_t *p)
+{
+    (void)ctx;
+    rx_wrong += !same(p, rx_stream + 188 * rx_emitted, 188);
+    ++rx_emitted;
+}
+
+// The transmitter's TS framing (dvbs2_bb_ts, BBHEADER and data field) into the receiver's deframer:
+// the packets come back exact and in order. Even frames start at every offset; odd ones end their
+// data field on a 16-byte boundary, and any read past the field or before the BBHEADER's block
+// is flagged.
+static void rx_ts(void)
+{
+    begin("rx_ts");
+    static const unsigned picks[][2] = {{1, 16}, {1, 4}, {0, 11}};
+    const unsigned frames = 24, packets = 24 * 7264 / 188 + 2;
+    uint8_t *stream = take(188 * packets, EXTERNAL);
+    uint8_t *box = take(2 * MARGIN + 32 + 10 + DVBS2_FEC_BYTES, INTERNAL);
+    dvbs2_workspace *plain = take(sizeof *plain, EXTERNAL);
+    rx_ts_t *t = take(rx_ts_size(), INTERNAL);
+    for (unsigned i = 0; i < 188 * packets; ++i) stream[i] = i % 188 ? (uint8_t)rnd() : 0x47;
+    rx_stream = stream;
+    for (unsigned k = 0; k < sizeof picks / sizeof *picks; ++k)
+        for (unsigned corrupt = 0; corrupt < 2; ++corrupt) {
+            const dvbs2_mode *m = picks[k][0] ? dvbs2_find_mode_short(picks[k][1]) : dvbs2_find_mode(picks[k][1]);
+            const size_t cap = (m->kbch - 80) / 8;
+            dvbs2_ts_state ts = {0};
+            rx_ts_init(t, 0, rx_emit, NULL);
+            rx_emitted = rx_wrong = 0;
+            for (unsigned f = 0; f < frames; ++f) {
+                dvbs2_bb_ts(plain, m, &ts, stream + f * cap, cap);
+                if (corrupt && f == 3) plain->bits[10 + 400] ^= 4;
+                const unsigned at = f % 2 ? (unsigned)(16 - (10 + cap) % 16) % 16 : (f * 7) % 16;
+                uint8_t *frame = box + MARGIN + 16 + at;
+                memcpy(frame, plain->bits, 10 + cap);
+                watch((const void *)((uintptr_t)frame & ~(uintptr_t)15),
+                      (const void *)(((uintptr_t)frame + 10 + cap + 15) & ~(uintptr_t)15));
+                rx_ts_frame(t, frame, (unsigned)cap, f);
+                if (watched()) miss("read outside frame", picks[k][1], f, at, flagged_pc);
+                memset(frame, 0xa5, 10 + cap);  /* the receiver reuses the slot */
+                ++cases;
+            }
+            rx_ts_stats_t st;
+            rx_ts_stats(t, &st);
+            const unsigned want = (unsigned)((frames * cap - 1) / 188);
+            if (rx_emitted != want || st.crc_errors != corrupt || rx_wrong != corrupt)
+                miss("packets or crc", picks[k][1], rx_emitted, st.crc_errors, rx_wrong);
+        }
+    heap_caps_free(stream);
+    heap_caps_free(box);
+    heap_caps_free(plain);
+    heap_caps_free(t);
+    end();
+}
+
 /* ------------------------------------------------------------ reused host checks */
 
 // machine.c's host oracles (machine.h), for the reused checks.
@@ -766,6 +831,7 @@ void app_main(void)
         fills();
         ring();
         ingress();
+        rx_ts();
         reused();
         printf("@{\"part\":\"all\",\"errors\":%u,\"firmware\":\"%s\"}\n@{\"done\":true}\n", total_errors,
                esp_app_get_description()->version);

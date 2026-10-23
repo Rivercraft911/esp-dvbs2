@@ -1,7 +1,8 @@
 cmake_minimum_required(VERSION 3.22)
 # The transmitter's PIE kernels on the board against their references (tests/tx_pie_bench.c).
 set(EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/../../firmware/components/dvbs2"
-                         "${CMAKE_CURRENT_LIST_DIR}/../../firmware/components/ingress")
+                         "${CMAKE_CURRENT_LIST_DIR}/../../firmware/components/ingress"
+                         "${CMAKE_CURRENT_LIST_DIR}/../../firmware/components/dvbs2rx")
 set(COMPONENTS main)
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 # Report the commit, as the transmitter does.
