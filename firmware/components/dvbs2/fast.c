@@ -1383,7 +1383,16 @@ HOT unsigned dvbs2_fast_axis_read(const dvbs2_fast *f, dvbs2_sign_state *s, uint
 #ifdef DVBS2_PIE
                     if (f->pie & DVBS2_PIE_MAP) {
                         void dvbs2_qpsk_shift(uint32_t *, const uint32_t *, unsigned, unsigned);
-                        dvbs2_qpsk_shift(dst+done,p,words,off);
+                        void dvbs2_qpsk_shift4(uint32_t *, const uint32_t *, unsigned, unsigned);
+                        // Scalar words up to a 16-byte destination, then four per vector.
+                        uint32_t *d = dst+done;
+                        unsigned head = (unsigned)(-(uintptr_t)d/4)&3, left = words;
+                        if (head > left) head = left;
+                        if (head) dvbs2_qpsk_shift(d,p,head,off);
+                        const unsigned groups = (left-head)/4;
+                        if (groups) dvbs2_qpsk_shift4(d+head,p+head,groups,off);
+                        const unsigned tail = left-head-4*groups;
+                        if (tail) dvbs2_qpsk_shift(d+head+4*groups,p+head+4*groups,tail,off);
                     } else
 #endif
                     {

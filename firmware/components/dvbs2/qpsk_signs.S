@@ -80,3 +80,46 @@ dvbs2_qpsk_shift:
 .Lshift_end:
     retw
     .size dvbs2_qpsk_shift,.-dvbs2_qpsk_shift
+
+/* The same shift, four words per vector: out = blend(src[j] << off, src[j+1] >> (16-off), m),
+ * m = low off bits of each halfword. dst 16-byte aligned, src word aligned; reads up to 28
+ * bytes past src[4*groups]. EE.VSR.32 is arithmetic: its sign fill lands above m's bits.
+ * Two unaligned streams, at src and src + 4, each load sets its own SAR_BYTE (TRM v1.8
+ * 1.8.17 EE.LD.128.USAR.IP, 1.8.49 EE.SRC.Q). About fourteen instructions per four words.
+ * void dvbs2_qpsk_shift4(uint32_t *dst, const uint32_t *src, unsigned groups, unsigned off) */
+    .align 4
+    .global dvbs2_qpsk_shift4
+    .type dvbs2_qpsk_shift4,@function
+dvbs2_qpsk_shift4:
+    entry a1,32
+    movi a6,1
+    ssl a5
+    sll a6,a6
+    addi a6,a6,-1
+    slli a7,a6,16
+    or a6,a6,a7
+    ee.movi.32.q q7,a6,0
+    ee.movi.32.q q7,a6,1
+    ee.movi.32.q q7,a6,2
+    ee.movi.32.q q7,a6,3
+    movi a7,16
+    sub a7,a7,a5
+    addi a8,a3,4
+    loopnez a4,.Lshift4_end
+    ee.ld.128.usar.ip q0,a3,16
+    ee.vld.128.ip q1,a3,0
+    ee.src.q q0,q0,q1
+    ee.ld.128.usar.ip q2,a8,16
+    ee.vld.128.ip q3,a8,0
+    ee.src.q q2,q2,q3
+    ssr a5
+    ee.vsl.32 q0,q0
+    ssr a7
+    ee.vsr.32 q2,q2
+    ee.xorq q2,q2,q0
+    ee.andq q2,q2,q7
+    ee.xorq q0,q0,q2
+    ee.vst.128.ip q0,a2,16
+.Lshift4_end:
+    retw
+    .size dvbs2_qpsk_shift4,.-dvbs2_qpsk_shift4
