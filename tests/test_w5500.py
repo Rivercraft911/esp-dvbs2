@@ -478,11 +478,11 @@ def test_throughput(native):
         for k in range(5):                                  # reach the steady state
             check(chip.send(0, data) == OK, "warm-up")
         s = steady_state(chip, lambda k: check(chip.send(0, data) == OK, "send"), 50)
-        check(s["polled"] == 3 and s["queued"] == 1 and s["bytes"] == 1335,
+        check(s["polled"] == 4 and s["queued"] == 1 and s["bytes"] == 1338,
               f"send frames at {mhz:.2f} MHz: {s}")
-        t_send = T_QUEUE + 3 * T_POLL + 8 * 1335 / mhz
+        t_send = T_QUEUE + 4 * T_POLL + 8 * 1338 / mhz
         check(abs(s["now_us"] - t_send) < 0.01, f"send time {s['now_us']} vs {t_send}")
-        cpu_send = T_QUEUE + 3 * T_POLL + 8 * 16 / mhz
+        cpu_send = T_QUEUE + 4 * T_POLL + 8 * 19 / mhz
         check(abs(s["cpu_us"] - cpu_send) < 0.01, "send CPU")
         chip.drain(0)
         chip.close()
@@ -494,26 +494,26 @@ def test_throughput(native):
             check(chip.inject(data) == 1, "inject")
             check(chip.lib.w5500_udp_recv(chip.w, 0, buf, UDP_MAX, None) == TS_DATAGRAM, "recv")
         r = steady_state(chip, one, 50)
-        check(r["polled"] == 4 and r["queued"] == 1 and r["bytes"] == 1344,
+        check(r["polled"] == 5 and r["queued"] == 1 and r["bytes"] == 1348,
               f"receive frames at {mhz:.2f} MHz: {r}")
-        t_recv = T_QUEUE + 4 * T_POLL + 8 * 1344 / mhz
+        t_recv = T_QUEUE + 5 * T_POLL + 8 * 1348 / mhz
         check(abs(r["now_us"] - t_recv) < 0.01, f"receive time {r['now_us']} vs {t_recv}")
-        check(abs(r["cpu_us"] - (T_QUEUE + 4 * T_POLL + 8 * 25 / mhz)) < 0.01, "receive CPU")
+        check(abs(r["cpu_us"] - (T_QUEUE + 5 * T_POLL + 8 * 29 / mhz)) < 0.01, "receive CPU")
         empty = steady_state(chip, lambda k: chip.recv(0), 10)
         check(empty["polled"] == 1 and abs(empty["now_us"] - (T_POLL + 40 / mhz)) < 0.01,
               "an empty poll is one Sn_RX_WR read")
         chip.close()
         table[mhz] = (t_send, 8 * TS_DATAGRAM / t_send, t_recv, 8 * TS_DATAGRAM / t_recv,
                       s["cpu_us"], r["cpu_us"])
-    expect = {40.0: (32.3, 31.1), 80 / 3: (22.9, 22.2), 20.0: (17.8, 17.3), 10.0: (9.3, 9.2)}
+    expect = {40.0: (31.2, 30.0), 80 / 3: (22.3, 21.7), 20.0: (17.4, 17.0), 10.0: (9.2, 9.1)}
     for mhz, (send_mbps, recv_mbps) in expect.items():
         check(round(table[mhz][1], 1) == send_mbps and round(table[mhz][3], 1) == recv_mbps,
               f"w5500.h table at {mhz:.2f} MHz")
     default = table[80 / 3]
     check(default[1] >= 15 and default[3] >= 15, "15 Mb/s goal at the default 26.67 MHz")
     per_second = 12.64e6 / (8 * TS_DATAGRAM)
-    check(round(100 * per_second * default[4] / 1e6, 1) == 7.7, "send CPU share at 12.64 Mb/s")
-    check(round(100 * per_second * default[5] / 1e6, 1) == 9.3, "receive CPU share at 12.64 Mb/s")
+    check(round(100 * per_second * default[4] / 1e6, 1) == 9.1, "send CPU share at 12.64 Mb/s")
+    check(round(100 * per_second * default[5] / 1e6, 1) == 10.8, "receive CPU share at 12.64 Mb/s")
     return table
 
 
@@ -618,6 +618,45 @@ def test_malformed(native):
         chip.close()
 
 
+def test_handshake(native):
+    """A command waits for the previous one to be accepted (Sn_CR = 0, DS p.46), and OPEN/CLOSE
+    wait for Sn_SR (DS pp.46-49), with acceptance and completion delayed independently."""
+    rng = random.Random(6)
+    # RECV after RECV: small datagrams leave only a few frames between two commits.
+    chip = receiver(native, cmd_us=200)
+    sent = [payload(rng, rng.randint(1, 20)) for _ in range(30)]
+    got = []
+    for d in sent:
+        check(chip.inject(d) == 1, "inject")
+        got.append(chip.recv(0)[1])
+    check(got == sent, "small datagrams with slow command acceptance")
+    chip.close()
+    # CLOSE right after SEND.
+    chip = sender(native, cmd_us=200)
+    check(chip.send(0, b"last words") == OK, "send")
+    check(chip.lib.w5500_udp_close(chip.w, 0) == OK and chip.peek(reg(0), SN_SR) == 0,
+          "close waits for SEND acceptance and SOCK_CLOSED")
+    chip.close()
+    # OPEN and CLOSE complete long after acceptance.
+    chip = Chip(native, state_us=300, cmd_us=20, open_ptr=0x1234)
+    check(chip.init(tx0=8, rx0=8) == OK, "init")
+    check(chip.open(0, 5004) == OK, "open waits for SOCK_UDP")
+    check(chip.open(0, 5004) == OK, "reopen waits for SOCK_CLOSED, then SOCK_UDP")
+    chip.dest(0, BROADCAST, 5006)
+    check(chip.send(0, b"after reopen") == OK, "send")
+    check([d[3] for d in chip.drain(0)] == [b"after reopen"], "pointers read after OPEN completed")
+    check(chip.lib.w5500_udp_close(chip.w, 0) == OK and chip.peek(reg(0), SN_SR) == 0, "close")
+    chip.close()
+    # The previous SEND_OK is cleared before the next SEND, so a SEND that finishes within a
+    # frame (here: a wire 1,000 times faster) is still seen.
+    chip = sender(native, wire_bps=1e11)
+    data = [payload(rng, TS_DATAGRAM) for _ in range(20)]
+    for d in data:
+        check(chip.send(0, d) == OK, "send")
+    check([d[3] for d in chip.drain(0)] == data, "every completion seen")
+    chip.close()
+
+
 def test_settings(native):
     lib = native.lib
     s = Settings()
@@ -672,9 +711,10 @@ def main():
         table = test_throughput(native)
         test_receive(native)
         test_malformed(native)
+        test_handshake(native)
         test_settings(native)
     print("w5500: fake checks, frames, init, open, send, full, ARP timeout, receive, malformed, "
-          f"settings: ok (driver state {size} bytes)")
+          f"command handshake, settings: ok (driver state {size} bytes)")
     for mhz, row in table.items():
         print(f"  {mhz:5.2f} MHz: send {row[0]:6.1f} us {row[1]:4.1f} Mb/s {row[4]:4.1f} us CPU, "
               f"receive {row[2]:6.1f} us {row[3]:4.1f} Mb/s {row[5]:4.1f} us CPU")

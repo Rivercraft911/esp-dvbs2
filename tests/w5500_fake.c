@@ -8,10 +8,12 @@
  *     8-byte receive header (WIZnet "W5500 UDP Function" page), ARP for unicast SENDs with the
  *     RTR x (RCR + 1) timeout (DS p.38).
  * Time: every frame advances a clock by a model of the ESP backend's cost (a polled or an
- * interrupt transaction, plus 8 x (3 + n) bits at f_SCK) and a SEND holds the wire for its
- * Ethernet frame. What the datasheet forbids, and what the driver must never do, is counted as a
- * violation with a reason. After a TIMEOUT the model leaves Sn_TX_RD where it was (the datasheet
- * does not say). */
+ * interrupt transaction) and then byte by byte at f_SCK, so the chip can act between two bytes of
+ * one frame. A SEND holds the wire for its Ethernet frame. Sn_CR clears cmd_us after a command
+ * (acceptance, DS p.46) and Sn_SR changes state_us after OPEN or CLOSE (completion, DS pp.46-49),
+ * independently. Sn_RX_WR can change between the two bytes of a read. What the datasheet forbids,
+ * and what the driver must never do, is counted as a violation with a reason. After a TIMEOUT the
+ * model leaves Sn_TX_RD where it was (the datasheet does not say). */
 #include "w5500.h"
 
 #include <stdarg.h>
@@ -45,10 +47,12 @@ typedef struct {
     uint16_t committed[8];      /* Sn_RX_RD as of the last RECV */
     int sending[8];             /* 0 idle, 1 on the wire, 2 ARP that will time out */
     double send_done[8], cmd_done[8];
+    int state_to[8];            /* Sn_SR after a pending OPEN or CLOSE, -1 if none */
+    double state_at[8];
     uint8_t arp_ip[8][4];
     bool arp_valid[8];
     uint8_t tx[MEM], rx[MEM];
-    double sck_hz, poll_us, queue_us, wire_bps, cmd_us, arp_us, reset_us, reset_until;
+    double sck_hz, poll_us, queue_us, wire_bps, cmd_us, state_us, arp_us, reset_us, reset_until;
     bool arp_reply;
     uint8_t version, phy, mosi_and;
     uint16_t open_ptr;
@@ -118,6 +122,7 @@ static void reset(fake *f)
         f->sending[s] = 0;
         f->committed[s] = 0;
         f->cmd_done[s] = 0;
+        f->state_to[s] = -1;
         f->arp_valid[s] = false;
     }
 }
@@ -155,6 +160,7 @@ int fake_set(fake *f, const char *key, double v)
     else if (!strcmp(key, "queue_us")) f->queue_us = v;
     else if (!strcmp(key, "wire_bps")) f->wire_bps = v;
     else if (!strcmp(key, "cmd_us")) f->cmd_us = v;
+    else if (!strcmp(key, "state_us")) f->state_us = v;
     else if (!strcmp(key, "arp_us")) f->arp_us = v;
     else if (!strcmp(key, "arp_reply")) f->arp_reply = v != 0;
     else if (!strcmp(key, "reset_us")) f->reset_us = v;
@@ -196,10 +202,30 @@ static void complete(fake *f, unsigned s)
     f->sending[s] = 0;
 }
 
+static void settle_state(fake *f, unsigned s)
+{
+    uint8_t *r = f->reg[s];
+    if (f->state_to[s] == 0x22) {
+        r[0x03] = 0x22;
+        w16(r + 0x22, f->open_ptr);
+        w16(r + 0x24, f->open_ptr);
+        w16(r + 0x28, f->open_ptr);
+        w16(r + 0x2A, f->open_ptr);
+        f->committed[s] = f->open_ptr;
+        f->arp_valid[s] = false;
+    } else {
+        r[0x03] = 0;
+    }
+    f->sending[s] = 0;
+    f->state_to[s] = -1;
+}
+
 static void update(fake *f)
 {
-    for (unsigned s = 0; s < 8; ++s)
+    for (unsigned s = 0; s < 8; ++s) {
         if (f->sending[s] && f->st.now_us >= f->send_done[s]) complete(f, s);
+        if (f->state_to[s] >= 0 && f->st.now_us >= f->state_at[s]) settle_state(f, s);
+    }
 }
 
 void fake_advance(fake *f, double us)
@@ -220,6 +246,7 @@ static void command(fake *f, unsigned s, uint8_t v)
     uint8_t *r = f->reg[s];
     if (f->st.now_us < f->cmd_done[s])
         violate(f, "S%u_CR 0x%02x before 0x%02x was accepted", s, v, r[1]);
+    if (f->state_to[s] >= 0) violate(f, "S%u command 0x%02x before OPEN or CLOSE completed", s, v);
     r[0x01] = v;
     f->cmd_done[s] = f->st.now_us + f->cmd_us;
     switch (v) {
@@ -229,18 +256,15 @@ static void command(fake *f, unsigned s, uint8_t v)
             return;
         }
         if (!sizes_valid(f)) violate(f, "socket buffer sizes invalid or over 16 KB");
-        r[0x03] = 0x22;
-        w16(r + 0x22, f->open_ptr);
-        w16(r + 0x24, f->open_ptr);
-        w16(r + 0x28, f->open_ptr);
-        w16(r + 0x2A, f->open_ptr);
-        f->committed[s] = f->open_ptr;
-        f->sending[s] = 0;
-        f->arp_valid[s] = false;
+        if (r[0x03]) violate(f, "S%u OPEN while not SOCK_CLOSED", s);
+        f->state_to[s] = 0x22;
+        f->state_at[s] = f->st.now_us + f->state_us;
+        update(f);
         return;
     case 0x10:   /* CLOSE */
-        r[0x03] = 0;
-        f->sending[s] = 0;
+        f->state_to[s] = 0;
+        f->state_at[s] = f->st.now_us + f->state_us;
+        update(f);
         return;
     case 0x20: { /* SEND */
         if (r[0x03] != 0x22) {
@@ -365,6 +389,8 @@ static uint8_t get(fake *f, unsigned bsb, uint16_t a)
             return 0;
         }
         if (a == 0x01) return f->st.now_us < f->cmd_done[s] ? r[1] : 0;
+        if (a >= 0x20 && a <= 0x2B && f->state_to[s] >= 0)
+            violate(f, "S%u pointer read before OPEN or CLOSE completed", s);
         if (a == 0x20 || a == 0x21) {
             uint8_t v[2];
             w16(v, (uint16_t)(bytes(f, s, true) - (uint16_t)(r16(r + 0x24) - r16(r + 0x22))));
@@ -430,6 +456,8 @@ static void put(fake *f, unsigned bsb, uint16_t a, uint8_t v)
                 violate(f, "S%u_TX_WR written during SEND", s);
             if ((a == 0x1E || a == 0x1F) && r[0x03])
                 violate(f, "S%u buffer size changed while open", s);
+            if ((a <= 0x05 || a == 0x1E || a == 0x1F) && f->state_to[s] >= 0)
+                violate(f, "S%u reconfigured before OPEN or CLOSE completed", s);
             r[a] = v;
         }
         return;
@@ -459,9 +487,9 @@ static int frame(void *ctx, uint16_t offset, uint8_t control, const uint8_t *tx,
     }
     if (f->fail_in > 0) f->fail_in--;
     const bool polled = n <= W5500_SMALL_MAX;
-    const double bits_us = 8.0 * (3 + n) / f->sck_hz * 1e6;
-    f->st.now_us += (polled ? f->poll_us : f->queue_us) + bits_us;
-    f->st.cpu_us += polled ? f->poll_us + bits_us : f->queue_us;
+    const double byte_us = 8.0 / f->sck_hz * 1e6;
+    f->st.now_us += (polled ? f->poll_us : f->queue_us) + 3 * byte_us;   /* to the data phase */
+    f->st.cpu_us += polled ? f->poll_us + (3 + n) * byte_us : f->queue_us;
     f->st.frames++;
     f->st.polled += polled;
     f->st.queued += !polled;
@@ -482,6 +510,8 @@ static int frame(void *ctx, uint16_t offset, uint8_t control, const uint8_t *tx,
     }
     for (size_t i = 0; i < n; ++i) {
         const uint16_t a = (uint16_t)(offset + i);
+        f->st.now_us += byte_us;
+        update(f);
         if (write) {
             put(f, bsb, a, tx[i] & f->mosi_and);
             continue;

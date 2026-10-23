@@ -32,6 +32,7 @@
 #define IR_SEND_OK 0x10
 #define IR_TIMEOUT 0x08
 #define IR_ALL 0x1F        /* bits 7-5 are reserved (DS p.48) */
+#define SOCK_CLOSED 0x00
 #define SOCK_UDP 0x22
 
 #define BSB_COMMON 0u
@@ -40,7 +41,8 @@
 #define BSB_RX(s) (4u * (s) + 3u)
 
 #define RESET_POLLS 100    /* x 100 us */
-#define COMMAND_POLLS 100  /* x 10 us */
+#define COMMAND_POLLS 100  /* x 10 us: Sn_CR acceptance */
+#define STATE_POLLS 100    /* x 100 us: Sn_SR after OPEN or CLOSE */
 
 static uint16_t get16(const uint8_t *p)
 {
@@ -137,42 +139,67 @@ int w5500_phy(w5500 *w)
     return e ? e : v;
 }
 
-/* Write Sn_CR and wait until the chip has accepted it (DS p.46). Only open and close wait: in
- * the data path consecutive commands are separated by several frames. */
-static int command(w5500 *w, unsigned s, uint8_t cmd)
+/* The chip clears Sn_CR once it has accepted a command (DS p.46); a command written before that
+ * may be lost. Acceptance is not completion, which shows in Sn_SR or Sn_IR. Each command marks
+ * the socket, and the next one first reads Sn_CR until it is 0 (usually once, as the data path
+ * puts several frames between two commands). */
+static int accepted(w5500 *w, unsigned s)
 {
-    int e = wr(w, BSB_REG(s), SN_CR, &cmd, 1);
-    for (unsigned i = 0; !e && i < COMMAND_POLLS; ++i) {
+    w5500_socket *k = &w->sock[s];
+    for (unsigned i = 0; k->cmd_pending; ++i) {
         uint8_t cr;
-        if ((e = rd(w, BSB_REG(s), SN_CR, &cr, 1))) break;
-        if (!cr) return W5500_OK;
-        w->bus.delay_us(w->bus.ctx, 10);
+        const int e = rd(w, BSB_REG(s), SN_CR, &cr, 1);
+        if (e) return e;
+        if (!cr) k->cmd_pending = false;
+        else if (i == COMMAND_POLLS) return W5500_ERR_CHIP;
+        else w->bus.delay_us(w->bus.ctx, 10);
     }
-    return e ? e : W5500_ERR_CHIP;
+    return W5500_OK;
 }
 
-/* Close, set UDP mode and the port, open, and take the pointers OPEN initialized (DS p.54-55).
- * Keeps statistics and the destination, drops anything staged. */
+static int command(w5500 *w, unsigned s, uint8_t cmd)
+{
+    int e = accepted(w, s);
+    if (!e) e = wr(w, BSB_REG(s), SN_CR, &cmd, 1);
+    if (!e) w->sock[s].cmd_pending = true;
+    return e;
+}
+
+/* Wait for Sn_SR to show that OPEN or CLOSE has completed (DS pp.46-49). */
+static int state(w5500 *w, unsigned s, uint8_t want)
+{
+    for (unsigned i = 0;; ++i) {
+        uint8_t sr;
+        const int e = rd(w, BSB_REG(s), SN_SR, &sr, 1);
+        if (e) return e;
+        if (sr == want) return W5500_OK;
+        if (i == STATE_POLLS) return W5500_ERR_SOCKET;
+        w->bus.delay_us(w->bus.ctx, 100);
+    }
+}
+
+/* Close (unless closed), set UDP mode and the port, open, and take the pointers OPEN initialized
+ * (DS p.54-55). Keeps statistics and the destination, drops anything staged. */
 static int open_socket(w5500 *w, unsigned s)
 {
     w5500_socket *k = &w->sock[s];
     const uint8_t mode = MR_UDP, clear = IR_ALL;
     uint8_t p[8];
     k->open = false;
-    int e = command(w, s, CR_CLOSE);
+    int e = rd(w, BSB_REG(s), SN_SR, p, 1);
+    if (!e && p[0] != SOCK_CLOSED) e = command(w, s, CR_CLOSE);
+    if (!e) e = state(w, s, SOCK_CLOSED);
     if (!e) e = wr(w, BSB_REG(s), SN_MR, &mode, 1);
     if (!e) e = wr16(w, s, SN_PORT, k->port);
     if (!e) e = wr(w, BSB_REG(s), SN_IR, &clear, 1);
     if (!e) e = command(w, s, CR_OPEN);
-    if (!e) e = rd(w, BSB_REG(s), SN_SR, p, 1);
-    if (!e && p[0] != SOCK_UDP) e = W5500_ERR_SOCKET;
+    if (!e) e = state(w, s, SOCK_UDP);
     if (!e) e = rd(w, BSB_REG(s), SN_TX_RD, p, 8);   /* TX_RD, TX_WR, RX_RSR, RX_RD */
     if (e) return e;
     k->tx_wr = k->tx_end = get16(p + 2);
     k->rx_rd = get16(p + 6);
     k->flight = 0;
     k->q_head = k->q_count = 0;
-    k->ir_clear = 0;
     k->rx_left = 0;
     k->rx_dirty = false;
     k->dest_dirty = true;
@@ -194,7 +221,8 @@ int w5500_udp_close(w5500 *w, unsigned s)
 {
     if (s >= W5500_SOCKETS) return W5500_ERR_ARG;
     w->sock[s].open = false;
-    return command(w, s, CR_CLOSE);
+    const int e = command(w, s, CR_CLOSE);
+    return e ? e : state(w, s, SOCK_CLOSED);
 }
 
 void w5500_udp_dest(w5500 *w, unsigned s, const uint8_t ip[4], uint16_t port)
@@ -226,6 +254,7 @@ static int kick(w5500 *w, unsigned s)
     if (k->flight) {
         uint8_t r[3];   /* Sn_CR, Sn_IR, Sn_SR */
         if ((e = rd(w, BSB_REG(s), SN_CR, r, 3))) return e;
+        if (!r[0]) k->cmd_pending = false;   /* the SEND was accepted */
         if (r[2] != SOCK_UDP) {
             k->open = false;
             return W5500_ERR_SOCKET;
@@ -240,7 +269,9 @@ static int kick(w5500 *w, unsigned s)
         k->st.sent++;
         k->st.sent_bytes += k->flight;
         k->flight = 0;
-        k->ir_clear |= IR_SEND_OK;
+        /* Clear SEND_OK (write 1, DS p.48) before the next SEND can set it again. */
+        const uint8_t ok = IR_SEND_OK;
+        if ((e = wr(w, BSB_REG(s), SN_IR, &ok, 1))) return e;
     }
     if (!k->q_count) return W5500_OK;
     if (k->dest_dirty) {
@@ -250,17 +281,12 @@ static int kick(w5500 *w, unsigned s)
         k->dest_dirty = false;
     }
     const uint16_t n = k->queue[k->q_head];
-    /* SEND in Sn_CR, then clear the previous SEND_OK in Sn_IR within the same frame: the new
-     * SEND cannot finish in the 8 SCLK cycles between the two bytes, as its frame alone takes
-     * at least 6.7 us on a 100 Mb/s wire. */
-    const uint8_t cmd[2] = {CR_SEND, k->ir_clear};
-    if ((e = wr16(w, s, SN_TX_WR, (uint16_t)(k->tx_wr + n))) ||
-        (e = wr(w, BSB_REG(s), SN_CR, cmd, sizeof cmd))) return e;
+    if ((e = wr16(w, s, SN_TX_WR, (uint16_t)(k->tx_wr + n))) || (e = command(w, s, CR_SEND)))
+        return e;
     k->tx_wr = (uint16_t)(k->tx_wr + n);
     k->flight = n;
     k->q_head = (uint8_t)((k->q_head + 1) % W5500_TXQ);
     k->q_count--;
-    k->ir_clear = 0;
     return W5500_OK;
 }
 
@@ -293,13 +319,14 @@ int w5500_udp_poll(w5500 *w, unsigned s)
     return e ? e : w->sock[s].q_count + (w->sock[s].flight != 0);
 }
 
-/* Write Sn_RX_RD and command RECV, releasing what has been read (DS p.55). */
+/* Write Sn_RX_RD and command RECV, releasing what has been read (DS p.55). The previous RECV
+ * must have been accepted before Sn_RX_RD changes again. */
 static int commit(w5500 *w, unsigned s)
 {
     w5500_socket *k = &w->sock[s];
-    const uint8_t recv = CR_RECV;
-    int e = wr16(w, s, SN_RX_RD, k->rx_rd);
-    if (!e) e = wr(w, BSB_REG(s), SN_CR, &recv, 1);
+    int e = accepted(w, s);
+    if (!e) e = wr16(w, s, SN_RX_RD, k->rx_rd);
+    if (!e) e = command(w, s, CR_RECV);
     if (!e) k->rx_dirty = false;
     return e;
 }

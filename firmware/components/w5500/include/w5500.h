@@ -7,7 +7,7 @@
  *
  * The chip runs its own TCP/IP stack. A socket in UDP mode sends and receives whole datagrams
  * from 16 KB of TX and 16 KB of RX buffer memory inside the chip, so the S3 needs no lwIP and
- * almost no RAM: the driver state is about 240 bytes and payloads move by SPI DMA straight
+ * almost no RAM: the driver state is about 250 bytes and payloads move by SPI DMA straight
  * between the chip and the caller's buffer.
  *
  * Sources. "DS p.N" is the WIZnet W5500 Datasheet Version 1.1.0 (17 Dec 2022). The 8-byte header
@@ -34,9 +34,15 @@
  * (DS pp.54-56). So the driver keeps 16-bit copies of the pointers, writes and reads at those
  * offsets, and never splits a burst at the end of a buffer.
  *
+ * Commands (DS Sn_CR pp.46-48). The chip clears Sn_CR when it has accepted a command, and a
+ * command written before that may be lost, so every command first waits for Sn_CR = 0 (one read,
+ * or none when a status read already showed it). Acceptance is not completion: OPEN and CLOSE
+ * wait for Sn_SR to reach SOCK_UDP or SOCK_CLOSED (DS pp.49-50).
+ *
  * Send (DS Sn_TX_WR pp.54-55, Sn_CR SEND p.47). Write the datagram at Sn_TX_WR, advance
  * Sn_TX_WR, command SEND; SEND transmits Sn_TX_RD..Sn_TX_WR as one datagram and sets SEND_OK in
- * Sn_IR when done (DS p.48), or TIMEOUT if ARP for a unicast destination fails (DS p.38).
+ * Sn_IR when done (DS p.48), or TIMEOUT if ARP for a unicast destination fails (DS p.38). The
+ * driver clears SEND_OK before the next SEND, so a completion is never lost.
  * Only one SEND may be outstanding, so the driver stages the next datagrams in the TX buffer
  * past Sn_TX_WR while a SEND is on the wire and starts each as the previous one completes.
  * The payload burst of datagram k+1 (at least 264 us of SPI, at 40 MHz) outlasts the wire time of
@@ -49,11 +55,11 @@
  * Receive (DS Sn_RX_RD p.55, Sn_RX_WR pp.55-56, Sn_CR RECV p.48). The chip stores each datagram
  * as the 8-byte header and the payload at Sn_RX_WR. The driver reads Sn_RX_WR (not Sn_RX_RSR,
  * which depends on when RECV is processed), then the header and payload at its own read
- * pointer, and finally writes Sn_RX_RD and commands RECV once everything known has been read.
- * Sn_RX_WR only grows while the driver reads, and its MSB is read first, so a read that
- * straddles an update is never high: a low read only delays data, and a header that disagrees
- * with it is re-checked against a stable value (read until two agree, as DS p.55 advises for the
- * size registers) before the buffer is declared malformed and flushed.
+ * pointer, and finally writes Sn_RX_RD and commands RECV once everything known has been read
+ * and the previous RECV was accepted. Sn_RX_WR only grows while the driver reads, and its MSB is
+ * read first, so a read that straddles an update is never high: a low read only delays data, and
+ * a header that disagrees with it is re-checked against a stable value (read until two agree, as
+ * DS p.55 advises for the size registers) before the buffer is declared malformed and flushed.
  *
  * Throughput (derived; the board measures it, `eth send` and `eth recv`). Each access is one SPI
  * frame: 3 header bytes plus data. The ESP backend polls frames of at most W5500_SMALL_MAX data
@@ -62,20 +68,20 @@
  * of one byte (docs/en/api-reference/peripherals/spi_master.rst, "Transaction Duration"); they are
  * used here as fixed costs per frame, with the bits added at f_SCK.
  *   Send, one 1,316-byte datagram (7 TS packets), steady state:
- *     payload write 3+1316, Sn_CR..Sn_SR read 3+3, Sn_TX_WR write 3+2, SEND + Sn_IR clear 3+2
- *     = 1 burst + 3 polled frames, 1,335 bytes = 10,680 bits
- *     T_send = t_q + 3 t_p + 10,680 / f_SCK
+ *     payload write 3+1316, Sn_CR..Sn_SR read 3+3, SEND_OK clear 3+1, Sn_TX_WR write 3+2,
+ *     SEND 3+1 = 1 burst + 4 polled frames, 1,338 bytes = 10,704 bits
+ *     T_send = t_q + 4 t_p + 10,704 / f_SCK
  *   Receive, one datagram, nothing else queued:
- *     Sn_RX_WR read 3+2, header read 3+8, payload read 3+1316, Sn_RX_RD write 3+2, RECV 3+1
- *     = 1 burst + 4 polled frames, 1,344 bytes = 10,752 bits
- *     T_recv = t_q + 4 t_p + 10,752 / f_SCK
+ *     Sn_RX_WR read 3+2, header read 3+8, payload read 3+1316, Sn_CR read (last RECV accepted)
+ *     3+1, Sn_RX_RD write 3+2, RECV 3+1 = 1 burst + 5 polled frames, 1,348 bytes = 10,784 bits
+ *     T_recv = t_q + 5 t_p + 10,784 / f_SCK
  *   Payload rate R = 10,528 bits / T (1,316 bytes x 8):
  *     f_SCK (80 MHz/n)   T_send    R_send      T_recv    R_recv
- *     40.00 MHz (/2)     326.0 us  32.3 Mb/s   338.8 us  31.1 Mb/s
- *     26.67 MHz (/3)     459.5 us  22.9 Mb/s   473.2 us  22.2 Mb/s   default
- *     20.00 MHz (/4)     593.0 us  17.8 Mb/s   607.6 us  17.3 Mb/s
- *     10.00 MHz (/8)    1127.0 us   9.3 Mb/s  1145.2 us   9.2 Mb/s
- *   15 Mb/s needs T <= 701.9 us, so f_SCK >= 16.6 MHz for send and 17.0 MHz for receive: 20 MHz
+ *     40.00 MHz (/2)     337.6 us  31.2 Mb/s   350.6 us  30.0 Mb/s
+ *     26.67 MHz (/3)     471.4 us  22.3 Mb/s   485.4 us  21.7 Mb/s   default
+ *     20.00 MHz (/4)     605.2 us  17.4 Mb/s   620.2 us  17.0 Mb/s
+ *     10.00 MHz (/8)    1140.4 us   9.2 Mb/s  1159.4 us   9.1 Mb/s
+ *   15 Mb/s needs T <= 701.9 us, so f_SCK >= 16.9 MHz for send and 17.4 MHz for receive: 20 MHz
  *   is the slowest S3 divider that meets the goal. The W5500 is guaranteed to 33.3 MHz and
  *   designed for 80 MHz (DS p.61), so 26.67 MHz is the default and 40 MHz is for trying.
  *   Wire: a 1,316-byte datagram is a 1,362-byte Ethernet frame (14 MAC + 20 IP + 8 UDP + 4 FCS)
@@ -83,9 +89,9 @@
  *   time, so SPI sets the rate. On a 10 Mb/s link (1.106 ms) the wire caps payload at 9.5 Mb/s,
  *   below the 12.64 Mb/s receiver mode, so the link must be 100 Mb/s (`eth` prints it).
  *   CPU on the calling core: a polled frame busies the core for t_p plus its bits; an interrupt
- *   transaction costs about t_q while DMA moves the payload. Send: 3 x 11 + 16 x 8 / 26.67 +
- *   26 = 63.8 us per datagram; receive: 4 x 11 + 25 x 8 / 26.67 + 26 = 77.5 us. At the 12.64 Mb/s
- *   receiver mode (1,200.6 datagrams/s) that is 7.7% (send) and 9.3% (receive) of one 240 MHz
+ *   transaction costs about t_q while DMA moves the payload. Send: 4 x 11 + 19 x 8 / 26.67 +
+ *   26 = 75.7 us per datagram; receive: 5 x 11 + 29 x 8 / 26.67 + 26 = 89.7 us. At the 12.64 Mb/s
+ *   receiver mode (1,200.6 datagrams/s) that is 9.1% (send) and 10.8% (receive) of one 240 MHz
  *   core, plus 12.5 us for each empty receive poll. Most of it is ESP-IDF's fixed cost per
  *   transaction, so a faster clock barely helps; driving GP-SPI2's registers directly would.
  *   tests/test_w5500.py replays these frame sequences through the fake and checks the frame
@@ -113,7 +119,7 @@ enum {
     W5500_ERR_ARG = -1,
     W5500_ERR_BUS = -2,    /* the backend failed a frame */
     W5500_ERR_CHIP = -3,   /* wrong VERSIONR, reset or command not finishing, register write lost */
-    W5500_ERR_SOCKET = -4, /* the chip closed the socket */
+    W5500_ERR_SOCKET = -4, /* the socket did not open, or the chip closed it */
 };
 
 typedef struct {
@@ -158,11 +164,11 @@ typedef struct {
     uint16_t flight;             /* length of the SEND in progress, 0 if none */
     uint16_t queue[W5500_TXQ];   /* staged datagram lengths, oldest at q_head */
     uint8_t q_head, q_count;
-    uint8_t ir_clear;            /* Sn_IR bits to clear in the next SEND frame */
     uint16_t rx_rd;              /* read pointer; Sn_RX_RD lags until the next RECV */
     uint16_t rx_left;            /* bytes known received and not yet read */
     uint16_t rx_last;            /* length of the last datagram received */
     bool open, dest_dirty, rx_dirty;
+    bool cmd_pending;            /* Sn_CR written and not yet seen accepted */
     w5500_stats st;
 } w5500_socket;
 
