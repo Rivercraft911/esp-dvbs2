@@ -23,6 +23,7 @@ Words the records use:
 
 | Record | Headline |
 |---|---|
+| [2026-10-23-tx-ts-rolloff](../results/2026-10-23-tx-ts-rolloff/README.md) | QPSK at 33.33 Msym/s with TS input was shaped at roll-off 0.20 under BBHEADERs that said 0.35; the board's dumps matched the independent model with 0.35 headers sample for sample. Since bdf9cf6 they match the model with 0.20 headers. Also corrects the fill record's description of core 1's tick. |
 | [2026-10-23-tx-fill](../results/2026-10-23-tx-fill/README.md) | Every 80 MS/s mode keeps at least 17.2% of its 47,220-cycle bank deadline on core 1, radio off (was 12.9%): fill phases timed only in dumps, and core 1's FreeRTOS tick off during runs. Worst fill 39,098 cycles at QPSK 1/2, 33.33 Msym/s. |
 | [2026-10-23-tx-ts-input](../results/2026-10-23-tx-ts-input/README.md) | QPSK 9/10 at 33.33 Msym/s with TS input replayed: 15.3% encoder spare (was 14.1%), keyed 793 of 793 frames exact with 15.4% fill spare. The PV wire check costs 34.3k cycles a frame, 14.3%. 8PSK 9/10 at 26.67 Msym/s with TS replayed runs at full rate on 3.9% spare. A capacity test: no real wire has fed these rates. |
 | [2026-10-23-tx-pie-bench](../results/2026-10-23-tx-pie-bench/README.md) | The transmitter's PIE kernels match their references on the board in every configuration the transmitter uses: 82,493 cases. Not covered: the Morse ID's `station_repeat40` (pinned ID dumps only); the slot copy has its own 128-case run in tx-ts-input. One unused path, the generic mapper on short 8PSK frames, gets the last 12 to 40 symbols wrong. |
