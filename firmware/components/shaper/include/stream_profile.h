@@ -86,4 +86,37 @@ STREAM_PROFILE_FN stream_mark_t stream_mark_for(const stream_profile_t *p)
     return p->counters ? stream_mark() : stream_mark_cycles();
 }
 
+// The same through pointers, for the encoder's per-stage marks: by-value marks cost four
+// ROM memcpy calls per stage on Xtensa.
+static inline __attribute__((always_inline)) void stream_mark_at(stream_mark_t *m, int counters)
+{
+#ifdef __XTENSA__
+    if (counters) {
+        m->flash_miss = REG_READ(EXTMEM_DBUS_ACS_FLASH_MISS_CNT_REG);
+        m->psram_miss = REG_READ(EXTMEM_DBUS_ACS_SPIRAM_MISS_CNT_REG);
+        m->data_access = REG_READ(EXTMEM_DBUS_ACS_CNT_REG);
+        m->instruction_miss = REG_READ(EXTMEM_IBUS_ACS_MISS_CNT_REG);
+    } else m->flash_miss = m->psram_miss = m->data_access = m->instruction_miss = 0;
+    m->cycles = esp_cpu_get_cycle_count();
+#else
+    (void)counters;
+    m->flash_miss = m->psram_miss = m->data_access = m->instruction_miss = 0;
+    m->cycles = stream_mark_cycles().cycles;
+#endif
+}
+
+STREAM_PROFILE_FN void stream_record_at(stream_profile_t *p, const stream_mark_t *a, const stream_mark_t *b)
+{
+    const uint32_t cycles = b->cycles - a->cycles;
+    p->cycles += cycles;
+    if (p->counters) {
+        p->flash_miss += (uint32_t)(b->flash_miss - a->flash_miss);
+        p->psram_miss += (uint32_t)(b->psram_miss - a->psram_miss);
+        p->data_access += (uint32_t)(b->data_access - a->data_access);
+        p->instruction_miss += (uint32_t)(b->instruction_miss - a->instruction_miss);
+    }
+    p->calls++;
+    if (cycles > p->max_cycles) p->max_cycles = cycles;
+}
+
 #undef STREAM_PROFILE_FN

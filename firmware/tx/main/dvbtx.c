@@ -552,25 +552,36 @@ static void synthetic_payload(encoder_t *e, size_t bytes, uint32_t *seed)
 static radio_s3_fill_fn encoder_fill(void) { return vcm_enc.vcm ? fill_vcm : fill; }
 
 // Core 0: frame after frame into the ring, waiting while every slot is still needed.
+// Marks change in place: by-value 32-byte marks cost four ROM memcpy calls per stage.
 typedef struct {
     stream_mark_t clock;
-    uint64_t wait;
+    uint32_t wait;                 // low word of queue_wait_cycles; only differences are used
 } encoder_mark_t;
 
-static inline __attribute__((always_inline)) encoder_mark_t encoder_mark(void)
+static inline __attribute__((always_inline)) void encoder_mark_at(encoder_mark_t *m)
 {
-    encoder_mark_t m = {.clock=dvb.profile ? stream_mark() : stream_mark_cycles()};
-    m.wait = dvb.queue_wait_cycles;
-    return m;
+    m->wait = (uint32_t)dvb.queue_wait_cycles;
+    stream_mark_at(&m->clock,dvb.profile);
 }
 
-static inline __attribute__((always_inline)) encoder_mark_t encoder_record(stream_profile_t *p, encoder_mark_t before)
+static inline __attribute__((always_inline)) void encoder_mark_copy(encoder_mark_t *to, const encoder_mark_t *from)
 {
-    const encoder_mark_t after = encoder_mark();
-    stream_mark_t active = before.clock;
-    active.cycles += (uint32_t)(after.wait-before.wait);
-    stream_record(p,active,after.clock);
-    return after;
+    to->clock.cycles = from->clock.cycles;
+    to->clock.flash_miss = from->clock.flash_miss;
+    to->clock.psram_miss = from->clock.psram_miss;
+    to->clock.data_access = from->clock.data_access;
+    to->clock.instruction_miss = from->clock.instruction_miss;
+    to->wait = from->wait;
+}
+
+// Record the stage since *before, less full-queue waits, and start the next one.
+static inline __attribute__((always_inline)) void encoder_record(stream_profile_t *p, encoder_mark_t *before)
+{
+    encoder_mark_t after;
+    encoder_mark_at(&after);
+    before->clock.cycles += after.wait-before->wait;
+    stream_record_at(p,&before->clock,&after.clock);
+    encoder_mark_copy(before,&after);
 }
 
 #define ENCODER_TASK encoder_task
