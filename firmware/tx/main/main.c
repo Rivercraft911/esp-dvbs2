@@ -290,6 +290,9 @@ void app_main(void)
 
     radio = radio_s3_init(); // PHY calibration, once
     memory = run_memory_init();
+    if (usb_input_init() != ESP_OK) {
+        printf("@{\"cmd\":\"usbinput\",\"error\":\"timer unavailable\"}\n");
+    }
     const esp_err_t storage = station_store_init();
     if (storage != ESP_OK) {
         printf("@{\"cmd\":\"callsign\",\"error\":\"NVS unavailable or invalid callsign\","

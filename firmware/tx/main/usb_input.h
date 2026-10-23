@@ -2,6 +2,7 @@
 #include "ingress.h"
 #include "esp_err.h"
 
+esp_err_t usb_input_init(void); // once at boot: the wake timer
 esp_err_t usb_input_start(unsigned type);
 void usb_input_control(bool (*control)(unsigned));
 size_t usb_input_read(uint8_t *dst, size_t n);

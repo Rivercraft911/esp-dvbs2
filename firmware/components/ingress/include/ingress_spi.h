@@ -37,7 +37,11 @@ typedef struct {
     uint32_t isr_cycles;    /* CPU cycles inside the interrupt callback (not entry and exit) */
 } ingress_spi_stats;
 
-/* Start on the core that will consume: the GDMA interrupt is allocated on the calling core. */
+/* Once per input mode, on the core that will consume (the interrupt is allocated there):
+ * claim the bus and GDMA channel (quad) or the IDF slave driver (raw). Sessions then make no
+ * heap calls. ingress_spi_release gives them back; it does nothing during a session. */
+esp_err_t ingress_spi_provision(bool raw);
+void ingress_spi_release(void);
 esp_err_t ingress_spi_start(const ingress_spi_config *cfg, ingress_ring **ring);
 void ingress_spi_stop(void);
 void ingress_spi_get_stats(ingress_spi_stats *out);

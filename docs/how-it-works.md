@@ -190,7 +190,9 @@ room; the next command returns everything at once. The largest run takes 57,088 
 memory (8PSK 3/4 at 10 Msym/s) and 294,848 B of PSRAM (QPSK at 1 Msym/s). Task stacks are static, and the
 core-1 radio worker is created once at boot. ESP-IDF's heap hooks count every heap call after
 boot (`info` prints `heap_after_boot`); after paces, keyed runs, dumps and benchmarks the count
-is zero. Payload input over SPI still installs ESP-IDF's SPI and DMA drivers per run.
+is zero. Payload input installs its drivers once, when `spiinput` selects SPI (`spiinput off`
+frees them) and at boot for USB, so runs with input make no heap calls either. `spisend`, the
+diagnostic sender, still installs and frees its own driver each time.
 
 Payload, BB, BCH and LDPC for the next frame run before waiting for pages; only
 mapping and PL publication block. Scratch cannot be reused until the mapped

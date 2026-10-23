@@ -66,15 +66,19 @@ static void free_buffers(void)
 static bool (*control_handler)(unsigned);
 void usb_input_control(bool (*control)(unsigned)) { control_handler=control; }
 
+// At boot: the wake timer is the input's only heap allocation, made once and kept.
+esp_err_t usb_input_init(void)
+{
+    const esp_timer_create_args_t cfg={.callback=wake,.name="usb_rx"};
+    return timer ? ESP_OK : esp_timer_create(&cfg,&timer);
+}
+
 esp_err_t usb_input_start(unsigned type)
 {
     buffers=run_take(INGRESS_SLOTS*INGRESS_SLOT_BYTES, 16, MALLOC_CAP_SPIRAM);
     tables=run_take(4096, 16, MALLOC_CAP_INTERNAL);
-    const esp_timer_create_args_t cfg={.callback=wake,.name="usb_rx"};
-    esp_err_t err=ESP_ERR_NO_MEM;
-    // The timer is created on first use and kept: one heap allocation per boot.
-    if (!buffers || !tables || (!timer && (err=esp_timer_create(&cfg,&timer))!=ESP_OK)) {
-        free_buffers(); return err;
+    if (!buffers || !tables || !timer) {
+        free_buffers(); return timer ? ESP_ERR_NO_MEM : ESP_ERR_INVALID_STATE;
     }
     portENTER_CRITICAL(&rx_mux);
     saved_rx_enabled=(usb_serial_jtag_ll_get_intr_ena_status() & USB_SERIAL_JTAG_INTR_SERIAL_OUT_RECV_PKT)!=0;

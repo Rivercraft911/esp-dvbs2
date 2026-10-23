@@ -132,7 +132,8 @@ quad:        H = 24, L = 4   -> 136 Mb/s at 40 MHz
 | `spisend ms on\|quad [ts\|gcs] [MHz [Mb/s]]` | Test sender on a second S3 |
 
 Input selection applies to the next `dvbdump`, `dvbpace` or `dvb`; it does not
-start reception or the radio. Settings last until changed or reset.
+start reception or the radio. It does install the SPI driver for the chosen wire, so runs
+only start and stop it. Settings last until changed or reset.
 
 ## Diagnostics
 
