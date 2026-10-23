@@ -13,6 +13,7 @@ void w5500_settings_default(w5500_settings *s)
     *s = (w5500_settings){
         .ip = {192, 168, 77, 2}, .mask = {255, 255, 255, 0}, .gateway = {0, 0, 0, 0},
         .dest = {255, 255, 255, 255}, .port = 5004, .dest_port = 5006, .sck_khz = 26667,
+        .mon_port = 1235,
         .sclk = 9, .mosi = 43, .miso = 44, .cs = 3,
     };
 }
@@ -111,6 +112,12 @@ int w5500_settings_parse(w5500_settings *s, const char *args)
         }
         if (!port) return -1;
         n.dest_port = (uint16_t)port;
+    } else if (!strcmp(key, "mon")) {
+        if (!word(&p, a, sizeof a)) return -1;
+        if (!strcmp(a, "on")) n.mon_port = 1235;
+        else if (!strcmp(a, "off")) n.mon_port = 0;
+        else if (number(a, 65535, &v) && v) n.mon_port = (uint16_t)v;
+        else return -1;
     } else if (!strcmp(key, "port")) {
         if (!word(&p, a, sizeof a) || !number(a, 65535, &v) || !v) return -1;
         n.port = (uint16_t)v;
@@ -143,8 +150,9 @@ int w5500_settings_json(const w5500_settings *s, char *out, size_t cap)
     return snprintf(out, cap,
                     "\"ip\":\"%u.%u.%u.%u\",\"mask\":\"%u.%u.%u.%u\",\"gateway\":\"%u.%u.%u.%u\","
                     "\"port\":%u,\"dest\":\"%u.%u.%u.%u\",\"dest_port\":%u,\"sck_khz\":%u,"
+                    "\"mon_port\":%u,"
                     "\"pins\":{\"sclk\":%d,\"mosi\":%d,\"miso\":%d,\"cs\":%d}",
                     IP(s->ip), IP(s->mask), IP(s->gateway), s->port, IP(s->dest), s->dest_port,
-                    s->sck_khz, s->sclk, s->mosi, s->miso, s->cs);
+                    s->sck_khz, s->mon_port, s->sclk, s->mosi, s->miso, s->cs);
 #undef IP
 }

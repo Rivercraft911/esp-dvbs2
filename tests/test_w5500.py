@@ -56,7 +56,7 @@ class Peer(ct.Structure):
 class Settings(ct.Structure):
     _fields_ = [("ip", ct.c_uint8 * 4), ("mask", ct.c_uint8 * 4), ("gateway", ct.c_uint8 * 4),
                 ("dest", ct.c_uint8 * 4), ("port", ct.c_uint16), ("dest_port", ct.c_uint16),
-                ("sck_khz", ct.c_uint16), ("sclk", ct.c_int8), ("mosi", ct.c_int8),
+                ("sck_khz", ct.c_uint16), ("mon_port", ct.c_uint16), ("sclk", ct.c_int8), ("mosi", ct.c_int8),
                 ("miso", ct.c_int8), ("cs", ct.c_int8)]
 
 
@@ -1098,7 +1098,7 @@ def test_settings(native):
     lib.w5500_settings_json(ct.byref(s), out, 512)
     check(out.value.decode() ==
           '"ip":"192.168.77.2","mask":"255.255.255.0","gateway":"0.0.0.0","port":5004,'
-          '"dest":"255.255.255.255","dest_port":5006,"sck_khz":26667,'
+          '"dest":"255.255.255.255","dest_port":5006,"sck_khz":26667,"mon_port":1235,'
           '"pins":{"sclk":9,"mosi":43,"miso":44,"cs":3}', out.value)
 
     def parse(line):
@@ -1115,6 +1115,9 @@ def test_settings(native):
           s.dest_port == 1234, "broadcast keeps the port")
     check(parse("dest broadcast:5006") == 1 and s.dest_port == 5006, "broadcast with port")
     check(parse("port 6000") == 1 and s.port == 6000, "local port")
+    check(parse("mon off") == 1 and s.mon_port == 0, "monitor off")
+    check(parse("mon 1300") == 1 and s.mon_port == 1300, "monitor port")
+    check(parse("mon on") == 1 and s.mon_port == 1235, "monitor on: 1235")
     check(parse("mhz 26.67") == 1 and s.sck_khz == 26670, "clock")
     check(parse("mhz 40") == 1 and s.sck_khz == 40000, "40 MHz")
     check(parse("pins 12 11 13 10") == 1 and (s.sclk, s.mosi, s.miso, s.cs) == (12, 11, 13, 10),
@@ -1127,7 +1130,7 @@ def test_settings(native):
                 "mhz 9.9", "mhz 40.1", "mhz x", "pins 1 2 3", "pins 1 2 3 3", "pins 1 2 3 49",
                 "pins 22 2 3 4", "pins 1 19 3 4", "pins 1 2 20 4", "pins 1 2 3 26",
                 "pins 33 2 3 4", "pins 37 2 3 4", "pins 45 2 3 4", "pins 1 46 3 4",
-                "defaults now", "speed 10"):
+                "defaults now", "speed 10", "mon", "mon maybe", "mon 0", "mon 70000", "mon on off"):
         check(parse(bad) == -1 and bytes(s) == before, f"rejects {bad!r}")
     check(parse("defaults") == 1 and s.port == 5004 and s.sck_khz == 26667, "defaults")
     lib.w5500_settings_valid.restype = ct.c_bool

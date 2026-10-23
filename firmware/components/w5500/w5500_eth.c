@@ -22,7 +22,7 @@
 
 #define TS_PACKET 188
 #define DATAGRAM (7 * TS_PACKET)
-#define STORE_VERSION 1
+#define STORE_VERSION 2   /* 2: mon_port */
 
 static w5500 chip;
 static w5500_bus bus;
@@ -560,7 +560,7 @@ void w5500_eth_command(const char *args)
     return;
 usage:
     printf("@{\"cmd\":\"eth\",\"error\":\"usage: eth; eth ip A.B.C.D/N [gw A.B.C.D]; "
-           "eth dest A.B.C.D|broadcast[:PORT]; eth port PORT; eth mhz 10..40; "
+           "eth dest A.B.C.D|broadcast[:PORT]; eth port PORT; eth mhz 10..40; eth mon on|off|PORT; "
            "eth pins SCLK MOSI MISO CS; eth defaults; eth send MS [Mb/s]; eth recv MS; "
            "eth phy auto|100f|100h|10f|10h|reset; eth watch SECONDS\"}\n");
 }

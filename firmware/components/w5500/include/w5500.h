@@ -274,6 +274,7 @@ typedef struct {
     uint8_t ip[4], mask[4], gateway[4], dest[4];
     uint16_t port, dest_port;   /* local port (listen and source), destination port */
     uint16_t sck_khz;           /* SPI clock request, 10000..40000 */
+    uint16_t mon_port;          /* the receiver's monitor datagrams to dest at this port; 0 off */
     int8_t sclk, mosi, miso, cs;
 } w5500_settings;
 
@@ -281,7 +282,8 @@ void w5500_settings_default(w5500_settings *s);
 /* Pins usable on these boards and distinct, ports nonzero, clock 10-40 MHz. */
 bool w5500_settings_valid(const w5500_settings *s);
 /* One `eth` setting: "ip A.B.C.D/N [gw A.B.C.D]", "dest A.B.C.D|broadcast[:PORT]",
- * "port PORT", "mhz F" (10..40), "pins SCLK MOSI MISO CS", "defaults".
+ * "port PORT", "mhz F" (10..40), "pins SCLK MOSI MISO CS", "mon on|off|PORT" (on: 1235),
+ * "defaults".
  * Returns 1 if s changed, -1 on a syntax error (s unchanged). */
 int w5500_settings_parse(w5500_settings *s, const char *args);
 /* JSON members without braces, e.g. "ip":"192.168.77.2",...; snprintf return value. */
