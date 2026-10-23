@@ -36,7 +36,7 @@ stage digests, numerical symbol comparisons and file-loopback evidence are docum
   ([results](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/results/2026-10-16-radio/README.md)).
 - **Tuning (esp-sdr-zephyr):** on their boards the S3's PLL locked on air from 2180 to 2793 MHz,
   and with its divider the LO reached 1817 MHz; they report these as per-chip results, not
-  tested over temperature ([register notes, lines 1424-1427](https://github.com/cyber-murmel/esp-sdr-zephyr/blob/3214c16a7c9f136414cc5ae9d245ea290c98a6ce/doc/undocumented-registers-esp32s3.md#L1424-L1427)), which covers the
+  tested over temperature ([register notes, lines 1424-1435](https://github.com/cyber-murmel/esp-sdr-zephyr/blob/3214c16a7c9f136414cc5ae9d245ea290c98a6ce/doc/undocumented-registers-esp32s3.md#L1424-L1435)), which covers the
   13 cm band. Conducted checks here decoded exact payloads from 2000 to 2420 MHz
   ([S-band](../results/2026-10-20-s-band/README.md), [lower edge](../results/2026-10-20-band-followup/README.md)).
 - **Filter controls (esp-sdr-zephyr):** BBTOP block `0x67` registers 4/5 control the receive
