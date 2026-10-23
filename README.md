@@ -64,10 +64,12 @@ real time with the DAC output going nowhere.
 | 8PSK 5/6 | 26.67 Msym/s | 36 MHz | **64.6 Mb/s** | keyed | exact, fresh payload |
 | QPSK 9/10, roll-off 0.20 | 33.33 Msym/s | **40 MHz** | **58.2 Mb/s** | keyed | exact, fresh payload |
 | 8PSK 2/3 | 26.67 Msym/s | 36 MHz | **51.6 Mb/s** | keyed | exact, fresh payload |
+| 8PSK 9/10 | 20 Msym/s | 27 MHz | **52.4 Mb/s** | keyed | [exact, fresh payload](results/2026-10-23-tx-table-8psk-rekey/README.md) |
 | 8PSK 5/6 | 20 Msym/s | 27 MHz | **48.4 Mb/s** | keyed | exact, fresh payload |
 | QPSK 9/10 | 26.67 Msym/s | 36 MHz | 46.6 Mb/s | keyed | exact, fresh payload |
 | 8PSK 2/3 | 20 Msym/s | 27 MHz | 38.7 Mb/s | keyed | exact, fresh payload |
 | QPSK 9/10 | 20 Msym/s | 27 MHz | 34.9 Mb/s | keyed | exact, fresh payload |
+| 8PSK 9/10 | 10 Msym/s | 13.5 MHz | 26.2 Mb/s | keyed | exact, fresh payload |
 | 8PSK 5/6 | 10 Msym/s | 13.5 MHz | 24.2 Mb/s | keyed | exact, fresh payload |
 | QPSK 9/10 | 10 Msym/s | 13.5 MHz | 17.5 Mb/s | keyed | exact, fresh payload |
 | QPSK 3/4, video dry run | 10 Msym/s | 13.5 MHz | 14.5 Mb/s | keyed, TS input replayed | exact |
@@ -87,8 +89,8 @@ with 32/31/32 exact packets in the sampled RF. [Wide filter](results/2026-10-20-
 [startup fix](results/2026-10-20-qpsk-startup/README.md).
 Margins, raw records and limits: [measurements](docs/measurements.md) and the [keyed table](results/2026-10-23-tx-table/README.md).
 With a fresh payload the 40 MHz mode keeps **26% mean encoder headroom and 14% bank-fill
-headroom**. At 36 MHz, 8PSK 9/10, 2/3 and 5/6 run at full rate with 11%, 7% and 2% mean encoder
-spare; 5/6 sent 6 dummy frames in 20 s.
+headroom**. At 36 MHz, 8PSK 9/10, 2/3 and 5/6 run at full rate with 21%, 20% and 16% mean encoder
+spare and no dummy frames ([8PSK re-key](results/2026-10-23-tx-table-8psk-rekey/README.md)).
 
 ![36 MHz 8PSK spectrum and waterfall captured by a B200](docs/img/rf-36mhz.png)
 
