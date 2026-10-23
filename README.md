@@ -38,7 +38,9 @@ it never had to. Every short-frame mode the transmitter sends decodes live:
 | 8PSK 3/5 to 8/9 | 5 Msym/s | 8.46 to 12.64 Mb/s | 105,235 | 29.6 to 29.8 dB | 63% / 60 to 63% |
 
 Nineteen live 30 s runs, 223,153 frames, none lost, none failed, no relocks
-([sweep](results/2026-10-23-rx-sweep/README.md)). MER (modulation error ratio) is how far the
+([sweep](results/2026-10-23-rx-sweep/README.md)). Full-length 540 s runs held up too: 997,605 frames
+and 4.4 million TS packets exact, with the median MER steady within 0.1 dB from the first minute to
+the last ([long runs](results/2026-10-23-rx-long/README.md)). MER (modulation error ratio) is how far the
 received points sit from where they should be: 30 dB is a clean link. The core columns are the
 demodulator's mean share of core 1, and the release and check tasks' share of core 0.
 
