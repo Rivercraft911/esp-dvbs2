@@ -6,10 +6,10 @@
 #include "dvbs2rx.h"
 
 /* One binary record per frame on USB. A good frame's record (length = payload bytes) is
- * followed by the payload, or at 5 Msym/s by its 4-byte CRC-32 (esp_rom_crc32_le(0, payload,
- * length), little-endian), as the stream header's "payload" says. A failed frame (-1) is
- * followed by its 8-byte header sample index, then its RX_HARD_BITS hard bits and as many weak
- * bits (codeword order, MSB first). A record with length RECEIVE_END closes the stream. */
+ * followed by the payload, or at 5 Msym/s by its 4-byte CRC-32 (zlib.crc32, little-endian), as
+ * the stream header's "payload" says. A failed frame (-1) is followed by its 8-byte header sample
+ * index, then its RX_HARD_BITS hard bits and as many weak bits (codeword order, MSB first). A
+ * record with length RECEIVE_END closes the stream. */
 #define RECEIVE_MAGIC 0x46524453U   /* "SDRF" */
 #define RECEIVE_END (-2)
 #define RECEIVE_BITS 2025U          /* 16,200 bits */

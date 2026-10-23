@@ -12,7 +12,6 @@
 #include "esp_attr.h"
 #include "esp_cpu.h"
 #include "esp_heap_caps.h"
-#include "esp_rom_crc.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
@@ -39,6 +38,7 @@ typedef struct {
     QueueHandle_t full, empty;
     SemaphoreHandle_t done, usb;
     TaskHandle_t release, checker, decoder;
+    uint32_t *crc_table;        /* 5 Msym/s: the record's CRC-32 by bytes (PSRAM) */
     receive_stats_t *stats;
 } receiver_t;
 
@@ -82,7 +82,10 @@ static void quit(receiver_t *r, uint32_t *stack_free)
 }
 
 /* Highest priority on core 0: every queued run, into the current slot; a whole frame goes to
- * the checker. Without a free slot the frame is dropped and its buffers reused. */
+ * the checker. Without a free slot it waits for the checker to free one, at least 1 ms (two ticks):
+ * the frames after a lock come in a burst while the first check runs cold (300k to 370k cycles).
+ * Meanwhile the demodulator's ring fills (0.82 ms of symbols at 5 Msym/s); if it overflows, the
+ * next frame is lost instead of this one. Then the frame is dropped and its buffers reused. */
 static void releaser(void *arg)
 {
     receiver_t *r = arg;
@@ -97,7 +100,7 @@ static void releaser(void *arg)
             s->release_cycles += cycles;
             if (cycles > s->max_release_cycles) s->max_release_cycles = cycles;
             if (!done) break;
-            if (xQueueReceive(r->empty, &next, 0) == pdTRUE) {
+            if (xQueueReceive(r->empty, &next, 2) == pdTRUE) {
                 xQueueSend(r->full, &cur, 0);
                 cur = next;
             } else {
@@ -106,6 +109,15 @@ static void releaser(void *arg)
         }
     }
     quit(r, &s->release_stack_free);
+}
+
+/* zlib's CRC-32 (reflected 0xedb88320, as esp_rom_crc32_le(0, ...)) a byte at a time from a table:
+ * the ROM's takes 30k to 90k cycles for an 8PSK 8/9 frame, a third of the frame period. */
+static uint32_t crc32(const uint32_t *table, const uint8_t *p, size_t n)
+{
+    uint32_t c = ~0U;
+    while (n--) c = table[(c ^ *p++) & 255] ^ c >> 8;
+    return ~c;
 }
 
 static void record(receiver_t *r, const rx_frame_t *f, int length, const uint8_t *payload,
@@ -120,7 +132,7 @@ static void record(receiver_t *r, const rx_frame_t *f, int length, const uint8_t
     if (fec->iterations > s->max_iterations) s->max_iterations = fec->iterations;
     receive_write(&rec, sizeof rec);
     if (length > 0 && r->crc) {
-        uint32_t crc = esp_rom_crc32_le(0, payload, length);
+        uint32_t crc = crc32(r->crc_table, payload, length);
         receive_write(&crc, 4);
     } else if (length > 0) {
         receive_write(payload, length);
@@ -200,8 +212,9 @@ static esp_err_t start(void *ctx)
     r->empty = xQueueCreate(SLOTS, 1);
     r->done = xSemaphoreCreateCounting(3, 0);
     r->usb = xSemaphoreCreateMutex();
+    if (r->crc) r->crc_table = heap_caps_malloc(1024, MALLOC_CAP_SPIRAM);
     bool ok = r->demod && r->ring && r->check && r->decode && r->work && r->job.hard &&
-              r->job.weak && r->full && r->empty && r->done && r->usb;
+              r->job.weak && r->full && r->empty && r->done && r->usb && (r->crc_table || !r->crc);
     for (unsigned i = 0; ok && i < SLOTS; ++i) {
         r->slot[i].hard = heap_caps_aligned_alloc(16, RX_HARD_BYTES, INTERNAL);
         r->slot[i].weak = heap_caps_aligned_alloc(16, RX_HARD_BYTES, INTERNAL);
@@ -210,6 +223,11 @@ static esp_err_t start(void *ctx)
         if (ok && i) xQueueSend(r->empty, &n, 0);   /* the release starts on slot 0 */
     }
     if (!ok) return ESP_ERR_NO_MEM;
+    for (uint32_t v = 0; r->crc && v < 256; ++v) {
+        uint32_t c = v;
+        for (unsigned b = 0; b < 8; ++b) c = c >> 1 ^ (0xedb88320U & -(c & 1));
+        r->crc_table[v] = c;
+    }
     if (rx_demod_init(r->demod, &r->config, r->ring) || rx_fec_init(r->check, modcod, NULL) ||
         rx_fec_init(r->decode, modcod, r->work))
         return ESP_ERR_INVALID_ARG;
@@ -273,6 +291,7 @@ static void finish(receiver_t *r)
     heap_caps_free(r->check);
     heap_caps_free(r->ring);
     heap_caps_free(r->demod);
+    heap_caps_free(r->crc_table);
 }
 
 static void setup(receiver_t *r, unsigned modcod, unsigned rate, unsigned mhz, receive_stats_t *s)
