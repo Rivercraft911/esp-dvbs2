@@ -80,14 +80,14 @@ def fast(so):
     assert loss < 0.5, loss
 
     # Dummy PLFRAMEs (MODCOD 0, 3,330 symbols, no pilots) from a transmitter whose input ran dry:
-    # one, two, and 40 in a row (27 ms) while the carrier drifts 2 kHz/s. The lock holds, every
+    # one, two, and 400 in a row (0.27 s) while the carrier drifts 2 kHz/s. The lock holds, every
     # data frame is exact and the sequence counts data frames only.
-    dummies = (2, 4, 4) + (7,) * 40
+    dummies = (2, 4, 4) + (7,) * 400
     link = T.Link(rate=5e6, modcod=16, frames=12, mer_db=24, seed=8, dummies=dummies, drift_hz_s=-2000)
     d, _, truth = run_twin(so, link)
     pairs = matched(d, truth)
     s = d.stats()
-    assert [truth.index(t) for _, t in pairs] == list(range(1, 12)) and s["dummies"] == 43, s
+    assert [truth.index(t) for _, t in pairs] == list(range(1, 12)) and s["dummies"] == 403, s
     assert all(np.array_equal(f["hard"], t["codeword"]) for f, t in pairs)
     assert [f["sequence"] for f, _ in pairs] == list(range(11)) and s["relocks"] == s["lost"] == 0, s
 
