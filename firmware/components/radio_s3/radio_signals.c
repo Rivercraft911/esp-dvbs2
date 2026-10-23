@@ -76,8 +76,8 @@ bool radio_signal_init(radio_signal_t *signal, const char *name)
 
 static inline __attribute__((always_inline)) void copy8(uint32_t *dst, const uint32_t *src)
 {
-    // Word stores only: byte stores replicate across lanes (hardware-quirks.md:125-147
-    // at the same pinned esp-sdr-zephyr revision cited above).
+    // Whole aligned words only: the DAC reads 32-bit sample words, and narrower stores into
+    // a DAC bank have not been tested here, so no code relies on them.
     dst[0] = src[0], dst[1] = src[1], dst[2] = src[2], dst[3] = src[3];
     dst[4] = src[4], dst[5] = src[5], dst[6] = src[6], dst[7] = src[7];
 }

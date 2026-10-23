@@ -11,7 +11,7 @@
 //            force_tx_gain writes slot0; the keying offset cancels the base index.
 //   1089-1121: analog 0x65:0[4] selects LO=PLL*5/6; clear for direct LO.
 //   1355-1365: TX I[9:0], Q[19:10], signed10; RX has the opposite order.
-//   1377-1386: vendor tuning/gain/chain entry points; Wi-Fi NULL/promiscuous setup.
+//   1377-1386: vendor tuning/gain/chain entry points.
 // Tone override 0x60006040[18]: jochenhammes/esp32-sdr-trx
 // e1aebbf2ef508c7199a9b6c6c277b57fe0b51aa9, docs/research/TX-RESEARCH.md:419-456.
 // At 40 MS/s, each bank has 64 lead and 2048 tail samples of overlap, leaving
@@ -27,10 +27,11 @@
 #include <string.h>
 
 #include "radio_s3.h"
-#include "radio_calibration.h"
-#include "physolo.h"
+#include "radio_power.h"
 #include "esp_timer.h"
 #include "esp_private/phy.h"
+#include "esp_private/periph_ctrl.h"
+#include "esp_phy_init.h"
 #include "station_id.h"
 #include "station_store.h"
 #include "esp_heap_caps.h"
@@ -40,7 +41,6 @@
 #include "esp_private/esp_clk.h"
 #include "esp_private/regi2c_ctrl.h"
 #include "esp_task_wdt.h"
-#include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -48,6 +48,9 @@
 #include "soc/soc.h"
 #include "soc/extmem_reg.h"
 #include "sdkconfig.h"
+#include "hal/systimer_ll.h"
+#include "esp_private/systimer.h"
+extern void esp_vApplicationTickHook(void); /* esp_system/freertos_hooks.c */
 
 #if !CONFIG_IDF_TARGET_ESP32S3
 #error "radio_s3 requires ESP32-S3"
@@ -96,7 +99,7 @@ static geometry_t geometry(uint32_t dac_rate)
 SOC_RESERVE_MEMORY_REGION(0x3fcc0000, 0x3fce0000, radio_dac_banks);
 
 /* Undocumented vendor ABIs, checked against the installed S3 archives and the
- * pinned register document:1377-1386. Public Wi-Fi APIs own PHY lifetime.
+ * pinned register document:1377-1386. radio_s3_init owns the PHY lifetime.
  */
 extern void rom_pbus_xpd_rx_on(unsigned int en);
 extern void rom_pbus_xpd_tx_off(void);
@@ -185,9 +188,23 @@ static uint32_t cw_backoff(unsigned gain)
     return (RADIO_S3_GAIN_MAX - gain) * 8;
 }
 static StaticSemaphore_t done_storage;
+/* One radio worker on core 1 for the life of the firmware, created at boot with a static stack
+ * in internal SRAM (a heap stack could land in slow RTC FAST memory). It holds core 1's
+ * task-watchdog subscription; core 1's idle task is not checked, since a run never lets it in.
+ * Between runs the worker feeds the watchdog once a second; during one, every bank switch does,
+ * so a stuck fill or switch still trips it. Nothing is allocated per run. */
+static StackType_t worker_stack[6144 / sizeof(StackType_t)];
+static StaticTask_t worker_tcb;
+static TaskHandle_t worker_task;
+static StaticSemaphore_t job_storage;
+static SemaphoreHandle_t job_ready;
+static TaskFunction_t job_task;
+static void *job_arg;
+static bool watched;
+static station_id_t worker_id;
 
-// Final stream allocation/prefill after Wi-Fi and worker allocations exist.
-// Runs before either paced deadlines or the first keyed register access.
+// Final stream preparation after the worker exists, before either paced deadlines or the
+// first keyed register access.
 esp_err_t __attribute__((weak)) radio_s3_stream_ready(void) { return ESP_OK; }
 
 typedef struct {
@@ -203,14 +220,12 @@ typedef struct {
     uint64_t samples;               /* exact sample count, including IDs */
     bool identify;
     bool limit_duration;
-    bool wifi_pace;
-    bool probe;                     /* Wi-Fi start-up and shutdown only, no register access */
+    bool paced;                     /* bank deadlines without the radio */
     radio_s3_sink_fn sink;
     void *sink_ctx;
     radio_s3_dry_stats_t *dry;
     geometry_t geo;
     radio_s3_options_t options;
-    station_fill_fn *payload_fill;
     radio_s3_startup_t *startup;
 } run_t;
 
@@ -351,6 +366,12 @@ static inline __attribute__((always_inline)) esp_err_t schedule(run_t *run, uint
         if (run->watch_worker) {
             (void)esp_task_wdt_reset();
         }
+        /* Core 1's tick is off for the run (core1_tick): run its tick hooks here, outside any
+         * fill, so the interrupt watchdog's core-1 check (800 ms) still sees core 1 alive.
+         * Every 1,024 banks is at most 365 ms. */
+        if (!(stats->switches & 1023)) {
+            esp_vApplicationTickHook();
+        }
         next ^= 1;
         handoff += g.step;
         target += step_cycles;
@@ -393,7 +414,7 @@ static esp_err_t IRAM_ATTR __attribute__((noinline)) stream(run_t *run)
 
     /* force_tx_gain programs gain memory slot 0, but the front end uses slot
      * (offset + base index) & 0xff (FE_CTRL bits 25:18). ESP-IDF v6.1 leaves a
-     * nonzero base index after Wi-Fi start (2026-10-16), so cancel it with the
+     * nonzero base index after Wi-Fi start (2026-10-16); cancel any base index with the
      * offset and read the selected slot back before any sample plays. A wrong
      * slot would key at a vendor power setting, so abort; cleanup unkeys.
      */
@@ -412,7 +433,7 @@ static esp_err_t IRAM_ATTR __attribute__((noinline)) stream(run_t *run)
     if (stats->fe_gain_index != 0) {
         return ESP_ERR_INVALID_STATE;
     }
-    if (!radio_calibration_filter(&stats->filter)) {
+    if (!radio_filter_apply(&stats->filter)) {
         return ESP_ERR_INVALID_STATE;
     }
     REG_CLR_BIT(TONE_CTRL, 1U << 18);
@@ -449,72 +470,77 @@ static void heap_now(uint32_t *free_bytes, uint32_t *largest)
     *largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 }
 
-/* Streaming occupies core 1 without an idle tick. Transfer that core's watchdog
- * subscription to the running task; watch_end restores it on every exit. A stuck
- * fill or switch still trips the task watchdog.
- */
-static esp_err_t watch_begin(run_t *run, bool *watch_idle, bool *watch_worker)
+/* The radio, once at boot and for good, without Wi-Fi (radio_power.h). The DAC streams from the
+ * Wi-Fi baseband, so its clock domain stays referenced. */
+static bool phy_up;
+extern void phy_param_track_tot(bool en_wifi, bool en_ble_154); /* libphy */
+
+static void core1(void *arg)
 {
-    TaskHandle_t idle = xTaskGetIdleTaskHandleForCore(1);
-    if (esp_task_wdt_status(idle) == ESP_OK) {
-        esp_err_t error = esp_task_wdt_delete(idle);
-        if (error != ESP_OK) {
-            return error;
+    (void)arg;
+    watched = esp_task_wdt_add(NULL) == ESP_OK;
+    for (;;) {
+        if (xSemaphoreTake(job_ready, pdMS_TO_TICKS(1000)) == pdTRUE) {
+            job_task(job_arg);
         }
-        *watch_idle = true;
+        if (watched) {
+            (void)esp_task_wdt_reset();
+        }
     }
-    esp_err_t error = esp_task_wdt_add(NULL);
-    if (error == ESP_OK) {
-        *watch_worker = true;
-        run->watch_worker = true;
-    } else if (error != ESP_ERR_INVALID_STATE) {
-        return error;
-    }
-    return ESP_OK;
 }
 
-static void watch_end(bool watch_idle, bool watch_worker)
+esp_err_t radio_s3_init(void)
 {
-    if (watch_worker) {
-        (void)esp_task_wdt_delete(NULL);
+    if (!worker_task) {
+        job_ready = xSemaphoreCreateBinaryStatic(&job_storage);
+        worker_task = xTaskCreateStaticPinnedToCore(core1, "radio", sizeof worker_stack, NULL,
+                                                    configMAX_PRIORITIES - 2, worker_stack,
+                                                    &worker_tcb, 1);
     }
-    if (watch_idle) {
-        (void)esp_task_wdt_add(xTaskGetIdleTaskHandleForCore(1));
-    }
+    const esp_err_t e = radio_power_up();
+    phy_up = e == ESP_OK;
+    return worker_task ? e : ESP_ERR_NO_MEM;
+}
+
+/* Core 1 is reserved for this worker during a run. The worker is pinned there at
+ * configMAX_PRIORITIES - 2 and never blocks in a run, and no other firmware task is pinned to
+ * core 1 or created without a core (tests/test_radio_duration.py checks the sources). Core 1's
+ * FreeRTOS tick keeps no time; core 0's does and expires every timeout. What core 1's tick
+ * does is time slicing among equal priorities and the deferred preemption core 0 leaves it
+ * (xYieldPending[1]) when a timeout readies a core-1 task. With the tick off, such a task
+ * would wait for the next scheduling event or the end of the run. ipc1, the one task above
+ * the worker, is woken by notification, which still preempts at once.
+ * The tick cost the fills about 1k cycles once a millisecond, so stop that alarm's interrupt
+ * for the run. Re-enabled, the handler (freertos/port_systick.c) replays every skipped tick:
+ * 29 ms after a 10 s pace, 100 ms after 60 s, so about 0.8 s after the 540 s limit, on core 1
+ * only and with the transmitter already off. Nothing else toggles this enable bit after boot.
+ * schedule() runs core 1's tick hooks (the interrupt watchdog's) between fills meanwhile. */
+static void core1_tick(bool on)
+{
+    systimer_ll_enable_alarm_int(&SYSTIMER, SYSTIMER_ALARM_OS_TICK_CORE0 + 1, on);
 }
 
 static void worker(void *arg)
 {
     run_t *run = arg;
     radio_s3_startup_t startup = {0};
-    if (run->wifi_pace && run->options.startup) {
+    if (run->paced && run->options.startup) {
         const uint64_t end = run->stats->id_samples;
         startup.first_sample = end < RADIO_S3_BANK_WORDS ? 0 :
             ((end+run->geo.lead-RADIO_S3_BANK_WORDS)/run->geo.step+1)*run->geo.step-run->geo.lead;
         run->startup = &startup;
     }
-    bool initialized = false;
-    bool started = false;
-    bool watch_worker = false;
-    bool watch_idle = false;
-    bool rf_setup = false;
-    physolo_t solo = {0};
+    run->watch_worker = watched;
+    bool rf_setup = false, tick_off = false;
 #if CONFIG_PM_ENABLE
     esp_pm_lock_handle_t cpu_lock = NULL;
     esp_pm_lock_handle_t sleep_lock = NULL;
 #endif
-    wifi_mode_t existing;
     esp_err_t error = ESP_OK;
-    if (!run->probe && !run->wifi_pace &&
-        (error = radio_calibration_begin(run->freq_mhz, run->gain, run->geo.rate,
-                                         &run->stats->calibration)) != ESP_OK)
-        goto cleanup;
-    error = esp_wifi_get_mode(&existing);
-    if (error != ESP_ERR_WIFI_NOT_INIT) {
+    if (!run->paced && !phy_up) {
         error = ESP_ERR_INVALID_STATE;
         goto cleanup;
     }
-    if (run->options.phy_solo && (error = physolo_available()) != ESP_OK) goto cleanup;
 #if CONFIG_PM_ENABLE
     error = esp_pm_lock_create(ESP_PM_CPU_FREQ_MAX, 0, "radio_cpu", &cpu_lock);
     if (error != ESP_OK) {
@@ -537,70 +563,23 @@ static void worker(void *arg)
         error = ESP_ERR_INVALID_STATE;
         goto cleanup;
     }
-    radio_s3_wifi_heap_t *heap = &run->stats->wifi;
-    heap_now(&heap->free_before, &heap->largest_before);
-    wifi_init_config_t config = WIFI_INIT_CONFIG_DEFAULT();
-    config.nvs_enable = 0; /* Wi-Fi configuration stays in RAM. */
-    error = esp_wifi_init(&config);
-    heap_now(&heap->free_init, &heap->largest_init);
-    if (error != ESP_OK) {
-        goto cleanup;
-    }
-    initialized = true;
-    error = esp_wifi_set_storage(WIFI_STORAGE_RAM);
-    if (error == ESP_OK) {
-        error = esp_wifi_set_mode(WIFI_MODE_NULL);
-    }
-    if (error == ESP_OK) {
-        error = esp_wifi_start();
-    }
-    if (error != ESP_OK) {
-        goto cleanup;
-    }
-    started = true;
-    error = esp_wifi_set_ps(WIFI_PS_NONE);
-    if (error == ESP_OK) {
-        error = esp_wifi_set_promiscuous(true);
-    }
-    if (error == ESP_OK) {
-        error = esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
-    }
-    heap_now(&heap->free_up, &heap->largest_up);
-    heap->min_free = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
-    if (error != ESP_OK) goto cleanup;
-    if (run->options.phy_solo) {
-        error = esp_wifi_set_promiscuous(false);
-        if (error != ESP_OK) goto cleanup;
-        error = physolo_acquire(&solo);
-        if (error != ESP_OK) goto cleanup;
-        error = esp_wifi_stop();
-        if (error != ESP_OK) goto cleanup;
-        started = false;
-        run->stats->wifi_stop_at_us = esp_timer_get_time();
-        error = esp_wifi_deinit();
-        if (error != ESP_OK) goto cleanup;
-        initialized = false;
-        run->stats->wifi_deinit_at_us = esp_timer_get_time();
-        error = physolo_snapshot(&run->stats->session);
-        if (error != ESP_OK) goto cleanup;
-        if (run->stats->session.wifi_initialized || run->stats->session.phy_users != PHY_MODEM_BT ||
-            run->stats->session.wifi_irq_routes[0] || run->stats->session.wifi_irq_routes[1]) {
-            error = ESP_ERR_INVALID_STATE;
-            goto cleanup;
-        }
-    }
-    // Admit stream memory only after the optional teardown, before any RF setup.
     error = radio_s3_stream_ready();
-    if (error == ESP_OK && run->options.select_fill && run->payload_fill)
-        *run->payload_fill = run->options.select_fill(*run->payload_fill);
-    if (error == ESP_OK && run->wifi_pace) {
-        error = watch_begin(run, &watch_idle, &watch_worker);
-        if (error == ESP_OK) error = paced(run);
+    if (error == ESP_OK && run->paced) {
+        core1_tick(false);
+        tick_off = true;
+        error = paced(run);
         goto cleanup;
     }
-    if (error != ESP_OK || run->probe) {
+    if (error != ESP_OK) {
         goto cleanup;
     }
+    /* One PLL and temperature tracking pass before keying, as Wi-Fi's 1 s timer used to run.
+     * It returns a 16-byte front-end table to its Wi-Fi-up values (the receiver's register diff,
+     * results/2026-10-23-rx-no-wifi-ab) and takes about 44,000 cycles. */
+    _lock_t phy_lock = phy_get_lock();
+    _lock_acquire(&phy_lock);
+    phy_param_track_tot(true, false);
+    _lock_release(&phy_lock);
     rf_setup = true;
     REG_WRITE(DAC_CTRL, 0);
     REG_WRITE(ADC_CTRL, 0);
@@ -611,19 +590,16 @@ static void worker(void *arg)
     direct_lo();
     set_chanfreq(2412, 0); /* Real Wi-Fi channel. Final filter is applied after CW setup. */
     tune(run->freq_mhz);
-    /* No MAC frames in NULL mode. Allow unkeyed retune to settle. */
+    /* Allow the unkeyed retune to settle. */
     vTaskDelay(pdMS_TO_TICKS(3));
 
-    error = watch_begin(run, &watch_idle, &watch_worker);
-    if (error != ESP_OK) {
-        goto cleanup;
-    }
+    core1_tick(false);
+    tick_off = true;
     error = stream(run);
 
 cleanup:
     if (rf_setup) {
         REG_WRITE(DAC_CTRL, 0);
-        if (!radio_calibration_restore() && error == ESP_OK) error = ESP_ERR_INVALID_STATE;
         if (run->stats->filter.applied && !radio_filter_finish(&run->stats->filter) && error == ESP_OK) {
             error = ESP_ERR_INVALID_STATE;
         }
@@ -636,29 +612,9 @@ cleanup:
         rom_pbus_xpd_rx_on(0);
         REG_WRITE(BANK_USAGE, REG_READ(BANK_USAGE) & ~0xfU);
     }
-    if (!run->probe && !run->wifi_pace) radio_calibration_end(&run->stats->calibration);
-    if (started) {
-        (void)esp_wifi_set_promiscuous(false);
+    if (tick_off) {
+        core1_tick(true);
     }
-    if (initialized) {
-        /* Stop even when esp_wifi_start returned an error after partial setup. */
-        esp_err_t stopped = esp_wifi_stop();
-        if (error == ESP_OK && stopped != ESP_OK) {
-            error = stopped;
-        }
-        esp_err_t deinitialized = esp_wifi_deinit();
-        if (error == ESP_OK && deinitialized != ESP_OK) {
-            error = deinitialized;
-        }
-    }
-    physolo_release(&solo);
-    if (run->options.phy_solo) {
-        const esp_err_t observed = physolo_snapshot(&run->stats->after);
-        if (error == ESP_OK) error = observed;
-        if (error == ESP_OK && (run->stats->after.wifi_initialized || run->stats->after.phy_users))
-            error = ESP_ERR_INVALID_STATE;
-    }
-    watch_end(watch_idle, watch_worker);
 #if CONFIG_PM_ENABLE
     if (sleep_lock) {
         (void)esp_pm_lock_release(sleep_lock);
@@ -669,14 +625,12 @@ cleanup:
         (void)esp_pm_lock_delete(cpu_lock);
     }
 #endif
-    if (initialized) run->stats->wifi.min_free = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
     if (run->startup) {
         *run->options.startup = startup;
         run->startup = NULL;
     }
     run->error = error;
     xSemaphoreGive(run->done);
-    vTaskDelete(NULL);
 }
 
 /* The dry run: the fill sequence of stream() and the samples the DAC would play. */
@@ -691,8 +645,11 @@ static void dry_worker(void *arg)
         error = fill_bank(run, 1, step - lead);
     }
     for (uint64_t j = 0; error == ESP_OK && j * step < samples; ++j) {
-        // Let IDLE1 run now and then. A sink that rarely blocks (iddump keeps 1 sample in
-        // 4000) otherwise starves it past the 5 s task watchdog, whose log lands in the dump.
+        // Feed the watchdog every bank: a dump's USB sink can take 80 ms per bank, and a
+        // watchdog report would land in the dump. Let other core-1 work run now and then.
+        if (watched) {
+            (void)esp_task_wdt_reset();
+        }
         if ((j & 63) == 63) {
             vTaskDelay(1);
         }
@@ -714,32 +671,9 @@ static void dry_worker(void *arg)
     stats->max_fill_cycles = run->stats->max_fill_cycles;
     run->error = error;
     xSemaphoreGive(run->done);
-    vTaskDelete(NULL);
 }
 
-/* The paced run: stream()'s schedule with the radio off. */
-static void paced_worker(void *arg)
-{
-    run_t *run = arg;
-    bool watch_worker = false;
-    bool watch_idle = false;
-    esp_err_t error = esp_clk_cpu_freq() == 240000000 ? ESP_OK : ESP_ERR_INVALID_STATE;
-#if CONFIG_PM_ENABLE
-    error = ESP_ERR_NOT_SUPPORTED;  /* would need worker()'s frequency lock */
-#endif
-    if (error == ESP_OK) {
-        error = watch_begin(run, &watch_idle, &watch_worker);
-    }
-    if (error == ESP_OK) {
-        error = paced(run);
-    }
-    watch_end(watch_idle, watch_worker);
-    run->error = error;
-    xSemaphoreGive(run->done);
-    vTaskDelete(NULL);
-}
-
-/* Run one task on core 1 and wait for it. One run at a time. */
+/* Run one job on the core-1 worker and wait for it. One run at a time. */
 static esp_err_t on_core1(TaskFunction_t task, run_t *run)
 {
     portENTER_CRITICAL(&state_lock);
@@ -750,13 +684,9 @@ static esp_err_t on_core1(TaskFunction_t task, run_t *run)
     running = true;
     portEXIT_CRITICAL(&state_lock);
     station_id_t *id = NULL;
-    run->payload_fill = &run->fill;
     if (run->identify) {
-        id = heap_caps_calloc(1, sizeof *id, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-        if (!id) {
-            run->error = ESP_ERR_NO_MEM;
-            goto finished;
-        }
+        id = &worker_id;
+        memset(id, 0, sizeof *id);
         if (!station_id_init_rate(id, station_store_get(), run->samples, run->geo.rate,
                                   run->fill, run->ctx)) {
             run->error = ESP_ERR_INVALID_STATE;
@@ -778,7 +708,6 @@ static esp_err_t on_core1(TaskFunction_t task, run_t *run)
             }
         }
         run->samples = id->total_samples;
-        run->payload_fill = &id->payload;
         run->fill = station_id_fill;
         run->ctx = id;
         run->stats->id_samples = id->length;
@@ -786,15 +715,15 @@ static esp_err_t on_core1(TaskFunction_t task, run_t *run)
         run->stats->planned_samples = id->total_samples;
     }
     run->done = xSemaphoreCreateBinaryStatic(&done_storage);
-    BaseType_t created = xTaskCreatePinnedToCore(task, "radio", 6144, run,
-                                                configMAX_PRIORITIES - 2, NULL, 1);
-    if (created == pdPASS) {
+    if (worker_task) {
+        job_task = task;
+        job_arg = run;
+        xSemaphoreGive(job_ready);
         xSemaphoreTake(run->done, portMAX_DELAY);
     } else {
-        run->error = ESP_ERR_NO_MEM;
+        run->error = ESP_ERR_INVALID_STATE; /* radio_s3_init has not run */
     }
 finished:
-    heap_caps_free(id);
     portENTER_CRITICAL(&state_lock);
     running = false;
     portEXIT_CRITICAL(&state_lock);
@@ -820,14 +749,8 @@ esp_err_t radio_s3_dry_run_rate(radio_s3_fill_fn fill, void *ctx, uint64_t sampl
     return on_core1(dry_worker, &run);
 }
 
-esp_err_t radio_s3_dry_run(radio_s3_fill_fn fill, void *ctx, uint64_t samples,
-                           radio_s3_sink_fn sink, void *sink_ctx, radio_s3_dry_stats_t *stats)
-{
-    return radio_s3_dry_run_rate(fill, ctx, samples, RADIO_S3_DAC_RATE, sink, sink_ctx, stats);
-}
-
-esp_err_t radio_s3_paced_run_rate(uint32_t seconds, uint32_t dac_rate, radio_s3_fill_fn fill,
-                                  void *ctx, radio_s3_stats_t *stats)
+esp_err_t radio_s3_paced_run(uint32_t seconds, uint32_t dac_rate, radio_s3_fill_fn fill, void *ctx,
+                             const radio_s3_options_t *options, radio_s3_stats_t *stats)
 {
     if (!fill || !stats || seconds == 0 || seconds > 600 || !known_rate(dac_rate)) {
         return ESP_ERR_INVALID_ARG;
@@ -835,79 +758,14 @@ esp_err_t radio_s3_paced_run_rate(uint32_t seconds, uint32_t dac_rate, radio_s3_
     memset(stats, 0, sizeof *stats);
     stats->min_fill_slack_cycles = UINT32_MAX;
     run_t run = {.seconds = seconds, .samples = (uint64_t)seconds * dac_rate,
-                 .identify = station_store_get()[0] != 0,
+                 .identify = station_store_get()[0] != 0, .paced = true,
                  .fill = fill, .ctx = ctx, .stats = stats, .geo = geometry(dac_rate)};
-    esp_err_t error = on_core1(paced_worker, &run);
+    if (options) run.options = *options;
+    esp_err_t error = on_core1(worker, &run);
     if (stats->min_fill_slack_cycles == UINT32_MAX) {
         stats->min_fill_slack_cycles = 0;
     }
     return error;
-}
-
-/* Wi-Fi NULL/promiscuous receive only. probe keeps all keyed setup and
- * cleanup register accesses out of this path, including error returns. */
-esp_err_t radio_s3_paced_wifi_rate(uint32_t seconds, uint32_t dac_rate, radio_s3_fill_fn fill,
-                                   void *ctx, radio_s3_stats_t *stats)
-{
-    return radio_s3_paced_wifi_options(seconds,dac_rate,fill,ctx,NULL,stats);
-}
-
-esp_err_t radio_s3_paced_wifi_options(uint32_t seconds, uint32_t dac_rate, radio_s3_fill_fn fill,
-                                      void *ctx, const radio_s3_options_t *options, radio_s3_stats_t *stats)
-{
-    if (!fill || !stats || seconds == 0 || seconds > 600 || !known_rate(dac_rate) ||
-            (options && options->phy_solo && seconds > RADIO_S3_PHY_SOLO_MAX_SECONDS) ||
-            !station_store_get()[0]) return ESP_ERR_INVALID_ARG;
-    memset(stats,0,sizeof *stats);
-    stats->min_fill_slack_cycles = UINT32_MAX;
-    run_t run = {.seconds=seconds, .samples=(uint64_t)seconds*dac_rate,
-                 .identify=true, .probe=true, .wifi_pace=true,
-                 .fill=fill, .ctx=ctx, .stats=stats, .geo=geometry(dac_rate)};
-    if (options) run.options = *options;
-    const esp_err_t error = on_core1(worker,&run);
-    if (stats->min_fill_slack_cycles == UINT32_MAX) stats->min_fill_slack_cycles = 0;
-    return error;
-}
-
-esp_err_t radio_s3_paced_run(uint32_t seconds, radio_s3_fill_fn fill, void *ctx,
-                             radio_s3_stats_t *stats)
-{
-    return radio_s3_paced_run_rate(seconds, RADIO_S3_DAC_RATE, fill, ctx, stats);
-}
-
-static esp_err_t no_fill(uint32_t *dst, uint64_t first, size_t count, void *ctx)
-{
-    (void)dst, (void)first, (void)count, (void)ctx;
-    return ESP_FAIL;
-}
-
-esp_err_t radio_s3_wifi_probe(radio_s3_stats_t *stats)
-{
-    if (!stats) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    if (!station_store_get()[0]) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    memset(stats, 0, sizeof *stats);
-    run_t run = {
-        .samples = 30ULL * RADIO_S3_DAC_RATE, .identify = true, .limit_duration = true,
-        .probe = true, .seconds = 30, .fill = no_fill, .stats = stats,
-        .geo = geometry(RADIO_S3_DAC_RATE),
-    };
-    return on_core1(worker, &run);
-}
-
-esp_err_t radio_s3_run(uint32_t freq_mhz, uint8_t gain, uint32_t seconds,
-                       radio_s3_fill_fn fill, void *ctx, radio_s3_stats_t *stats)
-{
-    return radio_s3_run_rate(freq_mhz, gain, seconds, RADIO_S3_DAC_RATE, fill, ctx, stats);
-}
-
-esp_err_t radio_s3_run_rate(uint32_t freq_mhz, uint8_t gain, uint32_t seconds, uint32_t dac_rate,
-                            radio_s3_fill_fn fill, void *ctx, radio_s3_stats_t *stats)
-{
-    return radio_s3_run_bandwidth(freq_mhz, gain, seconds, dac_rate, dac_rate, fill, ctx, stats);
 }
 
 esp_err_t radio_s3_run_bandwidth(uint32_t freq_mhz, uint8_t gain, uint32_t seconds,
@@ -924,7 +782,6 @@ esp_err_t radio_s3_run_options(uint32_t freq_mhz, uint8_t gain, uint32_t seconds
     const int64_t rf = (int64_t)freq_mhz * 1000 + lo_offset_khz;
     if (stats) {
         memset(stats, 0, sizeof *stats);
-        radio_calibration_attempt(&stats->calibration, true);
         stats->requested_rf_khz = rf >= 0 && rf <= UINT32_MAX ? rf : 0;
         stats->lo_offset_khz = lo_offset_khz;
         stats->lo_divided = lo_divided;
@@ -935,11 +792,10 @@ esp_err_t radio_s3_run_options(uint32_t freq_mhz, uint8_t gain, uint32_t seconds
             freq_mhz < RADIO_S3_FREQ_MIN_MHZ || freq_mhz > RADIO_S3_FREQ_MAX_MHZ ||
             rf < RADIO_S3_FREQ_MIN_MHZ * 1000U || rf > RADIO_S3_FREQ_MAX_MHZ * 1000U ||
             gain > RADIO_S3_GAIN_MAX || seconds == 0 || seconds > RADIO_S3_MAX_SECONDS ||
-            (options && options->phy_solo && seconds > RADIO_S3_PHY_SOLO_MAX_SECONDS) || !known_rate(dac_rate)) {
+            !known_rate(dac_rate)) {
         return ESP_ERR_INVALID_ARG;
     }
-    if ((lo_divided || lo_offset_khz) && stats->calibration.requested) return ESP_ERR_NOT_SUPPORTED;
-    // Refuse before task creation, Wi-Fi init, calibration or any register access.
+    // Refuse before task creation or any register access.
     if (!station_store_get()[0]) {
         return ESP_ERR_INVALID_STATE;
     }

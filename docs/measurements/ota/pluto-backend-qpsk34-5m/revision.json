@@ -2,5 +2,5 @@
   "started_utc": "2026-10-18T22:39:05.473967+00:00",
   "coordinator": "7391f86324d3d9ffd5a4592f1628bb9dcb80ab27",
   "dirty": false,
-  "receiver": "/Users/river/Documents/stanford/SSI/esp-dvbs2/notes/leansdr/src/apps/leandvb"
+  "receiver": "local LeanDVB build"
 }

@@ -2,17 +2,62 @@
 // Timing is synthetic. Compare every filled DAC word against the plain encoder.
 #include "native.h"
 #include <stdbool.h>
+#include "run_memory.h"
+/* Host run memory: native.h's heap model (counts, injected failures, caps) behind the firmware's
+ * arena capacity, which the firmware's allocator core and first-fit policy check here. */
+static arena_t native_run[3] = {{(uint8_t *)RUN_LOW_BASE, RUN_LOW_BYTES, 0, 0},
+                                {(uint8_t *)RUN_HIGH_BASE, RUN_HIGH_BYTES, 0, 0},
+                                {(uint8_t *)0x3d800000, RUN_PSRAM_BYTES, 0, 0}};
+static void *native_taken[64];
+static unsigned native_takes;
+static pthread_mutex_t native_run_lock = PTHREAD_MUTEX_INITIALIZER;
+void *run_take(size_t bytes, size_t align, uint32_t caps) {
+    if (align < 16) align = 16;
+    pthread_mutex_lock(&native_run_lock);
+    void *p = NULL;
+    const int fits = caps & MALLOC_CAP_SPIRAM ? arena_take_aligned(&native_run[2], bytes, align) != NULL :
+        arena_take_aligned(&native_run[0], bytes, align) || arena_take_aligned(&native_run[1], bytes, align);
+    if (fits && (p = heap_caps_aligned_alloc(align, bytes, caps))) {
+        memset(p, 0, bytes);
+        assert(native_takes < 64); native_taken[native_takes++] = p;
+    }
+    pthread_mutex_unlock(&native_run_lock);
+    return p;
+}
+void run_reset(void) {
+    pthread_mutex_lock(&native_run_lock);
+    while (native_takes) heap_caps_free(native_taken[--native_takes]);
+    for (unsigned i = 0; i < 3; ++i) native_run[i].used = 0;
+    pthread_mutex_unlock(&native_run_lock);
+}
+// A command's run memory is returned by the next command's run_reset. Return it now and check
+// that nothing else is left on the (modelled) heap.
+static bool run_returned(void) { run_reset(); return !live_allocations; }
+void run_memory_print(void) {
+    printf(",\"run_memory\":{\"low\":[%u,%u,%u],\"high\":[%u,%u,%u],\"psram\":[%u,%u,%u]}",
+           (unsigned)native_run[0].used, (unsigned)native_run[0].peak, (unsigned)native_run[0].size,
+           (unsigned)native_run[1].used, (unsigned)native_run[1].peak, (unsigned)native_run[1].size,
+           (unsigned)native_run[2].used, (unsigned)native_run[2].peak, (unsigned)native_run[2].size);
+}
 #include "ring.h"
 #include "machine.h"
 uint32_t native_ranges[4];
 static int checked_window(ring_t *, uint8_t *, size_t, uint64_t, size_t, unsigned, unsigned, unsigned);
 static int checked_task(void (*)(void *), const char *, unsigned, void *, unsigned, TaskHandle_t *, int);
+static TaskHandle_t checked_static_task(void (*fn)(void *), const char *name, unsigned stack, void *arg,
+                                        unsigned priority, StackType_t *buffer, StaticTask_t *tcb, int core)
+{
+    (void)buffer; (void)tcb; TaskHandle_t handle = NULL;
+    return checked_task(fn, name, stack, arg, priority, &handle, core) == pdPASS ? handle : NULL;
+}
 static uint32_t checked_load(const volatile uint32_t *, int);
 #define __atomic_load_n checked_load
 #define xTaskCreatePinnedToCore checked_task
+#define xTaskCreateStaticPinnedToCore checked_static_task
 #define ring_window checked_window
 #include "dvbtx.c"
 #undef ring_window
+#undef xTaskCreateStaticPinnedToCore
 #undef xTaskCreatePinnedToCore
 #undef __atomic_load_n
 
@@ -62,6 +107,9 @@ static int checked_task(void (*fn)(void *), const char *name, unsigned stack, vo
     // page cursors and the 64-bit symbol timeline must remain continuous.
     if (dvb.lofty) {
         assert(priority == MOON_PRIORITY);
+        // Forced not-ready admissions replay the dummy path inside a dump.
+        if (getenv("FORCE_DUMMIES") || getenv("FORCE_DUMMY_FRAME") || getenv("DUMMY_FROM_FRAME"))
+            lofty_mux.whole_frames = false;
 #ifdef QUEUE_TEST_PAGES
         assert(QUEUE_TEST_PAGES <= dvb.queue_pages);
         dvb.queue_pages = QUEUE_TEST_PAGES;
@@ -101,6 +149,9 @@ static void *input_sim;
 static FILE *native_wire;
 static unsigned native_input, input_seq, input_reads, input_zero_reads;
 static volatile bool input_empty;
+static size_t input_limit = SIZE_MAX, input_given; // bytes before the source stops
+static size_t input_corrupt = SIZE_MAX;             // zero the input from here: BB rejects the TS
+static bool fill_may_fail;                          // whole-frame tests: return fill errors
 static bool native_replay;
 static uint8_t *native_buffers[INGRESS_SLOTS];
 extern void sim_set_buffer(void *, unsigned, uint8_t *);
@@ -125,17 +176,25 @@ unsigned spi_input_type(void) { return native_input; }
 const char *spi_input_source(void) { return "spi"; }
 esp_err_t spi_input_start(void) {
     if (native_input) {
+        // Charge run memory as spi_input_start does on the board: the slot block unless the
+        // encoder lent slots. The 4 KiB CRC table came from the heap with spiinput.
+        uint8_t *slots[INGRESS_SLOTS];
+        memcpy(slots, native_buffers, sizeof slots);
+        if (!slots[0]) {
+            uint8_t *block = run_take(INGRESS_SLOTS*INGRESS_SLOT_BYTES, 16, MALLOC_CAP_INTERNAL);
+            if (!block) return ESP_ERR_NO_MEM;
+            for (unsigned i = 0; i < INGRESS_SLOTS; ++i) slots[i] = block+i*INGRESS_SLOT_BYTES;
+        }
         input_sim = sim_new(); sim_ring(input_sim)->type = native_input;
         sim_ring(input_sim)->control=native_control;
-        if (native_buffers[0])
-            for (unsigned i = 0; i < INGRESS_SLOTS; ++i) sim_set_buffer(input_sim, i, native_buffers[i]);
+        for (unsigned i = 0; i < INGRESS_SLOTS; ++i) sim_set_buffer(input_sim, i, slots[i]);
         if (native_replay) sim_replay(input_sim, native_input);
         input_seq = input_reads = input_zero_reads = 0;
     }
     return ESP_OK;
 }
 size_t spi_input_read(uint8_t *dst, size_t n) {
-    if (input_empty || (++input_reads % 7) == 0) {
+    if (input_empty || input_given >= input_limit || (++input_reads % 7) == 0) {
         ++input_zero_reads;
         return 0; // starvation between partial reads
     }
@@ -153,12 +212,17 @@ size_t spi_input_read(uint8_t *dst, size_t n) {
         assert(sim_transfer(input_sim, msg, sizeof msg) == sizeof msg);
     }
     if (n > 997) n = 997; // cut TS packets and SPI messages across calls and frames
-    return ingress_read(r, dst, n);
+    if (n > input_limit-input_given) n = input_limit-input_given;
+    const size_t got = ingress_read(r, dst, n);
+    for (size_t i = 0; i < got; ++i)
+        if (input_given+i >= input_corrupt) dst[i] = 0;
+    input_given += got;
+    return got;
 }
 void spi_input_stop(void) {
     if (input_sim) {
         // Partial reads must drain immediately. Only an empty read may sleep.
-        assert(enc.input_waits == input_zero_reads);
+        assert(fill_may_fail || enc.input_waits == input_zero_reads);
         sim_free(input_sim); input_sim = NULL;
     }
 }
@@ -186,8 +250,8 @@ static bool vcm_ready(size_t end)
     return available >= end;
 }
 
-static void bank_fill(radio_s3_fill_fn fn, void *ctx, unsigned b, uint64_t first,
-                       radio_s3_dry_stats_t *stats)
+static esp_err_t bank_fill(radio_s3_fill_fn fn, void *ctx, unsigned b, uint64_t first,
+                           radio_s3_dry_stats_t *stats)
 {
     const size_t offset = (first+bank_shift) % RADIO_S3_BANK_WORDS;
     const size_t parts[] = {RADIO_S3_BANK_WORDS - offset, offset};
@@ -209,7 +273,9 @@ static void bank_fill(radio_s3_fill_fn fn, void *ctx, unsigned b, uint64_t first
         }
         if (dvb.moon && getenv("EARLY_WAKE")) xTaskNotifyGive(enc.task);
         const unsigned sent = enc.task->notifications_sent;
-        assert(fn(banks[b] + (at+bank_shift) % RADIO_S3_BANK_WORDS, at, count, ctx) == ESP_OK);
+        const esp_err_t filled = fn(banks[b] + (at+bank_shift) % RADIO_S3_BANK_WORDS, at, count, ctx);
+        if (fill_may_fail && filled != ESP_OK) return filled;
+        assert(filled == ESP_OK);
         if (enc.packed && !dvb.moon) {
             if (offset && !p) assert(enc.task->notifications_sent == sent);
             else assert(!dvb.wake_pending);
@@ -269,6 +335,7 @@ static void bank_fill(radio_s3_fill_fn fn, void *ctx, unsigned b, uint64_t first
         assert(dvb.sample_end == first + RADIO_S3_BANK_WORDS);
     }
     stats->fills++;
+    return ESP_OK;
 }
 
 // The bank sequence of radio_s3.c's dry_worker at the rate's geometry (radio_s3.h).
@@ -281,8 +348,9 @@ esp_err_t radio_s3_dry_run_rate(radio_s3_fill_fn fn, void *ctx, uint64_t samples
     // regular overlap from its first data bank; psk8_handoff.c tests the ID.
     const uint64_t lead = dvb.cached_words-(RADIO_S3_BANK_WORDS-step);
     *stats = (radio_s3_dry_stats_t){0};
-    bank_fill(fn, ctx, 0, 0, stats);
-    bank_fill(fn, ctx, 1, step - lead, stats);
+    esp_err_t error = bank_fill(fn, ctx, 0, 0, stats);
+    if (!error) error = bank_fill(fn, ctx, 1, step - lead, stats);
+    if (error) return error;
     for (uint64_t k = 0; k * step < samples; ++k) {
         const uint64_t first = k * step;
         const size_t count = samples - first < step ? (size_t)(samples - first) : (size_t)step;
@@ -292,19 +360,17 @@ esp_err_t radio_s3_dry_run_rate(radio_s3_fill_fn fn, void *ctx, uint64_t samples
                 unshifted[i] = banks[k & 1][(i+bank_shift)%RADIO_S3_BANK_WORDS];
             assert(sink_fn(unshifted, first, count, sink_ctx) == ESP_OK);
         } else assert(sink_fn(banks[k & 1], first, count, sink_ctx) == ESP_OK);
-        if (first + step < samples)
-            bank_fill(fn, ctx, k & 1, (k + 2) * step - lead, stats);
+        if (first + step < samples && (error = bank_fill(fn, ctx, k & 1, (k + 2) * step - lead, stats)))
+            return error;
     }
     assert(dvb.ring.underruns == 0);
     return ESP_OK;
 }
 
 #ifndef NATIVE_PACE_TEST
-esp_err_t radio_s3_paced_run_rate(uint32_t sec, uint32_t rate, radio_s3_fill_fn fn, void *ctx,
-                                  radio_s3_stats_t *stats)
-{ (void)sec; (void)rate; (void)fn; (void)ctx; (void)stats; abort(); }
-esp_err_t radio_s3_paced_wifi_rate(uint32_t sec, uint32_t rate, radio_s3_fill_fn fn, void *ctx, radio_s3_stats_t *stats)
-{ (void)sec; (void)rate; (void)fn; (void)ctx; (void)stats; abort(); }
+esp_err_t radio_s3_paced_run(uint32_t sec, uint32_t rate, radio_s3_fill_fn fn, void *ctx,
+                             const radio_s3_options_t *options, radio_s3_stats_t *stats)
+{ (void)sec; (void)rate; (void)fn; (void)ctx; (void)options; (void)stats; abort(); }
 #endif
 static bool native_keyed_fixture;
 static unsigned native_keyed_frames;
@@ -326,31 +392,8 @@ esp_err_t radio_s3_run_bandwidth(uint32_t freq, uint8_t gain, uint32_t sec, uint
     stats->fills = dry.fills;
     return err;
 }
-esp_err_t radio_s3_run_options(uint32_t freq, uint8_t gain, uint32_t sec, uint32_t rate,
-                               uint32_t bandwidth, radio_s3_fill_fn fn, void *ctx,
-                               const radio_s3_options_t *options, radio_s3_stats_t *stats)
-{
-    assert(options && (options->phy_solo || options->select_fill || options->startup));
-    if (options->select_fill) {
-        assert(radio_s3_stream_ready() == ESP_OK);
-        fn = options->select_fill(fn);
-    }
-    return radio_s3_run_bandwidth(freq,gain,sec,rate,bandwidth,fn,ctx,stats);
-}
-esp_err_t radio_s3_paced_wifi_options(uint32_t sec, uint32_t rate, radio_s3_fill_fn fn,
-                                      void *ctx, const radio_s3_options_t *options, radio_s3_stats_t *stats)
-{
-    assert(options && (options->phy_solo || options->select_fill || options->startup));
-    if (options->select_fill) {
-        assert(radio_s3_stream_ready() == ESP_OK);
-        fn = options->select_fill(fn);
-    }
-    return radio_s3_paced_wifi_rate(sec,rate,fn,ctx,stats);
-}
 void radio_filter_print(const radio_filter_stats_t *stats) { (void)stats; }
 void radio_s3_tuning_print(const radio_s3_stats_t *stats) { (void)stats; }
-void radio_calibration_print(const radio_calibration_stats_t *stats) { (void)stats; }
-static unsigned wifi_probes;
 static esp_err_t discard(const uint32_t *bank, uint64_t first, size_t count, void *ctx)
 { (void)bank; (void)first; (void)count; (void)ctx; return ESP_OK; }
 
@@ -379,13 +422,42 @@ static void id_handoff_check(uint32_t rate)
         assert(banks[0][(id.length+j)%RADIO_S3_BANK_WORDS] == reference[j]);
 }
 
-esp_err_t radio_s3_wifi_probe(radio_s3_stats_t *stats)
+
+// Whole-frame dump admission (lofty_consumer.inc): with no sender, a source that stops in the
+// middle of a frame, or input the encoder rejects, a dump ends with ESP_FAIL instead of waiting
+// forever. The harness must not pace publication here (UNPACED_LOFTY).
+static void whole_frame_failures(unsigned mc, unsigned sps, uint32_t rate, size_t frame_bytes,
+                                 size_t symbols)
 {
-    assert(enc.fast && enc.ws && enc.payload && (dvb.moon || dvb.win));
-    assert(!enc.packed || dvb.samples); // the heap probe must own the playback cache
-    memset(stats, 0, sizeof *stats);
-    ++wifi_probes;
-    return radio_s3_stream_ready();
+    setenv("UNPACED_LOFTY", "1", 1);
+    fill_may_fail = true;
+    for (unsigned scenario = 0; scenario < 3; ++scenario) {
+        input_empty = scenario == 0;
+        input_given = 0;
+        input_limit = scenario == 1 ? 2*frame_bytes+frame_bytes/2 : SIZE_MAX;
+        input_corrupt = scenario == 2 ? 3*frame_bytes+frame_bytes/2 : SIZE_MAX;
+        capture = tmpfile(); assert(capture);
+        const TickType_t started = xTaskGetTickCount();
+        dvbtx_dump(mc, 16, 128, 1, 0, sps, rate);
+        const TickType_t waited = xTaskGetTickCount()-started;
+        // The host still receives the announced binary_bytes, zero-padded (board.py framing).
+        assert((uint64_t)ftell(capture) == (16*(uint64_t)symbols*dvb.table.n+dvb.den-1)/dvb.den*4);
+        fclose(capture);
+        assert(run_returned());
+        assert(lofty_mux.whole_frames);
+        // Every scenario ends; only the timeout waits out the bound, and not much longer.
+        assert(scenario == 2 ? !lofty_mux.whole_frame_timeout && waited < LOFTY_WHOLE_WAIT_MS :
+               lofty_mux.whole_frame_timeout && waited >= LOFTY_WHOLE_WAIT_MS);
+        assert(waited < LOFTY_WHOLE_WAIT_MS+2000);
+        printf("@{\"test\":\"whole_frame_failure\",\"scenario\":\"%s\",\"ms\":%u,"
+               "\"published\":%u,\"timeout\":%s}\n",
+               (const char *[]){"no input","input stops mid-frame","encoder fails"}[scenario],
+               (unsigned)waited, (unsigned)lofty_mux.published, lofty_mux.whole_frame_timeout ? "true" : "false");
+        static const unsigned published[] = {0, 2, 3};
+        assert(lofty_mux.published == published[scenario]);
+    }
+    input_empty = fill_may_fail = false;
+    input_limit = input_corrupt = SIZE_MAX;
 }
 
 int main(int argc, char **argv)
@@ -412,6 +484,11 @@ int main(int argc, char **argv)
     if (native_input > 2) { native_replay = true; native_input -= 2; }
     const dvbs2_mode *mode = short_frames ? dvbs2_find_mode_short(mc) : dvbs2_find_mode(mc);
     const size_t length = dvbs2_frame_symbols(mode, 1), bytes = (mode->kbch - 80) / 8;
+    if (getenv("WHOLE_FRAME")) {
+        assert(native_input && moon && mc >= 12);
+        whole_frame_failures(mc, sps, rate, bytes, length);
+        return 0;
+    }
     phase_count = (frames + 2) * length;
     phases = malloc(phase_count);
     dvbs2_workspace ws;
@@ -428,7 +505,7 @@ int main(int argc, char **argv)
             for (size_t i = 0; i < bytes; ++i) payload[i] = next_byte(&x);
             station_payload_header(payload, bytes, callsign);
         }
-        assert(!(native_input == PV_TS ? dvbs2_bb_ts(&ws, mode, &ts, payload, bytes) :
+        assert(!(native_input == PV_TS ? dvbs2_bb_ts_ro(&ws, mode, &ts, payload, bytes, sps == DVB_SPS_12_5 ? 2 : 0) :
                                         dvbs2_bb_gcs_ro(&ws, mode, payload, bytes * 8, sps == DVB_SPS_12_5 ? 2 : 0)));
         dvbs2_bb_scramble(&ws, mode); dvbs2_bch(&ws, mode); dvbs2_ldpc(&ws, mode);
         uint8_t *out = phases + f * length;
@@ -438,8 +515,8 @@ int main(int argc, char **argv)
     // Cleanup must leave no live allocations.
     allocation_count = 0;
     if (!moon || native_input) {
-        assert(!start_encoder_source("dvb",mc,128,0,sps,rate,true,true));
-        assert(!allocation_count && !live_allocations);
+        assert(!start_encoder_options("dvb",mc,128,0,sps,rate,true,true));
+        assert(!allocation_count && run_returned());
     }
     assert(start_encoder("dvbdump", mc, 128, 0, sps, rate));
     const int allocations = allocation_count;
@@ -454,29 +531,37 @@ int main(int argc, char **argv)
             assert(native_buffers[i]+INGRESS_SLOT_BYTES <= enc.bch ||
                    native_buffers[i] >= enc.bch+DVBS2_BCH_CACHE_BYTES);
     }
-    if (!moon) assert(allocations == (sps == 40 ? 7 : 4 + (mc >= 12 && !short_pulse) +
-                          (resident && mode->t > 8 && !native_input && !borrowed_bch) + !resident));
+    const int input_takes = native_input && !native_buffers[0]; // the slot block
+    if (!moon) assert(allocations == input_takes + (sps == 40 ? 7 : 4 + (mc >= 12 && !short_pulse) +
+                          (resident && (mode->t > 8 || mc >= 12) && (!native_input || quads) && !borrowed_bch) + !resident));
     for (unsigned i = 0; i < 64; ++i) {
         if (native_blocks[i].p == enc.ws)
-            assert(native_blocks[i].caps == ((resident ? MALLOC_CAP_INTERNAL : MALLOC_CAP_SPIRAM) | MALLOC_CAP_8BIT));
+            assert(!(native_blocks[i].caps & MALLOC_CAP_SPIRAM) == resident);
         if (enc.bch && native_blocks[i].p == enc.bch)
             assert(native_blocks[i].n == DVBS2_BCH_CACHE_BYTES && (native_blocks[i].caps & MALLOC_CAP_INTERNAL));
     }
     if (native_input) {
-        // Match the input guide's requested SRAM for every supported mode.
-        // DMA/driver/task overhead is outside this host allocator, not measured here.
+        // Match the input guide's requested SRAM for every supported mode, including the
+        // input's own slot block (unless borrowed). The CRC table, driver and task overhead
+        // are outside this host allocator.
         size_t internal = 0;
         for (unsigned i = 0; i < 64; ++i)
             if (native_blocks[i].p && (native_blocks[i].caps & MALLOC_CAP_INTERNAL))
                 internal += native_blocks[i].n;
         const size_t fast = dvbs2_fast_mode_size(mode);
-        const size_t expected = mc >= 12 && sps == 8 ? 22240+2058 :
+        // 33.33 Msym/s (moon): the context and its resident encoder cache; the workspace
+        // lives in the renderer store.
+        const size_t expected = moon ? fast+dvbs2_fast_cache_size(enc.fast) :
+            mc >= 12 && sps == 8 ? 22240+2058 :
             sps == 40 ? fast+420 : quads && !moon && sps == 4 ? fast+25056 :
             fast+(quads && sps == 3 ? 8352 : 12420)+(mc >= 12 && !short_pulse ? 11120 : 0);
-        assert(internal == expected+(sps == 40 ? 0 : CACHED_FOR(rate)*sizeof(uint32_t)));
+        // QPSK at 80 MS/s keeps its 8 KiB byte BCH table with input (t = 10/12).
+        const size_t byte_bch = quads && !moon && mode->t > 8 ? DVBS2_BCH_CACHE_BYTES : 0;
         // Eight slots fit the slow QPSK tails and short-pulse 8PSK 8/9 or
-        // 9/10 tails. All other layouts fall back to the DMA heap block.
+        // 9/10 tails. All other layouts take the slot block from run memory.
         const bool borrowed = mc < 12 ? sps == 8 || sps == 40 : short_pulse && mc >= 16;
+        const size_t ingress = borrowed ? 0 : INGRESS_SLOTS*INGRESS_SLOT_BYTES;
+        assert(internal == expected+byte_bch+ingress+(sps == 40 ? 0 : CACHED_FOR(rate)*sizeof(uint32_t)));
         assert((native_buffers[0] != NULL) == borrowed);
     }
     if (enc.packed && !resident) {
@@ -489,29 +574,24 @@ int main(int argc, char **argv)
     assert(dvb.win_bytes <= (moon ? 6864u : sps == 3 ? 1370u : sps == 4 ? 4105u : sps == 8 ? 2058u : 420u));
     stop_encoder();
     printf("}\n");
-    assert(live_allocations == 0);
+    assert(run_returned());
     for (int i = 0; i < allocations; ++i) {
         fail_after = i;
         assert(!start_encoder("dvbdump", mc, 128, 0, sps, rate));
-        assert(live_allocations == 0);
+        assert(run_returned());
     }
     fail_after = -1;
     if (dvb.lofty) {
         native_task_fail = 1;
         assert(!start_encoder("dvbdump",mc,128,0,sps,rate));
-        assert(!live_allocations);
+        assert(run_returned());
         native_task_fail = 0;
-    }
-    if (*callsign) {
-        dvbtx_wifi(mc, sps, rate);
-        assert(wifi_probes == 1 && live_allocations == 0);
-        assert((dvb.table.parts == 2) == short_pulse);
     }
     for (unsigned repeat = 0; repeat < 2; ++repeat) {
         capture = fopen(argv[3], "wb"); assert(capture);
         dvbtx_dump(mc, frames, 128, sps == 40 ? 10 : mc < 12 && sps == 8 ? 2 : 1, 0, sps, rate);
         fclose(capture);
-        assert(live_allocations == 0);
+        assert(run_returned());
         for (unsigned i = 0; i < 4; ++i) assert(native_ranges[i] == 0);
     }
     if (!native_input && (mc == 11 || mc == 13 || mc == 15 || mc == 17)) {
@@ -527,7 +607,8 @@ int main(int argc, char **argv)
             dvbs2_map(&ws,mode,phases+f*length+90); dvbs2_plframe(mode,1,phases+f*length);
         }
         allocation_count = 0;
-        assert(start_encoder("dvbpace",mc,128,0,sps,rate));
+        // Queued paces here use the prepared-frame fixture (dvbpace --fixture).
+        assert(start_encoder_options("dvbpace",mc,128,0,sps,rate,false,moon));
         const int pace_allocations = allocation_count;
         const bool heap_input = enc.input && !enc.input_borrowed;
         assert(pace_allocations == allocations+(int)heap_input);
@@ -554,24 +635,24 @@ int main(int argc, char **argv)
         assert(!radio_s3_dry_run_rate(fill,NULL,((uint64_t)frames*length*sps+dvb.den-1)/dvb.den,
                                       rate,discard,NULL,&stats));
         stop_encoder(); printf("}\n");
-        assert(live_allocations == 0);
+        assert(run_returned());
         if (moon) {
             native_keyed_fixture = true;
             native_keyed_frames = frames;
             dvbtx_run(2412,mc,30,0,128,sps,rate,true);
-            assert(!live_allocations && !enc.failed);
+            assert(run_returned() && !enc.failed);
             native_keyed_fixture = false;
         }
         if (moon && !dvb.lofty && mc == 11) {
-            assert(start_encoder("dvbpace",mc,128,0,sps,rate));
+            assert(start_encoder_options("dvbpace",mc,128,0,sps,rate,false,true));
             id_handoff_check(rate);
             stop_encoder(); printf("}\n");
-            assert(live_allocations == 0);
+            assert(run_returned());
         }
         if (heap_input) {
             fail_after = pace_allocations-1;
-            assert(!start_encoder("dvbpace",mc,128,0,sps,rate));
-            assert(live_allocations == 0);
+            assert(!start_encoder_options("dvbpace",mc,128,0,sps,rate,false,moon));
+            assert(run_returned());
             fail_after = -1;
         }
     }
@@ -579,15 +660,17 @@ int main(int argc, char **argv)
         input_empty = true;
         assert(start_encoder("dvbdump", mc, 128, 0, sps, rate));
         assert(enc.frames == 0 && !enc.failed);
-        uint8_t window[64];
-        assert(ring_window(&dvb.ring, window, sizeof window, 0, 12, sps, 0, RADIO_S3_BANK_WORDS) >= 0);
-        assert(dvb.ring.underruns > 0);
+        if (!moon) { // the page queue (moon) has no ring to underrun
+            uint8_t window[64];
+            assert(ring_window(&dvb.ring, window, sizeof window, 0, 12, sps, 0, RADIO_S3_BANK_WORDS) >= 0);
+            assert(dvb.ring.underruns > 0);
+        }
         input_empty = false;
         unsigned tries=0;
         while (!enc.frames) { assert(++tries < 5000); vTaskDelay(1); }
         assert(!enc.failed && enc.input_partial > 0);
         stop_encoder(); printf("}\n");
-        assert(live_allocations == 0);
+        assert(run_returned());
     }
     free(source); free(phases); free(banks);
     return 0;

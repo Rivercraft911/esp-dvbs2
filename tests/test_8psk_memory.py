@@ -1,4 +1,4 @@
-"""Console fixture parser, post-Wi-Fi queue sizing and heap failures. No board."""
+"""Console fixture parser, queue sizing without heap use and run-memory failures. No board."""
 import argparse
 import json
 import pathlib
@@ -11,7 +11,7 @@ from test_stream import ROOT, compile_stream
 
 def check(out):
     out.mkdir(parents=True,exist_ok=True)
-    source = (ROOT/'firmware/main/main.c').read_text()
+    source = (ROOT/'firmware/tx/main/main.c').read_text()
     functions = '\n'.join(re.search(r'static (?:bool|void) '+name+r'\([^\n]*[\s\S]*?\n}',source).group()
                           for name in ('number','tx_mode','short_scope','take_option','cmd_dvb','cmd_dvbpace'))
     parser = out/'parser.c'
@@ -29,27 +29,26 @@ def check(out):
 #define RADIO_S3_GAIN_DEFAULT 0
 #define RADIO_S3_GAIN_MAX 17
 #define RADIO_S3_MAX_SECONDS 540u
-#define RADIO_S3_PHY_SOLO_MAX_SECONDS 60u
 static bool station_require(const char *cmd) { (void)cmd; return true; }
 static unsigned keyed_calls;
-static bool expected_solo, expected_fused;
 static void dvbtx_run_check(uint32_t freq, unsigned mc, uint32_t sec, unsigned gain,
-    unsigned peak, unsigned sps, uint32_t rate, bool fixture, bool solo, bool fused)
+    unsigned peak, unsigned sps, uint32_t rate, bool fixture)
 {
     assert(freq == 2412 && sec == 30 && !gain && peak == 128 && rate == 80000000);
     assert((mc == 11 && sps == DVB_SPS_12_5) || ((mc == 13 || mc == 15 || mc == 17) && sps == 3));
     assert(fixture == (keyed_calls < 4 || keyed_calls >= 5));
-    assert(solo == expected_solo && fused == expected_fused); ++keyed_calls;
+    ++keyed_calls;
 }
-#define dvbtx_run_options dvbtx_run_check
+#define dvbtx_run dvbtx_run_check
 static unsigned calls;
+static bool expected_pace_fixture;
 static void dvbtx_pace_check(unsigned mc, uint32_t sec, unsigned peak, unsigned stall,
-    unsigned sps, uint32_t rate, bool solo, bool fused)
+    unsigned sps, uint32_t rate, bool fixture)
 {
-    assert(mc == 17 && sec == 10 && peak == 128 && !stall && sps == 3 && rate == 80000000);
-    assert(solo == expected_solo && fused == expected_fused); ++calls;
+    assert(mc == 17 && (sec == 10 || sec == 600) && peak == 128 && !stall && sps == 3 && rate == 80000000);
+    assert(fixture == expected_pace_fixture); ++calls;
 }
-#define dvbtx_pace_options dvbtx_pace_check
+#define dvbtx_pace dvbtx_pace_check
 void dvbtx_set_short(bool enabled) { assert(!enabled); }
 '''+functions+'''
 int main(void) {
@@ -72,27 +71,28 @@ int main(void) {
         char text[128]; strcpy(text,keyed[i]); cmd_dvb(text);
         assert(keyed_calls == (i < 5 ? i+1 : 5));
     }
-    for (unsigned flags=1; flags<4; ++flags) {
-        expected_solo = flags&1; expected_fused = flags&2;
-        char keyed_option[128], pace_option[128];
-        snprintf(keyed_option,sizeof keyed_option,"--fixture 2412 13 26m667 30 %s %s",
-                 expected_solo ? "--phy-solo" : "",expected_fused ? "--fused" : "");
-        snprintf(pace_option,sizeof pace_option,"17 26m667 10 %s %s",
-                 expected_fused ? "--fused" : "",expected_solo ? "--phy-solo" : "");
-        cmd_dvb(keyed_option); cmd_dvbpace(pace_option);
-        assert(keyed_calls == 5+flags && calls == 2+flags);
-    }
-    char duplicate[]="2412 13 26m667 30 --fused --fused";
+    // --phy-solo is a legacy no-op now that Wi-Fi never starts; it is still parsed once.
+    char keyed_option[] = "--fixture 2412 13 26m667 30 --phy-solo";
+    char pace_option[] = "17 26m667 10 --phy-solo";
+    cmd_dvb(keyed_option); cmd_dvbpace(pace_option);
+    assert(keyed_calls == 6 && calls == 3);
+    char duplicate[]="2412 13 26m667 30 --phy-solo --phy-solo";
     char duplicate_solo[]="17 26m667 10 --phy-solo --phy-solo";
-    char wrong_rate[]="2412 13 20m 30 --fused";
-    char too_long[]="17 26m667 61 --phy-solo";
-    cmd_dvb(duplicate); cmd_dvbpace(duplicate_solo); cmd_dvb(wrong_rate); cmd_dvbpace(too_long);
-    assert(keyed_calls == 8 && calls == 5);
+    char retired[]="2412 13 26m667 30 --fused";
+    char too_long[]="17 26m667 601 --phy-solo";
+    cmd_dvb(duplicate); cmd_dvbpace(duplicate_solo); cmd_dvb(retired); cmd_dvbpace(too_long);
+    assert(keyed_calls == 6 && calls == 3);
+    char long_solo[]="17 26m667 600 --phy-solo";
+    cmd_dvbpace(long_solo); assert(calls == 4);
+    expected_pace_fixture = true;
+    char pace_fixture[]="17 26m667 10 --fixture";
+    char short_fixture[]="16 5m 10 --fixture --short";
+    cmd_dvbpace(pace_fixture); cmd_dvbpace(short_fixture); assert(calls == 5);
     puts("keyed fixture: flag order, QPSK/8PSK rates, defaults, duplicates and unsupported options: ok");
 }
 ''')
     subprocess.run(['cc','-O2','-std=c11','-Wall','-Wextra','-Werror',
-                    '-I'+str(ROOT/'firmware/main'),str(parser),'-o',str(out/'parser')],check=True)
+                    '-I'+str(ROOT/'firmware/tx/main'),str(parser),'-o',str(out/'parser')],check=True)
     text = subprocess.check_output([str(out/'parser')],text=True)
     (out/'parser.log').write_text(text)
     print(text.splitlines()[-1])
@@ -102,46 +102,38 @@ int main(void) {
     assert run.returncode == 0,(run.stdout,run.stderr)
     rows = [json.loads(l[1:]) for l in run.stdout.splitlines() if l.startswith('@{')]
     pace = [r for r in rows if r.get('cmd') == 'dvbpace' and 'status' in r]
-    assert len(pace) == 2 and all(r['status'] == 'ESP_OK' and r['paced_wifi_up'] for r in pace)
-    assert not pace[0]['profile']['fill_phase_cycles'] and not pace[0]['profile']['fill']['whole']['calls']
-    assert pace[1]['profile']['fill_phase_cycles'] and pace[1]['profile']['fill']['whole']['calls'] > 0
-    budget = [r for r in rows if r.get('test') == 'queue_budget']
-    assert len(budget) == 18
+    assert len(pace) == 2 and all(r['status'] == 'ESP_OK' for r in pace)
+    # Paces time the fill without per-phase marks (dumps keep them: test_8psk_26m667).
+    assert not any(r['profile']['fill_phase_cycles'] or r['profile']['fill']['whole']['calls'] for r in pace)
+    checks = [r for r in rows if r.get('test') == 'queue_check']
+    assert len(checks) == 12
     for mc in (13,15,17):
         for setup in ('dvb','dvbpace'):
-            pair = [r for r in budget[:12] if r['modcod'] == mc and r['setup'] == setup]
+            pair = [r for r in checks if r['modcod'] == mc and r['setup'] == setup]
             assert [r['queue_sizing']['automatic'] for r in pair] == [False,True]
             assert [r['queue_pages'] for r in pair] == [{13:54,15:50,17:46}[mc],54]
             assert pair[0]['crc'] == pair[1]['crc']
             auto = pair[1]
-            assert auto['queue_sizing']['free_before'] == 32000
-            assert auto['queue_sizing']['free_after'] == 32000
             assert auto['renderer_warm_words'] == 39983 and pair[0]['renderer_warm_words'] == 0
             assert auto['dummy_dcache_bytes'] == 13376 and not pair[0]['dummy_dcache_bytes']
-            assert not auto['ring_heap_bytes'] and auto['workspace_heap_bytes'] == 8144
+            store = int(auto['layout']['table'],16)
+            assert not store <= int(auto['layout']['workspace'],16) < store+65536
             layout = auto['queue_layout']
             assert layout['contiguous'] and layout['resident_pages'] == 54 and layout['page_bytes'] == 528
             region, = layout['regions']
             assert region['first_page'] == 0 and region['pages'] == 54 and not region['dac_overlap']
             assert int(region['end'],16)-int(region['begin'],16) == 54*528
             if setup == 'dvbpace':
-                assert auto['input_memory'] == 'psram' and auto['reference_psram_bytes'] > 5000
-                assert auto['reference_psram_bytes'] == {13:5370,15:6720,17:7264}[mc]
-                assert not auto['reference_store_bytes'] and int(auto['layout']['reference'],16)
-            else: assert auto['input_memory'] == 'none' and not auto['reference_psram_bytes']
+                assert auto['input_memory'] == 'psram' and not auto['reference_store_bytes']
+                assert int(auto['layout']['reference'],16)
+            else: assert auto['input_memory'] == 'none'
             assert int(auto['layout']['dummy'],16)
             assert int(auto['layout']['encoder_cache_tail'],16)
             assert auto['encoder_cache_psram_bytes'] == {13:2912,15:2720,17:2320}[mc]
-            assert auto['encoder_cache_heap_bytes']+auto['encoder_cache_psram_bytes'] == auto['encoder_cache_bytes']
-    assert [r['queue_pages'] for r in budget[-5:]] == [54,54,0,0,54]
-    assert [r['queue_sizing']['ready'] for r in budget[-3:]] == [False,False,True]
-    fragmented = [r for r in rows if r.get('test') == 'queue_fragmentation']
-    assert [(r['modcod'],r['setup']) for r in fragmented] == [(mc,s) for mc in (13,15,17) for s in ('dvb','dvbpace')]
-    assert all(r['queue_pages'] == 54 for r in fragmented)
-    for r in fragmented:
-        assert r['crc'] == next(b['crc'] for b in budget if (b['modcod'],b['setup']) == (r['modcod'],r['setup']))
-    print('fragmented heap: old order fails 15/17, cache-first order streams all three with identical words in pace and keyed setups')
-    print('contiguous queues: 13/15/17 pace and keyed setup 54 pages; no post-Wi-Fi allocations; exact reserve and failure cleanup')
+            # Every run fits the firmware's arenas (the host shim refuses what would not).
+            memory = auto['run_memory']
+            assert memory['low'][0]+memory['high'][0] > 0 and memory['psram'][0] > 0
+    print('contiguous queues: 13/15/17 pace and keyed setup 54 pages with identical words; the gate takes no memory; failure cleanup')
     print(run.stdout.splitlines()[-1])
 
 
@@ -155,6 +147,7 @@ def check_residency(current):
         out = Path(tmp)
         (out/'esp_attr.h').write_text('#define IRAM_ATTR\n')
         subprocess.run(['cc','-O2','-Wall','-Wextra','-Werror','-I'+tmp,
+                        '-I'+str(ROOT/'firmware/components/shaper/include'),
                         str(ROOT/'tests/psk8_resident.c'),'-o',str(out/'resident')],check=True)
         subprocess.run([str(out/'resident')],check=True)
     print('cache residency: dormant, timeout, ROM error, repeated setup and cleanup: ok')
@@ -167,27 +160,20 @@ def check_residency(current):
         if len(fields) == 3: m[fields[2]] = int(fields[0],16)
     first,end = m['_lofty_text_start'],m['_lofty_text_end']
     size = (end-first+31)&~31
-    assert first%32 == 0 and 0 < size <= 4096
+    assert first%32 == 0 and 0 < size <= 2048  # one 2 KiB way of the 16 KiB 8-way cache
     assert 0x42000000 <= first < end < 0x42800000
-    assert size == 1632, "default lock footprint must match 6e7eed5"
     for name in ('lofty_shape','lofty_short','lofty_splice','lofty_samples'):
         assert first <= m[name] < end,(name,m[name])
-    fused_first, fused_end = m['_lofty_fused_text_start'],m['_lofty_fused_text_end']
-    assert fused_first%32 == 0 and 0 < fused_end-fused_first <= 4096
-    assert end <= fused_first
-    for name in ('lofty_shape_fused','lofty_short_fused','lofty_splice_fused','fill_fused',
-                 'moon_map_fused','lofty_fused_samples','lofty_fused_render_pie',
-                 'lofty_fused_render_pages_pie'):
-        assert fused_first <= m[name] < fused_end,(name,m[name])
-    for name in ('lofty_prepare_pie','lofty_fused_prepare_pie'):
-        assert 0x42000000 <= m[name] < 0x42800000
+    for name in ('lofty_prepare_pie','lofty_prepare_16','lofty_prepare'):
+        assert 0x40370000 <= m[name] < 0x403e0000,(name,m[name])
     for name in ('lofty_render_pie','lofty_render_pages_pie','machine_axis_render_pie',
                  'machine_axis_samples','xTaskGenericNotify','shaper_copy_pie'):
         assert 0x40370000 <= m[name] < 0x403e0000,(name,m[name])
-    assert m['fill'] == 0x4037752c, "default fill entry must match main 7391f86"
-    assert m['lofty_render_pages_pie'] == 0x4037a324, "default PIE placement must match main"
-    assert m['lofty_render_pie'] == 0x4037a334
-    assert first % 4096 == 0x720, "default lock cache indices must match main 7391f86"
+    assert m['lofty_render_pages_pie'] % 32 == 4, "renderer fetch alignment must match 7391f86"
+    assert m['lofty_render_pie'] % 32 == 20
+    assert first % 4096 == 0x720, "lock cache indices must match 7391f86"
+    state = m['_stream_bss_start']
+    assert state % 16 == 0 and 0x3fc88000 <= state < m['_stream_bss_end'] <= 0x3fcc0000
     assert 0x40370000 <= m['_vcm_text_start'] < m['_vcm_text_end'] < 0x403e0000
     assert m['shaper_axes8_pie'] % 32 == 8, "axis PIE fetch alignment must match modswap 154692d"
     assert m['_vcm_text_end'] <= m['_iram_text_end'] <= m['_iram_end']
@@ -198,7 +184,7 @@ def check_residency(current):
     assert not any(name == 'lofty_page_at' or name.startswith('lofty_page_at.') for name in m), "page accessor must stay inline"
     store = m['shaper_store']
     assert store%16 == 0 and 0x3fc88000 <= store < store+65536 <= 0x3fcc0000
-    print(f'linked: main fill/PIE entries, {size} B default lock with main cache indices; separate VCM IRAM; common 64 KiB store before DAC')
+    print(f'linked: renderer fetch alignment, {size} B lock with 7391f86 cache indices; separate VCM IRAM; stream state and 64 KiB store before DAC')
 
 if __name__ == '__main__':
     p = argparse.ArgumentParser(description=__doc__)

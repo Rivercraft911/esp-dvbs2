@@ -228,7 +228,14 @@ HOT static bool advance(ingress_ring *r)
             continue;
         }
         const uint8_t *m = d->buf;
-        switch (pv_check(m, INGRESS_LENGTH(w))) {
+#ifdef INGRESS_IRAM
+        const uint32_t t0 = esp_cpu_get_cycle_count();
+        const pv_status status = pv_check(m, INGRESS_LENGTH(w));
+        r->check_cycles += esp_cpu_get_cycle_count() - t0;
+#else
+        const pv_status status = pv_check(m, INGRESS_LENGTH(w));
+#endif
+        switch (status) {
         case PV_OK:
             break;
         case PV_SHORT:
@@ -295,6 +302,25 @@ HOT static bool advance(ingress_ring *r)
     return false;  /* yield under a continuous flood of invalid messages */
 }
 
+#ifdef INGRESS_PIE
+void ingress_copy_pie(uint8_t *dst, const uint8_t *src, unsigned blocks); /* ingress_pie.S */
+
+/* Bytes up to a 16-byte aligned destination, whole vectors by PIE, then the tail. The kernel
+ * reads only the aligned blocks that hold source bytes. */
+HOT static void copy(uint8_t *dst, const uint8_t *src, size_t n)
+{
+    size_t head = -(uintptr_t)dst & 15;
+    if (head > n) head = n;
+    for (size_t i = 0; i < head; ++i) dst[i] = src[i];
+    dst += head, src += head, n -= head;
+    const size_t blocks = n / 16;
+    if (blocks) ingress_copy_pie(dst, src, (unsigned)blocks);
+    for (size_t i = 16 * blocks; i < n; ++i) dst[i] = src[i];
+}
+#else
+#define copy memcpy
+#endif
+
 HOT size_t ingress_read(ingress_ring *r, uint8_t *dst, size_t n)
 {
     size_t done = 0;
@@ -311,7 +337,7 @@ HOT size_t ingress_read(ingress_ring *r, uint8_t *dst, size_t n)
 #ifdef INGRESS_IRAM
         const uint32_t t0 = esp_cpu_get_cycle_count();
 #endif
-        memcpy(dst + done, r->data, k);
+        copy(dst + done, r->data, k);
 #ifdef INGRESS_IRAM
         const uint32_t cycles = esp_cpu_get_cycle_count()-t0;
         r->copy_cycles += cycles;

@@ -1,0 +1,33 @@
+{"host_time": "2026-10-23T13:08:58+00:00", "command": "check", "part": "monitor", "cases": 5, "errors": 0, "ms": 0, "kinds": {}}
+{"host_time": "2026-10-23T13:08:58+00:00", "command": "check", "part": "stages", "error": "phases", "case": [1120, 1, 0, 5454]}
+{"host_time": "2026-10-23T13:08:58+00:00", "command": "check", "part": "stages", "error": "packed", "case": [1120, 1, 0, 2733]}
+{"host_time": "2026-10-23T13:08:58+00:00", "command": "check", "part": "stages", "error": "phases", "case": [1120, 2, 0, 5465]}
+{"host_time": "2026-10-23T13:08:58+00:00", "command": "check", "part": "stages", "error": "packed", "case": [1120, 2, 0, 2733]}
+{"host_time": "2026-10-23T13:08:58+00:00", "command": "check", "part": "stages", "error": "phases", "case": [1120, 3, 0, 5460]}
+{"host_time": "2026-10-23T13:08:58+00:00", "command": "check", "part": "stages", "error": "packed", "case": [1120, 3, 0, 2733]}
+{"host_time": "2026-10-23T13:08:58+00:00", "command": "check", "part": "stages", "modcod": 12, "short": true, "mismatches": 154}
+{"host_time": "2026-10-23T13:08:58+00:00", "command": "check", "part": "stages", "modcod": 13, "short": true, "mismatches": 126}
+{"host_time": "2026-10-23T13:08:58+00:00", "command": "check", "part": "stages", "modcod": 14, "short": true, "mismatches": 154}
+{"host_time": "2026-10-23T13:08:58+00:00", "command": "check", "part": "stages", "modcod": 15, "short": true, "mismatches": 154}
+{"host_time": "2026-10-23T13:08:58+00:00", "command": "check", "part": "stages", "modcod": 16, "short": true, "mismatches": 126}
+{"host_time": "2026-10-23T13:08:58+00:00", "command": "check", "part": "stages", "frames": {"c": 364, "flash": 364, "nibble": 364, "resident": 364, "split": 210, "bch": 308, "pack": 84, "map": 266}, "bch_paths": {"pair": 196, "split-pair": 210, "byte": 1190, "nibble": 364}}
+{"host_time": "2026-10-23T13:08:58+00:00", "command": "check", "part": "stages", "cases": 2324, "errors": 714, "ms": 13423, "kinds": {"phases": 392, "packed": 322}}
+{"host_time": "2026-10-23T13:08:58+00:00", "command": "check", "part": "bb_inputs", "cases": 19872, "errors": 0, "ms": 18199, "kinds": {}}
+{"host_time": "2026-10-23T13:08:58+00:00", "command": "check", "part": "xorshift", "cases": 120, "errors": 0, "ms": 39, "kinds": {}}
+{"host_time": "2026-10-23T13:08:58+00:00", "command": "check", "part": "fills", "cases": 15904, "errors": 0, "ms": 9054, "kinds": {}}
+{"host_time": "2026-10-23T13:08:58+00:00", "command": "check", "part": "ring", "cases": 44268, "errors": 0, "ms": 1848, "kinds": {}}
+{"host_time": "2026-10-23T13:08:58+00:00", "command": "check", "part": "qpsk_axes", "cases": 0, "errors": 0, "ms": 887, "kinds": {}}
+{"host_time": "2026-10-23T13:08:58+00:00", "command": "check", "part": "shaper_axes", "cases": 0, "errors": 0, "ms": 27233, "kinds": {}}
+{"host_time": "2026-10-23T13:08:58+00:00", "command": "check", "test": "lofty", "peak": 16, "seed": 0, "table": 3745194891, "samples": 94951519}
+{"host_time": "2026-10-23T13:08:58+00:00", "command": "check", "test": "lofty", "peak": 16, "seed": 1, "table": 3745194891, "samples": 1821484219}
+{"host_time": "2026-10-23T13:08:58+00:00", "command": "check", "test": "lofty", "peak": 16, "seed": 2, "table": 3745194891, "samples": 2700354235}
+{"host_time": "2026-10-23T13:08:58+00:00", "command": "check", "test": "lofty", "peak": 128, "seed": 0, "table": 3777177905, "samples": 810766040}
+{"host_time": "2026-10-23T13:08:58+00:00", "command": "check", "test": "lofty", "peak": 128, "seed": 1, "table": 3777177905, "samples": 1656363116}
+{"host_time": "2026-10-23T13:08:58+00:00", "command": "check", "test": "lofty", "peak": 128, "seed": 2, "table": 3777177905, "samples": 385379723}
+{"host_time": "2026-10-23T13:08:58+00:00", "command": "check", "test": "lofty", "peak": 508, "seed": 0, "table": 2259289528, "samples": 3239476395}
+{"host_time": "2026-10-23T13:08:58+00:00", "command": "check", "test": "lofty", "peak": 508, "seed": 1, "table": 2259289528, "samples": 3702046377}
+{"host_time": "2026-10-23T13:08:58+00:00", "command": "check", "test": "lofty", "peak": 508, "seed": 2, "table": 2259289528, "samples": 2040543780}
+{"host_time": "2026-10-23T13:08:58+00:00", "command": "check", "test": "lofty_end", "slices": 4320, "errors": 0}
+{"host_time": "2026-10-23T13:08:58+00:00", "command": "check", "test": "lofty_mapper", "frames": 36, "errors": 0}
+{"host_time": "2026-10-23T13:08:58+00:00", "command": "check", "part": "psk8_kernels", "cases": 0, "errors": 0, "ms": 18158, "kinds": {}}
+{"host_time": "2026-10-23T13:08:58+00:00", "command": "check", "part": "all", "errors": 714, "firmware": "0528ec7"}

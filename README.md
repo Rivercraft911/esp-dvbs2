@@ -5,96 +5,128 @@ defined radios. People have pulled raw I/Q samples out of the Wi-Fi receiver, se
 steering the radio's test tone, played arbitrary waveforms through the transmit DAC, and put
 DVB-S on the 13 cm band from a C3 with a PC doing the encoding.
 
-Now... this repo goes for the whole thing: **a complete DVB-S2 transmitter running on one ESP32-S3**.
-Framing, error correction, modulation and pulse shaping all happen on the chip, and the signal
-leaves through the S3's own Wi-Fi radio. No PC doing the encoding, no external DAC, no FPGA.
+Now... this repo goes for the whole thing: **a complete DVB-S2 transceiver running on the
+ESP32-S3**. One S3 frames, codes, modulates and pulse-shapes the signal and sends it out of its
+own Wi-Fi radio. A second S3 pulls it back in through its own radio and demodulates and decodes
+every frame on the chip. No PC doing the encoding or the decoding, no external DAC or ADC, no
+FPGA.
 
 It started with the goal of live video, 8PSK 2/3 at 5 Msym/s, 9.68 Mb/s. Then it kept going:
-the same $5 chip now pushes **58.2 Mb/s in 40 MHz**, the widest channel its Wi-Fi radio was
-ever built for. Read [How it got here](docs/story.md) to learn about the tumultuous journey.
+the same $5 chip now pushes **69.8 Mb/s in 36 MHz** and **58.2 Mb/s in 40 MHz**, the widest
+channel its Wi-Fi radio was ever built for, and a second one receives **12.64 Mb/s** and
+decodes every byte of it. Read [How it got here](docs/story.md) to learn about the tumultuous
+journey.
 
-![40 MHz QPSK spectrum and waterfall captured by a B200](docs/img/rf-40mhz.png)
+![40 MHz QPSK spectrum and spectrogram transmitted by an ESP32-S3, captured by a B200](docs/img/rf-40mhz.png)
 
-One ESP32-S3, one B200 capture at 2420 MHz through 40 dB of coax attenuation.
-The receiver recovered 40 exact frames from this 41.94 ms recording, using a prepared,
-repeated payload. [Capture and plotting details](results/2026-10-21-rf-figures/README.md).
+QPSK 9/10 at 33.33 Msym/s from one ESP32-S3, captured by a B200 at 2420 MHz through coax and
+attenuation: 41.94 ms, 40 exact frames from a prepared payload
+([capture details](results/2026-10-21-rf-figures/README.md)). The same mode has since been keyed
+with a payload that never repeats ([keyed table](results/2026-10-23-tx-table/README.md)).
 
 ## Receiving on an S3
 
-A second ESP32-S3 receives the stream and decodes all of it on the chip: it captures through
-its own radio at 16 MS/s, matched-filters, tracks timing and carrier, checks or decodes LDPC and
-BCH, and streams a record per frame over USB. With short frames, 8PSK 8/9 at 5 Msym/s, it
-decoded every frame of three 38 s runs exactly, **12.64 Mb/s**, with no samples dropped and a
-median pilot MER of 29.9 dB. One QPSK 3/4 run at 5 Msym/s (6.95 Mb/s) and one at 1 Msym/s
-(1.39 Mb/s) were also exact. The receiver started before the transmitter keyed; the path was coax with
-30 dB of attenuation.
-[5 Msym/s results](results/2026-10-23-rx-5m-margin/README.md),
-[1 Msym/s qualification](results/2026-10-22-rx-continuous/README.md),
-[receiver chain](docs/how-it-works.md#receiving).
+The second S3 captures 16 MS/s through its own radio, matched-filters it, finds and follows the
+frames, and checks every one by encoding it again. LDPC decoding (low-density parity check, the
+heavy error correction in DVB-S2) only runs when a frame fails that check. On a clean coax link
+it never had to. Every short-frame mode the transmitter sends decodes live:
+
+| Modes | Symbol rate | Payload | Frames, all exact | Pilot MER, median | Core 1 / core 0 |
+|---|---:|---:|---:|---:|---:|
+| QPSK 1/2 to 8/9 | 1 Msym/s | 0.83 to 1.69 Mb/s | 19,705 | 30.2 to 30.3 dB | 43% / 7 to 8% |
+| QPSK 1/2 to 8/9 | 5 Msym/s | 4.15 to 8.45 Mb/s | 98,213 | 29.7 to 29.8 dB | 61% / 39 to 43% |
+| 8PSK 3/5 to 8/9 | 5 Msym/s | 8.46 to 12.64 Mb/s | 105,235 | 29.6 to 29.8 dB | 63% / 60 to 63% |
+
+Nineteen live 30 s runs, 223,153 frames, none lost, none failed, no relocks
+([sweep](results/2026-10-23-rx-sweep/README.md)). Full-length 540 s runs held up too: 997,605 frames
+and 4.4 million TS packets exact, with the median MER steady within 0.1 dB from the first minute to
+the last ([long runs](results/2026-10-23-rx-long/README.md)). MER (modulation error ratio) is how far the
+received points sit from where they should be: 30 dB is a clean link. The core columns are the
+demodulator's mean share of core 1, and the release and check tasks' share of core 0.
+
+![What the receiving S3 sees at 12.64 Mb/s: spectrum, spectrogram and constellation](docs/img/rx-5m.png)
+
+That is the receiver's own 16 MS/s capture of 8PSK 8/9 at 5 Msym/s, and the constellation its
+demodulator produced from it: 164 of 164 frames exact
+([figures](results/2026-10-23-rx-figures/README.md)). The receiver never starts Wi-Fi: it
+calibrates the PHY directly, and after boot it never touches the heap
+([no Wi-Fi](results/2026-10-23-rx-no-wifi-ab/README.md)). It also speaks MPEG transport stream:
+1,738,344 TS packets crossed the S3 link with every one exact, and the receiver rode through
+95,810 filler frames from a transmitter starved of input without losing lock
+([TS link](results/2026-10-23-ts-link/README.md)).
 
 ```sh
 (. ~/.espressif/tools/activate_idf_v6.1.sh && cd firmware/rx && idf.py build flash)
-python3 host/rx.py 16 --rate 5m --mhz 2420 --gain 32 --seconds 45 --port RX_PORT --callsign KJ5SCH
-python3 host/board.py "dvb 2420 16 5m 55 0 128 --short --phy-solo" --port TX_PORT   # transmitter, keyed
+python3 host/rx.py 16 --rate 5m --mhz 2420 --gain 32 --seconds 45 --port RX_PORT --callsign YOURCALL
+python3 host/board.py "dvb 2420 16 5m 55 0 128 --short" --port TX_PORT --timeout 90   # keys the transmitter
 ```
 
-## Live video
+`YOURCALL` must match the callsign stored on the transmitter: the receiver's check rebuilds the
+transmitter's payload, station header included.
+
+![Receiver load per core in the live runs](docs/img/rx-load.png)
+
+## What it transmits
+
+Every row was keyed for 30 s with a payload that never repeats and decoded by LeanDVB, an
+independent receiver, from four short B200 captures per run: every recovered frame was exact
+([keyed table](results/2026-10-23-tx-table/README.md), [8PSK re-key](results/2026-10-23-tx-table-8psk-rekey/README.md),
+[80 MS/s fill confirmation](results/2026-10-23-tx-fill-keyed/README.md)). Spare is the share of each core left
+over: the encoder on core 0 against the frame period, the bank fill on core 1 against its
+deadline.
+
+| Mode | Symbol rate | Bandwidth | Payload | Exact frames | Spare, encoder / fill |
+|---|---:|---:|---:|---:|---:|
+| 8PSK 9/10 | 26.67 Msym/s | 36 MHz | **69.8 Mb/s** | 947 | 21.5% / 22.7% |
+| 8PSK 5/6 | 26.67 Msym/s | 36 MHz | **64.6 Mb/s** | 947 | 16.8% / 21.8% |
+| QPSK 9/10, roll-off 0.20 | 33.33 Msym/s | **40 MHz** | **58.2 Mb/s** | 793 | 30.1% / 17.7% |
+| 8PSK 9/10 | 20 Msym/s | 27 MHz | **52.4 Mb/s** | 706 | 53.8% / 17.5% |
+| 8PSK 2/3 | 26.67 Msym/s | 36 MHz | **51.6 Mb/s** | 946 | 20.5% / 21.9% |
+| 8PSK 5/6 | 20 Msym/s | 27 MHz | 48.4 Mb/s | 706 | 40.2% / 17.4% |
+| QPSK 9/10 | 26.67 Msym/s | 36 MHz | 46.6 Mb/s | 632 | 59.3% / 20.7% |
+| 8PSK 2/3 | 20 Msym/s | 27 MHz | 38.7 Mb/s | 706 | 49.2% / 17.3% |
+| QPSK 9/10 | 20 Msym/s | 27 MHz | 34.9 Mb/s | 227 | 68.5% / 23.5% |
+| 8PSK 9/10 | 10 Msym/s | 13.5 MHz | 26.2 Mb/s | 529 | 77.0% / 50.0% |
+| 8PSK 5/6 | 10 Msym/s | 13.5 MHz | 24.2 Mb/s | 406 | 69.5% / 50.1% |
+| QPSK 9/10 | 10 Msym/s | 13.5 MHz | 17.5 Mb/s | 353 | 80.1% / 49.7% |
+| 8PSK 9/10 | 5 Msym/s | 6.75 MHz | 13.1 Mb/s | 337 | 73.7% / 55.3% |
+| 8PSK 8/9, short frames | 5 Msym/s | 6.75 MHz | 12.64 Mb/s | 1,697 | 76.4% / 55.5% |
+| 8PSK 2/3 | 5 Msym/s | 6.75 MHz | 9.68 Mb/s | 334 | 76.1% / 55.4% |
+| QPSK 1/2 | 1 Msym/s | 1.35 MHz | 0.97 Mb/s | 111 | 91.6% / 51.4% |
+
+Roll-off is 0.35 unless noted. Rates use normal frames with pilots, except the short-frame row,
+and leave out the Morse ID. The B200 listened through coax and attenuation on its TX/RX port.
+The encoder also keeps up with payload arriving through the real SPI input code: QPSK 9/10 at
+40 MHz ran at full rate with TS input replayed on the chip, keeping 15.5% encoder and 16.2% fill
+spare ([fill confirmation](results/2026-10-23-tx-fill-keyed/README.md)). That is a capacity test; the fastest live
+input so far is a CM5's 9 Mb/s camera mux.
+
+![36 MHz 8PSK spectrum and spectrogram transmitted by an ESP32-S3](docs/img/rf-36mhz.png)
+
+## How it works
 
 ```
-CM5 + cameras --SPI--> ESP32-S3 --DVB-S2 RF--> SDR --IQ--> LeanDVB --TS--> player
+transmit  core 0: payload -> BB frame -> BCH -> LDPC -> map -> PL frame -> frame ring
+          core 1: frame ring -> pulse shaping -> DAC bank -> the S3's radio
+receive   core 1: the S3's radio -> 16 MS/s bank -> matched filter -> sync -> symbol ring
+          core 0: symbol ring -> derotate, demap -> re-encode check -> (LDPC) -> payload
 ```
 
-The [live-video example](examples/live-video/README.md) uses **8PSK 2/3 at 5 Msym/s**:
-9.68 Mb/s TS capacity in 6.75 MHz. A CM5 sends two camera streams in a 9 Mb/s mux
-over 16 MHz SPI. A B200 recovered both through 40 dB of coax attenuation, with no
-TS continuity gaps in a 111 s interval. The [run records](results/2026-10-19-live-rf/README.md)
-include the recovery tests. The player can still pause when the source or station ID restarts.
-Finite 2.4 Mb/s H.264 files also passed USB → S3 → E200 → LeanDVB and played
-on the laptop. Use the [Linux SPI sender](examples/pi-sender/README.md) for a live 9 Mb/s mux.
+The S3's radio hides a test engine that plays samples from internal RAM straight into its I/Q
+DAC, and a dump engine that writes what the receiver hears into RAM. Both work in banks. On the
+transmit side a fresh 16,380-sample bank is due every 196.75 µs at 80 MS/s: 47,220 CPU cycles
+to make 15,740 new samples. On the receive side the dump engine fills a 16,384-sample ring and
+hands the receiver 12,288 new samples every 768 µs.
 
-## What it can do
-
-The best measured configurations on main, fastest first. **Keyed** means the S3 really transmitted for
-30 s and met every bank deadline; **radio off** means the same encoder and bank schedule ran in
-real time with the DAC output going nowhere.
-
-| Mode | Symbol rate | Bandwidth | **Data rate** | Tested | RF decode |
-|---|---:|---:|---:|---|---|
-| 8PSK 9/10 | 26.67 Msym/s | 36 MHz | **69.8 Mb/s** | keyed | [decoded, prepared](results/2026-10-20-wide-filter/README.md) |
-| 8PSK 5/6 | 26.67 Msym/s | 36 MHz | **64.6 Mb/s** | keyed | decoded, prepared |
-| QPSK 9/10, roll-off 0.20 | 33.33 Msym/s | **40 MHz** | **58.2 Mb/s** | keyed | decoded, prepared |
-| 8PSK 2/3 | 26.67 Msym/s | 36 MHz | **51.6 Mb/s** | keyed | decoded, prepared |
-| 8PSK 5/6 | 20 Msym/s | 27 MHz | **48.4 Mb/s** | keyed* | decoded (B200) |
-| QPSK 9/10 | 26.67 Msym/s | 36 MHz | 46.6 Mb/s | keyed | [decoded (B200)](results/2026-10-20-qpsk-startup/README.md) |
-| 8PSK 2/3 | 20 Msym/s | 27 MHz | 38.7 Mb/s | keyed* | decoded, soft LDPC |
-| QPSK 9/10 | 20 Msym/s | 27 MHz | 34.9 Mb/s | keyed | decoded, peak 32–64; 48 best |
-| 8PSK 5/6 | 10 Msym/s | 13.5 MHz | 24.2 Mb/s | keyed | decoded, soft LDPC |
-| QPSK 9/10 | 10 Msym/s | 13.5 MHz | 17.5 Mb/s | radio off | decoded |
-| QPSK 3/4, video dry run | 10 Msym/s | 13.5 MHz | 14.5 Mb/s | host-model TS dry run | decoded (RF burst) |
-| 8PSK 9/10 | 5 Msym/s | 6.75 MHz | 13.1 Mb/s | radio off | [decoded (mixed VCM)](docs/vcm.md) |
-| 8PSK 2/3 | 5 Msym/s | 6.75 MHz | 9.68 Mb/s | keyed | [decoded (mixed VCM)](docs/vcm.md) |
-| QPSK 1/2 | 1 Msym/s | 1.35 MHz | 0.97 Mb/s | keyed | decoded |
-
-Roll-off is 0.35 unless noted. Rates use normal frames with pilots and exclude station-ID time.
-Every row has exact RF payload recovery in LeanDVB, an independent receiver. The four fastest
-modes used prepared, repeated payloads; the remaining modes include changing-payload tests.
-The E200 checks used a closed Faraday box; the wider B200 checks used coax and 40 dB attenuation.
-[RF records](docs/measurements.md#over-the-air).
-
-The wide modes needed a fix to restore the radio's filter after test-tone setup.
-QPSK at 26.67 Msym/s also needed a third frame buffer: three 20 s runs then had zero underruns,
-with 32/31/32 exact packets in the sampled RF. [Wide filter](results/2026-10-20-wide-filter/README.md),
-[startup fix](results/2026-10-20-qpsk-startup/README.md).
-\*The 30 s keyed timing used an earlier, longer pulse; the current pulse decoded in these 20 s RF tests.
-Margins, raw records and limits: [measurements](docs/measurements.md). With a prepared payload,
-30 s keyed tests of the 40 MHz mode left **37% mean encoder headroom and 16% bank-fill headroom**.
-At 36 MHz, keyed 8PSK 9/10 meets the 15% reserve on both cores; 2/3 and 5/6
-run at full rate with 14% and 12% mean encoder spare.
-
-![36 MHz 8PSK spectrum and waterfall captured by a B200](docs/img/rf-36mhz.png)
-
-8PSK 9/10 at 26.67 Msym/s: 69.8 Mb/s during data, with 47 exact frames recovered
-from this capture. This also used a prepared, repeated payload.
+To pulse shape with such speed and tenacity I went a similar path to my
+[RP2350 version](https://github.com/Rivercraft911/RP2350_IQ_Benchmark/tree/88ab018e65a51805ff562842177a4d47b1b04b2e): every possible output of
+the shaping filter is computed once into a table, so producing samples is copying table rows
+instead of doing filter math. The heavy DSP loops on both sides (shaping, BCH and LDPC, matched
+filtering, demapping) run on the S3's 128-bit PIE vector unit. Neither app starts Wi-Fi, and
+once booted neither touches the heap during a run; only setup commands such as `spiinput` and
+`callsign` do.
+[How it works](docs/how-it-works.md), then the [transmitter](docs/transmitter.md) and the
+[receiver](docs/receiver.md) in depth.
 
 ## Quick start
 
@@ -105,22 +137,17 @@ own Python and can hide numpy/scipy. Run all host and example commands in this s
 python3 -m venv .venv
 . .venv/bin/activate
 python3 -m pip install numpy scipy pyserial
-python3 -c 'import numpy, scipy, serial; print("Host dependencies OK")'
+for test in tests/test_*.py; do python3 "$test" || exit 1; done
 ```
 
-Install ESP-IDF v6.1 using [Espressif's ESP32-S3 setup guide](https://docs.espressif.com/projects/esp-idf/en/v6.1/esp32s3/get-started/index.html).
-The activation path below is the tested macOS EIM path; substitute your installation's
-activation/export script. Parentheses keep IDF's Python inside the build subshell.
-Without a board, run the [host suite and build](docs/how-it-works.md#checking-changes),
-the self-check `--plan`, the [sender vector](examples/pi-sender/README.md), and the
-[video dry run](examples/live-video/README.md#prepare).
-
-For board checks, the measured module is N16R8 (8 MB octal PSRAM, 16 MB flash).
-The optional 8 MB flash XIAO uses a [separate configuration](docs/transmitting.md#board-and-usb).
+Install ESP-IDF v6.1 using [Espressif's ESP32-S3 setup guide](https://docs.espressif.com/projects/esp-idf/en/v6.1/esp32s3/get-started/index.html),
+then build and flash the two apps. Parentheses keep IDF's Python inside the build subshell.
+XIAO ESP32-S3 boards (8 MB flash) use a [separate configuration](docs/transmitting.md#board-and-usb).
 Nothing below turns the radio on.
 
 ```sh
-(. ~/.espressif/tools/activate_idf_v6.1.sh && cd firmware && idf.py build flash)
+(. ~/.espressif/tools/activate_idf_v6.1.sh && cd firmware/tx && idf.py build flash)
+(. ~/.espressif/tools/activate_idf_v6.1.sh && cd firmware/rx && idf.py build flash)
 python3 host/board.py info --reset
 python3 host/board.py "callsign N0CALL"      # placeholder for radio-off tests only
 ```
@@ -135,78 +162,41 @@ python3 host/decode.py fast.iq --rate 80000000 --symbol-rate 20000000 \
   --modcod 15 --stream 16 --receiver notes/leansdr/src/apps/leandvb
 ```
 
-The [self-check](examples/self-check/README.md) runs the full radio-off regression in about
-five minutes: six dumps and decodes, a real-time pace of every modulation and rate path, and a
-Wi-Fi memory check. All console commands are in [transmitting](docs/transmitting.md#console).
-
-Opt-in [VCM](docs/vcm.md) switches MODCOD per frame, including mixed QPSK/8PSK at 5 Msym/s.
-The laptop can change it mid-transmission: QPSK 1/2 → 3/4 → 9/10 → 1/2 over USB decoded
-exact and in order over the air ([live VCM](examples/over-the-air/README.md)).
+The [self-check](examples/self-check/README.md) runs the full radio-off regression. Every console
+command for both apps is in [transmitting and receiving](docs/transmitting.md#console).
 
 ## Send it your data
 
 [examples/usb-send](examples/usb-send/README.md) is one Python file (`pyserial` only) for
-files, telemetry and low-rate video over native USB. Measured payload intake is **3.23 Mb/s**
-at 5 Msym/s with the PSRAM encoder (radio off, 2026-10-17). It defaults to radio-off checks
-and includes SHA-256 file recovery. USB and SPI senders accept `--fec 16:4` to
-recover from any four missing frames per 20-frame block on a one-way link;
-see [file transfer](docs/file-link.md) for overhead and the IQ-to-LeanDVB proof.
-Over the air, a 237 KB PNG arrived with a matching SHA-256, including with one frame
-per block deliberately dropped at the receiver ([run](docs/measurements.md#over-the-air)).
-
-SPI carries higher rates. The sender clocks fixed 1,332-byte messages: a 12-byte
-header (`PV`, version, type, sequence, length), up to seven 188-byte MPEG-TS packets and a
-CRC-32. A READY pin tells the sender when the S3 has room. Single-line SPI delivered the
-9 Mb/s camera mux at 16 MHz; its ideal ceiling is 19.4 Mb/s at 20 MHz. Quad SPI reached
-46.6 Mb/s with on-chip loopback. Payload is MPEG-TS for video or any
-bytes as a generic stream. The S3 does the rest: framing, coding, filler frames when the
-input runs dry, and transmission. Select it with `spiinput on` before a run; the
-[reference sender](examples/pi-sender/README.md) streams a file from a Linux board.
-[Message format, pins and commands](docs/spi-input.md).
-
-## How it works
-
-```
-payload -> BB frame -> BCH -> LDPC -> map -> PL frame -> pulse shaping -> DAC bank -> radio
-           <-------------- core 0 --------------->    <--------- core 1 --------->
-```
-
-The S3's radio hides a test engine that plays samples from internal RAM straight into its I/Q
-DAC. It loops one bank of 16,380 samples while the CPU fills the other and switches them on time.
-At 80 MS/s a fresh bank is due every 196.75 µs, or 47,220 cycles at 240 MHz.
-Core 0 encodes frames into a small ring; core 1 shapes them into samples. At 40 MHz, core 0
-queues compact I/Q sign bit planes, from which core 1 extracts windows while rendering.
-
-To pulse shape with such speed and tenacity I went a similar path to my
-[RP2350 version](https://github.com/Rivercraft911/RP2350_IQ_Benchmark/tree/88ab018e65a51805ff562842177a4d47b1b04b2e): every possible output of
-the shaping filter is computed once into a table, so producing samples is copying table rows
-instead of doing filter math. At 40 MHz the trick goes one further: QPSK's I and Q are two BPSK
-streams, so each four-sample vector comes from small sign-indexed tables and one OR.
-[The encoder, fill and bank schedule](docs/how-it-works.md).
+files, telemetry and low-rate video over native USB, with SHA-256 file recovery and optional
+`--fec 16:4`, which recovers any four missing frames per 20-frame block on a one-way link
+([file transfer](docs/file-link.md)). SPI carries more: fixed 1,332-byte messages of up to seven
+188-byte MPEG-TS packets with a CRC-32, paced by a READY pin
+([message format, pins and commands](docs/spi-input.md)). A CM5 sent two camera streams in a
+9 Mb/s mux over 16 MHz SPI, and a B200 recovered both, with no TS continuity gaps in 111 s
+([live video](examples/live-video/README.md), [records](results/2026-10-19-live-rf/README.md)).
+Opt-in [VCM](docs/vcm.md) switches MODCOD (modulation and code rate) per frame.
 
 ## Transmitting
 
-Only a licensed operator should key the radio on an authorized amateur frequency, in a
-shielded setup or into a dummy load, or through at least 30 dB attenuation into a receiver.
-Set your assigned callsign first. The firmware sends 20 WPM Morse before and after a run;
-synthetic test payloads also carry the callsign. External SPI/USB payload bytes are preserved
-without an added callsign header; Morse ID remains separate. [Setup and limitations](docs/transmitting.md).
-My callsign is **KJ5SCH**; use your own station's call when setting up a board.
-The [contained E200 RF check](examples/over-the-air/README.md) coordinates capture,
-explicit operator keying and exact payload verification; it also supports offline USB replay.
+Only a licensed operator should key the radio, on an authorized amateur frequency, in a
+shielded setup or into a dummy load, or through at least 30 dB of attenuation into a receiver.
+Store your own callsign first; the firmware sends it in 20 WPM Morse before and after every run,
+and the synthetic test payloads carry it too. External payload bytes are sent untouched.
+[Setup and limitations](docs/transmitting.md).
 
 ## More
 
 | Path | What's there |
 |---|---|
-| `firmware/` | Console, transmitter, encoder, radio, station ID and SPI input; `firmware/rx` is the receiver |
-| `host/` | Board protocol, independent decode, Python reference encoder, figures |
-| `examples/` | [Self-check](examples/self-check/README.md), [live video](examples/live-video/README.md), [SPI sender](examples/pi-sender/README.md) |
-| `tests/` | Standard vectors, C/Python agreement and stream CRCs ([running them](docs/how-it-works.md#checking-changes)) |
-| `docs/` | [How it works](docs/how-it-works.md), [transmitting](docs/transmitting.md), [SPI input](docs/spi-input.md), [measurements](docs/measurements.md), [story](docs/story.md), [credits](docs/prior-art.md) |
-
-Additional experiments and raw results live in
-[archive/dev-2026-10-17](https://github.com/Rivercraft911/esp-dvbs2/tree/archive/dev-2026-10-17).
+| `firmware/tx` | The transmitter app: console, stream control, encoder and fill loops |
+| `firmware/rx` | The receiver app: capture, the receive tasks, replay |
+| `firmware/components` | Shared parts: `dvbs2` encoder, `dvbs2rx` demodulator and FEC, `shaper`, `radio_s3`, `platform`, `ingress`, `station_id` |
+| `host/` | Board protocol, Python reference encoder, receiver checks, figures |
+| `examples/` | [Self-check](examples/self-check/README.md), [USB send](examples/usb-send/README.md), [SPI sender](examples/pi-sender/README.md), [live video](examples/live-video/README.md), [over the air](examples/over-the-air/README.md) |
+| `tests/` | Standard vectors, C/Python agreement, pinned output CRCs ([running them](docs/how-it-works.md#checking-changes)) |
+| `results/` | The run records since 2026-10-19, one folder per run with its README and raw records; earlier evidence is indexed in [measurements](docs/measurements.md#earlier-work) |
+| `docs/` | [How it works](docs/how-it-works.md), [transmitter](docs/transmitter.md), [receiver](docs/receiver.md), [transmitting and receiving](docs/transmitting.md), [SPI input](docs/spi-input.md), [measurements](docs/measurements.md), [story](docs/story.md), [credits](docs/prior-art.md) |
 
 ## Licence
 

@@ -15,6 +15,8 @@ import numpy as np
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "host"))
 import dvbs2 as d
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent / "reference"))
+import gen_dvbs2_fast as tables  # noqa: E402
 
 MODES = [(k, "qpsk", r) for k, r in enumerate(d.RATES[3:], 4)]
 MODES += [(k, "8psk", r) for k, r in enumerate(d.PSK8_RATES, 12)]
@@ -51,6 +53,8 @@ class NativeEncoder:
             "dvbs2_bb_gcs_ro": (ct.c_int, [ct.c_void_p, ct.c_void_p, U8P, ct.c_size_t, ct.c_uint]),
             "dvbs2_bb_ts": (ct.c_int, [ct.c_void_p, ct.c_void_p, ct.c_void_p,
                                       U8P, ct.c_size_t]),
+            "dvbs2_bb_ts_ro": (ct.c_int, [ct.c_void_p, ct.c_void_p, ct.c_void_p,
+                                         U8P, ct.c_size_t, ct.c_uint]),
             "dvbs2_bb_scramble": (None, [ct.c_void_p, ct.c_void_p]),
             "dvbs2_bch": (None, [ct.c_void_p, ct.c_void_p]),
             "dvbs2_ldpc": (None, [ct.c_void_p, ct.c_void_p]),
@@ -202,7 +206,30 @@ def test_rolloff(native):
         before = bytes(native.ws)
         assert native.lib.dvbs2_bb_gcs_ro(native.ws, mode, packed.ctypes.data_as(U8P), len(bits), 3) == -1
         assert bytes(native.ws) == before
-    print("roll-off: plain .35/.25/.20 and fast .20, every stage against Python, invalid code leaves workspace untouched")
+        # TS carries the same RO field (MATYPE-1 0xf0 | RO), plain and fast with RO_20.
+        size = (c.kbch - 80) // 8
+        packets = np.random.default_rng(mc+100).integers(0, 256, (-(-2*size // 188), 188), dtype=np.uint8)
+        packets[:, 0] = 0x47
+        stream = packets.ravel()
+        for ro, alpha in enumerate((.35, .25, .20)):
+            expected = d.ts_bbframes(packets, rate, ro=alpha)
+            state = ct.create_string_buffer(native.lib.state_size())
+            for k in range(2):
+                payload = stream[k*size:(k+1)*size]
+                assert native.lib.dvbs2_bb_ts_ro(native.ws, mode, state, payload.ctypes.data_as(U8P), size, ro) == 0
+                native.stages(expected[k], mode, rate, modulation, 1)
+        expected = d.ts_bbframes(packets, rate, ro=.20)
+        state = ct.create_string_buffer(native.lib.state_size())
+        for k in range(2):
+            payload = stream[k*size:(k+1)*size]
+            assert native.lib.dvbs2_fast_bb_ts(native.fast, native.ws, state, payload.ctypes.data_as(U8P), size) == 0
+            native.fast_stages(expected[k], mode, rate, modulation, 1, offset=k)
+        state = ct.create_string_buffer(native.lib.state_size())
+        before = bytes(native.ws) + bytes(state)
+        assert native.lib.dvbs2_bb_ts_ro(native.ws, mode, state, stream.ctypes.data_as(U8P), size, 3) == -1
+        assert bytes(native.ws) + bytes(state) == before
+    print("roll-off: GCS and TS plain .35/.25/.20 and fast .20, every stage against Python, "
+          "invalid code leaves workspace and TS state untouched")
 
 
 def test_ts(native):
@@ -464,12 +491,12 @@ def test_bch_cache(native):
         mode, c = lib.dvbs2_find_mode(modcod), d.code(rate)
         assert lib.dvbs2_fast_prepare(native.fast, mode, 1, 15) == 0
         assert lib.dvbs2_fast_cache_bch(native.fast, cache[at + 1:].ctypes.data_as(U8P)) == -1
-        if c.t == 8:
-            assert lib.dvbs2_fast_cache_bch(native.fast, table) == -1
-            continue
         data = np.random.default_rng(modcod).integers(0, 2, c.kbch, dtype=np.uint8)
         native.load(data)
         assert lib.dvbs2_fast_cache_bch(native.fast, table) == 0
+        # The copy is the generator's table: pair tables for t = 8, byte table otherwise.
+        expected = tables.bch_pair() if c.t == 8 else tables.bch_byte(c.t)
+        assert bytes(cache[at:at + 8192]) == bytes(expected), modcod
         lib.dvbs2_fast_bch(native.fast, native.ws)
         np.testing.assert_array_equal(native.bits(c.nbch), d.bch_encode(data, rate))
         saved = cache.copy()
@@ -478,7 +505,7 @@ def test_bch_cache(native):
         np.testing.assert_array_equal(native.bits(c.nbch), d.bch_encode(data, rate))
         np.testing.assert_array_equal(cache, saved)
         assert np.all(cache[:at] == 0xA5) and np.all(cache[at + 8192:] == 0xA5)
-    print("resident BCH: every t=10/12 mode, canonical parity, guards, restore and invalid alignment")
+    print("resident BCH: every mode (t=8 pair tables too), canonical parity, guards, restore and invalid alignment")
 
 
 def test_short(native):

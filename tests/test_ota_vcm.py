@@ -17,7 +17,7 @@ def test_plan_and_analysis():
             '--pattern', ','.join(map(str, pattern)), '--hold', str(hold), '--plan'])
         settings = ota.settings(args)
         plan = ota.plan(args, settings)
-        assert plan['board_setup'] == ['vcm axes off', f'vcm {hold} ' + ' '.join(map(str, pattern))]
+        assert plan['board_setup'] == [f'vcm {hold} ' + ' '.join(map(str, pattern))]
         assert plan['board_command'] == 'dvb 2420 4 5m 30 0 128'
         rows, modes = frames(pattern, 36, hold)
         status = 'FRAMELOCK 1\n' + '\n'.join(
@@ -58,7 +58,6 @@ def test_cleanup():
             if text == 'info': return [dict(callsign='N0CALL')]
             if text.startswith('dvb '): return [row]
             if text == 'vcm off': return [dict(enabled=False)]
-            if text.startswith('vcm axes'): return [dict(axes=False)]
             if text.startswith('vcm '):
                 return [dict(pattern=[4, 11, 13, 17], hold_frames=1, enabled=fault != 'setup')]
             return [dict(cmd='spiinput')]
@@ -75,7 +74,7 @@ def test_cleanup():
                     patch.object(ota.time, 'sleep'):
                 if fault: rejects(ota.hardware, args, settings, out)
                 else: assert ota.hardware(args, settings, out)[:2] == ('N0CALL', 32)
-            assert sent[-2:] == ['vcm off', 'vcm axes off']
+            assert sent[-1:] == ['vcm off']
             assert all(r['passed'] for r in json.loads((out/'cleanup.json').read_text()))
             if fault: assert not any(s.startswith('dvb ') for s in sent)
 
@@ -95,7 +94,7 @@ def test_recheck():
             data = {
                 'settings.json': dict(pattern=pattern, hold_frames=1, symbol_rate=5000000),
                 'capture.json': dict(complete=True, overflows=None),
-                'cleanup.json': [dict(command=text, passed=True) for text in ('vcm off', 'vcm axes off')],
+                'cleanup.json': [dict(command='vcm off', passed=True)],
             }
             for name, value in data.items(): (source/name).write_text(json.dumps(value))
             row = dict(cmd='dvb', status='ESP_OK', modcod=4, callsign='N0CALL', symbol_rate=5000000,

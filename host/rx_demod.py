@@ -161,7 +161,7 @@ class Stats(ct.Structure):
                 ("relocks", ct.c_uint32), ("acquire_cycles", ct.c_uint32),
                 ("dc_i", ct.c_int16), ("dc_q", ct.c_int16), ("locked", ct.c_uint8),
                 ("cfo_hz", ct.c_int32), ("clock_ppb", ct.c_int32), ("rejects", ct.c_uint32),
-                ("dropped", ct.c_uint32)]
+                ("dropped", ct.c_uint32), ("dummies", ct.c_uint32)]
 
 
 def build(folder, extra=()):

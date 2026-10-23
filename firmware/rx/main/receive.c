@@ -3,7 +3,10 @@
 // bits (highest priority: it frees the ring core 1 writes); the checker runs each frame's
 // re-encode check and streams one binary record per frame over USB; the decoder runs the LDPC
 // decoder on frames that fail the check, one at a time, in PSRAM. A replay drives the same
-// receiver from a recorded capture instead of the radio (capture_replay).
+// receiver from a recorded capture instead of the radio (capture_replay). In TS mode the checker
+// then deframes each good frame into TS packets for the egress (ts_egress.h); frames the decoder
+// repairs come too late for the stream and are only recorded.
+#include <assert.h>
 #include <stdio.h>
 #include <string.h>
 #include "receive.h"
@@ -12,14 +15,16 @@
 #include "esp_attr.h"
 #include "esp_cpu.h"
 #include "esp_heap_caps.h"
-#include "esp_rom_crc.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
+#include "arena.h"
 #include "capture.h"
 #include "dvbs2rx.h"
+#include "ingress_pattern.h"
 
 #define SLOTS 3U
 #define PIECE 3072U             /* words per push: the release starts within ~1,000 symbols */
@@ -39,7 +44,11 @@ typedef struct {
     QueueHandle_t full, empty;
     SemaphoreHandle_t done, usb;
     TaskHandle_t release, checker, decoder;
+    uint32_t *crc_table;        /* 5 Msym/s: the record's CRC-32 by bytes (PSRAM) */
     receive_stats_t *stats;
+    receive_options_t options;
+    rx_ts_t *ts;
+    int32_t last;               /* pattern: the previous packet's seq << 3 | j; -1 for none */
 } receiver_t;
 
 /* The driver's transmit ring holds 8 KB: larger blocks go in pieces. */
@@ -82,7 +91,10 @@ static void quit(receiver_t *r, uint32_t *stack_free)
 }
 
 /* Highest priority on core 0: every queued run, into the current slot; a whole frame goes to
- * the checker. Without a free slot the frame is dropped and its buffers reused. */
+ * the checker. Without a free slot it waits for the checker to free one, at least 1 ms (two ticks):
+ * the frames after a lock come in a burst while the first check runs cold (300k to 370k cycles).
+ * Meanwhile the demodulator's ring fills (0.82 ms of symbols at 5 Msym/s); if it overflows, the
+ * next frame is lost instead of this one. Then the frame is dropped and its buffers reused. */
 static void releaser(void *arg)
 {
     receiver_t *r = arg;
@@ -97,7 +109,7 @@ static void releaser(void *arg)
             s->release_cycles += cycles;
             if (cycles > s->max_release_cycles) s->max_release_cycles = cycles;
             if (!done) break;
-            if (xQueueReceive(r->empty, &next, 0) == pdTRUE) {
+            if (xQueueReceive(r->empty, &next, 2) == pdTRUE) {
                 xQueueSend(r->full, &cur, 0);
                 cur = next;
             } else {
@@ -108,19 +120,29 @@ static void releaser(void *arg)
     quit(r, &s->release_stack_free);
 }
 
+/* zlib's CRC-32 (reflected 0xedb88320, as esp_rom_crc32_le(0, ...)) a byte at a time from a table:
+ * the ROM's takes 30k to 90k cycles for an 8PSK 8/9 frame, a third of the frame period. */
+static uint32_t crc32(const uint32_t *table, const uint8_t *p, size_t n)
+{
+    uint32_t c = ~0U;
+    while (n--) c = table[(c ^ *p++) & 255] ^ c >> 8;
+    return ~c;
+}
+
 static void record(receiver_t *r, const rx_frame_t *f, int length, const uint8_t *payload,
                    const rx_fec_stats_t *fec)
 {
     receive_stats_t *s = r->stats;
     receive_record_t rec = {RECEIVE_MAGIC, f->sequence, f->cfo_hz, f->mer_cdb, (int16_t)length,
                             fec->iterations, fec->failed_checks};
+    const uint32_t crc = length > 0 && r->crc ? crc32(r->crc_table, payload, length) : 0;
     xSemaphoreTake(r->usb, portMAX_DELAY);
     ++s->frames;
     length >= 0 ? ++s->good : ++s->failed;
     if (fec->iterations > s->max_iterations) s->max_iterations = fec->iterations;
+    const int64_t start = esp_timer_get_time();
     receive_write(&rec, sizeof rec);
     if (length > 0 && r->crc) {
-        uint32_t crc = esp_rom_crc32_le(0, payload, length);
         receive_write(&crc, 4);
     } else if (length > 0) {
         receive_write(payload, length);
@@ -130,7 +152,57 @@ static void record(receiver_t *r, const rx_frame_t *f, int length, const uint8_t
         receive_write(f->hard, RECEIVE_BITS);
         receive_write(f->weak, RECEIVE_BITS);
     }
+    const uint32_t us = (uint32_t)(esp_timer_get_time() - start);
+    if (us > s->max_write_us) {
+        s->max_write_us = us;
+        s->max_write_sequence = f->sequence;
+    }
+    s->slow_writes += us >= 1000;
     xSemaphoreGive(r->usb);
+}
+
+/* A packet of the transmitter's test input: bytes 4..6 name its message and place (ingress_pattern).
+ * The next packet follows it in the message, or opens the next message; `ts replay` loops back
+ * from message 7 to 0, a live sender's count wraps at 65,536. */
+static void expect(receiver_t *r, const uint8_t *p)
+{
+    receive_pattern_t *s = &r->stats->pattern;
+    const uint32_t seq = p[4] | (uint32_t)p[5] << 8, j = p[6];
+    ++s->checked;
+    if (r->last >= 0) {
+        const uint32_t ls = (uint32_t)r->last >> 3, lj = r->last & 7;
+        if (lj == 6 && ls == 7 && !seq && !j) ++s->wraps;
+        else if (lj < 6 ? seq != ls || j != lj + 1 : seq != ((ls + 1) & 0xffff) || j) ++s->jumps;
+    }
+    r->last = (int32_t)(seq << 3 | (j & 7));
+    s->bad += ingress_pattern_ts_differs(p, (uint16_t)seq, j) != 0;
+}
+
+/* Each packet the deframer hands on: the pattern check if asked, then the egress. Only the
+ * checker task deframes, as ts_egress.h promises the egress. */
+static void emit(void *ctx, const uint8_t *packet)
+{
+    receiver_t *r = ctx;
+    assert(xTaskGetCurrentTaskHandle() == r->checker);
+    if (r->options.pattern) {
+        uint32_t start = esp_cpu_get_cycle_count();
+        expect(r, packet);
+        r->stats->pattern.cycles += esp_cpu_get_cycle_count() - start;
+    }
+    const ts_egress_t *e = r->options.egress;
+    if (e) e->packet(e->ctx, packet);
+}
+
+static void deframe(receiver_t *r, rx_frame_t *f, int length)
+{
+    receive_stats_t *s = r->stats;
+    uint32_t start = esp_cpu_get_cycle_count();
+    rx_ts_frame(r->ts, f->hard, (unsigned)length, f->sequence);
+    const ts_egress_t *e = r->options.egress;
+    if (e && e->flush) e->flush(e->ctx);
+    uint32_t cycles = esp_cpu_get_cycle_count() - start;
+    s->ts_cycles += cycles;
+    if (cycles > s->max_ts_cycles) s->max_ts_cycles = cycles;
 }
 
 /* The clean path for every frame; a frame that fails its parity checks goes to the decoder
@@ -160,8 +232,14 @@ static void checker(void *arg)
             xTaskNotifyGive(r->decoder);
         } else {
             record(r, f, length, payload, &fec);
+            if (r->ts && length >= 0) deframe(r, f, length);
         }
         xQueueSend(r->empty, &i, portMAX_DELAY);
+    }
+    if (r->ts) {                /* the end: a packet waiting for its CRC-8 goes on unchecked */
+        rx_ts_flush(r->ts);
+        const ts_egress_t *e = r->options.egress;
+        if (e && e->flush) e->flush(e->ctx);
     }
     quit(r, &s->check_stack_free);
 }
@@ -183,36 +261,59 @@ static void decoder(void *arg)
     quit(r, &s->decode_stack_free);
 }
 
-/* Every run allocation (after Wi-Fi has gone, internal RAM for what core 1 and the release
- * touch), the core 0 tasks and the stream header. */
+/* The queues and semaphores, made once at boot from static storage (receive_init). */
+static QueueHandle_t full_q, empty_q;
+static SemaphoreHandle_t done_sem, usb_sem;
+
+void receive_init(void)
+{
+    static StaticQueue_t full_s, empty_s;
+    static StaticSemaphore_t done_s, usb_s;
+    static uint8_t full_items[SLOTS + 1], empty_items[SLOTS];
+    full_q = xQueueCreateStatic(SLOTS + 1, 1, full_items, &full_s);
+    empty_q = xQueueCreateStatic(SLOTS, 1, empty_items, &empty_s);
+    done_sem = xSemaphoreCreateCountingStatic(3, 0, &done_s);
+    usb_sem = xSemaphoreCreateMutexStatic(&usb_s);
+}
+
+/* Every run's memory, from the arenas (internal RAM for what core 1 and the release touch, PSRAM
+ * for the decoder), the core 0 tasks and the stream header. */
 static esp_err_t start(void *ctx)
 {
     receiver_t *r = ctx;
     const unsigned modcod = r->config.modcod;
-    r->demod = heap_caps_aligned_alloc(16, rx_demod_size(), INTERNAL);
-    r->ring = heap_caps_aligned_alloc(16, RX_DEMOD_RING_BYTES, INTERNAL);
-    r->check = heap_caps_aligned_alloc(16, rx_fec_check_size(modcod), INTERNAL);
-    r->decode = heap_caps_aligned_alloc(16, rx_fec_size(modcod), MALLOC_CAP_SPIRAM);
-    r->work = heap_caps_aligned_alloc(16, rx_fec_work_size(modcod), MALLOC_CAP_SPIRAM);
-    r->job.hard = heap_caps_aligned_alloc(16, RX_HARD_BYTES, MALLOC_CAP_SPIRAM);
-    r->job.weak = heap_caps_aligned_alloc(16, RX_HARD_BYTES, MALLOC_CAP_SPIRAM);
-    r->full = xQueueCreate(SLOTS + 1, 1);
-    r->empty = xQueueCreate(SLOTS, 1);
-    r->done = xSemaphoreCreateCounting(3, 0);
-    r->usb = xSemaphoreCreateMutex();
+    arena_reset();
+    r->demod = arena_take(&arena_low, rx_demod_size());
+    r->check = arena_take(&arena_low, rx_fec_check_size(modcod));
+    if (r->options.ts) r->ts = arena_take(&arena_low, rx_ts_size());
+    r->ring = arena_take(&arena_high, RX_DEMOD_RING_BYTES);
+    r->decode = arena_take(&arena_psram, rx_fec_size(modcod));
+    r->work = arena_take(&arena_psram, rx_fec_work_size(modcod));
+    r->job.hard = arena_take(&arena_psram, RX_HARD_BYTES);
+    r->job.weak = arena_take(&arena_psram, RX_HARD_BYTES);
+    if (r->crc) r->crc_table = arena_take(&arena_psram, 1024);
     bool ok = r->demod && r->ring && r->check && r->decode && r->work && r->job.hard &&
-              r->job.weak && r->full && r->empty && r->done && r->usb;
+              r->job.weak && (r->ts || !r->options.ts) && (r->crc_table || !r->crc);
+    xQueueReset(full_q);
+    xQueueReset(empty_q);
+    xQueueReset(done_sem);
     for (unsigned i = 0; ok && i < SLOTS; ++i) {
-        r->slot[i].hard = heap_caps_aligned_alloc(16, RX_HARD_BYTES, INTERNAL);
-        r->slot[i].weak = heap_caps_aligned_alloc(16, RX_HARD_BYTES, INTERNAL);
+        r->slot[i].hard = arena_take(&arena_high, RX_HARD_BYTES);
+        r->slot[i].weak = arena_take(&arena_high, RX_HARD_BYTES);
         ok = r->slot[i].hard && r->slot[i].weak;
         uint8_t n = i;
         if (ok && i) xQueueSend(r->empty, &n, 0);   /* the release starts on slot 0 */
     }
     if (!ok) return ESP_ERR_NO_MEM;
+    for (uint32_t v = 0; r->crc && v < 256; ++v) {
+        uint32_t c = v;
+        for (unsigned b = 0; b < 8; ++b) c = c >> 1 ^ (0xedb88320U & -(c & 1));
+        r->crc_table[v] = c;
+    }
     if (rx_demod_init(r->demod, &r->config, r->ring) || rx_fec_init(r->check, modcod, NULL) ||
         rx_fec_init(r->decode, modcod, r->work))
         return ESP_ERR_INVALID_ARG;
+    if (r->ts) rx_ts_init(r->ts, r->options.drop_null, emit, r);
     /* Static stacks: never in slow RTC FAST memory. */
     static StackType_t stacks[3][STACK / sizeof(StackType_t)];
     static StaticTask_t tasks[3];
@@ -223,7 +324,8 @@ static esp_err_t start(void *ctx)
     r->stats->free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     r->stats->largest_internal = heap_caps_get_largest_free_block(INTERNAL);
     printf("@{\"cmd\":\"rx\",\"stream\":\"binary\",\"record_bytes\":%u,\"payload\":\"%s\","
-           "\"failed\":\"hard+weak\"}\n", (unsigned)sizeof(receive_record_t), r->crc ? "crc32" : "bytes");
+           "\"failed\":\"hard+weak\",\"ts\":%s}\n", (unsigned)sizeof(receive_record_t),
+           r->crc ? "crc32" : "bytes", r->ts ? "true" : "false");
     fflush(stdout);
     return ESP_OK;
 }
@@ -236,7 +338,8 @@ static void reap(TaskHandle_t task, bool finished)
     vTaskDelete(task);
 }
 
-/* Stop the core 0 tasks after the last frames, close the stream and free everything. */
+/* Stop the core 0 tasks after the last frames and close the stream. The memory goes back to the
+ * arenas when the next run resets them. */
 static void finish(receiver_t *r)
 {
     receive_stats_t *s = r->stats;
@@ -254,40 +357,32 @@ static void finish(receiver_t *r)
         receive_record_t end = {RECEIVE_MAGIC, 0, 0, 0, RECEIVE_END, 0, 0};
         receive_write(&end, sizeof end);
         rx_demod_stats(r->demod, &s->demod);
+        if (r->ts) {
+            rx_ts_stats(r->ts, &s->ts);
+            while (s->ts_pids < RX_TS_PIDS && rx_ts_pid(r->ts, s->ts_pids, &s->pids[s->ts_pids]))
+                ++s->ts_pids;
+        }
     }
     reap(r->release, running);
     reap(r->checker, running);
     reap(r->decoder, running);
-    for (unsigned i = 0; i < SLOTS; ++i) {
-        heap_caps_free(r->slot[i].hard);
-        heap_caps_free(r->slot[i].weak);
-    }
-    if (r->usb) vSemaphoreDelete(r->usb);
-    if (r->done) vSemaphoreDelete(r->done);
-    if (r->empty) vQueueDelete(r->empty);
-    if (r->full) vQueueDelete(r->full);
-    heap_caps_free(r->job.hard);
-    heap_caps_free(r->job.weak);
-    heap_caps_free(r->work);
-    heap_caps_free(r->decode);
-    heap_caps_free(r->check);
-    heap_caps_free(r->ring);
-    heap_caps_free(r->demod);
 }
 
-static void setup(receiver_t *r, unsigned modcod, unsigned rate, unsigned mhz, receive_stats_t *s)
+static void setup(receiver_t *r, unsigned modcod, unsigned rate, unsigned mhz,
+                  const receive_options_t *options, receive_stats_t *s)
 {
     memset(s, 0, sizeof *s);
-    *r = (receiver_t){.stats = s, .crc = rate == 5000000,
+    *r = (receiver_t){.stats = s, .crc = rate == 5000000, .options = *options,
+                      .last = -1, .full = full_q, .empty = empty_q, .done = done_sem, .usb = usb_sem,
                       .config = {.modcod = modcod, .symbol_rate = rate, .cfo_hint_hz = -10000,
                                  .cfo_span_hz = 30000, .carrier_khz = mhz * 1000U}};
 }
 
 esp_err_t receive_run(const capture_config_t *capture, unsigned modcod, unsigned rate,
-                      receive_stats_t *s, capture_stats_t *cs)
+                      const receive_options_t *options, receive_stats_t *s, capture_stats_t *cs)
 {
     receiver_t r;
-    setup(&r, modcod, rate, capture->mhz, s);
+    setup(&r, modcod, rate, capture->mhz, options, s);
     capture_config_t c = *capture;
     c.ready = start;
     esp_err_t error = capture_run(&c, consume, &r, cs);
@@ -296,10 +391,11 @@ esp_err_t receive_run(const capture_config_t *capture, unsigned modcod, unsigned
 }
 
 esp_err_t receive_replay(const int8_t *sc8, size_t pairs, unsigned modcod, unsigned rate,
-                         unsigned skip, receive_stats_t *s, capture_stats_t *cs)
+                         unsigned skip, const receive_options_t *options, receive_stats_t *s,
+                         capture_stats_t *cs)
 {
     receiver_t r;
-    setup(&r, modcod, rate, 2420, s);
+    setup(&r, modcod, rate, 2420, options, s);
     capture_config_t c = {.mhz = 2420, .ready = start};
     esp_err_t error = capture_replay(&c, sc8, pairs, skip, consume, &r, cs);
     finish(&r);

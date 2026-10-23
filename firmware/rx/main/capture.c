@@ -5,17 +5,17 @@
 // finite receiver on exp/s3-receive (firmware/rx/main/capture.c, samples.c).
 #include <string.h>
 #include "capture.h"
+#include "arena.h"
+#include "radio_power.h"
 
 #include "esp_attr.h"
 #include "esp_cpu.h"
 #include "esp_heap_caps.h"
 #include "esp_private/regi2c_ctrl.h"
-#include "esp_async_memcpy.h"
 #include "esp_phy_init.h"
 #include "esp_private/periph_ctrl.h"
 #include "esp_private/phy.h"
 #include "driver/gptimer.h"
-#include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -196,71 +196,74 @@ wake:
     return woken == pdTRUE;
 }
 
+/* One run at a time: the handoff interrupt's state, its timer (made once at boot on core 1,
+ * where the interrupt must run), and the semaphores a run waits on. */
+static sched_t sched;
+static gptimer_handle_t timer;
+static SemaphoreHandle_t job_done;
+
 static const char *IRAM_ATTR stream(job_t *job)
 {
     const capture_config_t *c = job->config;
     capture_stats_t *s = job->stats;
-    sched_t h = {.owner = REG_READ(BANK_USAGE) & ~15U, .target = CAPTURE_UNIT,
-                 .task = xTaskGetCurrentTaskHandle(), .free = {1, 2}, .free_tail = 2};
-    gptimer_config_t tc = {.clk_src = GPTIMER_CLK_SRC_DEFAULT, .direction = GPTIMER_COUNT_UP,
-                           .resolution_hz = TIMER_HZ, .intr_priority = 3};
-    gptimer_event_callbacks_t callbacks = {.on_alarm = handoff};
+    sched_t *h = &sched;
+    *h = (sched_t){.timer = timer, .owner = REG_READ(BANK_USAGE) & ~15U, .target = CAPTURE_UNIT,
+                   .task = xTaskGetCurrentTaskHandle(), .free = {1, 2}, .free_tail = 2};
     gptimer_alarm_config_t first = {.alarm_count = UNIT_TICKS - EARLY_TICKS};
-    if (gptimer_new_timer(&tc, &h.timer) != ESP_OK) return "timer";
+    if (!timer || gptimer_set_raw_count(timer, 0) != ESP_OK) return "timer";
     const char *fault = NULL;
-    if (gptimer_register_event_callbacks(h.timer, &callbacks, &h) != ESP_OK ||
-        gptimer_enable(h.timer) != ESP_OK || gptimer_set_alarm_action(h.timer, &first) != ESP_OK) {
+    if (gptimer_enable(timer) != ESP_OK || gptimer_set_alarm_action(timer, &first) != ESP_OK) {
         fault = "timer";
         goto done;
     }
     REG_WRITE(DUMP_CTRL, 0);
-    REG_WRITE(BANK_USAGE, h.owner);
+    REG_WRITE(BANK_USAGE, h->owner);
     __asm__ volatile ("memw" ::: "memory");
     for (unsigned n = 0; n < 3; ++n) clear(bank(n));
     REG_WRITE(DUMP_LANES, 0x000c2040U);
-    REG_WRITE(BANK_USAGE, h.owner | 1U);
+    REG_WRITE(BANK_USAGE, h->owner | 1U);
     __asm__ volatile ("memw" ::: "memory");
     uint32_t irq = portSET_INTERRUPT_MASK_FROM_ISR();
     REG_WRITE(DUMP_CTRL, DUMP_RUN | DUMP_CIRCULAR | DUMP_16M | CAPTURE_RING);
-    gptimer_start(h.timer);
+    gptimer_start(h->timer);
     portCLEAR_INTERRUPT_MASK_FROM_ISR(irq);
 
     const uint64_t total = (uint64_t)c->seconds * CAPTURE_RATE;
     unsigned before = 0, after = 0, expected = 0;
     uint64_t end_pairs = 0;     /* engine count at the end of the last unit processed */
     bool gap = false;
-    while (s->samples < total && !h.fault) {
-        if (h.done == h.posted) {
+    while (s->samples < total && !h->fault) {
+        if (h->done == h->posted) {
             if (!ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(20))) { fault = "no handoff"; break; }
             continue;
         }
-        uint32_t lag = h.posted - h.done;
+        uint32_t lag = h->posted - h->done;
         if (lag > s->max_lag) s->max_lag = lag;
-        unsigned slot = h.done % RECORDS;
+        unsigned slot = h->done % RECORDS;
         uint32_t irq2 = portSET_INTERRUPT_MASK_FROM_ISR();
-        h.working = h.done;
-        bool dropped = h.dropped[slot];
+        h->working = h->done;
+        bool dropped = h->dropped[slot];
         portCLEAR_INTERRUPT_MASK_FROM_ISR(irq2);
         if (dropped) {
-            before = h.before[slot];
-            after = h.after[slot];
+            before = h->before[slot];
+            after = h->after[slot];
             gap = true;
-            ++h.done;
+            ++h->done;
             continue;
         }
         uint32_t start = esp_cpu_get_cycle_count();
-        const uint32_t *b = bank(h.bank[slot]);
+        const uint32_t *b = bank(h->bank[slot]);
         unsigned first = gap ? after : expected, last;
         /* A taken-back bank has no sentinels before its unit: it starts where the last unit
          * ended, or, after a loss, at the handoff bracket (a sample or two of slack). */
-        if ((!h.reowned[slot] && !edge(b, before, after, true, &first)) ||
-            !edge(b, h.before[slot], h.after[slot], false, &last)) { fault = "edge"; break; }
+        if ((!h->reowned[slot] && !edge(b, before, after, true, &first)) ||
+            !edge(b, h->before[slot], h->after[slot], false, &last)) { fault = "edge"; break; }
         size_t count = (last - first) & RING_MASK;
         if (first != expected && !gap) { fault = "gap"; break; }
         if (gap) {
             /* Lost units: the engine count gives the length to within a bracket and the
              * ring index makes it exact. */
-            uint64_t approx = h.at[(h.done - 1U) % RECORDS] - end_pairs;
+            uint64_t approx = h->at[(h->done - 1U) % RECORDS] - end_pairs;
             uint64_t lost = approx + ((((first - expected - approx) & RING_MASK) + CAPTURE_RING / 2U)
                                       & RING_MASK) - CAPTURE_RING / 2U;
             s->samples += lost;
@@ -288,24 +291,23 @@ static const char *IRAM_ATTR stream(job_t *job)
         s->samples += count;
         ++s->units;
         expected = last;
-        end_pairs = h.at[slot];
-        before = h.before[slot];
-        after = h.after[slot];
-        h.free[h.free_tail & 3U] = h.bank[slot];
+        end_pairs = h->at[slot];
+        before = h->before[slot];
+        after = h->after[slot];
+        h->free[h->free_tail & 3U] = h->bank[slot];
         __asm__ volatile ("memw" ::: "memory");
-        ++h.free_tail;
-        ++h.done;
+        ++h->free_tail;
+        ++h->done;
     }
-    if (!fault) fault = h.fault;
-    s->drops = h.drops;
+    if (!fault) fault = h->fault;
+    s->drops = h->drops;
 
 done:
     REG_WRITE(DUMP_CTRL, 0);
-    gptimer_stop(h.timer);
-    gptimer_disable(h.timer);
-    gptimer_del_timer(h.timer);
-    s->max_late = h.max_late;
-    s->max_spin = h.max_spin;
+    gptimer_stop(timer);
+    gptimer_disable(timer);
+    s->max_late = h->max_late;
+    s->max_spin = h->max_spin;
     return fault;
 }
 
@@ -323,27 +325,15 @@ static void IRAM_ATTR read_vectors(const uint32_t *p, size_t words)
                           "ee.vld.128.ip q2, %0, 16\n ee.vld.128.ip q3, %0, 16" : "+r"(p));
 }
 
-static bool copied(async_memcpy_handle_t mcp, async_memcpy_event_t *event, void *arg)
-{
-    (void)mcp; (void)event;
-    BaseType_t woken = pdFALSE;
-    xSemaphoreGiveFromISR(arg, &woken);
-    return woken == pdTRUE;
-}
-
 /* Cycles to read 4,096 words (16 KiB) from a free bank while the engine writes
  * another, against the same reads from ordinary internal RAM, then the engine
- * stopped. Slots: words, vectors, memcpy, gdma; bank then dram; running then stopped. */
+ * stopped. Slots: words, vectors, memcpy; bank then dram; running then stopped. */
 static const char *bench(job_t *job)
 {
     enum { WORDS = 4096 };
-    uint32_t *r = job->bench, *dram = heap_caps_aligned_alloc(16, 4 * WORDS,
-                                                               MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
-    SemaphoreHandle_t sem = xSemaphoreCreateBinary();
-    async_memcpy_handle_t mcp = NULL;
-    async_memcpy_config_t mc = ASYNC_MEMCPY_DEFAULT_CONFIG();
-    const char *fault = !dram || !sem ? "memory" :
-                        esp_async_memcpy_install(&mc, &mcp) != ESP_OK ? "gdma" : NULL;
+    arena_reset();
+    uint32_t *r = job->bench, *dram = arena_take(&arena_high, 4 * WORDS);
+    const char *fault = dram ? NULL : "memory";
     const uint32_t owner = REG_READ(BANK_USAGE) & ~15U;
     for (unsigned run = 0; !fault && run < 2; ++run) {
         REG_WRITE(DUMP_CTRL, 0);
@@ -369,17 +359,10 @@ static const char *bench(job_t *job)
                 t = esp_cpu_get_cycle_count();
                 memcpy(dram, from, 4 * WORDS);
                 r[2] = esp_cpu_get_cycle_count() - t;
-                t = esp_cpu_get_cycle_count();
-                if (esp_async_memcpy(mcp, dram, (void *)from, 4 * WORDS, copied, sem) != ESP_OK ||
-                    xSemaphoreTake(sem, pdMS_TO_TICKS(10)) != pdTRUE) fault = "gdma copy";
-                r[3] = esp_cpu_get_cycle_count() - t;
             }
         }
     }
     REG_WRITE(DUMP_CTRL, 0);
-    if (mcp) esp_async_memcpy_uninstall(mcp);
-    if (sem) vSemaphoreDelete(sem);
-    heap_caps_free(dram);
     return fault;
 }
 
@@ -410,7 +393,7 @@ static void worker(void *arg)
     } else {
         force_rx_gain(1, c->gain, 0);
         select_lo(divided);
-        /* Bit 1 is set while Wi-Fi runs; without it the dump holds a constant. */
+        /* Wi-Fi sets bit 1 when it runs; without it the dump holds a constant. */
         REG_SET_BIT(SYSCON_WIFI_BB_CFG_REG, 1U << 1);
         vTaskDelay(pdMS_TO_TICKS(3));
         s->free_ready = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
@@ -501,63 +484,62 @@ esp_err_t capture_bench(const capture_config_t *config, uint32_t results[16],
     return launch(&job);
 }
 
+/* The radio, once at boot and for good, without Wi-Fi (radio_power.h). The PHY is held under the
+ * Bluetooth modem bit, which asks for no PLL tracking: the state Wi-Fi's stop used to leave
+ * behind. The dump engine lives in the Wi-Fi baseband, so its clock domain stays referenced; the
+ * worker sets the baseband bit that Wi-Fi used to set. */
+static bool radio_up;
+
+/* On core 1, once: the handoff timer, its interrupt there, and the callback on the static state. */
+static void timer_setup(void *arg)
+{
+    esp_err_t *e = arg;
+    gptimer_config_t tc = {.clk_src = GPTIMER_CLK_SRC_DEFAULT, .direction = GPTIMER_COUNT_UP,
+                           .resolution_hz = TIMER_HZ, .intr_priority = 3};
+    gptimer_event_callbacks_t callbacks = {.on_alarm = handoff};
+    *e = gptimer_new_timer(&tc, &timer);
+    if (*e == ESP_OK) *e = gptimer_register_event_callbacks(timer, &callbacks, &sched);
+    xSemaphoreGive(job_done);
+    vTaskSuspend(NULL);
+}
+
+static StackType_t core1_stack[CAPTURE_STACK / sizeof(StackType_t)];
+static StaticTask_t core1_task;
+
+esp_err_t capture_init(void)
+{
+    if (radio_up) return ESP_OK;
+    static StaticSemaphore_t job_s;
+    job_done = xSemaphoreCreateBinaryStatic(&job_s);
+    esp_err_t e = ESP_FAIL;
+    TaskHandle_t setup = xTaskCreateStaticPinnedToCore(timer_setup, "capture", CAPTURE_STACK, &e,
+                                                       configMAX_PRIORITIES - 1, core1_stack,
+                                                       &core1_task, 1);
+    xSemaphoreTake(job_done, portMAX_DELAY);
+    while (eTaskGetState(setup) != eSuspended) vTaskDelay(1);
+    vTaskDelete(setup);
+    if (e != ESP_OK) return e;
+    e = radio_power_up();
+    radio_up = e == ESP_OK;
+    return e;
+}
+
 static esp_err_t launch(job_t *job)
 {
     capture_stats_t *s = job->stats;
-    bool initialized = false, held = false;
-    /* Wi-Fi starts only to power and calibrate the PHY. The run then holds the PHY with
-     * the Bluetooth modem bit, as firmware/components/radio_s3/physolo.c does for the
-     * transmitter, keeps the Wi-Fi clock domain referenced and deinitializes Wi-Fi: no MAC
-     * interrupts or periodic work, and about 44 KB of internal RAM return. The worker
-     * sets the baseband bit that Wi-Fi's stop clears. */
     s->free_before = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    cfg.nvs_enable = 0;
-    if (job->sc8) goto replay;
-    if ((s->error = esp_wifi_init(&cfg)) != ESP_OK) goto done;
-    initialized = true;
-    if ((s->error = esp_wifi_set_storage(WIFI_STORAGE_RAM)) != ESP_OK ||
-        (s->error = esp_wifi_set_mode(WIFI_MODE_NULL)) != ESP_OK ||
-        (s->error = esp_wifi_start()) != ESP_OK) goto done;
-    if (phy_get_modem_flag() != PHY_MODEM_WIFI) { s->error = ESP_ERR_INVALID_STATE; goto done; }
-    esp_wifi_bt_power_domain_on();
-    esp_phy_modem_init();
-    esp_phy_enable(PHY_MODEM_BT);
-    wifi_module_enable();
-    held = true;
-    if ((s->error = esp_wifi_stop()) != ESP_OK || (s->error = esp_wifi_deinit()) != ESP_OK) goto done;
-    initialized = false;
-replay:
-    s->free_wifi = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-    if (job->config->ready && (s->error = job->config->ready(job->ctx)) != ESP_OK) goto done;
-    if (!(job->done = xSemaphoreCreateBinary())) { s->error = ESP_ERR_NO_MEM; goto done; }
+    if (!job->sc8 && !radio_up) return s->error = ESP_ERR_INVALID_STATE;
+    if (job->config->ready && (s->error = job->config->ready(job->ctx)) != ESP_OK) return s->error;
+    job->done = job_done;
+    xQueueReset(job_done);
     /* A static stack stays in internal SRAM; from the heap it could land in slow RTC FAST
      * memory, where the demodulator's stack traffic once ran 3.4 times slower. */
-    static StackType_t stack[CAPTURE_STACK / sizeof(StackType_t)];
-    static StaticTask_t task;
     TaskHandle_t handle = xTaskCreateStaticPinnedToCore(job->sc8 ? replayer : worker, "capture",
                                                         CAPTURE_STACK, job, configMAX_PRIORITIES - 1,
-                                                        stack, &task, 1);
-    if (!handle) {
-        s->error = ESP_ERR_NO_MEM;
-        goto done;
-    }
+                                                        core1_stack, &core1_task, 1);
+    if (!handle) return s->error = ESP_ERR_NO_MEM;
     xSemaphoreTake(job->done, portMAX_DELAY);
     while (eTaskGetState(handle) != eSuspended) vTaskDelay(1);
     vTaskDelete(handle);
-
-done:
-    if (job->done) vSemaphoreDelete(job->done);
-    if (initialized) {
-        esp_err_t e = esp_wifi_stop();
-        if (e != ESP_OK && e != ESP_ERR_WIFI_NOT_STARTED) s->cleanup = e;
-        if ((e = esp_wifi_deinit()) != ESP_OK && s->cleanup == ESP_OK) s->cleanup = e;
-    }
-    if (held) {
-        esp_phy_disable(PHY_MODEM_BT);
-        esp_phy_modem_deinit();
-        wifi_module_disable();
-        esp_wifi_bt_power_domain_off();
-    }
     return s->error;
 }

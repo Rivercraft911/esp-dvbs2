@@ -5,8 +5,10 @@
     python3 host/rx_twin.py --frames 10 --gap 0 0.1 --out tone.sc8      int8 pairs, for replay
     python3 host/rx_twin.py --frames 3584 --check --reference 40         30 s through the C demodulator
     python3 host/rx_twin.py --rate 5e6 --modcod 16 --frames 40 --check   8PSK 8/9 at 5 Msym/s
+    python3 host/rx_twin.py --rate 5e6 --ts --dummies 3 3 9 --frames 40 --out ts.sc8
 
-Transmitter: host/dvbs2.py frames carrying the firmware's test payload (host/rx.py model), the
+Transmitter: host/dvbs2.py frames carrying the firmware's test payload (host/rx.py model), or with
+--ts its TS replay input (host/rx.py ts_model), dummy PLFRAMEs after the frames listed, the
 firmware pulse (shaper_taps.h: inverse-hold RRC at 40 MS/s, 360 taps at 1 Msym/s, 72 taps at
 5 Msym/s), each DAC sample held for 25 ns, then band-limited to the dump's +-8 MHz. Channel and receiver: symbol clock offset
 and carrier offset that drift together (both radios run from 40 MHz crystals), Wiener phase
@@ -61,6 +63,8 @@ class Link:
     tx_leak_db: float = -17.0
     tx_image_db: float = -32.0
     gap: tuple = None            # (after this many frames, seconds of keyed tone)
+    dummies: tuple = ()          # a dummy PLFRAME after each frame listed (repeat for more)
+    ts: bool = False             # payload: the TS replay input instead of the GCS test stream
     lead_symbols: int = 500      # receiver noise before the transmitter starts
     seed: int = 2026
 
@@ -72,7 +76,7 @@ def pulse(rate=1e6, isi=0.0):
     so a stream of unit symbols has unit rms (sum of p^2 on a 16-point grid per symbol = 16).
     isi adds the pulse one symbol either side at that weight: the analog filters' residual ISI
     on the real link at 5 Msym/s."""
-    text = (ROOT / "firmware/main/shaper_taps.h").read_text()
+    text = (ROOT / "firmware/components/shaper/include/shaper_taps.h").read_text()
     taps = np.array([int(v) for v in re.search(TAPS[rate] + r"\[\d+\] = \{([^}]*)\}", text)
                      .group(1).split(",") if v.strip()], float)
     n = 16 * GRID
@@ -93,7 +97,10 @@ def frames(link):
     """Symbols (phase index, 0..7) and per-frame truth: first symbol, model frame, codeword."""
     rate, modulation = mode(link.modcod)
     size = (dvbs2.code(rate, link.short).kbch - 80) // 8
-    model = rx.model(size, link.first + link.frames, link.callsign)
+    if link.ts:
+        model = rx.ts_model(link.modcod, link.first + link.frames, short=link.short)
+    else:
+        model = rx.model(size, link.first + link.frames, link.callsign)
     parts, truth, at = [np.zeros(link.lead_symbols, np.uint8)], [], link.lead_symbols
     active = [np.zeros(link.lead_symbols, bool)]
     for j in range(link.frames):
@@ -104,12 +111,22 @@ def frames(link):
             at += g
         k = link.first + j
         bits = np.unpackbits(np.frombuffer(model[k], np.uint8))
-        cw = dvbs2.fecframe(dvbs2.bbframe(bits, rate, link.short), rate, link.short)
+        if link.ts:
+            syncd = (-8 * size * k) % 1504
+            bbf = np.concatenate([dvbs2.bbheader(dvbs2.matype1(dvbs2.TS), 8 * size, 1504, 0x47, syncd), bits])
+        else:
+            bbf = dvbs2.bbframe(bits, rate, link.short)
+        cw = dvbs2.fecframe(bbf, rate, link.short)
         ph = dvbs2.plframe_phases(cw, rate, link.short, modulation=modulation)
         truth.append(dict(symbol=at, model_frame=k, codeword=cw, phases=ph))
         parts.append(ph)
         active.append(np.ones(len(ph), bool))
         at += len(ph)
+        for _ in range(list(link.dummies).count(j)):
+            dummy = dvbs2.dummy_phases()
+            parts.append(dummy)
+            active.append(np.ones(len(dummy), bool))
+            at += len(dummy)
     e0, de = clock(link)
     for f in truth:                   # pulse peak 4.5 symbols in; approximate, for matching
         n = (f["symbol"] + 4.5) * FS / link.rate / (1 + e0)
@@ -278,7 +295,8 @@ def check(link, reference_frames=0):
                             round(float(np.median([r["data_mer"] for r in rows.values()])), 2)],
                cfo_hz=[min(r["cfo"] for r in rows.values()), max(r["cfo"] for r in rows.values())],
                clock_ppb=[min(r["ppb"] for r in rows.values()), max(r["ppb"] for r in rows.values())],
-               lost=stats["lost"], relocks=stats["relocks"], rejects=stats["rejects"])
+               lost=stats["lost"], relocks=stats["relocks"], rejects=stats["rejects"],
+               dummies=stats["dummies"])
     if reference_frames:
         ref = reference(np.concatenate(kept), truth[:reference_frames], link)
         pairs = [(r, rows[k]["data_mer"]) for k, r in enumerate(ref) if r is not None and k in rows]
@@ -297,13 +315,17 @@ def main():
             p.add_argument("--" + f.name.replace("_", "-"), type=f.type, default=f.default)
     p.add_argument("--normal", action="store_true")
     p.add_argument("--gap", type=float, nargs=2, metavar=("AFTER", "SECONDS"))
+    p.add_argument("--dummies", type=int, nargs="*", default=(), metavar="AFTER",
+                   help="a dummy PLFRAME after each of these frames (repeat for more)")
+    p.add_argument("--ts", action="store_true", help="TS replay payload")
     p.add_argument("--out", type=pathlib.Path, help=".u32 dump words, or .sc8 int8 I, Q pairs")
     p.add_argument("--check", action="store_true", help="run the C demodulator on it")
     p.add_argument("--reference", type=int, default=0, help="frames for the float reference")
     a = p.parse_args()
     link = Link(**{f.name: getattr(a, f.name) for f in dataclasses.fields(Link)
-                   if f.name not in ("gap", "short") and hasattr(a, f.name)},
-                short=not a.normal, gap=(int(a.gap[0]), a.gap[1]) if a.gap else None)
+                   if f.name not in ("gap", "short", "dummies") and hasattr(a, f.name)},
+                short=not a.normal, gap=(int(a.gap[0]), a.gap[1]) if a.gap else None,
+                dummies=tuple(a.dummies))
     if a.check:
         out = check(link, a.reference)
         return 0 if out["exact"] == out["matched"] and not out["missing"] else 1

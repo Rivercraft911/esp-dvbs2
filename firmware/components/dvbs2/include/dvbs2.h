@@ -72,6 +72,8 @@ int dvbs2_bb_gcs_ro(dvbs2_workspace *ws, const dvbs2_mode *mode,
                    const uint8_t *payload, size_t dfl_bits, unsigned ro);
 int dvbs2_bb_ts(dvbs2_workspace *ws, const dvbs2_mode *mode,
                dvbs2_ts_state *state, const uint8_t *input, size_t input_bytes);
+int dvbs2_bb_ts_ro(dvbs2_workspace *ws, const dvbs2_mode *mode, dvbs2_ts_state *state,
+                   const uint8_t *input, size_t input_bytes, unsigned ro);
 
 /* Public stages permit bit-for-bit checks and per-stage cycle measurements.
  * Call in this order after bb_gcs/bb_ts. bits[] contains BBFRAME, then scrambled
@@ -108,7 +110,7 @@ typedef struct dvbs2_fast dvbs2_fast;
  * MAP_SPARSE keeps the
  * 8PSK mapper's hot cache footprint at 512 B beside a PSRAM workspace.
  * MAP_QUADS selects the QPSK block shaper's four-symbol bytes.
- * RO_20 selects GCS BBHEADER roll-off 0.20; the default is 0.35. */
+ * RO_20 selects BBHEADER roll-off 0.20 (GCS and TS); the default is 0.35. */
 /* VCM clears CCM in GCS MATYPE-1. TS VCM requires Annex D adaptation, not implemented. */
 enum { DVBS2_BCH_NIBBLE = 16, DVBS2_MAP_SPARSE = 256, DVBS2_MAP_QUADS = 512,
        DVBS2_RO_20 = 1024, DVBS2_VCM = 2048 };
@@ -126,17 +128,24 @@ size_t dvbs2_fast_size(void);
  * and either pilot setting; allocate fast_size() to switch freely. */
 size_t dvbs2_fast_mode_size(const dvbs2_mode *mode);
 int dvbs2_fast_prepare(dvbs2_fast *f, const dvbs2_mode *mode, int pilots, unsigned pie);
-/* Optional resident byte-BCH table for t = 10/12. After prepare, copy once to
- * an owned 16-byte-aligned buffer of this size, outside context/workspace/output.
- * It stays valid until the next prepare or cache_bch call. NULL restores flash.
- * Returns -1 for invalid context/alignment or t = 8. No allocation is hidden. */
+/* Optional resident BCH table: byte table for t = 10/12, pair tables for t = 8. After
+ * prepare, copy once to an owned 16-byte-aligned buffer of this size, outside
+ * context/workspace/output. It stays valid until the next prepare or cache_bch call.
+ * NULL restores flash. Returns -1 for invalid context/alignment. No allocation is hidden. */
 #define DVBS2_BCH_CACHE_BYTES 8192
 int dvbs2_fast_cache_bch(dvbs2_fast *f, uint8_t *table);
-/* Optional t=10/12 pairs, even byte counts only. Call after cache_tables,
- * with a separate aligned low table. Uses the resident table's high padding;
- * both buffers live until prepare/cache_bch. No internal allocation. */
-#define DVBS2_BCH_PAIR_BYTES 4096
-int dvbs2_fast_cache_bch_pair(dvbs2_fast *, uint8_t *low);
+/* Optional t=10/12 pairs, even byte counts only. Call after cache_tables, with a
+ * separate 16-byte-aligned table of this size. Rewrites the resident byte table in
+ * place; both buffers live until prepare/cache_bch. No internal allocation. */
+#define DVBS2_BCH_PAIR_BYTES 8192
+int dvbs2_fast_cache_bch_pair(dvbs2_fast *, uint8_t *pair);
+/* Optional unrolled LDPC parity packing (normal 2/3, 5/6, 9/10 on the S3): 0 when
+ * selected, -1 otherwise. Kept until the next prepare. */
+int dvbs2_fast_cache_pack(dvbs2_fast *f);
+/* The BCH path dvbs2_fast_bch takes after prepare/cache: "pair" (two bytes per step, t = 8),
+ * "split-pair" (two bytes, T1's low half separate), "byte" or "nibble". table and pair receive
+ * the table addresses that path reads (pair is NULL unless split-pair). */
+const char *dvbs2_fast_bch_variant(const dvbs2_fast *f, const void **table, const void **pair);
 /* Optional complete hot-data cache (PRBS, Gold, BCH, LDPC
  * program/columns and GCS header CRC). After prepare, allocate cache_size()
  * aligned internal bytes, then cache_tables(). Buffer remains owned by caller
@@ -185,21 +194,16 @@ int dvbs2_encode_frame_packed(dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_state
                               const uint8_t *payload, size_t input_bits, uint8_t *packed);
 void dvbs2_pack(const uint8_t *phases, uint8_t *packed, size_t symbols);
 
-/* Streaming QPSK mapper. Keep history/pending across frames, initially zero
- * (six phase-1 history symbols). start maps FEC bytes, read writes one eleven-
- * sign history per five PL symbols, including header/pilots. No packed frame.
- * at reaches frame_symbols at EOF; a partial five-symbol group survives EOF.
- * lut has 1024 words: five phase>>1 codes to I bits 8:4 and Q bits 24:20. */
+/* Streaming mapper state, kept across frames, initially zero. at reaches frame_symbols
+ * at EOF; a partial group survives EOF. */
 typedef struct {
     uint32_t history;
     unsigned pending, at;
 } dvbs2_sign_state;
+/* QPSK FEC bytes to chronological quad bytes in the context scratch. */
 int dvbs2_fast_sign_start(dvbs2_fast *f, const dvbs2_workspace *ws, dvbs2_sign_state *s);
-unsigned dvbs2_fast_sign_read(const dvbs2_fast *f, dvbs2_sign_state *s, uint32_t *dst,
-                              unsigned blocks, const uint32_t *lut);
-/* QPSK axis queue variant: requires MAP_QUADS; separate start/read pair with the same state lifetime.
- * Each output word holds sixteen I-negative bits in 15:0 and Q in 31:16,
- * oldest first. pending counts symbols modulo sixteen. Do not mix the two APIs. */
+/* QPSK axis queue: requires MAP_QUADS. Each output word holds sixteen I-negative bits in 15:0
+ * and Q in 31:16, oldest first, including header and pilots. pending counts symbols modulo 16. */
 int dvbs2_fast_axis_start(dvbs2_fast *, const dvbs2_workspace *, dvbs2_sign_state *);
 unsigned dvbs2_fast_axis_read(const dvbs2_fast *, dvbs2_sign_state *, uint32_t *, unsigned words);
 

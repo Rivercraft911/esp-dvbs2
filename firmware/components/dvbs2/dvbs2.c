@@ -149,7 +149,13 @@ HOT int dvbs2_bb_gcs_ro(dvbs2_workspace *ws, const dvbs2_mode *mode,
 HOT int dvbs2_bb_ts(dvbs2_workspace *ws, const dvbs2_mode *mode,
                     dvbs2_ts_state *state, const uint8_t *input, size_t input_bytes)
 {
-    if (!ws || !valid_mode(mode) || !state || !input ||
+    return dvbs2_bb_ts_ro(ws, mode, state, input, input_bytes, 0);
+}
+
+HOT int dvbs2_bb_ts_ro(dvbs2_workspace *ws, const dvbs2_mode *mode, dvbs2_ts_state *state,
+                       const uint8_t *input, size_t input_bytes, unsigned ro)
+{
+    if (ro > 2 || !ws || !valid_mode(mode) || !state || !input ||
         state->packet_pos >= 188 || input_bytes != ((size_t)mode->kbch - 80) / 8) {
         return -1;
     }
@@ -161,7 +167,7 @@ HOT int dvbs2_bb_ts(dvbs2_workspace *ws, const dvbs2_mode *mode,
         }
     }
     unsigned syncd = ((188 - state->packet_pos) % 188) * 8;
-    bb_header(ws->bits, 0xf0, (unsigned)(input_bytes * 8), 1504, 0x47, syncd);
+    bb_header(ws->bits, 0xf0 | ro, (unsigned)(input_bytes * 8), 1504, 0x47, syncd);
     for (size_t k = 0; k < input_bytes; ++k) {
         if (state->packet_pos == 0) {
             ws->bits[10 + k] = state->previous_crc;

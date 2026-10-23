@@ -110,11 +110,10 @@ static inline size_t heap_caps_get_largest_free_block(unsigned c) {
     return free;
 }
 #define heap_caps_get_minimum_free_size heap_caps_get_free_size
-static inline int heap_caps_monitor_local_minimum_free_size_start(void) { return 0; }
-static inline int heap_caps_monitor_local_minimum_free_size_stop(void) { return 0; }
 typedef struct {
     pthread_t thread; pthread_mutex_t mutex; pthread_cond_t cond;
     unsigned notifications, notifications_sent, priority; void (*fn)(void *); void *arg;
+    int suspended;
 } native_task;
 typedef native_task *TaskHandle_t;
 static _Thread_local TaskHandle_t current;
@@ -141,7 +140,15 @@ static inline unsigned ulTaskNotifyTake(int clear, unsigned timeout) {
     unsigned n = t->notifications; t->notifications = 0;
     pthread_mutex_unlock(&t->mutex); return n;
 }
-static inline void vTaskSuspend(TaskHandle_t t) { (void)t; pthread_exit(NULL); }
+static inline void vTaskSuspend(TaskHandle_t t) {
+    (void)t; __atomic_store_n(&current->suspended, 1, __ATOMIC_RELEASE); pthread_exit(NULL);
+}
+typedef enum { eRunning, eReady, eBlocked, eSuspended, eDeleted } eTaskState;
+static inline eTaskState eTaskGetState(TaskHandle_t t) {
+    return __atomic_load_n(&t->suspended, __ATOMIC_ACQUIRE) ? eSuspended : eRunning;
+}
+typedef unsigned char StackType_t;
+typedef struct { int unused; } StaticTask_t;
 static inline void vTaskDelete(TaskHandle_t t) {
     pthread_join(t->thread, NULL);
     pthread_mutex_destroy(&t->mutex); pthread_cond_destroy(&t->cond); free(t);
@@ -157,6 +164,11 @@ static inline int xTaskCreatePinnedToCore(void (*fn)(void *), const char *name,
     pthread_mutex_init(&worker->mutex, NULL); pthread_cond_init(&worker->cond, NULL);
     *handle = worker; assert(!pthread_create(&worker->thread, NULL, native_entry, worker));
     return pdPASS;
+}
+static inline TaskHandle_t xTaskCreateStaticPinnedToCore(void (*fn)(void *), const char *name,
+    unsigned stack, void *arg, unsigned priority, StackType_t *buffer, StaticTask_t *tcb, int core) {
+    (void)buffer; (void)tcb; TaskHandle_t handle = NULL;
+    return xTaskCreatePinnedToCore(fn, name, stack, arg, priority, &handle, core) == pdPASS ? handle : NULL;
 }
 typedef struct { pthread_mutex_t mutex; pthread_cond_t cond; unsigned ready; } StaticSemaphore_t;
 typedef StaticSemaphore_t *SemaphoreHandle_t;
@@ -204,21 +216,22 @@ def compile_stream(folder, source="stream_host.c", defines=()):
     exe = folder / "stream"
     subprocess.run(["cc", "-O2", "-std=c11", "-D_POSIX_C_SOURCE=200809L",
                     "-Wall", "-Wextra", "-Werror", "-pthread", *["-D"+d for d in defines],
-                    "-I" + tmp, "-I" + str(ROOT / "firmware/main"),
+                    "-I" + tmp, "-I" + str(ROOT / "firmware/tx/main"),
+                    "-I" + str(ROOT / "firmware/components/shaper/include"),
                     "-I" + str(ROOT / "firmware/components/ingress/include"),
                     "-I" + str(ROOT / "firmware/components/dvbs2/include"),
                     "-I" + str(ROOT / "firmware/components/radio_s3/include"),
                     "-I" + str(ROOT / "firmware/components/station_id/include"),
+                    "-I" + str(ROOT / "firmware/components/platform/include"),
                     str(ROOT / "tests" / source), str(ROOT / "tests/ingress_sim.c"),
                     str(ROOT / "firmware/components/ingress/ingress.c"),
-                    str(ROOT / "firmware/components/ingress/ingress_pattern.c"), str(ROOT / "firmware/main/ring.c"),
-                    str(ROOT / "firmware/main/shaper.c"),
-                    str(ROOT / "firmware/main/shaper_axes.c"),
-                    str(ROOT / "firmware/main/shaper_short.c"),
-                    str(ROOT / "firmware/main/machine.c"),
-                    str(ROOT / "firmware/main/lofty.c"),
-                    str(ROOT / "firmware/main/lofty_fused.c"),
-                    str(ROOT / "firmware/main/shaper_qpsk.c"),
+                    str(ROOT / "firmware/components/ingress/ingress_pattern.c"), str(ROOT / "firmware/tx/main/ring.c"),
+                    str(ROOT / "firmware/components/shaper/shaper.c"),
+                    str(ROOT / "firmware/components/shaper/shaper_axes.c"),
+                    str(ROOT / "firmware/components/shaper/shaper_short.c"),
+                    str(ROOT / "firmware/components/shaper/machine.c"),
+                    str(ROOT / "firmware/components/shaper/lofty.c"),
+                    str(ROOT / "firmware/components/shaper/shaper_qpsk.c"),
                     str(ROOT / "firmware/components/dvbs2/dvbs2.c"),
                     str(ROOT / "firmware/components/dvbs2/fast.c"),
                     str(ROOT / "firmware/components/station_id/station_id.c"),
@@ -238,6 +251,7 @@ def test_stream(output=None, receiver=None, input_only=False):
         # repeated starts, every allocation failure, empty startup and resumed input.
         input_cases = [(mc,n,rate) for mc in range(4,18) for n,rate in ((8,40),(4,40),(4,80))]
         input_cases += [(mc,n,rate) for mc in range(4,12) for n,rate in ((40,40),(3,80))]
+        input_cases += [(mc,12,80) for mc in (4,7,11)]  # 100/3 Msym/s: roll-off 0.20 BBHEADERs
         for kind in (1, 2, 3, 4):
             for mc, sps, input_rate in input_cases:
                 iq = (output or folder)/f"input-{kind}-{mc}-n{sps}-{input_rate}m.iq"
@@ -292,14 +306,18 @@ def test_stream(output=None, receiver=None, input_only=False):
                 assert r["ring_format"] == ("quads" if quads else "packed" if packed else "raw")
                 assert r["workspace_memory"] == ("internal" if packed and (mc < 12 or sps == 4) else "psram")
                 assert r["workspace_bytes"] == 12420
-                assert r["workspace_heap_bytes"] == (0 if quads else r["workspace_bytes"])
-                assert r["fast_heap_bytes"] == r["fast_bytes"]
-                cached = packed and (mc < 12 or sps == 4) and mc not in (10, 11, 16, 17)
+                # Borrowed buffers lie in the 64 KiB shaping store; the rest is run memory.
+                store = int(r["layout"]["table"], 16)
+                in_store = lambda name: store <= int(r["layout"][name], 16) < store + 65536
+                assert in_store("workspace") == quads
+                assert not in_store("fast")
+                cached = packed and (mc < 12 or sps == 4) and mc not in (10, 11)
                 assert r["bch_cache_bytes"] == (8192 if cached else 0)
-                borrowed_bch = mc >= 12 and sps == 4 and (short or mc == 13) and cached
-                assert r["bch_cache_heap_bytes"] == (0 if borrowed_bch else r["bch_cache_bytes"])
-                pair = packed and (quads or mc >= 12 and sps == 4) and mc in (10,11,16,17)
-                assert r["bch_variant"] == ("resident-byte" if cached else "flash-pair" if pair else "nibble")
+                # t = 8 (16, 17) takes its pair tables from run memory, never the store.
+                borrowed_bch = mc >= 12 and sps == 4 and (short or mc == 13) and cached and mc < 16
+                if cached: assert in_store("bch") == borrowed_bch
+                # The host build has no PIE kernels: dvbs2_fast_bch takes the C nibble rows.
+                assert r["bch_variant"] == "nibble" and r["bch_pair_memory"] == "none"
                 assert r["packed_mapper"] == ("none" if not packed else "quads" if quads else "direct" if mc < 12 or sps == 4 else "sparse")
                 assert bool(int(r["layout"]["bch"], 16)) == cached
                 slots = [int(a, 16) for a in r["layout"]["slots"]]
@@ -315,7 +333,8 @@ def test_stream(output=None, receiver=None, input_only=False):
                     assert filler == table+12288*sps+(stored*8352 if sps == 3 else 12432)
                     if sps == 4: assert int(r['layout']['workspace'],16) == table+49152
                     assert filler+864 <= table+65536
-                    assert r['ring_heap_bytes'] == (r['ring_slots']-stored)*8352
+                    assert slots[stored:] == [slots[stored]+i*8352 for i in range(r['ring_slots']-stored)]
+                    assert all(not store <= a < store+65536 for a in slots[stored:])
                     assert all(a%16 == 0 for a in slots)
                 elif packed:
                     # Two packed frames, the packed dummy, then the payload, each with the
@@ -334,19 +353,18 @@ def test_stream(output=None, receiver=None, input_only=False):
                         used = 4096 if sps == 4 else 8192
                         assert slots[0] == int(r["layout"]["table"], 16) + used
                         assert slots == [slots[0] + i * frame for i in range(r["ring_slots"])]
-                        assert used + need <= 65536 and r["ring_heap_bytes"] == 0
+                        assert used + need <= 65536 and all(store <= a < store+65536 for a in slots)
                     elif short:
                         assert slots[0] == int(r["layout"]["table"], 16) + 16384
                         assert slots[2] >= filler+1696
                         assert slots[2] + frame <= int(r["layout"]["table"], 16) + 65536
-                        assert r["ring_heap_bytes"] == 0
                     elif sps == 4:
-                        # Two frames, dummy and payload in the store; the third on the heap.
+                        # Two frames, dummy and payload in the store; the third in run memory.
                         assert slots[0] == int(r["layout"]["table"], 16) + 32768
-                        assert need <= 32768 and r["ring_heap_bytes"] == frame
+                        assert need <= 32768 and not store <= slots[2] < store+65536
                         assert not slots[0] <= slots[2] < slots[0] + 32768
                     else:
-                        assert r["ring_heap_bytes"] == 2*frame
+                        assert all(not store <= a < store+65536 for a in slots)
                 assert all(p["calls"] == r["frames_encoded"] for p in r["profile"]["encoder"].values())
                 assert r["symbol_rate"] == rate * 1000000 // sps
             if receiver and (mc < 12 or mc in (13, 15, 17)):

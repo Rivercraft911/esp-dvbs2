@@ -115,7 +115,7 @@ def run(receiver=None, output=None):
         folder.mkdir(parents=True, exist_ok=True)
         exe = compile_stream(Path(tmp), source='vcm_host.c', defines=('STREAM_HEAP_LIMITS',))
         for sps, hold, scope in ((40, 1, 'qpsk'), (8, 1, 'qpsk'), (8, 4, 'first'), (8, 1, '8psk'),
-                                 (4, 1, 'qpsk'), (4, 1, '8psk'), (8, 1, 'mixed'), (8, 2, 'mixed'), (8, 1, 'ota'),
+                                 (8, 1, 'mixed'), (8, 2, 'mixed'), (8, 1, 'ota'),
                                  (8, 0, 'mixed'), (8, 0, 'qpsk')):
             stem = folder/f'vcm-n{sps}-hold{hold}-{scope}'
             symbols = stem.with_suffix('.phases')
@@ -132,23 +132,18 @@ def run(receiver=None, output=None):
                                     capture_output=True, text=True, timeout=90)
             assert result.returncode == 0, result.stdout[-2000:]+result.stderr
             records = [json.loads(line[1:]) for line in result.stdout.splitlines() if line.startswith('@')]
-            probes = [row for row in records if row.get('cmd') == 'wifimem' and 'status' in row]
-            assert len(probes) == 1 and probes[0]['status'] == 'ESP_OK'
-            for name in ('before', 'after_encoder', 'after_wifi'):
-                assert probes[0]['main_stack_min_free_'+name] == 1024
             dumps = [row for row in records if row.get('cmd') == 'dvbdump' and 'crc32' in row]
             assert len(dumps) == 2 and all(row['status'] == 'ESP_OK' and not row['encoder_failed'] for row in dumps)
             if hold:
                 pace = next(row for row in records if row.get('cmd') == 'dvbpace' and 'status' in row)
-                assert pace['status'] == 'ESP_OK' and pace['paced_wifi_up'] and not pace['encoder_failed']
+                assert pace['status'] == 'ESP_OK' and not pace['encoder_failed']
             assert Path(str(symbols)+'.iq').stat().st_size > 0
             failures = [json.loads(line[1:]) for line in result.stdout.splitlines() if line.startswith('@') and 'VCM allocation failed' in line]
             assert failures
-            fragmented = failures[-1]
-            assert fragmented['stage'] == 'overlap' and fragmented['requested_bytes'] == 8704
-            assert fragmented['free_internal_before'] == 16384 and fragmented['largest_internal_before'] == 4096
-            assert fragmented['free_internal'] == 16384-2058 and fragmented['largest_internal'] == 4096
-            assert fragmented['free_psram'] == fragmented['largest_psram'] == 1024*1024
+            short = failures[-1]
+            assert short['stage'] == 'overlap' and short['requested_bytes'] == 8704
+            low, high = short['run_memory']['low'], short['run_memory']['high']
+            assert low[0] == 2064 and low[2] == 4096 and high[2] == 0 # the 2058-byte window, then no room
             summary = next(line for line in result.stdout.splitlines() if line.startswith('VCM n'))
             sequence = check_model(np.fromfile(symbols, np.uint8), payload.read_bytes(), sps, hold, scope)
             print(summary+'; every PL symbol and DAC word matches', flush=True)

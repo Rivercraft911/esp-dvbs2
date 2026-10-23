@@ -55,7 +55,7 @@ typedef void (*TaskFunction_t)(void *);
 typedef int SemaphoreHandle_t;
 typedef int BaseType_t;
 static int state_lock, done_storage;
-static bool running, lo_divided, profile_selected;
+static bool running, lo_divided;
 static int32_t lo_offset_khz;
 static unsigned pll_mhz, pll_khz, selector;
 static void phy_set_freq(uint16_t mhz, int16_t khz) { pll_mhz=mhz; pll_khz=khz; }
@@ -68,21 +68,17 @@ static unsigned tasks, commands;
 static const char *call = "N0CALL";
 static const char *station_store_get(void) { return call; }
 static bool station_require(const char *cmd) { (void)cmd; return call[0] != 0; }
-static void *heap_caps_calloc(size_t n, size_t size, unsigned caps) {
-    (void)caps; return calloc(n,size);
-}
-static void heap_caps_free(void *p) { free(p); }
 static int xSemaphoreCreateBinaryStatic(int *p) { (void)p; return 1; }
 static void xSemaphoreTake(int s, unsigned t) { assert(s == 1 && t == portMAX_DELAY); }
-static int xTaskCreatePinnedToCore(TaskFunction_t task, const char *name, unsigned stack,
-                                 void *arg, unsigned priority, void *handle, int core) {
-    (void)name; (void)stack; (void)priority; (void)handle; assert(core == 1);
-    ++tasks; task(arg); return pdPASS;
-}
+// The persistent core-1 worker (radio_s3_init): giving it a job runs the job.
+typedef void *TaskHandle_t;
+static int worker_tcb, job_ready = 2;
+static TaskHandle_t worker_task = &worker_tcb;
+static TaskFunction_t job_task;
+static void *job_arg;
+static station_id_t worker_id;
+static void xSemaphoreGive(int s) { assert(s == 2); ++tasks; job_task(job_arg); }
 radio_filter_mode_t radio_filter_get(void) { return RADIO_FILTER_AUTO; }
-void radio_calibration_attempt(radio_calibration_stats_t *stats,bool keyed) {
-    memset(stats,0,sizeof *stats); stats->requested=keyed && profile_selected;
-}
 static uint64_t clock_cycles;
 static uint32_t cycles(void) { return (uint32_t)clock_cycles++; }
 static void wait_until(uint32_t deadline) {
@@ -90,12 +86,19 @@ static void wait_until(uint32_t deadline) {
     if (left > 0) clock_cycles += (uint32_t)left;
 }
 static int esp_task_wdt_reset(void) { return 0; }
+// Core 1's tick is off during runs; schedule() runs its tick hooks (the interrupt watchdog's).
+static unsigned tick_hooks;
+static uint64_t tick_first, tick_last, tick_gap_max;
+static void esp_vApplicationTickHook(void) {
+    if (!tick_hooks++) tick_first = clock_cycles;
+    else if (clock_cycles-tick_last > tick_gap_max) tick_gap_max = clock_cycles-tick_last;
+    tick_last = clock_cycles;
+}
 '''
 
 WORKERS = r'''
 static station_id_t observed;
 static uint32_t parsed_seconds, parsed_frequency, observed_frequency;
-static bool parsed_solo;
 static int payload(uint32_t *dst, uint64_t first, size_t count, void *ctx) {
     (void)ctx;
     for (size_t i=0; i<count; ++i) dst[i] = (uint32_t)(first+i)^0x12345678U;
@@ -135,17 +138,15 @@ static void worker(void *arg) {
     }
     run->error = ESP_OK;
 }
-static void paced_worker(void *arg) { worker(arg); }
 static esp_err_t fill_bank(run_t *run, unsigned bank, uint64_t start) {
     assert(bank <= 1 && start < run->samples);
     ++run->stats->fills; return ESP_OK;
 }
 static void dvbtx_set_short(bool enabled) { (void)enabled; }
-static void dvbtx_run_options(uint32_t f, unsigned m, uint32_t seconds, unsigned g,
-                            unsigned p, unsigned sps, uint32_t rate, bool fixture,
-                            bool solo, bool fused) {
-    (void)m; (void)g; (void)p; (void)sps; (void)rate; (void)fixture; (void)fused;
-    ++commands; parsed_frequency = f; parsed_seconds = seconds; parsed_solo = solo;
+static void dvbtx_run(uint32_t f, unsigned m, uint32_t seconds, unsigned g,
+                            unsigned p, unsigned sps, uint32_t rate, bool fixture) {
+    (void)m; (void)g; (void)p; (void)sps; (void)rate; (void)fixture;
+    ++commands; parsed_frequency = f; parsed_seconds = seconds;
 }
 '''
 
@@ -211,10 +212,10 @@ static void counters(void) {
 
 MAIN = r'''
 static void command(const char *text, bool accepted, bool solo) {
+    (void)solo; // --phy-solo is accepted from old scripts and has no effect
     char args[160]; snprintf(args,sizeof args,"%s",text);
     unsigned before = commands; cmd_dvb(args);
     assert(commands == before+(unsigned)accepted);
-    if (accepted) assert(parsed_solo == solo);
 }
 int main(void) {
     assert(!lo_divided && !lo_offset_khz);
@@ -253,7 +254,7 @@ int main(void) {
     command("2412 13 5m 540 0 128",true,false); assert(parsed_seconds == 540);
     command("2412 13 5m 61 17 508",true,false);
     command("2412 13 5m 541",false,false);
-    // --short: QPSK 4..10 at 1m or 5m, 8PSK 12..16 at 5m only; no 9/10, 10m, fixture or fused.
+    // --short: QPSK 4..10 at 1m or 5m, 8PSK 12..16 at 5m only; no 9/10, 10m or fixture.
     command("2412 7 5 --short",true,false); command("2412 7 5m 5 --short",true,false);
     command("2412 10 5m 5 --short",true,false); command("2412 12 5m 5 --short",true,false);
     command("2412 16 5m 5 --short",true,false);
@@ -263,20 +264,12 @@ int main(void) {
     command("2412 13 5m 0",false,false);
     command("2412 13 5m 4294967295",false,false);
     command("2412 13 5m 60 --phy-solo",true,true);
-    command("2412 13 5m 61 --phy-solo",false,true);
+    command("2412 13 5m 61 --phy-solo",true,true); // no Wi-Fi, so no 60 s PHY-solo limit
     command("1999 13 5m 530",false,false);
     command("2451 13 5m 530",false,false);
     command("2412 13 5m 530 18",false,false);
     command("2412 13 5m 530 0 509",false,false);
     radio_s3_stats_t stats;
-    profile_selected=true; radio_s3_lo_command("five-sixths");
-    unsigned before_profile=tasks;
-    assert(radio_s3_run_options(2420,0,30,RADIO_S3_DAC_RATE,6750000,payload,NULL,NULL,&stats)==ESP_ERR_NOT_SUPPORTED);
-    assert(tasks==before_profile && stats.calibration.requested);
-    radio_s3_lo_command("direct 1");
-    assert(radio_s3_run_options(2420,0,30,RADIO_S3_DAC_RATE,6750000,payload,NULL,NULL,&stats)==ESP_ERR_NOT_SUPPORTED);
-    assert(tasks==before_profile && stats.requested_rf_khz==2420001 && stats.lo_offset_khz==1);
-    profile_selected=false; radio_s3_lo_command("direct");
     unsigned before_offset=tasks;
     radio_s3_lo_command("direct -1");
     assert(radio_s3_run_options(2000,0,30,RADIO_S3_DAC_RATE,1350000,payload,NULL,NULL,&stats)==ESP_ERR_INVALID_ARG);
@@ -296,7 +289,6 @@ int main(void) {
         assert(!radio_s3_run_options(frequencies[i],0,30,RADIO_S3_DAC_RATE,6750000,payload,NULL,NULL,&stats));
         assert(observed_frequency == frequencies[i]);
     }
-    radio_s3_options_t solo = {.phy_solo=true};
     const char *calls[] = {"N0CALL","A0000000000000000000000"};
     for (unsigned c=0; c<2; ++c) for (unsigned scale=1; scale<=2; ++scale) {
         call = calls[c];
@@ -309,18 +301,15 @@ int main(void) {
         }
         unsigned before = tasks;
         assert(radio_s3_run_options(2412,0,541,rate,6750000,payload,NULL,NULL,&stats) == ESP_ERR_INVALID_ARG);
-        assert(radio_s3_run_options(2412,0,61,rate,6750000,payload,NULL,&solo,&stats) == ESP_ERR_INVALID_ARG);
         assert(radio_s3_run_options(1999,0,530,rate,6750000,payload,NULL,NULL,&stats) == ESP_ERR_INVALID_ARG);
         assert(radio_s3_run_options(2451,0,530,rate,6750000,payload,NULL,NULL,&stats) == ESP_ERR_INVALID_ARG);
         assert(radio_s3_run_options(2412,18,530,rate,6750000,payload,NULL,NULL,&stats) == ESP_ERR_INVALID_ARG);
         assert(tasks == before);
         call = "N0CALL";
-        assert(!radio_s3_run_options(2390,17,60,rate,6750000,payload,NULL,&solo,&stats));
-        assert(!radio_s3_paced_run_rate(600,rate,payload,NULL,&stats));
+        assert(!radio_s3_run_options(2390,17,60,rate,6750000,payload,NULL,NULL,&stats));
+        assert(!radio_s3_paced_run(600,rate,payload,NULL,NULL,&stats));
         assert(stats.id_count == 3); // existing nine-minute paced ID is preserved
-        assert(!radio_s3_paced_wifi_options(600,rate,payload,NULL,NULL,&stats));
-        assert(stats.id_count == 3);
-        assert(radio_s3_paced_wifi_options(61,rate,payload,NULL,&solo,&stats) == ESP_ERR_INVALID_ARG);
+        assert(radio_s3_paced_run(601,rate,payload,NULL,NULL,&stats) == ESP_ERR_INVALID_ARG);
         // Execute every production bank deadline over 540 s, from an epoch
         // near wrap, with a synthetic clock. No radio/register implementation.
         memset(&stats,0,sizeof stats);
@@ -328,7 +317,12 @@ int main(void) {
         run_t run = {.samples=540ULL*rate,.stats=&stats,.geo=geometry(rate)};
         clock_cycles = UINT32_MAX-1000;
         uint64_t epoch = clock_cycles;
+        tick_hooks = 0; tick_gap_max = 0;
         assert(!schedule(&run,(uint32_t)epoch,0,true));
+        // Every 1,024 banks: within the interrupt watchdog's 800 ms at either DAC rate, from
+        // the run's start to the first hook and from the last hook to the run's end too.
+        assert(tick_hooks == stats.switches/1024 && tick_gap_max < 800ULL*240000);
+        assert(tick_first-epoch < 800ULL*240000 && clock_cycles-tick_last < 800ULL*240000);
         assert(stats.elapsed_cycles >= 540ULL*240000000);
         assert(stats.elapsed_cycles < 540ULL*240000000+100);
         assert(stats.elapsed_samples >= 540ULL*rate);
@@ -342,6 +336,93 @@ int main(void) {
     assert(tasks == before);
     counters();
     puts("duration/frequency: parser/API bounds, LO divider arithmetic, profile guard, ID windows and 540 s cycle wraps pass");
+}
+'''
+
+
+LIFECYCLE = r'''
+#include <assert.h>
+#include <stdio.h>
+#include <string.h>
+#include "radio_s3.h"
+#define ESP_OK 0
+#define ESP_ERR_INVALID_STATE 0x103
+#define ESP_ERR_TIMEOUT 0x107
+#define IRAM_ATTR
+#define pdMS_TO_TICKS(ms) (ms)
+typedef void *SemaphoreHandle_t;
+typedef int _lock_t;
+typedef struct {int unused;} systimer_dev_t;
+static systimer_dev_t SYSTIMER;
+#define SYSTIMER_ALARM_OS_TICK_CORE0 0
+enum {DAC_CTRL, ADC_CTRL, BANK_USAGE, FE_CTRL, TONE_CTRL};
+static uint32_t regs[5];
+#define REG_READ(r) regs[r]
+#define REG_WRITE(r,v) (regs[r]=(v))
+#define REG_CLR_BIT(r,v) (regs[r]&=~(v))
+static const char *events[16];
+static unsigned count;
+static void event(const char *what) { assert(count < 16); events[count++] = what; }
+static bool tick_on = true, watched = true, phy_up = true, filter_ok = true;
+static esp_err_t ready_error, run_error;
+static uint32_t cpu_hz = 240000000;
+static void systimer_ll_enable_alarm_int(systimer_dev_t *dev, unsigned alarm, bool on) {
+    assert(dev == &SYSTIMER && alarm == 1 && tick_on != on); // core 1's alarm, toggled once
+    tick_on = on; event(on ? "tick on" : "tick off");
+}
+esp_err_t radio_s3_stream_ready(void) { return ready_error; }
+static uint32_t esp_clk_cpu_freq(void) { return cpu_hz; }
+static _lock_t phy_get_lock(void) { return 0; }
+static void _lock_acquire(_lock_t *l) { (void)l; }
+static void _lock_release(_lock_t *l) { (void)l; }
+static void phy_param_track_tot(bool a, bool b) { (void)a; (void)b; }
+static void force_txon_mode(uint8_t e, uint8_t m, uint8_t o) { (void)e; (void)m; (void)o; }
+static void rom_pbus_xpd_tx_off(void) {}
+static void rom_pbus_xpd_rx_on(unsigned en) { (void)en; }
+static void direct_lo(void) {}
+static void set_chanfreq(uint16_t mhz, uint8_t bw) { (void)mhz; (void)bw; }
+static void tune(uint32_t mhz) { (void)mhz; }
+static void vTaskDelay(unsigned ticks) { (void)ticks; }
+bool radio_filter_finish(radio_filter_stats_t *s) { (void)s; event("filter"); return filter_ok; }
+static void esp_phy_wifi_tx_tone(uint32_t start, uint32_t chan, uint32_t backoff) {
+    (void)start; (void)chan; (void)backoff; event("rf off");
+}
+static void xSemaphoreGive(SemaphoreHandle_t s) { (void)s; event("done"); }
+'''
+
+LIFECYCLE_MAIN = r'''
+static esp_err_t paced(run_t *run) { (void)run; assert(!tick_on); event("paced"); return run_error; }
+static esp_err_t stream(run_t *run) { (void)run; assert(!tick_on); event("stream"); return run_error; }
+static unsigned at(const char *what) {
+    for (unsigned i = 0; i < count; ++i) if (!strcmp(events[i], what)) return i;
+    return 99;
+}
+int main(void) {
+    // paced, keyed; setup failures; run failures; a failed filter finish.
+    const struct {bool paced, phy, filter_applied, filter; esp_err_t ready, err; uint32_t hz; esp_err_t want;} cases[] = {
+        {1,1,0,1,ESP_OK,ESP_OK,240000000,ESP_OK}, {1,1,0,1,ESP_OK,ESP_ERR_TIMEOUT,240000000,ESP_ERR_TIMEOUT},
+        {1,1,0,1,ESP_ERR_TIMEOUT,ESP_OK,240000000,ESP_ERR_TIMEOUT}, {1,1,0,1,ESP_OK,ESP_OK,160000000,ESP_ERR_INVALID_STATE},
+        {0,1,1,1,ESP_OK,ESP_OK,240000000,ESP_OK}, {0,1,1,1,ESP_OK,ESP_ERR_TIMEOUT,240000000,ESP_ERR_TIMEOUT},
+        {0,1,1,0,ESP_OK,ESP_OK,240000000,ESP_ERR_INVALID_STATE}, {0,0,0,1,ESP_OK,ESP_OK,240000000,ESP_ERR_INVALID_STATE},
+        {0,1,0,1,ESP_ERR_TIMEOUT,ESP_OK,240000000,ESP_ERR_TIMEOUT},
+    };
+    for (unsigned c = 0; c < sizeof cases/sizeof *cases; ++c) {
+        radio_s3_stats_t stats = {0};
+        stats.filter.applied = cases[c].filter_applied;
+        run_t run = {.freq_mhz = 2412, .stats = &stats, .paced = cases[c].paced, .geo = {.step = 15740, .lead = 128}};
+        count = 0; phy_up = cases[c].phy; filter_ok = cases[c].filter; ready_error = cases[c].ready;
+        run_error = cases[c].err; cpu_hz = cases[c].hz; regs[DAC_CTRL] = 1;
+        worker(&run);
+        const bool ran = at(cases[c].paced ? "paced" : "stream") != 99;
+        assert(run.error == cases[c].want && tick_on && at("done") == count-1);
+        // The tick is off exactly around the run and back on after the RF cleanup.
+        if (ran) {
+            assert(at("tick off")+1 == at(cases[c].paced ? "paced" : "stream") && at("tick on") < at("done"));
+            if (!cases[c].paced) assert(at("rf off") < at("tick on") && !regs[DAC_CTRL]);
+        } else assert(at("tick off") == 99 && at("tick on") == 99);
+    }
+    puts("worker: core 1's tick off only around paced/stream runs and back on after the RF cleanup, "
+         "on every exit (9 cases, injected failures)");
 }
 '''
 
@@ -394,7 +475,7 @@ static void force_tx_gain(uint16_t code,uint16_t bb,uint8_t digital) {
 static void force_txon_mode(uint8_t enabled,uint8_t mode,uint8_t offset) {
     assert(enabled==1 && !mode && offset==(uint8_t)-37); check_tune(); regs[FE_CTRL]=37U<<18;
 }
-bool radio_calibration_filter(radio_filter_stats_t *s) {
+bool radio_filter_apply(radio_filter_stats_t *s) {
     check_tune(); s->selected=s->occupied_hz>20000000U?RADIO_FILTER_WIDE:RADIO_FILTER_NARROW; return true;
 }
 static uint32_t cycles(void) {return 123;}
@@ -424,9 +505,45 @@ int main(void) {
 '''
 
 
+def arguments(text, open_at):
+    """Top-level comma-separated arguments of the call whose '(' is at open_at."""
+    depth, start, out = 0, open_at + 1, []
+    for k in range(open_at, len(text)):
+        c = text[k]
+        depth += (c == "(") - (c == ")")
+        if depth == 1 and c == ",":
+            out.append(text[start:k].strip()); start = k + 1
+        elif depth == 0:
+            out.append(text[start:k].strip())
+            return out
+    raise ValueError("unbalanced call")
+
+
+def core1_reserved():
+    """radio_s3.c turns core 1's tick off during a run because core 1 then runs only the radio
+    worker: every transmitter task but the worker is pinned to core 0, and none is created
+    without a core. sdkconfig.defaults moves no IDF task to core 1; the unpinned IDF timer
+    task (priority 1) cannot preempt the worker (configMAX_PRIORITIES - 2), which never blocks
+    in a run."""
+    tasks = []
+    for path in sorted((ROOT / "firmware").rglob("*.c")):
+        if "build" in path.parts or path.is_relative_to(ROOT / "firmware/rx"):
+            continue
+        text = path.read_text()
+        for m in re.finditer(r"\bxTaskCreate\w*\s*\(", text):
+            args = arguments(text, m.end() - 1)
+            assert "PinnedToCore" in m.group(0), (path, m.group(0))
+            tasks.append((path.name, args[1], args[-1]))
+    assert {(name, core) for _, name, core in tasks} == {('"radio"', "1"), ('"encoder"', "0")}, tasks
+    defaults = (ROOT / "firmware/tx/sdkconfig.defaults").read_text()
+    assert "AFFINITY_CPU1=y" not in defaults
+    print("core 1: only the radio worker is pinned there; every other TX task is pinned to core 0")
+
+
 if __name__ == "__main__":
+    core1_reserved()
     radio = (RADIO / "radio_s3.c").read_text()
-    console = (ROOT / "firmware/main/main.c").read_text()
+    console = (ROOT / "firmware/tx/main/main.c").read_text()
     geometry = radio[radio.index("typedef struct {"):radio.index("} geometry_t;")+len("} geometry_t;")]
     run_at = radio.index("typedef struct {\n    uint32_t freq_mhz;")
     run = radio[run_at:radio.index("} run_t;", run_at)+len("} run_t;")]
@@ -434,12 +551,12 @@ if __name__ == "__main__":
     source += function(radio,"schedule") + function(radio,"on_core1") + function(radio,"known_rate")
     for name in ("radio_s3_lo_command","requested_rf_khz","radio_s3_tuning_print","tune","direct_lo","cw_channel"):
         source += function(radio,name)
-    for name in ("radio_s3_run_options","radio_s3_paced_run_rate","radio_s3_paced_wifi_options"):
+    for name in ("radio_s3_run_options","radio_s3_paced_run"):
         source += function(radio,name)
     for name in ("number","tx_mode","short_scope","take_option","cmd_dvb"):
         source += function(console,name)
     source += COUNTERS + MAIN
-    build = ROOT / "firmware/build"
+    build = ROOT / "firmware/tx/build"
     build.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="radio-duration-",dir=build) as temp:
         folder = Path(temp)
@@ -449,8 +566,9 @@ if __name__ == "__main__":
         exe = folder / "test"
         subprocess.run(["cc","-std=c11","-D_POSIX_C_SOURCE=200809L","-O2","-Wall","-Wextra","-Werror",
                         "-I"+str(folder),"-I"+str(RADIO / "include"),"-I"+str(STATION / "include"),
-                        "-I"+str(ROOT / "firmware/main"),"-I"+str(ROOT / "firmware/components/ingress/include"),
-                        str(folder / "test.c"),str(STATION / "station_id.c"),str(ROOT / "firmware/main/ring.c"),
+                        "-I"+str(ROOT / "firmware/tx/main"),"-I"+str(ROOT / "firmware/components/shaper/include"),
+                        "-I"+str(ROOT / "firmware/components/ingress/include"),
+                        str(folder / "test.c"),str(STATION / "station_id.c"),str(ROOT / "firmware/tx/main/ring.c"),
                         str(ROOT / "firmware/components/ingress/ingress.c"),
                         str(ROOT / "firmware/components/ingress/ingress_pattern.c"),"-lm","-o",str(exe)],check=True)
         result = subprocess.run([str(exe)],check=True,capture_output=True,text=True)
@@ -467,3 +585,12 @@ if __name__ == "__main__":
                         "-I"+str(folder),"-I"+str(RADIO / "include"),str(folder / "setup.c"),
                         "-o",str(folder / "setup")],check=True)
         subprocess.run([str(folder / "setup")],check=True)
+        lifecycle = LIFECYCLE + geometry + run
+        lifecycle += "static esp_err_t paced(run_t *run);\nstatic esp_err_t stream(run_t *run);\n"
+        for name in ("cw_channel","cw_backoff","core1_tick","worker"):
+            lifecycle += function(radio,name)
+        (folder / "lifecycle.c").write_text(lifecycle + LIFECYCLE_MAIN)
+        subprocess.run(["cc","-std=c11","-O2","-Wall","-Wextra","-Werror",
+                        "-I"+str(folder),"-I"+str(RADIO / "include"),str(folder / "lifecycle.c"),
+                        "-o",str(folder / "lifecycle")],check=True)
+        subprocess.run([str(folder / "lifecycle")],check=True)

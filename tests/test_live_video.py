@@ -64,7 +64,10 @@ def test_processes():
         result = subprocess.run(cmd, capture_output=True, timeout=10, check=True)
         assert result.stdout == ts
         assert b"UHD status" in result.stderr
-        # Simulate a cold player launch and a capture with finite queue headroom.
+        # A cold player launch must not consume the capture's queue headroom: receive.run starts
+        # the player before the source and the decoder. Check that order where it is decided, in
+        # Popen, rather than by a write deadline: a deadline also measured the fake decoder's own
+        # startup, and under load that flaked (UHD exit 7). The deadline stays as a hang guard.
         player = folder / "player"
         player.write_text("#!" + sys.executable + "\nimport sys\n"
                           f"open({str(folder/'played.ts')!r}, 'wb').write(sys.stdin.buffer.read())\n")
@@ -72,14 +75,16 @@ def test_processes():
         source.write_text("#!" + sys.executable + "\nimport os,pathlib,sys,time\n"
                           f"data=memoryview(pathlib.Path({str(folder/'source.ts')!r}).read_bytes())\n"
                           "fd=os.open(sys.argv[-1],os.O_WRONLY|os.O_NONBLOCK)\n"
-                          "deadline=time.monotonic()+.3\n"
+                          "deadline=time.monotonic()+10\n"
                           "while data:\n"
                           " if time.monotonic()>deadline: raise SystemExit(7)\n"
                           " try: data=data[os.write(fd,data):]\n"
                           " except BlockingIOError: time.sleep(.001)\n"
                           "os.close(fd)\n")
         popen = subprocess.Popen
+        launched = []
         def cold_player(command, **kwargs):
+            launched.append(Path(command[0]).name)
             if command[0] == str(player):
                 time.sleep(.6)
             return popen(command, **kwargs)
@@ -88,6 +93,7 @@ def test_processes():
         receive.validate(args)
         with patch.object(receive.subprocess, 'Popen', cold_player):
             receive.run(args)
+        assert launched == ["player", "source", "decoder"], launched
         assert (folder/'saved.ts').read_bytes() == (folder/'played.ts').read_bytes() == ts
         # A source which fails before opening its FIFO must not hang.
         source.write_text("#!" + sys.executable + "\nraise SystemExit(3)\n")

@@ -1,0 +1,35 @@
+# The fill wakes the encoder from task context. Keep the notification's normal
+# path in IRAM; its critical-section and cross-core-yield callees are already there.
+[mapping:stream_notify]
+archive: libfreertos.a
+entries:
+    tasks:xTaskGenericNotify (noflash_text)
+    tasks:vTaskGenericNotifyGiveFromISR (noflash_text)
+
+# Stream state shared by both cores; stream_assert.ld checks its placement.
+[sections:stream_bss]
+entries:
+    .stream_bss
+
+[scheme:stream_bss]
+entries:
+    stream_bss -> dram0_bss
+
+[mapping:stream_bss]
+archive: libmain.a
+entries:
+    * (stream_bss);
+        stream_bss -> dram0_bss ALIGN(16, pre, post) SURROUND(stream_bss)
+
+[sections:vcm_bss]
+entries:
+    .vcm_bss
+
+[scheme:vcm_bss]
+entries:
+    vcm_bss -> dram0_bss
+
+[mapping:vcm_bss]
+archive: libmain.a
+entries:
+    * (vcm_bss)

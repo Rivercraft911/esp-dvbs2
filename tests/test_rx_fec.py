@@ -385,8 +385,43 @@ def test_false_accepts(native):
     print("false accepts: random words, wrong MODCOD and type, bad BBHEADERs, BCH errors: -1")
 
 
+def test_ts(native):
+    """Single-TS BBFRAMEs (host/dvbs2.py ts_bbframes) pass with their data fields exact; TS headers
+    the receiver cannot deframe are rejected."""
+    rng = np.random.default_rng(7)
+    packets = rng.integers(0, 256, (60, 188), dtype=np.uint8)
+    packets[:, 0] = 0x47
+    for modcod in (4, 7, 10):
+        rate = rate_of(modcod)
+        frames = d.ts_bbframes(packets.ravel(), rate, short=True)
+        assert len(frames) >= 4
+        for bbf in frames:
+            payload, st = native.frame(modcod, np.where(d.fecframe(bbf, rate, True), -K, K))
+            assert payload == np.packbits(bbf[80:]).tobytes() and st.header_ok, modcod
+    rate, modcod = rate_of(7), 7
+    dfl = d.code(rate, True).kbch - 80
+    data = rng.integers(0, 2, dfl, dtype=np.uint8)
+
+    def frame(mt1=d.matype1(d.TS), upl=1504, sync=0x47, syncd=0, length=dfl):
+        h = d.bbheader(mt1, length, upl, sync, syncd)
+        return np.concatenate([h, data[:length], np.zeros(dfl - length, np.uint8)])
+
+    for name, bbf, ok in (("TS", frame(), True), ("no packet start", frame(syncd=0xffff), True),
+                          ("ACM", frame(mt1=d.matype1(d.TS, ccm=0)), True),
+                          ("SYNCD at the end", frame(syncd=dfl - 8), True),
+                          ("UPL", frame(upl=1512), False), ("SYNC", frame(sync=0x48), False),
+                          ("SYNCD not bytes", frame(syncd=4), False),
+                          ("SYNCD past the field", frame(syncd=dfl), False),
+                          ("ISSY", frame(mt1=d.matype1(d.TS, issyi=1)), False),
+                          ("null-packet deletion", frame(mt1=d.matype1(d.TS, npd=1)), False),
+                          ("multiple streams", frame(mt1=d.matype1(d.TS, sis=0)), False)):
+        payload, st = native.frame(modcod, np.where(d.fecframe(bbf, rate, True), -K, K))
+        assert (payload is not None) == ok and st.bch_ok and st.header_ok == ok, name
+    print("ts: ts_bbframes data fields exact at MODCOD 4/7/10, bad TS headers rejected: ok")
+
+
 if __name__ == "__main__":
     with Native() as native:
         for test in (test_clean, test_failed_checks, test_awgn, test_int8_edges, test_damage,
-                     test_false_accepts):
+                     test_false_accepts, test_ts):
             test(native)

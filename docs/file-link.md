@@ -34,7 +34,7 @@ pass; paths in received names and existing output files are refused.
 ## Construction and wire format
 
 [`host/filelink.py`](../host/filelink.py) implements **systematic Cauchy
-Reed–Solomon over GF(256)**, the construction described by Plank and Xu,
+Reed-Solomon over GF(256)**, the construction described by Plank and Xu,
 [*Optimizing Cauchy Reed-Solomon Codes for Fault-Tolerant Storage Applications*,
 NCA 2006](https://web.eecs.utk.edu/~jplank/plank/papers/NCA-2006.pdf)
 ([tutorial material](https://web.eecs.utk.edu/~jplank/plank/papers/CS-05-569.html)).
@@ -115,10 +115,9 @@ Sending spools the snapshot and coded stream to temporary files and buffers one
 coding block. Recovery currently buffers the received transfer and reconstructed
 container in memory. Neither path establishes real-time encoding throughput.
 
-## Coordinator only: radio off first
+## Radio-off board check
 
-Use an already flashed compatible checkout; these are the only board steps,
-to be run by the coordinator. In a host shell, from the repository root:
+Flash `firmware/tx` from the same checkout first. In a host shell, from the repository root:
 
 ```sh
 PORT=/dev/cu.usbmodem101
@@ -137,26 +136,33 @@ board/USB/IQ CRCs and lengths, LeanDVB GCS lock and zero clean-channel FEC error
 then checks full recovery, random M-loss and burst M-loss recovery per block,
 and rejection at M+1 with no output. Losses here are injected after decoding the
 board dump. It prints JSON evidence. Use fresh IQ/report paths for another run.
-This board check is provided for the coordinator; it has not been run here.
+No run of this board check is recorded yet.
 
-## Coordinator only: keyed, closed Faraday box
+## Keyed, closed Faraday box
+
+Over the air, a 237,171-byte PNG crossed from the S3 to an E200 at QPSK 3/4, 5 Msym/s,
+FEC 16:4. All 60 coded frames of its three blocks arrived, and the file's SHA-256 matched,
+both as received and with one source frame per block thrown away
+([report](measurements/ota/file-png-5m/report.json)). That is one capture, in one closed
+box. The PNG is `tests/data/file-payload.png`.
 
 With both devices/antennas inside the **closed box**, compatible firmware already
-flashed, and an assigned callsign stored, run from the repository root:
+flashed, and your own callsign stored, run from the repository root:
 
 ```sh
-python3 examples/over-the-air/file_check.py docs/img/fill-history.png notes/file-ota \
+python3 examples/over-the-air/file_check.py tests/data/file-payload.png notes/file-ota \
   --port /dev/cu.usbmodem1101 --uri ip:192.168.1.10 --closed-box --key
 ```
 
 Defaults: real 237,171-byte PNG, FEC 16:4, QPSK 3/4 at 5 Msym/s, 2420 MHz,
-TX gain 0/peak 128, manual RX gain 30 dB, 30 seconds including both Morse IDs.
+TX gain 0/peak 128, manual RX gain 30 dB, 30 s including both Morse IDs (`--seconds`
+takes 1 to 60).
 Choose the actual port and authorized frequency (`--port`/`--mhz`);
 `--modcod 4` selects QPSK 1/2. Override the existing LeanDVB/Radioconda paths
 with `--receiver`/`--iio-python`; see the [RF checker](../examples/over-the-air/README.md).
 Allow 5.15 GB free disk and use a fresh output directory.
 
-The coordinator snapshots the file, reserves the exact serial port without reset,
+`file_check.py` snapshots the file, reserves the exact serial port without reset,
 validates the stored callsign/airtime budget, and starts the existing receive-only
 libiio worker with fail-closed TX inhibits. After one second of IQ it runs the
 USB FEC sender once, requires complete file acceptance/playback and healthy
@@ -184,5 +190,5 @@ audit using the same source/settings.
 Host tests: `python3 tests/test_file_ota.py`; add `--receiver /path/to/leandvb`
 for model IQ through an independent decoder. These pass with the real PNG,
 including one source-frame drop in each of three blocks (three erasures of
-margin left per block). This is **offline evidence**; the closed-box RF run
-still needs operator evidence.
+margin left per block). They are offline checks; the closed-box report above is the RF
+evidence.

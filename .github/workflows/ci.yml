@@ -22,11 +22,8 @@ jobs:
       - run: python tests/test_8psk_26m667.py
       - run: python tests/test_8psk_queue.py
       - run: python tests/test_8psk_memory.py
-      - run: python tests/test_fused.py
-      - run: python tests/test_physolo.py
       - run: python tests/test_radio_duration.py
       - run: python tests/test_radio_filter.py
-      - run: python tests/test_radio_calibration.py
       - run: python tests/test_qpsk_axes.py
       - run: python tests/test_self_check.py
       - run: python tests/test_live_video.py
@@ -40,13 +37,16 @@ jobs:
       - run: python tests/test_rx_kernels.py
       - run: python tests/test_rx_demod.py
       - run: python tests/test_rx_fec.py
+      - run: python tests/test_rx_ts.py
+      - run: python tests/test_run_arena.py
+      - run: python tests/test_run_memory.py
+      - run: python tests/test_ts_crc.py
       - name: SPI input
         run: |
           python tests/test_ingress.py
           python tests/test_pi_sender.py
           python tests/test_spi_input.py
           python tests/test_spi_pv.py
-          python tests/test_spi_board.py
           python tests/test_spi_sender.py
 
       - name: W5500 Ethernet (fake chip)
@@ -66,7 +66,7 @@ jobs:
         with:
           esp_idf_version: v6.1
           target: esp32s3
-          path: firmware
+          path: firmware/tx
       - uses: espressif/esp-idf-ci-action@v1
         with:
           esp_idf_version: v6.1

@@ -27,8 +27,7 @@ def checksum(data):
 def kernels(text):
     rows = [json.loads(l[1:]) for l in text.splitlines() if l.startswith('@{')]
     assert len(rows) == 11,len(rows)
-    assert "sign mapper: 96 frames" in text and "machine add: 4095 blocks" in text
-    assert "fused tails: three peaks" in text
+    assert "machine add: 4095 blocks" in text
     assert "lofty pages: 99 guarded batches" in text
     for r in rows[:9]:
         assert r['table'] == checksum(lofty.table(r['peak']).tobytes()),r
@@ -51,10 +50,9 @@ def check(out, receiver=None):
     component = ROOT/'firmware/components/dvbs2'
     kernel = out/'kernels'
     subprocess.run(['cc','-O2','-Wall','-Wextra','-Werror',
-                    '-I'+str(out),'-I'+str(ROOT/'firmware/main'),'-I'+str(component/'include'),
-                    str(ROOT/'tests/psk8_kernels.c'),str(ROOT/'tests/sign_mapper.c'),
-                    str(ROOT/'firmware/main/machine.c'),str(ROOT/'firmware/main/lofty.c'),
-                    str(ROOT/'firmware/main/lofty_fused.c'),
+                    '-I'+str(out),'-I'+str(ROOT/'firmware/components/shaper/include'),'-I'+str(component/'include'),
+                    str(ROOT/'tests/psk8_kernels.c'),
+                    str(ROOT/'firmware/components/shaper/machine.c'),str(ROOT/'firmware/components/shaper/lofty.c'),
                     str(component/'fast.c'),str(component/'dvbs2.c'),'-o',str(kernel)],check=True)
     kernels(subprocess.check_output([str(kernel)],text=True))
     crcs = {}
@@ -73,9 +71,9 @@ def check(out, receiver=None):
         r = dumps[0]
         assert r['profile']['fill_phase_cycles'] and r['profile']['fill']['whole']['calls'] > 0
         assert r['fill_kernel'] == 'lofty-queue' and r['ring_format'] == 'words'
-        assert r['warmup_frames'] == 3 and r['bch_variant'] == ('resident-pair' if mc == 17 else 'split-pair')
+        assert r['warmup_frames'] == 3 and r['bch_variant'] == ('nibble' if mc == 17 else 'split-pair')
         assert r['queue_wake_policy'] == 'bank' and r['queue_wakes'] > 0
-        assert r['bch_pair_psram_bytes'] == (0 if mc == 17 else 4096)
+        assert r['bch_pair_bytes'] == (0 if mc == 17 else 8192)
         assert r['encoder_priority'] == 24
         assert r['dummy_startup'] == r['dummy_steady'] == 0
         assert r['admission_pages'] == 9 and r['admission_wait_pages'] == 26
@@ -114,6 +112,7 @@ def check(out, receiver=None):
     structures = json.loads((ROOT/'tests/data/psk8_26m667_frames.json').read_text())
     assert crcs == {key: value['data_only_crc32'] for key,value in structures.items()}
     check_dump_layouts(out,exe,structures)
+    check_whole_frame_failures(out,exe)
     for peak in (16,128,508):
         margins = lofty.mask_margins(lofty.taps(peak),3,.35)
         assert min(margins[k] for k in ('upper','lower','far')) > 0,margins
@@ -123,38 +122,69 @@ def check(out, receiver=None):
     print('exact rounded-table mask at peak 128',quantized)
 
 
+def check_whole_frame_failures(out, exe):
+    """A dump waits for whole frames, but never forever: no sender, a source that stops in the
+    middle of a frame and input the encoder rejects all end the dump with ESP_FAIL. The dump
+    still sends its announced binary_bytes, zero-padded, so board.py reads the final record."""
+    env = dict(os.environ, WHOLE_FRAME='1')
+    run = subprocess.run([str(exe),'17','3',str(out/'whole.iq'),'N0CALL','80000000','16','1'],
+                         env=env,capture_output=True,text=True,timeout=60)
+    (out/'whole.log').write_text(run.stdout+run.stderr)
+    assert run.returncode == 0,(run.stdout,run.stderr)
+    rows = [json.loads(l[1:]) for l in run.stdout.splitlines() if l.startswith('@{')]
+    tests = [r for r in rows if r.get('test') == 'whole_frame_failure']
+    assert [r['scenario'] for r in tests] == ['no input','input stops mid-frame','encoder fails'],tests
+    dumps = [r for r in rows if r.get('cmd') == 'dvbdump' and 'status' in r]
+    assert len(dumps) == 3 and all(r['status'] != 'ESP_OK' for r in dumps),dumps
+    assert [r.get('whole_frame_timeout') for r in dumps] == [True,True,False],dumps
+    assert all(r.get('padded_bytes',0) > 0 for r in dumps),dumps
+    print('whole-frame dumps end on missing, stopped or rejected input:',
+          ', '.join(f"{r['scenario']} {r['ms']} ms" for r in tests),flush=True)
+
+
 def check_dump_layouts(out, exe, structures):
-    """Reproduce board dump structure without silicon clocks or saved board files."""
+    """Reproduce board dump structure without silicon clocks or saved board files.
+
+    Board dumps wait for whole frames, so the pinned layout has no dummies; the forced
+    layouts replay the dummy path at the same pinned positions as earlier board dumps."""
     golden = json.loads((ROOT/'tests/data/psk8_26m667_crcs.json').read_text())
     for mc in (13,15,17):
         key = f'{mc}/3/80/16'
-        before = tuple(structures[key]['dummy_before'])
-        symbols = onair.symbols(mc,16,dummy_before=before,callsign='N0CALL')
-        phases = np.rint(np.angle(symbols)*4/np.pi).astype(int)%8
-        model = lofty.iq(lofty.shape(phases))[:16*22194*3]
-        model = np.column_stack((model.real,model.imag)).astype('<i2')
-        assert zlib.crc32(model.tobytes()) == golden[key]
-        env = dict(os.environ)
-        if before:
-            starts = sorted(set(before))
-            assert all(before.count(f) == 2 for f in starts)
-            periods = {b-a for a,b in zip(starts,starts[1:])}
-            assert len(periods) == 1
-            env.update(DUMMY_FROM_FRAME=str(starts[0]), DUMMY_FRAME_PERIOD=str(periods.pop()))
-        iq = out/f'layout-{mc}.iq'
-        run = subprocess.run([str(exe),str(mc),'3',str(iq),'N0CALL','80000000','16'],
-                             env=env,capture_output=True,text=True,timeout=90)
-        (out/f'layout-{mc}.log').write_text(run.stdout+run.stderr)
-        assert run.returncode == 0,(run.stdout,run.stderr)
-        actual = np.fromfile(iq,dtype='<i2').reshape(-1,2)
-        np.testing.assert_array_equal(actual,model)
-        rows = [json.loads(l[1:]) for l in run.stdout.splitlines() if l.startswith('@{')]
-        dumps = [r for r in rows if 'crc32' in r]
-        assert len(dumps) == 2 and all(r['crc32'] == golden[key] for r in dumps)
-        assert all(r['queue_empty'] == r['underruns'] == r['overlap_mismatches'] == 0 for r in dumps)
-        layout = decode.stream_layout(mc,16,before)
-        assert layout['expected_payload_frames'] == {13:16,15:14,17:12}[mc]
-        print(mc,'pinned data/dummy layout, every word exact; CRC',golden[key],flush=True)
+        layouts = [(tuple(structures[key]['dummy_before']),golden[key],16)]
+        if 'forced_dummy_before' in structures[key]:
+            layouts.append((tuple(structures[key]['forced_dummy_before']),
+                            structures[key]['forced_crc32'],{15:14,17:12}[mc]))
+        for before,crc,complete in layouts:
+            check_layout(out,exe,mc,before,crc,complete)
+
+
+def check_layout(out, exe, mc, before, crc, complete):
+    symbols = onair.symbols(mc,16,dummy_before=before,callsign='N0CALL')
+    phases = np.rint(np.angle(symbols)*4/np.pi).astype(int)%8
+    model = lofty.iq(lofty.shape(phases))[:16*22194*3]
+    model = np.column_stack((model.real,model.imag)).astype('<i2')
+    assert zlib.crc32(model.tobytes()) == crc
+    env = dict(os.environ)
+    if before:
+        starts = sorted(set(before))
+        assert all(before.count(f) == 2 for f in starts)
+        periods = {b-a for a,b in zip(starts,starts[1:])}
+        assert len(periods) == 1
+        env.update(DUMMY_FROM_FRAME=str(starts[0]), DUMMY_FRAME_PERIOD=str(periods.pop()))
+    iq = out/f'layout-{mc}-{len(before)}.iq'
+    run = subprocess.run([str(exe),str(mc),'3',str(iq),'N0CALL','80000000','16'],
+                         env=env,capture_output=True,text=True,timeout=90)
+    (out/f'layout-{mc}-{len(before)}.log').write_text(run.stdout+run.stderr)
+    assert run.returncode == 0,(run.stdout,run.stderr)
+    actual = np.fromfile(iq,dtype='<i2').reshape(-1,2)
+    np.testing.assert_array_equal(actual,model)
+    rows = [json.loads(l[1:]) for l in run.stdout.splitlines() if l.startswith('@{')]
+    dumps = [r for r in rows if 'crc32' in r]
+    assert len(dumps) == 2 and all(r['crc32'] == crc for r in dumps)
+    assert all(r['queue_empty'] == r['underruns'] == r['overlap_mismatches'] == 0 for r in dumps)
+    layout = decode.stream_layout(mc,16,before)
+    assert layout['expected_payload_frames'] == complete
+    print(mc,'data/dummy layout',before or 'none',': every word exact; CRC',crc,flush=True)
 
 
 def check_dummies(out, receiver=None):
