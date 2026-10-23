@@ -50,35 +50,76 @@ def frame_bytes(modcod: int) -> int:
     return (BCH_PARAMS["short"][rate][0] - 80) // 8
 
 
+def model_frames(seconds: int, rate: str, modcod: int) -> int:
+    """Model frames to search: the receiver's run and a minute more, as the transmitter runs longer."""
+    return int((seconds + 60) * SYMBOL_RATE[rate] / frame_symbols(modcod)) + 100
+
+
 def frame_symbols(modcod: int) -> int:
     """A short PLFRAME with pilots: 8,370 symbols for QPSK, 5,598 for 8PSK."""
     return 5598 if modcod >= 12 else 8370
 
 
+def _step(x: int) -> int:
+    x ^= (x << 13) & 0xffffffff
+    x ^= x >> 17
+    return x ^ ((x << 5) & 0xffffffff)
+
+
+def rows(size: int, frames: int, chunk: int = 16384):
+    """The transmitter's xorshift32 stream (seed 2026) cut into `frames` rows of `size` bytes, as
+    numpy uint8 arrays of up to `chunk` rows. xorshift32 is linear over GF(2), so the state at each
+    row start is the previous one advanced `size` steps through four byte tables; numpy then steps
+    every row of a chunk at once. A 540 s run at 5 Msym/s needs about 850 MB of the stream."""
+    import numpy as np
+    cols = []
+    for i in range(32):
+        v = 1 << i
+        for _ in range(size):
+            v = _step(v)
+        cols.append(v)
+    jump = [[0] * 256 for _ in range(4)]
+    for t in range(4):
+        for b in range(256):
+            for i in range(8):
+                if b >> i & 1:
+                    jump[t][b] ^= cols[8 * t + i]
+    starts, x = [], 2026
+    for _ in range(frames):
+        starts.append(x)
+        x = jump[0][x & 255] ^ jump[1][x >> 8 & 255] ^ jump[2][x >> 16 & 255] ^ jump[3][x >> 24]
+    for c in range(0, frames, chunk):
+        x = np.array(starts[c:c + chunk], np.uint32)
+        out = np.empty((size, len(x)), np.uint8)
+        for i in range(size):
+            x ^= x << np.uint32(13)
+            x ^= x >> np.uint32(17)
+            x ^= x << np.uint32(5)
+            out[i] = x & np.uint32(255)
+        yield out.T
+
+
 def stream(n: int) -> bytes:
-    """The first n bytes of the transmitter's xorshift32 stream (seed 2026), cached in the
-    temp directory because 5 Msym/s runs need about 100 MB of it."""
-    import tempfile
-    path = pathlib.Path(tempfile.gettempdir()) / "esp-dvbs2-xorshift.bin"
-    if path.exists() and path.stat().st_size >= n:
-        with path.open("rb") as f:
-            return f.read(n)
-    out, state = bytearray(n), 2026
-    for i in range(n):
-        state ^= (state << 13) & 0xffffffff
-        state ^= state >> 17
-        state ^= (state << 5) & 0xffffffff
-        out[i] = state & 255
-    path.write_bytes(out)
-    return bytes(out)
+    """The first n bytes of the transmitter's xorshift32 stream (seed 2026)."""
+    size = 4096
+    data = b"".join(r.tobytes() for r in rows(size, -(-n // size)))
+    return data[:n]
 
 
 def model(size: int, frames: int, callsign: str) -> list[bytes]:
     """The transmitter's first `frames` payloads, as host/decode.py generates them: one
     continuous stream cut into frames, each starting with the station header."""
     header = ("ESP-DVBS2 ID=" + morse.callsign(callsign)).ljust(39).encode("ascii") + b"\n"
-    data = stream(size * frames)
-    return [header + data[k * size + 40:(k + 1) * size] for k in range(frames)]
+    return [header + bytes(r[40:]) for chunk in rows(size, frames) for r in chunk]
+
+
+def model_keys(size: int, frames: int, callsign: str, crc: bool) -> list:
+    """model()'s payloads, or at 5 Msym/s only their CRC-32s, without holding every payload."""
+    if not crc:
+        return model(size, frames, callsign)
+    header = ("ESP-DVBS2 ID=" + morse.callsign(callsign)).ljust(39).encode("ascii") + b"\n"
+    start = zlib.crc32(header)
+    return [zlib.crc32(r[40:].tobytes(), start) for chunk in rows(size, frames) for r in chunk]
 
 
 CRC8 = [0] * 256
@@ -134,6 +175,37 @@ def ts_model(modcod: int, frames: int, replay: bool = True, short: bool = True) 
             stream[188 * i] = crcs[i - 1]
     stream[0] = 0
     return [bytes(stream[k * size:(k + 1) * size]) for k in range(frames)]
+
+
+class Periodic:
+    """Keys that repeat with a period after a distinct first one."""
+    def __init__(self, first, period: list, length: int):
+        self.first, self.period, self.length = first, period, length
+
+    def __len__(self):
+        return self.length
+
+    def __getitem__(self, k: int):
+        return self.first if k == 0 else self.period[k % len(self.period)]
+
+    def __iter__(self):
+        return (self[k] for k in range(self.length))
+
+
+def ts_keys(modcod: int, frames: int, replay: bool, crc: bool):
+    """ts_model()'s data fields, or their CRC-32s, for long runs. The replay loop is 56 packets
+    (10,528 bytes), so from frame 1 on the fields repeat every 10,528 / gcd(size, 10,528) frames;
+    frame 0 differs only in the first sync byte (0, not the last packet's CRC-8)."""
+    if not replay:
+        fields = ts_model(modcod, frames, False)
+        return [zlib.crc32(f) for f in fields] if crc else fields
+    rate = PSK8_RATES[modcod - 12] if modcod >= 12 else RATES[modcod - 1]
+    size = (BCH_PARAMS["short"][rate][0] - 80) // 8
+    import math
+    period = 10528 // math.gcd(size, 10528)
+    fields = ts_model(modcod, period + 1, True)
+    key = zlib.crc32 if crc else (lambda f: f)
+    return Periodic(key(fields[0]), [key(fields[period])] + [key(f) for f in fields[1:period]], frames)
 
 
 def read_exact(link, n: int, deadline: float) -> bytes:
@@ -228,17 +300,20 @@ def upload(port: str, data: bytes) -> dict:
 
 
 def check(frames, modcod: int, callsign: str, tx_frames: int, symbol_rate: float = 1e6,
-          payloads: list[bytes] | None = None) -> dict:
+          payloads: list[bytes] | None = None, keys=None) -> dict:
     """Frames carry a payload, or at 5 Msym/s its CRC-32 ("crc"); either must match the model
     frame that the sequence implies. Records arrive in sequence order except decoded ones.
     Tens of thousands of model frames share some CRC-32s (birthday collisions), so a frame is
     compared with the model frame its sequence implies, and the lookup is only a fallback.
-    payloads: the transmitter's data fields, if not its synthetic GCS stream (ts_model)."""
+    payloads: the transmitter's data fields, if not its synthetic GCS stream (ts_model).
+    keys: instead, the model's keys themselves (model_keys, ts_keys), for long runs."""
     size = frame_bytes(modcod)
-    expected = payloads if payloads is not None else model(size, tx_frames, callsign)
     crc = any("crc" in f for f in frames)
     key = (lambda f: f["crc"]) if crc else (lambda f: f["payload"])
-    keys = [zlib.crc32(p) for p in expected] if crc else expected
+    if keys is None and payloads is None:
+        keys = model_keys(size, tx_frames, callsign, crc)
+    elif keys is None:
+        keys = [zlib.crc32(p) for p in payloads] if crc else payloads
     index = {}
     for k, v in enumerate(keys):
         index.setdefault(v, k)
@@ -257,6 +332,21 @@ def check(frames, modcod: int, callsign: str, tx_frames: int, symbol_rate: float
     span = good[-1]["sequence"] - s0 + 1
     period = frame_symbols(modcod) / symbol_rate
     mers = sorted(f["mer_cdb"] for f in good if "mer_cdb" in f)     # pilot MER: lowest, median
+    minutes = {}                     # pilot MER per minute of the run: lowest, median
+    for f in good:
+        if "mer_cdb" in f:
+            minutes.setdefault(int((f["sequence"] - s0) * period // 60), []).append(f["mer_cdb"])
+    mer_minutes = [[m, min(v) / 100, sorted(v)[len(v) // 2] / 100] for m, v in sorted(minutes.items())]
+    have = {f["sequence"] for f in good}
+    gaps, run = [], None             # runs of missing sequences: first, length, seconds into the run
+    for q in range(s0, s0 + span):
+        if q in have:
+            run = None
+        elif run is None:
+            run = [q, 1, round((q - s0) * period, 3)]
+            gaps.append(run)
+        else:
+            run[1] += 1
     report.update(mislabelled=[dict(sequence=f["sequence"], model=index.get(key(f)), implied=implied(f))
                                for f, ok in zip(good, matches) if k0 is not None and not ok][:8],
                   valid=len(found), in_order=all(b > a for a, b in zip(found, found[1:])),
@@ -264,6 +354,7 @@ def check(frames, modcod: int, callsign: str, tx_frames: int, symbol_rate: float
                   lost=found[-1] - found[0] + 1 - len(found) if found else 0,
                   first_model_frame=k0, sequence_span=span, span_seconds=round(span * period, 3),
                   mer_db=[mers[0] / 100, mers[len(mers) // 2] / 100] if mers else None,
+                  mer_minutes=mer_minutes, missing_runs=gaps[:20],
                   exact=exact, missing=span - len(good), payload_mbps=round(8 * size / period / 1e6, 4),
                   missing_sequences=sorted(set(range(s0, s0 + span)) - {f["sequence"] for f in good})[:8],
                   exact_bytes=exact * size, passed=k0 is not None and exact == span == len(good))
@@ -316,7 +407,7 @@ def main() -> int:
     p.add_argument("--callsign", default="N0CALL")
     p.add_argument("--ts", choices=("replay", "live"),
                    help="TS test input: the transmitter's `ts replay` loop, or a live sender's count")
-    p.add_argument("--tx-frames", type=int, help="model frames to search (default: 60 s of the rate)")
+    p.add_argument("--tx-frames", type=int, help="model frames to search (default: the run and 60 s)")
     p.add_argument("--out", type=pathlib.Path, help="append the summary to this JSON-lines file")
     a = p.parse_args()
     port = board.resolve_port(a.port)
@@ -332,9 +423,10 @@ def main() -> int:
         if a.replay:
             upload(port, data)
         before, frames, after = receive(port, command, timeout)
-    tx_frames = a.tx_frames or int(60 * SYMBOL_RATE[a.rate] / frame_symbols(a.modcod)) + 100
-    payloads = ts_model(a.modcod, tx_frames, a.ts == "replay") if a.ts else None
-    result = check(frames, a.modcod, a.callsign, tx_frames, SYMBOL_RATE[a.rate], payloads)
+    tx_frames = a.tx_frames or model_frames(a.seconds, a.rate, a.modcod)
+    crc = any("crc" in f for f in frames)
+    keys = ts_keys(a.modcod, tx_frames, a.ts == "replay", crc) if a.ts else None
+    result = check(frames, a.modcod, a.callsign, tx_frames, SYMBOL_RATE[a.rate], keys=keys)
     if a.ts:
         result["ts"] = ts_verdict(after, a.ts == "replay", result)
         result["passed"] = result["passed"] and result["ts"]["passed"]

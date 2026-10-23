@@ -15,6 +15,7 @@
 #include "esp_attr.h"
 #include "esp_cpu.h"
 #include "esp_heap_caps.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
@@ -134,13 +135,14 @@ static void record(receiver_t *r, const rx_frame_t *f, int length, const uint8_t
     receive_stats_t *s = r->stats;
     receive_record_t rec = {RECEIVE_MAGIC, f->sequence, f->cfo_hz, f->mer_cdb, (int16_t)length,
                             fec->iterations, fec->failed_checks};
+    const uint32_t crc = length > 0 && r->crc ? crc32(r->crc_table, payload, length) : 0;
     xSemaphoreTake(r->usb, portMAX_DELAY);
     ++s->frames;
     length >= 0 ? ++s->good : ++s->failed;
     if (fec->iterations > s->max_iterations) s->max_iterations = fec->iterations;
+    const int64_t start = esp_timer_get_time();
     receive_write(&rec, sizeof rec);
     if (length > 0 && r->crc) {
-        uint32_t crc = crc32(r->crc_table, payload, length);
         receive_write(&crc, 4);
     } else if (length > 0) {
         receive_write(payload, length);
@@ -150,6 +152,12 @@ static void record(receiver_t *r, const rx_frame_t *f, int length, const uint8_t
         receive_write(f->hard, RECEIVE_BITS);
         receive_write(f->weak, RECEIVE_BITS);
     }
+    const uint32_t us = (uint32_t)(esp_timer_get_time() - start);
+    if (us > s->max_write_us) {
+        s->max_write_us = us;
+        s->max_write_sequence = f->sequence;
+    }
+    s->slow_writes += us >= 1000;
     xSemaphoreGive(r->usb);
 }
 

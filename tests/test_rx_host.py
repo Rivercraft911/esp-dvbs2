@@ -28,6 +28,7 @@ def main():
     del lost[10]
     bad = rx.check(lost, 7, "KJ5SCH", 40)
     assert not bad["passed"] and bad["missing"] == 1, bad
+    assert bad["missing_runs"] == [[110, 1, 0.084]], bad["missing_runs"]   # 10 frames of 8.37 ms in
 
     wrong = frames(model[5:30], 100)
     wrong[3] = dict(wrong[3], payload=model[9])
@@ -75,6 +76,22 @@ def main():
         bad = dict(good, ts=dict(good["ts"], frames=taken, packets=packets,
                                  pattern=dict(good["ts"]["pattern"], checked=packets)))
         assert not rx.ts_verdict([bad], False, ok)["passed"], (taken, packets)
+    # Long runs (540 s): the stream comes from row jumps, not one step at a time, and must equal
+    # xorshift32 stepped byte by byte; CRC keys stand for the payloads; the model covers the run.
+    x, ref = 2026, bytearray()
+    for _ in range(9000):
+        x = rx._step(x)
+        ref.append(x & 255)
+    assert rx.stream(9000) == bytes(ref) and rx.model(1454, 3, "KJ5SCH")[2][40:] == ref[2948:4362]
+    assert rx.model_keys(1769, 20, "KJ5SCH", True) == [zlib.crc32(p) for p in rx.model(1769, 20, "KJ5SCH")]
+    assert rx.model_frames(530, "5m", 16) * 5598 / 5e6 > 590 and rx.model_frames(530, "1m", 7) * 8370 / 1e6 > 590
+    # The replay's fields repeat with its 56-packet loop, apart from frame 0: ts_keys equals ts_model.
+    import math
+    for modcod in (7, 16):
+        n = 2 * 10528 // math.gcd(rx.frame_bytes(modcod), 10528) + 3
+        fields = rx.ts_model(modcod, n, True)
+        assert list(rx.ts_keys(modcod, n, True, False)) == fields
+        assert list(rx.ts_keys(modcod, n, True, True)) == [zlib.crc32(f) for f in fields]
     print("rx host checks passed")
 
 

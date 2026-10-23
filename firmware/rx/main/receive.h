@@ -50,6 +50,9 @@ typedef struct {
     uint32_t ts_pids, max_ts_cycles;    /* per frame: deframer, pattern check and egress */
     uint64_t ts_cycles;
     receive_pattern_t pattern;
+    /* USB: the slowest frame record to write (it blocks while the host does not read), the
+     * sequence of that frame, and records that took 1 ms or more. */
+    uint32_t max_write_us, max_write_sequence, slow_writes;
 } receive_stats_t;
 
 /* The receiver's queues and semaphores, once at boot. */
