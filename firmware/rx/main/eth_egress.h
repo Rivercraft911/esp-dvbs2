@@ -8,8 +8,9 @@
  * of seven TS packets to the eth settings' destination (sdkconfig.defaults: the laptop,
  * 192.168.77.1:1234).
  *
- * The checker task copies each packet into a queue of 256 in PSRAM and never waits: a packet
- * that finds it full is dropped and counted. A sender task on core 0 drains it at priority 13,
+ * The checker task copies each packet into a queue of 4,096 in PSRAM (0.74 s at 8.3 Mb/s, for
+ * the bursts of a camera mux) and never waits: a packet that finds it full is dropped and
+ * counted. A sender task on core 0 drains it at priority 13,
  * above the release (12) and the checker (11): at 10 Mb/s the chip needs its next SEND within
  * microseconds of the last one ending, and below them, which keep core 0 about 70% busy at
  * 8PSK 5 Msym/s, the sender ran late and the egress topped out near 6.9 Mb/s. Each wake is short
@@ -32,6 +33,8 @@ typedef struct {
     uint32_t stack_free;            /* the sender's least free stack, bytes */
     int esp_err;                    /* the ESP-IDF error behind a "spi" status */
     uint32_t underflows;            /* payload writes the SPI DMA underran, written again */
+    int64_t backlog_us;             /* time with two datagrams' worth or more waiting */
+    uint32_t backlog_datagrams;     /* sent meanwhile: their rate is the sender's drain rate */
     /* When the run ended badly: the chip's socket registers and the driver's view of them. */
     bool stuck;
     w5500_regs regs;

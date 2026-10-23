@@ -14,7 +14,7 @@
 #include "w5500_eth.h"
 #include "w5500_ts.h"
 
-#define QUEUE 256U              /* packets: 47 KB of PSRAM, 36 ms at 10.39 Mb/s */
+#define QUEUE 4096U             /* packets: 770 KB of PSRAM, 0.74 s at 8.3 Mb/s */
 #define HOLD pdMS_TO_TICKS(10)  /* the longest a packet waits for six more */
 #define DRAIN pdMS_TO_TICKS(3000)   /* at the end; a chip ARP gives up after 1.8 s (w5500.h) */
 #define STACK 3072U
@@ -108,10 +108,22 @@ static int pump(void)
     TickType_t since = 0, end = 0;
     bool waiting = false;       /* fewer than seven packets wait */
     int staged = 0;             /* datagrams in the chip not yet sent */
+    /* Drain rate: datagrams sent while at least two datagrams' worth waited, over that time. */
+    bool backlog = false;
+    int64_t mark = esp_timer_get_time();
+    uint32_t marked = 0;
     send_clock clock = {w->sock[0].tx_wr, 0};
     for (;;) {
         const bool ending = e.ending;   /* read first: every packet was pushed before it was set */
         const uint32_t before = e.t.st.datagrams;
+        const int64_t t = esp_timer_get_time();
+        if (backlog) {
+            e.stats->backlog_us += t - mark;
+            e.stats->backlog_datagrams += before - marked;
+        }
+        backlog = w5500_ts_waiting(&e.q) >= 2 * W5500_TS_GROUP;
+        mark = t;
+        marked = before;
         int r = w5500_ts_send(&e.t, false);
         note_send(&w->sock[0], &clock);
         const TickType_t now = xTaskGetTickCount();
@@ -234,6 +246,9 @@ void eth_egress_print(const eth_egress_stats_t *s)
     if (s->phy >= 0)
         printf(",\"link\":%s,\"link_mbps\":%d", s->phy & W5500_PHY_LINK ? "true" : "false",
                s->phy & W5500_PHY_100M ? 100 : 10);
+    printf(",\"backlog_ms\":%.1f,\"backlog_datagrams\":%lu,\"drain_mbps\":%.3f",
+           s->backlog_us / 1000.0, (unsigned long)s->backlog_datagrams,
+           s->backlog_us ? s->backlog_datagrams * 8.0 * W5500_TS_DATAGRAM / s->backlog_us : 0.0);
     printf(",\"datagrams\":%lu,\"sent\":%lu,\"packets\":%lu,\"partial\":%lu,\"dropped\":%lu,"
            "\"peak\":%lu,\"queue\":%lu,\"full\":%lu,\"arp_dropped\":%lu,\"max_send_cycles\":%lu,"
            "\"send_cycles\":%llu,\"stack_free\":%lu,\"underflows\":%lu",
