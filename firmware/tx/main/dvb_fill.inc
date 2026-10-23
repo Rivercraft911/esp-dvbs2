@@ -7,9 +7,10 @@
 static FILL_TEXT esp_err_t FILL_NAME(uint32_t *dst, uint64_t first, size_t count, void *ctx)
 {
     (void)ctx;
-    // Keep the bank timer and encoder profiling. Per-phase marks and 64-bit
-    // accumulators belong to untimed 8PSK dumps, not its playback deadline.
-    const bool phases = dvb.profile && (!FILL_LOFTY || dvb.copy.counters);
+    // Keep the bank timer and encoder profiling. Per-phase marks and 64-bit accumulators
+    // belong to untimed dumps, not a playback deadline: they cost the 80 MS/s fills
+    // 0.8-0.9k of 47.2k cycles at the worst bank.
+    const bool phases = dvb.profile && dvb.copy.counters;
     const uint32_t before = esp_cpu_get_cycle_count();
     const stream_mark_t mark = phases ? stream_mark_for(&dvb.copy) : (stream_mark_t){0};
     const size_t requested = count;

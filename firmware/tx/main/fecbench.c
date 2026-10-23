@@ -35,7 +35,7 @@ void fecbench_command(unsigned modcod, bool short_frame)
 {
     const dvbs2_mode *mode = short_frame ? dvbs2_find_mode_short(modcod) : dvbs2_find_mode(modcod);
     if (!mode) {
-        printf("@{\"cmd\":\"fecbench\",\"error\":\"usage: fecbench <modcod 4..17> [--short (4..10)]\"}\n");
+        printf("@{\"cmd\":\"fecbench\",\"error\":\"usage: fecbench <modcod 4..17> [--short (4..10, 12..16)]\"}\n");
         return;
     }
     const uint32_t internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;

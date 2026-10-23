@@ -48,6 +48,9 @@
 #include "soc/soc.h"
 #include "soc/extmem_reg.h"
 #include "sdkconfig.h"
+#include "hal/systimer_ll.h"
+#include "esp_private/systimer.h"
+extern void esp_vApplicationTickHook(void); /* esp_system/freertos_hooks.c */
 
 #if !CONFIG_IDF_TARGET_ESP32S3
 #error "radio_s3 requires ESP32-S3"
@@ -363,6 +366,12 @@ static inline __attribute__((always_inline)) esp_err_t schedule(run_t *run, uint
         if (run->watch_worker) {
             (void)esp_task_wdt_reset();
         }
+        /* Core 1's tick is off for the run (core1_tick): run its tick hooks here, outside any
+         * fill, so the interrupt watchdog's core-1 check (800 ms) still sees core 1 alive.
+         * Every 1,024 banks is at most 365 ms. */
+        if (!(stats->switches & 1023)) {
+            esp_vApplicationTickHook();
+        }
         next ^= 1;
         handoff += g.step;
         target += step_cycles;
@@ -493,6 +502,18 @@ esp_err_t radio_s3_init(void)
     return worker_task ? e : ESP_ERR_NO_MEM;
 }
 
+/* During a run core 1 runs only this worker, so its FreeRTOS tick (time slicing on core 1;
+ * core 0's tick keeps time and wakes core-1 tasks) only costs the fills about 1k cycles a
+ * bank once a millisecond. Stop that alarm's interrupt for the run. Re-enabled, the handler
+ * (freertos/port_systick.c) runs every skipped tick at once: 29 ms after a 10 s pace, 100 ms
+ * after 60 s, so about 0.8 s after the 540 s limit, on core 1 only and with the
+ * transmitter already off. Nothing else toggles this enable bit after boot. schedule() runs
+ * core 1's tick hooks (the interrupt watchdog's) between fills meanwhile. */
+static void core1_tick(bool on)
+{
+    systimer_ll_enable_alarm_int(&SYSTIMER, SYSTIMER_ALARM_OS_TICK_CORE0 + 1, on);
+}
+
 static void worker(void *arg)
 {
     run_t *run = arg;
@@ -504,7 +525,7 @@ static void worker(void *arg)
         run->startup = &startup;
     }
     run->watch_worker = watched;
-    bool rf_setup = false;
+    bool rf_setup = false, tick_off = false;
 #if CONFIG_PM_ENABLE
     esp_pm_lock_handle_t cpu_lock = NULL;
     esp_pm_lock_handle_t sleep_lock = NULL;
@@ -538,6 +559,8 @@ static void worker(void *arg)
     }
     error = radio_s3_stream_ready();
     if (error == ESP_OK && run->paced) {
+        core1_tick(false);
+        tick_off = true;
         error = paced(run);
         goto cleanup;
     }
@@ -564,6 +587,8 @@ static void worker(void *arg)
     /* Allow the unkeyed retune to settle. */
     vTaskDelay(pdMS_TO_TICKS(3));
 
+    core1_tick(false);
+    tick_off = true;
     error = stream(run);
 
 cleanup:
@@ -580,6 +605,9 @@ cleanup:
         rom_pbus_xpd_tx_off();
         rom_pbus_xpd_rx_on(0);
         REG_WRITE(BANK_USAGE, REG_READ(BANK_USAGE) & ~0xfU);
+    }
+    if (tick_off) {
+        core1_tick(true);
     }
 #if CONFIG_PM_ENABLE
     if (sleep_lock) {

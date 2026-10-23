@@ -88,7 +88,7 @@ READY is an S3 output that says it has room for another message.
 Eight 1,336-byte receive buffers use 10,688 bytes of DMA RAM, borrowed from
 unused encoder regions when all eight fit, otherwise taken from run memory. The 4 KiB CRC-32
 table comes from the heap when `spiinput` selects the wire, with the SPI driver, and `spiinput
-off` frees it; runs make no heap calls.
+off` or `spiinput usb` frees it; runs make no heap calls.
 The two-slot READY margin permits seven unread messages (9,212 payload bytes),
 enough for a complete 5,370-byte BB payload while the encoder works.
 
@@ -146,8 +146,8 @@ preset; other builds start on the DevKit preset.
 Input selection applies to the next `dvbdump`, `dvbpace` or `dvb`; it does not start
 reception or the radio. It does claim the hardware, once: `spiinput on` installs ESP-IDF's SPI
 slave driver, `spiinput quad` claims the SPI bus and a GDMA channel, and both take the CRC-32
-table. Runs only start and stop them, so a run makes no heap calls. `spiinput off` frees all
-of it, and `spiinput usb` releases the SPI driver; USB input's wake timer is made at boot.
+table. Runs only start and stop them, so a run makes no heap calls. `spiinput off` and
+`spiinput usb` free all of it; USB input's wake timer is made at boot.
 Settings last until changed or reset.
 
 ## Diagnostics

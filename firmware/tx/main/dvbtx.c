@@ -1388,7 +1388,7 @@ static void stop_encoder(void)
                ",\"fill_cycles\":%" PRIu64 ",\"worst_call\":{\"copy\":%" PRIu32 ",\"whole\":%" PRIu32
                ",\"partial\":%" PRIu32 ",\"save\":%" PRIu32 ",\"notify\":%" PRIu32 "},"
                "\"shaped_words\":%" PRIu64 ",\"reused_words\":%" PRIu64 ",\"fill\":{",
-               dvb.copy.counters ? "true" : "false", !dvb.lofty || dvb.copy.counters ? "true" : "false",
+               dvb.copy.counters ? "true" : "false", dvb.copy.counters ? "true" : "false",
                dvb.fill_calls, dvb.fill_words,
                dvb.fill_cycles, dvb.worst_copy, dvb.worst_whole, dvb.worst_partial,
                dvb.worst_save, dvb.worst_notify, dvb.shaped_words, dvb.reused_words);
