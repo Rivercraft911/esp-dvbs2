@@ -35,7 +35,7 @@ void qpsk_axes_check(void)
     const unsigned sizes[] = {0,1,2,3,4,7,128,131};
     for (unsigned mc = 4; mc <= 11; ++mc)
         for (unsigned pilots = 0; pilots < 2; ++pilots)
-            for (unsigned pie = 0; pie < 2; ++pie) {
+            for (unsigned pie = 0; pie < 2; ++pie) { // the host runs C either way; tests/tx_pie_bench runs PIE
                 const dvbs2_mode *mode = dvbs2_find_mode(mc);
                 const unsigned bytes = (mode->kbch-80)/8, symbols = dvbs2_frame_symbols(mode,pilots);
                 dvbs2_sign_state state = {0};
@@ -73,7 +73,7 @@ void qpsk_axes_check(void)
                 }
             }
     free(raw); free(payload); free(f); free(ws);
-    printf("axis mapper: %u frames, all QPSK rates/pilots, C/PIE, partial words, guarded slices\n",cases);
+    printf("axis mapper: %u frames, all QPSK rates/pilots, PIE flags off/on, partial words, guarded slices\n",cases);
 }
 
 

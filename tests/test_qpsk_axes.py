@@ -1,4 +1,5 @@
-"""Guarded QPSK axis mapper and page expansion; also reusable in ESP32-S3 QEMU."""
+"""Guarded QPSK axis mapper and page expansion. The host build has no PIE kernels, so both PIE
+flag settings run portable C here; tests/tx_pie_bench runs the same checks on the board's PIE code."""
 import pathlib
 import subprocess
 import sys

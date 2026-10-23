@@ -423,7 +423,10 @@ fractional stream is also checked sample by sample against independent integer c
 Run-memory exhaustion and cleanup, dummy transitions, repeated commands, frame seams,
 bank wraps and counter wrap are covered.
 Host clocks and heaps are synthetic; only [the board example](../examples/self-check/README.md)
-can check deadlines and startup memory. RF decoding and spectral measurements remain separate work.
+can check deadlines and startup memory. Host builds also assemble no PIE kernels:
+[`tests/tx_pie_bench.c`](../tests/tx_pie_bench.c) runs each transmitter PIE kernel on the board
+against portable C or an independent oracle, with the build and run commands in its header.
+RF decoding and spectral measurements remain separate work.
 
 ```sh
 python3 -m pip install numpy scipy pyserial
