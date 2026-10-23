@@ -262,9 +262,12 @@ the receiver's run ends before the transmitter's data does
 ([sweep](../results/2026-10-23-rx-sweep/README.md)):
 
 ```sh
-python3 host/rx.py 16 --rate 5m --seconds 45 --port RX_PORT --callsign N0CALL
+python3 host/rx.py 16 --rate 5m --seconds 45 --port RX_PORT --callsign YOURCALL
 python3 host/board.py "dvb 2420 16 5m 55 0 128 --short" --port TX_PORT --timeout 90   # keys the transmitter
 ```
+
+Replace `YOURCALL` with the callsign stored on the transmitter: `host/rx.py` rebuilds the
+transmitter's payload, station header included, and checks each frame against it.
 
 For TS, run `spiinput quad ts replay` on the transmitter first and add `--ts replay`.
 `--replay FILE.sc8` uploads a capture and replays it with the radio off; `host/rx_twin.py`

@@ -55,9 +55,12 @@ calibrates the PHY directly, and after boot it never touches the heap
 
 ```sh
 (. ~/.espressif/tools/activate_idf_v6.1.sh && cd firmware/rx && idf.py build flash)
-python3 host/rx.py 16 --rate 5m --mhz 2420 --gain 32 --seconds 45 --port RX_PORT --callsign N0CALL
+python3 host/rx.py 16 --rate 5m --mhz 2420 --gain 32 --seconds 45 --port RX_PORT --callsign YOURCALL
 python3 host/board.py "dvb 2420 16 5m 55 0 128 --short" --port TX_PORT --timeout 90   # keys the transmitter
 ```
+
+`YOURCALL` must match the callsign stored on the transmitter: the receiver's check rebuilds the
+transmitter's payload, station header included.
 
 ![Receiver load per core in the live runs](docs/img/rx-load.png)
 
