@@ -234,6 +234,15 @@ int w5500_udp_poll(w5500 *w, unsigned s);
 int w5500_udp_recv(w5500 *w, unsigned s, uint8_t *buf, size_t cap, w5500_peer *from);
 const w5500_stats *w5500_udp_stats(const w5500 *w, unsigned s);
 
+/* The `eth send` diagnostic (w5500_diag.c). Datagram seq is 7 TS packets on PID 0x100 with
+ * running continuity counters, each payload starting with seq, MSB first. */
+#define W5500_DIAG_BYTES 1316
+void w5500_diag_pattern(uint8_t *p, uint32_t seq);
+/* Fill buf[seq & 1] with datagram seq and send it. With a posting backend the buffer sent last
+ * may still be clocking out until the next call's first frame, so the two buffers alternate and
+ * each is refilled only two sends later, after that send has finished it. */
+int w5500_diag_send(w5500 *w, unsigned s, uint8_t *const buf[2], uint32_t seq);
+
 /* Settings kept in NVS by the ESP backend; the console grammar is portable so it is tested on
  * the host (w5500_settings.c). */
 typedef struct {

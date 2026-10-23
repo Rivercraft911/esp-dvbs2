@@ -189,19 +189,6 @@ static void print_run(int e, int64_t us, uint64_t idle, int64_t driver_us, uint3
     if (e == W5500_ERR_BUS) printf(",\"esp_err\":\"%s\"", esp_err_to_name(w5500_port.err));
 }
 
-/* Seven TS packets on PID 0x100 with running continuity counters; each payload starts with the
- * datagram number, MSB first, so the laptop can count what was lost. */
-static void pattern(uint8_t *p, uint32_t seq)
-{
-    for (unsigned k = 0; k < 7; ++k, p += TS_PACKET) {
-        const uint8_t head[8] = {0x47, 0x01, 0x00, (uint8_t)(0x10 | ((7 * seq + k) & 15)),
-                                 (uint8_t)(seq >> 24), (uint8_t)(seq >> 16), (uint8_t)(seq >> 8),
-                                 (uint8_t)seq};
-        memcpy(p, head, sizeof head);
-        memset(p + sizeof head, (int)k, TS_PACKET - sizeof head);
-    }
-}
-
 /* A diagnostic that could not start reports why and nothing else (the counters may belong to
  * another owner's session). */
 static bool started(int e, uint8_t *buf, const char *what)
@@ -214,11 +201,14 @@ static bool started(int e, uint8_t *buf, const char *what)
     return false;
 }
 
+/* Numbered TS datagrams (w5500_diag_send) from two alternating buffers, since a posted payload
+ * may still be clocking out of the last one. */
 static void diag_send(unsigned ms, double mbps)
 {
-    uint8_t *buf = heap_caps_aligned_alloc(4, DATAGRAM, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-    int e = buf ? w5500_eth_start(W5500_ETH_SEND) : W5500_ERR_ARG;
-    if (!started(e, buf, "send")) return;
+    uint8_t *pair = heap_caps_aligned_alloc(4, 2 * DATAGRAM, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    uint8_t *const buf[2] = {pair, pair + DATAGRAM};
+    int e = pair ? w5500_eth_start(W5500_ETH_SEND) : W5500_ERR_ARG;
+    if (!started(e, pair, "send")) return;
     uint32_t seq = 0, calls = 0;
     int64_t driver_us = 0;
     const int64_t t0 = esp_timer_get_time();
@@ -231,9 +221,8 @@ static void diag_send(unsigned ms, double mbps)
             vTaskDelay(1);
             continue;
         }
-        pattern(buf, seq);
         const int64_t a = esp_timer_get_time();
-        e = w5500_udp_send(&chip, 0, buf, DATAGRAM);
+        e = w5500_diag_send(&chip, 0, buf, seq);
         driver_us += esp_timer_get_time() - a;
         calls++;
         seq += e == W5500_OK;
@@ -247,8 +236,8 @@ static void diag_send(unsigned ms, double mbps)
            seq, st->sent, st->full, st->dropped, us ? st->sent_bytes * 8.0 / us : 0.0);
     print_run(e > 0 ? W5500_OK : e, us, idle, driver_us, calls);
     printf("}\n");
-    w5500_eth_stop();
-    heap_caps_free(buf);
+    w5500_eth_stop();   /* closes the socket, so no transfer is still reading the buffers */
+    heap_caps_free(pair);
 }
 
 static void diag_recv(unsigned ms)

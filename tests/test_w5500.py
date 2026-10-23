@@ -82,7 +82,8 @@ class Native:
         subprocess.run(shlex.split(os.environ.get("CC", "cc")) + [
             "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-fPIC", "-shared",
             "-I", str(COMPONENT / "include"), str(COMPONENT / "w5500.c"),
-            str(COMPONENT / "w5500_settings.c"), str(COMPONENT / "w5500_gpspi.c"),
+            str(COMPONENT / "w5500_settings.c"), str(COMPONENT / "w5500_diag.c"),
+            str(COMPONENT / "w5500_gpspi.c"),
             str(ROOT / "tests/w5500_fake.c"),
             "-o", str(library)], check=True)
         lib = self.lib = ct.CDLL(str(library))
@@ -116,6 +117,8 @@ class Native:
             "w5500_udp_recv": (ct.c_int, [p, ct.c_uint, p, ct.c_size_t, ct.POINTER(Peer)]),
             "w5500_udp_stats": (ct.POINTER(Stats), [p, ct.c_uint]),
             "w5500_busy": (ct.c_bool, [p]),
+            "w5500_diag_pattern": (None, [p, ct.c_uint32]),
+            "w5500_diag_send": (ct.c_int, [p, ct.c_uint, ct.POINTER(ct.c_void_p), ct.c_uint32]),
             "w5500_gpspi_addr": (ct.c_uint32, [u16, ct.c_uint8]),
             "w5500_gpspi_clock": (ct.c_uint32, [ct.c_uint32, ct.c_uint32, ct.POINTER(ct.c_uint32)]),
             "w5500_gdma_dw0": (ct.c_uint32, [ct.c_uint, ct.c_uint, ct.c_bool]),
@@ -781,6 +784,39 @@ def test_direct(native):
     chip.close()
 
 
+def test_diag(native):
+    """`eth send` refills its payload while the last one may still be clocking out, so it must
+    alternate two buffers (w5500_diag_send). One buffer shows what goes wrong."""
+    lib = native.lib
+
+    def pattern(seq):
+        out = ct.create_string_buffer(TS_DATAGRAM)
+        lib.w5500_diag_pattern(out, seq)
+        return out.raw
+
+    seq = 0x01020304
+    p = pattern(seq)
+    for k in range(7):
+        packet = p[188 * k:188 * (k + 1)]
+        check(packet[:8] == bytes([0x47, 0x01, 0x00, 0x10 | (7 * seq + k) & 15, 1, 2, 3, 4]) and
+              packet[8:] == bytes([k]) * 180, "pattern: TS header, continuity, sequence MSB first")
+
+    def run(two, **mode):
+        chip = sender(native, **mode)
+        a, b = ct.create_string_buffer(TS_DATAGRAM), ct.create_string_buffer(TS_DATAGRAM)
+        bufs = (ct.c_void_p * 2)(ct.addressof(a), ct.addressof(b if two else a))
+        for seq in range(40):
+            check(lib.w5500_diag_send(chip.w, 0, bufs, seq) == OK, "diag send")
+        out = [d[3] for d in chip.drain(0)]
+        chip.close()
+        check(len(out) == 40, "all sent")
+        return sum(d != pattern(seq) for seq, d in enumerate(out))
+
+    check(run(True, **DIRECT) == 0, "two buffers: every datagram as numbered")
+    check(run(False, **DIRECT) > 30, "one buffer: posted payloads overwritten before they left")
+    check(run(False) == 0, "one buffer is fine without posting")
+
+
 def test_direct_model(native):
     """Per-datagram frames, bus time and CPU of the direct backend under the w5500.h estimates."""
     table = {}
@@ -945,10 +981,12 @@ def main():
         test_handshake(native)
         test_publication(native)
         test_direct(native)
+        test_diag(native)
         direct = test_direct_model(native)
         test_settings(native)
     print("w5500: fake checks, frames, init, open, send, full, ARP timeout, receive, malformed, "
-          f"command handshake, partial publication, posted writes, GP-SPI2 encodings, "
+          f"command handshake, partial publication, posted writes, diagnostic buffers, "
+          f"GP-SPI2 encodings, "
           f"settings: ok "
           f"(driver state {size} bytes)")
     for mhz, row in table.items():
