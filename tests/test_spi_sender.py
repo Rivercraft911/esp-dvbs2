@@ -203,7 +203,7 @@ int main(void) {
     assert(spi_input_start()==ESP_ERR_INVALID_STATE); run_reset(); // no driver provisioned
     spi_input_command("spiinput","quad");
     assert(spi_input_start()==ESP_OK); spi_input_stop(); run_reset();
-    assert(!rx && allocations==0 && !tasks);
+    assert(!rx && allocations==(crc_table!=NULL) && !tasks); // the wire keeps its CRC table
     // spirx borrows the other wire's driver, then gives the selection its own back, after a
     // probe and after a failed setup, so the next encoder start finds it.
     const char *probes[][2]={{"quad ts replay","100 on"},{"on gcs","100 quad"},{"quad","100 quad"},
@@ -214,7 +214,7 @@ int main(void) {
         const unsigned type=input_type; const bool pv=pv_mode, rep=replay, usb=usb_mode;
         spi_input_command("spirx",probes[i][1]);
         assert(held==before && input_type==type && pv_mode==pv && replay==rep && usb_mode==usb);
-        run_reset(); assert(!rx && allocations==0); // the next command returns the probe's memory
+        run_reset(); assert(!rx && allocations==(crc_table!=NULL)); // the probe's memory comes back
         if (type && !usb) { assert(spi_input_start()==ESP_OK); spi_input_stop(); run_reset(); }
     }
     spi_input_command("spiinput","quad ts replay");
@@ -225,7 +225,7 @@ int main(void) {
     spi_input_command("spirx","100 on");
     run_reset();
     assert(held==0 && spi_input_start()==ESP_OK); spi_input_stop(); run_reset();
-    assert(!rx && allocations==0);
+    assert(!rx && allocations==(crc_table!=NULL));
     spi_input_command("spiinput","on");
     assert(pv_mode && !replay && input_type==PV_TS && held==1);
     spi_input_command("spiinput","on replay"); // replay is quad only: rejected without changes
