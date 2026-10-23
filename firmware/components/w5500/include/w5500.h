@@ -1,0 +1,219 @@
+#ifndef W5500_H
+#define W5500_H
+
+/* WIZnet W5500 hardware UDP sockets over SPI: live MPEG-TS between a laptop and the ESP32-S3s.
+ * Portable C99, so the register and pointer logic runs on the host against tests/w5500_fake.c;
+ * w5500_eth.c is the ESP-IDF backend (SPI master, MAC, settings in NVS, `eth` console).
+ *
+ * The chip runs its own TCP/IP stack. A socket in UDP mode sends and receives whole datagrams
+ * from 16 KB of TX and 16 KB of RX buffer memory inside the chip, so the S3 needs no lwIP and
+ * almost no RAM: the driver state is about 240 bytes and payloads move by SPI DMA straight
+ * between the chip and the caller's buffer.
+ *
+ * Sources. "DS p.N" is the WIZnet W5500 Datasheet Version 1.1.0 (17 Dec 2022). The 8-byte header
+ * in front of each received UDP datagram is not in the datasheet; WIZnet's "W5500 UDP Function"
+ * page (docs.wiznet.io/Product/Chip/Ethernet/W5500/Application/udp, read 2026-10-22) lists its
+ * fields: peer IP (4 bytes), peer port (2), payload length (2). Like every multi-byte W5500
+ * field they are read MSB first; the page gives positions only, so the board confirms the order.
+ *
+ * SPI frame (DS 2.2, pp.14-17). Mode 0, MSB first (DS p.12); CS low for the whole frame
+ * (variable length data mode, DS 2.3 p.17):
+ *   bytes 0-1  16-bit offset address (DS 2.2.1, p.14)
+ *   byte 2     control: BSB[4:0] << 3 | RWB << 2 | OM[1:0] (DS 2.2.2, pp.15-17).
+ *              BSB 0 = common registers; for socket n, 4n+1 = its registers, 4n+2 = its TX
+ *              buffer, 4n+3 = its RX buffer; 4n+4 is reserved (DS pp.15-16). RWB 1 = write
+ *              (DS p.16). OM 00 = variable length data mode, the only mode used here (DS p.17).
+ *   bytes 3..  N >= 1 data bytes; the offset increments by one per byte (DS p.14).
+ * Example (DS p.20): five bytes to socket 1's TX buffer at 0x0040 are 00 40 34 then the data.
+ *
+ * Buffers and pointers. Each socket's TX and RX buffer is 0, 1, 2, 4, 8 or 16 KB; the sizes of
+ * all eight sockets must each sum to at most 16 KB and are allocated in socket order
+ * (DS 3.3 p.31, Sn_RXBUF_SIZE/Sn_TXBUF_SIZE pp.52-53). A buffer is addressed with a 16-bit offset
+ * that the chip maps onto the buffer modulo its size (DS p.31, p.53), and the pointers
+ * Sn_TX_RD/WR and Sn_RX_RD/WR are free-running 16-bit counters that drop the carry
+ * (DS pp.54-56). So the driver keeps 16-bit copies of the pointers, writes and reads at those
+ * offsets, and never splits a burst at the end of a buffer.
+ *
+ * Send (DS Sn_TX_WR pp.54-55, Sn_CR SEND p.47). Write the datagram at Sn_TX_WR, advance
+ * Sn_TX_WR, command SEND; SEND transmits Sn_TX_RD..Sn_TX_WR as one datagram and sets SEND_OK in
+ * Sn_IR when done (DS p.48), or TIMEOUT if ARP for a unicast destination fails (DS p.38).
+ * Only one SEND may be outstanding, so the driver stages the next datagrams in the TX buffer
+ * past Sn_TX_WR while a SEND is on the wire and starts each as the previous one completes.
+ * The payload burst of datagram k+1 (at least 264 us of SPI, at 40 MHz) outlasts the wire time of
+ * datagram k (110.6 us at 100 Mb/s, below), so udp_send normally finds the last SEND finished
+ * and never waits; the 16 KB buffer then absorbs ARP waits and link stalls (12 datagrams of
+ * 1,316 bytes, about 10 ms at 12.64 Mb/s). udp_send returns W5500_FULL instead of blocking when
+ * the buffer has no room; the room is what Sn_TX_FSR would report (DS pp.53-54), computed from
+ * the driver's own pointer copies instead of read.
+ *
+ * Receive (DS Sn_RX_RD p.55, Sn_RX_WR pp.55-56, Sn_CR RECV p.48). The chip stores each datagram
+ * as the 8-byte header and the payload at Sn_RX_WR. The driver reads Sn_RX_WR (not Sn_RX_RSR,
+ * which depends on when RECV is processed), then the header and payload at its own read
+ * pointer, and finally writes Sn_RX_RD and commands RECV once everything known has been read.
+ * Sn_RX_WR only grows while the driver reads, and its MSB is read first, so a read that
+ * straddles an update is never high: a low read only delays data, and a header that disagrees
+ * with it is re-checked against a stable value (read until two agree, as DS p.55 advises for the
+ * size registers) before the buffer is declared malformed and flushed.
+ *
+ * Throughput (derived; the board measures it, `eth send` and `eth recv`). Each access is one SPI
+ * frame: 3 header bytes plus data. The ESP backend polls frames of at most W5500_SMALL_MAX data
+ * bytes and runs longer ones as interrupt DMA transactions. ESP-IDF v6.1 quotes, for the
+ * ESP32-S3, t_p = 11 us per polled DMA transaction and t_q = 26 us per interrupt DMA transaction
+ * of one byte (docs/en/api-reference/peripherals/spi_master.rst, "Transaction Duration"); they are
+ * used here as fixed costs per frame, with the bits added at f_SCK.
+ *   Send, one 1,316-byte datagram (7 TS packets), steady state:
+ *     payload write 3+1316, Sn_CR..Sn_SR read 3+3, Sn_TX_WR write 3+2, SEND + Sn_IR clear 3+2
+ *     = 1 burst + 3 polled frames, 1,335 bytes = 10,680 bits
+ *     T_send = t_q + 3 t_p + 10,680 / f_SCK
+ *   Receive, one datagram, nothing else queued:
+ *     Sn_RX_WR read 3+2, header read 3+8, payload read 3+1316, Sn_RX_RD write 3+2, RECV 3+1
+ *     = 1 burst + 4 polled frames, 1,344 bytes = 10,752 bits
+ *     T_recv = t_q + 4 t_p + 10,752 / f_SCK
+ *   Payload rate R = 10,528 bits / T (1,316 bytes x 8):
+ *     f_SCK (80 MHz/n)   T_send    R_send      T_recv    R_recv
+ *     40.00 MHz (/2)     326.0 us  32.3 Mb/s   338.8 us  31.1 Mb/s
+ *     26.67 MHz (/3)     459.5 us  22.9 Mb/s   473.2 us  22.2 Mb/s   default
+ *     20.00 MHz (/4)     593.0 us  17.8 Mb/s   607.6 us  17.3 Mb/s
+ *     10.00 MHz (/8)    1127.0 us   9.3 Mb/s  1145.2 us   9.2 Mb/s
+ *   15 Mb/s needs T <= 701.9 us, so f_SCK >= 16.6 MHz for send and 17.0 MHz for receive: 20 MHz
+ *   is the slowest S3 divider that meets the goal. The W5500 is guaranteed to 33.3 MHz and
+ *   designed for 80 MHz (DS p.61), so 26.67 MHz is the default and 40 MHz is for trying.
+ *   Wire: a 1,316-byte datagram is a 1,362-byte Ethernet frame (14 MAC + 20 IP + 8 UDP + 4 FCS)
+ *   plus 20 bytes of preamble and gap: 1,382 bytes = 110.6 us at 100 Mb/s, shorter than the SPI
+ *   time, so SPI sets the rate. On a 10 Mb/s link (1.106 ms) the wire caps payload at 9.5 Mb/s,
+ *   below the 12.64 Mb/s receiver mode, so the link must be 100 Mb/s (`eth` prints it).
+ *   CPU on the calling core: a polled frame busies the core for t_p plus its bits; an interrupt
+ *   transaction costs about t_q while DMA moves the payload. Send: 3 x 11 + 16 x 8 / 26.67 +
+ *   26 = 63.8 us per datagram; receive: 4 x 11 + 25 x 8 / 26.67 + 26 = 77.5 us. At the 12.64 Mb/s
+ *   receiver mode (1,200.6 datagrams/s) that is 7.7% (send) and 9.3% (receive) of one 240 MHz
+ *   core, plus 12.5 us for each empty receive poll. Most of it is ESP-IDF's fixed cost per
+ *   transaction, so a faster clock barely helps; driving GP-SPI2's registers directly would.
+ *   tests/test_w5500.py replays these frame sequences through the fake and checks the frame
+ *   counts, bytes and times above. */
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#define W5500_SOCKETS 2      /* sockets 0 and 1; sockets 2-7 get no buffer memory */
+#define W5500_UDP_MAX 1472   /* 1500-byte MTU - 20 IP - 8 UDP: no IP fragmentation (DS p.2) */
+#define W5500_UDP_HEADER 8   /* peer IP, peer port, payload length, in front of each datagram */
+#define W5500_TXQ 16         /* datagrams staged in the TX buffer, at most */
+#define W5500_SMALL_MAX 32   /* frames up to this many data bytes are polled by the backend */
+#define W5500_VERSION 0x04   /* VERSIONR (DS p.43) */
+
+/* PHYCFGR status bits (DS p.42). */
+#define W5500_PHY_LINK 0x01
+#define W5500_PHY_100M 0x02
+#define W5500_PHY_FULL 0x04
+
+enum {
+    W5500_OK = 0,
+    W5500_FULL = 1,        /* udp_send: no room now; try again later */
+    W5500_ERR_ARG = -1,
+    W5500_ERR_BUS = -2,    /* the backend failed a frame */
+    W5500_ERR_CHIP = -3,   /* wrong VERSIONR, reset or command not finishing, register write lost */
+    W5500_ERR_SOCKET = -4, /* the chip closed the socket */
+};
+
+typedef struct {
+    /* One SPI frame: the 3-byte header, then n >= 1 data bytes written from tx or read into rx
+     * (exactly one is non-NULL). Frames longer than W5500_SMALL_MAX carry a datagram payload and
+     * point straight into the caller's buffer. Return 0 on success. */
+    int (*frame)(void *ctx, uint16_t offset, uint8_t control, const uint8_t *tx, uint8_t *rx,
+                 size_t n);
+    void (*delay_us)(void *ctx, uint32_t us);
+    void *ctx;
+} w5500_bus;
+
+typedef struct {
+    uint8_t mac[6], ip[4], mask[4], gateway[4];
+    /* KB per socket: 0, 1, 2, 4, 8 or 16; TX and RX each sum to at most 16 (DS pp.52-53). */
+    uint8_t tx_kb[W5500_SOCKETS], rx_kb[W5500_SOCKETS];
+} w5500_config;
+
+typedef struct {
+    uint8_t ip[4];
+    uint16_t port;
+} w5500_peer;
+
+typedef struct {
+    uint32_t sent, sent_bytes;          /* datagrams whose SEND finished with SEND_OK */
+    uint32_t full;                      /* udp_send calls refused for lack of TX room */
+    uint32_t dropped;                   /* accepted datagrams lost to a SEND TIMEOUT (ARP) */
+    uint32_t received, received_bytes;  /* datagrams delivered by udp_recv */
+    uint32_t overruns;   /* Sn_RX_WR reads that found room for less than one more datagram of the
+                          * last length: the chip drops datagrams that do not fit, so each marks a
+                          * possible loss (TS continuity counters downstream measure real loss) */
+    uint32_t discarded;  /* received datagrams skipped: empty or longer than the caller's buffer */
+    uint32_t malformed;  /* headers inconsistent with Sn_RX_WR; the buffer was flushed */
+} w5500_stats;
+
+typedef struct {
+    uint16_t tx_size, rx_size;   /* bytes */
+    uint16_t port, dest_port;
+    uint8_t dest[4];
+    uint16_t tx_wr;              /* Sn_TX_WR as written: the end of the data given to SEND */
+    uint16_t tx_end;             /* end of the staged datagrams */
+    uint16_t flight;             /* length of the SEND in progress, 0 if none */
+    uint16_t queue[W5500_TXQ];   /* staged datagram lengths, oldest at q_head */
+    uint8_t q_head, q_count;
+    uint8_t ir_clear;            /* Sn_IR bits to clear in the next SEND frame */
+    uint16_t rx_rd;              /* read pointer; Sn_RX_RD lags until the next RECV */
+    uint16_t rx_left;            /* bytes known received and not yet read */
+    uint16_t rx_last;            /* length of the last datagram received */
+    bool open, dest_dirty, rx_dirty;
+    w5500_stats st;
+} w5500_socket;
+
+typedef struct {
+    w5500_bus bus;
+    w5500_socket sock[W5500_SOCKETS];
+    uint32_t frames, frame_bytes, bus_errors;
+    uint8_t version;
+    uint8_t hdr[W5500_UDP_HEADER];
+} w5500;
+
+/* One owner task; nothing here blocks except the reset and open/close command waits.
+ * Read VERSIONR, software-reset the chip, set MAC/IP/mask/gateway (read back to check the
+ * MOSI path), and size the socket buffers. */
+int w5500_init(w5500 *w, const w5500_bus *bus, const w5500_config *cfg);
+/* PHYCFGR (DS p.42), whose low bits are W5500_PHY_*, or a negative error. */
+int w5500_phy(w5500 *w);
+
+/* Open socket s in UDP mode on a local port (also the source port of sent datagrams). */
+int w5500_udp_open(w5500 *w, unsigned s, uint16_t port);
+int w5500_udp_close(w5500 *w, unsigned s);
+/* Destination for udp_send; 255.255.255.255 broadcasts without ARP, other addresses are
+ * resolved by the chip's ARP on the first SEND. Applied before the next SEND starts. */
+void w5500_udp_dest(w5500 *w, unsigned s, const uint8_t ip[4], uint16_t port);
+/* Stage one datagram (1..W5500_UDP_MAX bytes, at most the TX buffer) and start it if the chip
+ * is idle. W5500_OK, W5500_FULL (nothing written; retry later) or an error. Payload buffers
+ * longer than W5500_SMALL_MAX bytes must be DMA capable, 4-byte aligned internal RAM. */
+int w5500_udp_send(w5500 *w, unsigned s, const uint8_t *data, size_t len);
+/* Finish a completed SEND and start the next staged datagram. Returns the datagrams still
+ * staged or on the wire (0 when all are out), or an error. Call it when idle. */
+int w5500_udp_poll(w5500 *w, unsigned s);
+/* Copy the next datagram's payload into buf: its length, 0 if none, or an error. Datagrams
+ * longer than cap are skipped and counted. buf follows the same DMA rule as udp_send. */
+int w5500_udp_recv(w5500 *w, unsigned s, uint8_t *buf, size_t cap, w5500_peer *from);
+const w5500_stats *w5500_udp_stats(const w5500 *w, unsigned s);
+
+/* Settings kept in NVS by the ESP backend; the console grammar is portable so it is tested on
+ * the host (w5500_settings.c). */
+typedef struct {
+    uint8_t ip[4], mask[4], gateway[4], dest[4];
+    uint16_t port, dest_port;   /* local port (listen and source), destination port */
+    uint16_t sck_khz;           /* SPI clock request, 10000..40000 */
+    int8_t sclk, mosi, miso, cs;
+} w5500_settings;
+
+void w5500_settings_default(w5500_settings *s);
+/* One `eth` setting: "ip A.B.C.D/N [gw A.B.C.D]", "dest A.B.C.D|broadcast[:PORT]",
+ * "port PORT", "mhz F" (10..40), "pins SCLK MOSI MISO CS", "defaults".
+ * Returns 1 if s changed, -1 on a syntax error (s unchanged). */
+int w5500_settings_parse(w5500_settings *s, const char *args);
+/* JSON members without braces, e.g. "ip":"192.168.77.2",...; snprintf return value. */
+int w5500_settings_json(const w5500_settings *s, char *out, size_t cap);
+
+#endif
