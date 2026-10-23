@@ -211,7 +211,13 @@ int w5500_eth_start(w5500_eth_role role)
     else c.rx_kb[0] = 16;
     int e = w5500_init(w, &bus, &c);
     if (!e && phy_mode) {
-        const int phy = w5500_phy_config(w, phy_mode);
+        /* The PHY's reset drops the link for about 1.5 s (10 Mb/s forced, `eth watch`): wait up to
+         * 3 s for it, so a unicast SEND's ARP does not time out (1.8 s, w5500.h) meanwhile. */
+        int phy = w5500_phy_config(w, phy_mode);
+        for (int i = 0; phy >= 0 && !(phy & W5500_PHY_LINK) && i < 300; ++i) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            phy = w5500_phy(w);
+        }
         if (phy < 0) e = phy;
     }
     if (!e) e = w5500_udp_open(w, 0, s.port);
