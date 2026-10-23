@@ -1,0 +1,12 @@
+menu "W5500 Ethernet"
+
+    config W5500_DIRECT_SPI
+        bool "Drive GP-SPI2 and GDMA registers directly"
+        default n
+        help
+            Use w5500_spi_direct.c, which programs GP-SPI2 and a GDMA channel itself, instead of
+            ESP-IDF's spi_master (w5500_spi_idf.c). Estimated CPU per 1,316-byte datagram: 11 us
+            sent and 21 us received, against 76 us and 90 us; no spi_master code in IRAM. The
+            ESP-IDF backend stays the reference until the board shows that both agree.
+
+endmenu

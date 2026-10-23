@@ -97,8 +97,17 @@
  *   receiver mode (1,200.6 datagrams/s) that is 9.1% (send) and 10.8% (receive) of one 240 MHz
  *   core, plus 12.5 us for each empty receive poll. Most of it is ESP-IDF's fixed cost per
  *   transaction, so a faster clock barely helps.
+ *   Direct GP-SPI2 backend (CONFIG_W5500_DIRECT_SPI; estimated, the board measures): a polled
+ *   frame costs about 1.0 us of register work plus its bits; a payload about 1.5 us to set up
+ *   its GDMA descriptor and start. A payload write is posted (udp_send returns while it clocks
+ *   out); a read sleeps on the SPI interrupt, about 6 us of CPU and 2 us of latency.
+ *     send, caller paced:  CPU 4 x 1.0 + 152 / f_SCK + 1.5 = 11.2 us at 26.67 MHz
+ *     send, back to back:  1.5 + 10,552 / f_SCK + 2 + 4 x 1.0 + 152 / f_SCK = 408.9 us, 25.7 Mb/s
+ *     receive:             CPU 5 x 1.0 + 232 / f_SCK + 1.5 + 6 = 21.2 us; 412.9 us, 25.5 Mb/s
+ *     at 40 MHz:           send 9.3 us CPU, 38.3 Mb/s; receive 18.3 us CPU, 37.9 Mb/s
+ *   At 12.64 Mb/s that is 1.3% (send) and 2.5% (receive) of one core.
  *   tests/test_w5500.py replays these frame sequences through the fake and checks the frame
- *   counts, bytes and times above. */
+ *   counts, bytes and times above for both backends. */
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -205,7 +214,7 @@ void w5500_udp_dest(w5500 *w, unsigned s, const uint8_t ip[4], uint16_t port);
 /* Stage one datagram (1..W5500_UDP_MAX bytes, at most the TX buffer) and start it if the chip
  * is idle. W5500_OK, W5500_FULL (nothing written; retry later) or an error. Payload buffers
  * longer than W5500_SMALL_MAX bytes must be DMA capable, 4-byte aligned internal RAM.
- * With a backend that posts (bus.busy set), udp_send returns while the
+ * With a backend that posts (bus.busy set: the direct GP-SPI2 one), udp_send returns while the
  * payload is still clocking out of data, so keep data unchanged until the next w5500 call on
  * this chip returns or w5500_busy() is false; that next call (udp_send or udp_poll) also starts
  * this datagram's SEND. */

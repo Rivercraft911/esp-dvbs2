@@ -23,7 +23,7 @@ OK, FULL, ERR_ARG, ERR_BUS, ERR_CHIP, ERR_SOCKET = 0, 1, -1, -2, -3, -4
 UDP_MAX, TXQ, SMALL_MAX = 1472, 16, 32
 TS_DATAGRAM = 1316
 T_POLL, T_QUEUE = 11.0, 26.0          # us per polled / interrupt transaction (w5500.h)
-# A posting backend (the direct GP-SPI2 one to come), estimated: register setup per polled
+# Direct GP-SPI2 backend (w5500_spi_direct.c), estimated in w5500.h: register setup per polled
 # frame, DMA setup per payload, CPU to sleep on and wake from the SPI interrupt, wake latency.
 D_POLL, D_POST, D_WAKE, D_LAT = 1.0, 1.5, 6.0, 2.0
 DIRECT = dict(posting=1, small_max=64, poll_us=D_POLL, queue_us=D_POST, wake_us=D_WAKE,
@@ -82,7 +82,8 @@ class Native:
         subprocess.run(shlex.split(os.environ.get("CC", "cc")) + [
             "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-fPIC", "-shared",
             "-I", str(COMPONENT / "include"), str(COMPONENT / "w5500.c"),
-            str(COMPONENT / "w5500_settings.c"), str(ROOT / "tests/w5500_fake.c"),
+            str(COMPONENT / "w5500_settings.c"), str(COMPONENT / "w5500_gpspi.c"),
+            str(ROOT / "tests/w5500_fake.c"),
             "-o", str(library)], check=True)
         lib = self.lib = ct.CDLL(str(library))
         p, u16, b = ct.c_void_p, ct.c_uint16, ct.c_char_p
@@ -115,6 +116,11 @@ class Native:
             "w5500_udp_recv": (ct.c_int, [p, ct.c_uint, p, ct.c_size_t, ct.POINTER(Peer)]),
             "w5500_udp_stats": (ct.POINTER(Stats), [p, ct.c_uint]),
             "w5500_busy": (ct.c_bool, [p]),
+            "w5500_gpspi_addr": (ct.c_uint32, [u16, ct.c_uint8]),
+            "w5500_gpspi_clock": (ct.c_uint32, [ct.c_uint32, ct.c_uint32, ct.POINTER(ct.c_uint32)]),
+            "w5500_gdma_dw0": (ct.c_uint32, [ct.c_uint, ct.c_uint, ct.c_bool]),
+            "w5500_gpspi_load": (None, [p, b, ct.c_size_t]),
+            "w5500_gpspi_store": (None, [p, p, ct.c_size_t]),
             "w5500_settings_default": (None, [ct.POINTER(Settings)]),
             "w5500_settings_parse": (ct.c_int, [ct.POINTER(Settings), b]),
             "w5500_settings_json": (ct.c_int, [ct.POINTER(Settings), b, ct.c_size_t]),
@@ -813,6 +819,59 @@ def test_direct_model(native):
     return table
 
 
+def gpspi_bits(addr_value, addr_bits, words, n):
+    """What the ESP32-S3 GP-SPI master shifts out in a half-duplex write with SPI_WR_BIT_ORDER = 0,
+    modelled from the TRM v1.8: the address phase sends SPI_USR_ADDR_VALUE from bit 31 down for
+    SPI_USR_ADDR_BITLEN + 1 bits (Table 30.5-10), then data byte i is bits 8(i%4)+7..8(i%4) of
+    SPI_W(i/4) (30.5.5.1), each MSB first (Table 30.5-5)."""
+    bits = [(addr_value >> (31 - i)) & 1 for i in range(addr_bits)]
+    for i in range(n):
+        byte = (words[i // 4] >> (8 * (i % 4))) & 0xFF
+        bits += [(byte >> (7 - k)) & 1 for k in range(8)]
+    return bytes(int("".join(map(str, bits[i:i + 8])), 2) for i in range(0, len(bits), 8))
+
+
+def test_gpspi(native):
+    """Register encodings of the direct GP-SPI2 backend against a model of the controller."""
+    lib = native.lib
+    rng = random.Random(9)
+    for _ in range(200):
+        offset, control = rng.getrandbits(16), rng.getrandbits(8)
+        n = rng.randint(1, 64)
+        data = payload(rng, n)
+        words = (ct.c_uint32 * 16)()
+        lib.w5500_gpspi_load(words, data, n)
+        addr = lib.w5500_gpspi_addr(offset, control)
+        wire = gpspi_bits(addr, 24, list(words), n)
+        check(wire == offset.to_bytes(2, "big") + bytes([control]) + data,
+              "24-bit address phase + W0..W15 make the W5500 frame (DS 2.2)")
+        back = ct.create_string_buffer(n)
+        lib.w5500_gpspi_store(back, words, n)
+        check(back.raw == data, "W0..W15 read back")
+    # A 16-bit command phase sends COMMAND_VALUE[7:0] first (Table 30.5-9): the wrong byte order
+    # for the W5500's offset, which is why the header uses the address phase.
+    offset = 0x1234
+    command = [(offset >> (7 - k)) & 1 for k in range(8)]
+    command += [(offset >> (15 - k)) & 1 for k in range(8)]
+    check(bytes(int("".join(map(str, command[i:i + 8])), 2) for i in (0, 8)) == b"\x34\x12",
+          "command phase is low byte first")
+    actual = ct.c_uint32()
+    for want, n in ((40e6, 2), (26_667_000, 3), (26.67e6, 3), (26e6, 4), (20e6, 4), (16e6, 5),
+                    (10e6, 8), (1.25e6, 64)):
+        reg = lib.w5500_gpspi_clock(80_000_000, int(want), ct.byref(actual))
+        N, H, L = reg >> 12 & 63, reg >> 6 & 63, reg & 63
+        check(N + 1 == n and L == N and H == (N + 1) // 2 - 1 and reg >> 18 == 0 and
+              actual.value == 80_000_000 // n,
+              f"SPI_CLOCK_REG for {want / 1e6:.2f} MHz: N {N} H {H} L {L}")
+        check(actual.value <= want < 80e6 / (n - 1) or n == 2, "fastest divider not above want")
+    check(lib.w5500_gpspi_clock(80_000_000, 1_000_000, ct.byref(actual)) == 0, "below 80/64 MHz")
+    dw0 = lib.w5500_gdma_dw0(1316, 1316, True)
+    check(dw0 >> 31 == 1 and dw0 >> 30 & 1 == 1 and dw0 >> 12 & 0xFFF == 1316 and
+          dw0 & 0xFFF == 1316,
+          "transmit descriptor: owner, suc_eof, length, size (TRM 3.4.1)")
+    check(lib.w5500_gdma_dw0(1472, 0, False) == 1 << 31 | 1472, "receive descriptor: owner, size")
+
+
 def test_settings(native):
     lib = native.lib
     s = Settings()
@@ -865,6 +924,7 @@ def main():
         size = native.lib.fake_driver_size()
         check(size <= 300, f"driver state {size} bytes")
         test_fake(native)
+        test_gpspi(native)
         test_frame_format(native)
         test_init(native)
         test_open(native)
@@ -880,7 +940,8 @@ def main():
         direct = test_direct_model(native)
         test_settings(native)
     print("w5500: fake checks, frames, init, open, send, full, ARP timeout, receive, malformed, "
-          f"command handshake, partial publication, posted writes, settings: ok "
+          f"command handshake, partial publication, posted writes, GP-SPI2 encodings, "
+          f"settings: ok "
           f"(driver state {size} bytes)")
     for mhz, row in table.items():
         print(f"  ESP-IDF {mhz:5.2f} MHz: send {row[0]:6.1f} us {row[1]:4.1f} Mb/s "
