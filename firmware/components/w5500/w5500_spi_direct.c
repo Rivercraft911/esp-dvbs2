@@ -28,7 +28,10 @@
  * The SPI FIFOs are reset before the GDMA starts, not after as TRM 30.5.8.4 step 9 lists, so no
  * byte the GDMA has already pushed is dropped (ESP-IDF's driver uses the same order).
  * Waiting: a transfer with more than SLEEP_US left sleeps on SPI_TRANS_DONE_INT (a flash-resident
- * interrupt that gives a semaphore), anything shorter spins on SPI_USR. */
+ * interrupt that gives a semaphore), anything shorter spins on SPI_USR. Every wait has a deadline;
+ * one that passes aborts: both GDMA links are stopped and reset, GP-SPI2 goes through its
+ * peripheral reset, and later frames fail until the chip is started again, so no buffer stays
+ * with the GDMA after an error is returned. */
 #include "w5500_port.h"
 #include "w5500_gpspi.h"
 
@@ -108,7 +111,9 @@
 #define IN_SUC_EOF (1u << 1)
 #define IN_DSCR_ERR (1u << 3)
 #define INLINK_START (1u << 22)
+#define INLINK_STOP (1u << 21)
 #define OUTLINK_START (1u << 21)
+#define OUTLINK_STOP (1u << 20)
 #define LINK_ADDR 0xFFFFFu
 #define DMA_RAM_LOW 0x3FC88000u           /* internal RAM the GDMA reaches (TRM 3.4.8, p.364) */
 #define DMA_RAM_HIGH 0x3FD00000u
@@ -126,7 +131,7 @@
 #define GM_IN_SEL(y) (GPIO_BASE + 0x154 + 4u * (y))   /* GPIO_FUNCy_IN_SEL_CFG_REG */
 #define GM_OUT_SEL(x) (GPIO_BASE + 0x554 + 4u * (x))  /* GPIO_FUNCx_OUT_SEL_CFG_REG */
 #define IN_SEL_MATRIX (1u << 7)                         /* GPIO_SIGy_IN_SEL */
-#define OUT_OEN_SEL (1u << 10)                          /* GPIO_FUNCx_OEN_SEL: OE from GPIO_ENABLE */
+#define OUT_OEN_SEL (1u << 10)                          /* GPIO_FUNCx_OEN_SEL: OE = GPIO_ENABLE */
 #define OUT_SIMPLE 0x100u                               /* signal 256: plain GPIO output */
 #define IOMUX(n) (IOMUX_BASE + 0x04 + 4u * (n))         /* IO_MUX_GPIOn_REG */
 #define IOMUX_WPU (1u << 8)
@@ -176,6 +181,8 @@ _Static_assert(GDMA_IN_CONF0_CH0_REG == GDMA_BASE + IN_CONF0 &&
                GDMA_IN_DSCR_ERR_CH0_INT_RAW == IN_DSCR_ERR &&
                GDMA_INLINK_START_CH0 == INLINK_START && GDMA_OUTLINK_START_CH0 == OUTLINK_START &&
                GDMA_INLINK_ADDR_CH0 == LINK_ADDR && GDMA_OUTLINK_ADDR_CH0 == LINK_ADDR, "GDMA");
+_Static_assert(GDMA_INLINK_STOP_CH0 == INLINK_STOP && GDMA_OUTLINK_STOP_CH0 == OUTLINK_STOP,
+               "GDMA link stop");
 _Static_assert(SYSTEM_PERIP_CLK_EN0_REG == PERIP_CLK_EN0 &&
                SYSTEM_PERIP_RST_EN0_REG == PERIP_RST_EN0 && SYSTEM_SPI2_CLK_EN == SYS_SPI2 &&
                SYSTEM_SPI2_RST == SYS_SPI2, "system registers");
@@ -192,6 +199,9 @@ _Static_assert(FSPICLK_OUT_IDX == SIG_FSPICLK && FSPIQ_IN_IDX == SIG_FSPIQ &&
                FSPID_OUT_IDX == SIG_FSPID && FSPICS0_OUT_IDX == SIG_FSPICS0, "signal indices");
 
 #define SLEEP_US 40      /* shorter waits spin: waking costs about 6 us (w5500.h) */
+#define UPDATE_US 100    /* SPI_UPDATE takes a few clock cycles; this is a deadline */
+#define CPU_FRAME_US 1000   /* 67 bytes take 54 us at 10 MHz */
+#define DMA_FRAME_US 4000   /* 1,475 bytes take 1.2 ms at 10 MHz */
 
 w5500_port_info w5500_port = {.name = "direct"};
 
@@ -208,14 +218,28 @@ static struct {
     StaticSemaphore_t done_buf;
     SemaphoreHandle_t done;
     uint32_t ch;             /* register base of the GDMA channel pair */
+    uint32_t clock;          /* SPI_CLOCK_REG */
     uint32_t end;            /* CPU cycle count at which the transfer in flight should end */
     uint32_t cycles_per_byte;
     int8_t pins[4];          /* sclk, mosi, miso, cs */
-    bool busy, reading, clocked;
+    bool claimed;            /* GP-SPI2's clock is on and it is ours */
+    bool routed;             /* the pins are connected */
+    bool busy, reading;      /* a DMA transfer is in flight */
+    bool failed;             /* a transfer was aborted: frames fail until the next start */
 } d;
 
 static inline void put(uint32_t a, uint32_t v) { *(volatile uint32_t *)a = v; }
 static inline uint32_t get(uint32_t a) { return *(volatile uint32_t *)a; }
+
+/* Spin until the mask bits of a register clear, or give up after us microseconds. */
+static bool cleared(uint32_t reg, uint32_t mask, uint32_t us)
+{
+    const uint32_t t0 = esp_cpu_get_cycle_count();
+    const uint32_t limit = us * (uint32_t)CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
+    while (get(reg) & mask)
+        if (esp_cpu_get_cycle_count() - t0 > limit) return false;
+    return true;
+}
 
 /* SPI_TRANS_DONE_INT: wake the waiting task. Runs from flash; ESP-IDF masks it during flash
  * writes, and nothing waits then. */
@@ -239,49 +263,82 @@ static void sleep_done(void)
     w5500_port.sleeps++;
 }
 
-/* End the transfer in flight: sleep if it has long to go, then spin on SPI_USR; a read also
- * waits for GDMA_IN_SUC_EOF (its data is in memory). Bounded by 4 ms of spinning. */
-static bool finish(void)
-{
-    if (!d.busy) return true;
-    d.busy = false;
-    const int32_t left = (int32_t)(d.end - esp_cpu_get_cycle_count());
-    if (left > (int32_t)(SLEEP_US * (uint32_t)CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ)) sleep_done();
-    const uint32_t start = esp_cpu_get_cycle_count();
-    const uint32_t limit = 4000u * CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
-    while (get(G_CMD) & CMD_USR)
-        if (esp_cpu_get_cycle_count() - start > limit) goto stuck;
-    if (d.reading) {
-        uint32_t raw;
-        while (!((raw = get(d.ch + IN_INT_RAW)) & (IN_SUC_EOF | IN_DSCR_ERR)))
-            if (esp_cpu_get_cycle_count() - start > limit) goto stuck;
-        if (raw & IN_DSCR_ERR) goto stuck;
-    }
-    return true;
-stuck:
-    w5500_port.err = ESP_ERR_TIMEOUT;
-    return false;
-}
-
-static void start_transfer(void)
-{
-    put(G_INT_CLR, TRANS_DONE);
-    put(G_CMD, CMD_UPDATE);                 /* APB to SPI clock domain (Register 30.1) */
-    while (get(G_CMD) & CMD_UPDATE) {}
-    put(G_CMD, CMD_USR);
-}
-
 static void dma_reset(uint32_t conf0)
 {
     put(d.ch + conf0, get(d.ch + conf0) | 1u);    /* GDMA_*_RST_CHn: 1, then 0 (TRM 3.6.2/3.6.3) */
     put(d.ch + conf0, get(d.ch + conf0) & ~1u);
 }
 
+static void spi_reset(void)
+{
+    PERIPH_RCC_ATOMIC() {                   /* SYSTEM_SPI2_RST: 1, then 0 (TRM 17.3.5) */
+        put(PERIP_RST_EN0, get(PERIP_RST_EN0) | SYS_SPI2);
+        put(PERIP_RST_EN0, get(PERIP_RST_EN0) & ~SYS_SPI2);
+    }
+}
+
+/* Take every buffer back: no SPI interrupt, both GDMA links stopped (GDMA_*LINK_STOP_CHn) and the
+ * channels reset, GP-SPI2 through its peripheral reset, which ends any transaction and empties its
+ * FIFOs (TRM 3.8, 17.3.5). Used after a failed wait and before the channels are released. */
+static void abort_all(void)
+{
+    if (d.claimed) put(G_INT_ENA, 0);
+    if (d.tx) {
+        put(d.ch + OUT_LINK, OUTLINK_STOP);
+        put(d.ch + IN_LINK, INLINK_STOP);
+        dma_reset(OUT_CONF0);
+        dma_reset(IN_CONF0);
+    }
+    if (d.claimed) spi_reset();
+    d.busy = false;
+}
+
+static int fail(esp_err_t err)
+{
+    w5500_port.err = err;
+    d.failed = true;
+    abort_all();
+    return 1;
+}
+
+/* End the transfer in flight: sleep if it has long to go, then spin on SPI_USR; a read also
+ * waits for GDMA_IN_SUC_EOF (its data is in memory, TRM Table 30.10-2 note 1). False if a
+ * deadline passed or the GDMA reported a descriptor error; d.busy stays set until the caller
+ * aborts, so nothing reuses the descriptor or the buffer meanwhile. */
+static bool finish(void)
+{
+    if (!d.busy) return true;
+    const int32_t left = (int32_t)(d.end - esp_cpu_get_cycle_count());
+    if (left > (int32_t)(SLEEP_US * (uint32_t)CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ)) sleep_done();
+    if (!cleared(G_CMD, CMD_USR, DMA_FRAME_US)) return false;
+    if (d.reading) {
+        const uint32_t t0 = esp_cpu_get_cycle_count();
+        const uint32_t limit = DMA_FRAME_US * (uint32_t)CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
+        uint32_t raw;
+        while (!((raw = get(d.ch + IN_INT_RAW)) & (IN_SUC_EOF | IN_DSCR_ERR)))
+            if (esp_cpu_get_cycle_count() - t0 > limit) return false;
+        if (raw & IN_DSCR_ERR) return false;
+    }
+    d.busy = false;
+    return true;
+}
+
+/* Clear SPI_TRANS_DONE_INT, SPI_UPDATE (APB to SPI clock domain, Register 30.1), then SPI_USR. */
+static bool start_transfer(void)
+{
+    put(G_INT_CLR, TRANS_DONE);
+    put(G_CMD, CMD_UPDATE);
+    if (!cleared(G_CMD, CMD_UPDATE, UPDATE_US)) return false;
+    put(G_CMD, CMD_USR);
+    return true;
+}
+
 static int frame(void *ctx, uint16_t offset, uint8_t control, const uint8_t *tx, uint8_t *rx,
                  size_t n, bool post)
 {
     (void)ctx;
-    if (!finish()) return 1;
+    if (d.failed) return 1;                 /* until w5500_eth_start sets everything up again */
+    if (!finish()) return fail(ESP_ERR_TIMEOUT);
     const uint8_t *buf = tx ? tx : rx;
     put(G_ADDR, w5500_gpspi_addr(offset, control));
     put(G_MS_DLEN, 8u * (uint32_t)n - 1u);
@@ -291,8 +348,8 @@ static int frame(void *ctx, uint16_t offset, uint8_t control, const uint8_t *tx,
         put(G_DMA_CONF, 0);
         if (tx) w5500_gpspi_load((volatile uint32_t *)G_W0, tx, n);
         put(G_USER, user);
-        start_transfer();
-        while (get(G_CMD) & CMD_USR) {}
+        if (!start_transfer() || !cleared(G_CMD, CMD_USR, CPU_FRAME_US))
+            return fail(ESP_ERR_TIMEOUT);
         if (rx) w5500_gpspi_store(rx, (const volatile uint32_t *)G_W0, n);
         w5500_port.polled++;
         return 0;
@@ -307,6 +364,8 @@ static int frame(void *ctx, uint16_t offset, uint8_t control, const uint8_t *tx,
     const uint32_t ena = tx ? DMA_TX_ENA : DMA_RX_ENA;
     put(G_DMA_CONF, ena | FIFO_RST);
     put(G_DMA_CONF, ena);
+    d.busy = true;                          /* the GDMA may own the buffer from here */
+    d.reading = rx != NULL;
     if (tx) {
         dma_reset(OUT_CONF0);
         put(d.ch + OUT_LINK, ((uint32_t)&d.desc & LINK_ADDR) | OUTLINK_START);
@@ -316,19 +375,17 @@ static int frame(void *ctx, uint16_t offset, uint8_t control, const uint8_t *tx,
         put(d.ch + IN_LINK, ((uint32_t)&d.desc & LINK_ADDR) | INLINK_START);
     }
     put(G_USER, user);
-    start_transfer();
-    d.busy = true;
-    d.reading = rx != NULL;
+    if (!start_transfer()) return fail(ESP_ERR_TIMEOUT);
     d.end = esp_cpu_get_cycle_count() + (3u + (uint32_t)n) * d.cycles_per_byte;
     w5500_port.queued++;
     if (post && tx) return 0;
-    return finish() ? 0 : 1;
+    return finish() ? 0 : fail(ESP_ERR_TIMEOUT);
 }
 
 static bool busy(void *ctx)
 {
     (void)ctx;
-    return d.busy && (get(G_CMD) & CMD_USR);
+    return d.busy && !d.failed && (get(G_CMD) & CMD_USR);
 }
 
 static void delay(void *ctx, uint32_t us)
@@ -357,21 +414,43 @@ static void release_output(int pin)
     else put(GM_ENABLE1_W1TC, 1u << (pin - 32));
 }
 
+/* Master, half-duplex, mode 0, 1-bit, MSB first, CS0 only, no setup/hold extension: the 0.5
+ * SPI_CLK of CS setup and hold (TRM 30.6) exceeds the W5500's 5 ns (DS p.61). */
+static bool configure(void)
+{
+    put(G_CLK_GATE, CLK_GATE_ON);
+    put(G_SLAVE, 0);
+    put(G_CLOCK, d.clock);
+    put(G_CTRL, get(G_CTRL) & ~CTRL_MODES);
+    put(G_MISC, (get(G_MISC) & ~MISC_CLEAR) | MISC_CS_DIS);
+    put(G_USER, 0);
+    put(G_USER1, USER1_ADDR_24);
+    put(G_USER2, 0);
+    put(G_DIN_MODE, 0);
+    put(G_DIN_NUM, 0);
+    put(G_DOUT_MODE, 0);
+    put(G_DMA_CONF, 0);
+    put(G_INT_ENA, 0);
+    put(G_INT_CLR, 0xFFFFFFFFu);
+    put(G_CMD, CMD_UPDATE);
+    return cleared(G_CMD, CMD_UPDATE, UPDATE_US);
+}
+
 void w5500_port_stop(void)
 {
-    if (d.clocked) {
-        finish();
-        put(G_INT_ENA, 0);
+    if (d.claimed && !d.failed && !finish()) d.failed = true;
+    abort_all();
+    if (d.routed) {
         /* Outputs back to inputs: the W5500's pull-up holds CS high (DS p.9). */
         release_output(d.pins[0]);
         release_output(d.pins[1]);
         release_output(d.pins[3]);
         put(GM_IN_SEL(SIG_FSPIQ), IN_SEL_MATRIX | 0x3C);   /* constant 0 (TRM 6.4.3 note 3) */
-        PERIPH_RCC_ATOMIC() {
-            put(PERIP_RST_EN0, get(PERIP_RST_EN0) | SYS_SPI2);
-            put(PERIP_CLK_EN0, get(PERIP_CLK_EN0) & ~SYS_SPI2);
-        }
-        d.clocked = false;
+        d.routed = false;
+    }
+    if (d.claimed) {
+        PERIPH_RCC_ATOMIC() { put(PERIP_CLK_EN0, get(PERIP_CLK_EN0) & ~SYS_SPI2); }
+        d.claimed = false;
     }
     if (d.intr) esp_intr_free(d.intr);
     d.intr = NULL;
@@ -392,54 +471,35 @@ esp_err_t w5500_port_start(const w5500_settings *s, w5500_bus *bus)
     const size_t free_before = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     w5500_port = (w5500_port_info){.name = "direct"};
     uint32_t hz;
-    const uint32_t clock = w5500_gpspi_clock(SPI_SRC_HZ, s->sck_khz * 1000u, &hz);
-    if (!clock || (uintptr_t)&d.desc < DMA_RAM_LOW || (uintptr_t)&d.desc >= DMA_RAM_HIGH) {
+    d.clock = w5500_gpspi_clock(SPI_SRC_HZ, s->sck_khz * 1000u, &hz);
+    if (!d.clock || (uintptr_t)&d.desc < DMA_RAM_LOW || (uintptr_t)&d.desc >= DMA_RAM_HIGH) {
         w5500_port.err = ESP_ERR_INVALID_ARG;
         return w5500_port.err;
     }
     if (!d.done) d.done = xSemaphoreCreateBinaryStatic(&d.done_buf);
+    d.failed = false;
 
-    /* A GDMA channel pair connected to SPI2 (TRM Table 3.4-1: peripheral 0), through ESP-IDF's
-     * allocator so no other driver takes the same channel. No GDMA interrupt is used. */
+    /* GP-SPI2's bus clock on and a reset (TRM 17.3.5). A GDMA channel pair connected to SPI2
+     * (Table 3.4-1: peripheral 0) through ESP-IDF's allocator. The SPI2 interrupt line for
+     * sleeping on TRANS_DONE. */
+    PERIPH_RCC_ATOMIC() { put(PERIP_CLK_EN0, get(PERIP_CLK_EN0) | SYS_SPI2); }
+    d.claimed = true;
+    spi_reset();
     int group, channel;
     esp_err_t err = gdma_new_ahb_channel(&(gdma_channel_alloc_config_t){0}, &d.tx, &d.rx);
     if (!err) err = gdma_connect(d.tx, GDMA_MAKE_TRIGGER(GDMA_TRIG_PERIPH_SPI, 2));
     if (!err) err = gdma_connect(d.rx, GDMA_MAKE_TRIGGER(GDMA_TRIG_PERIPH_SPI, 2));
     if (!err) err = gdma_get_group_channel_id(d.tx, &group, &channel);
-    if (!err) err = esp_intr_alloc(ETS_SPI2_INTR_SOURCE, ESP_INTR_FLAG_LOWMED, on_done, NULL,
-                                   &d.intr);
+    if (!err) {
+        d.ch = GDMA_BASE + CH_STRIDE * (uint32_t)channel;
+        err = esp_intr_alloc(ETS_SPI2_INTR_SOURCE, ESP_INTR_FLAG_LOWMED, on_done, NULL, &d.intr);
+    }
+    if (!err && !configure()) err = ESP_ERR_TIMEOUT;
     if (err) {
         w5500_port.err = err;
         w5500_port_stop();
         return err;
     }
-    d.ch = GDMA_BASE + CH_STRIDE * (uint32_t)channel;
-
-    /* GP-SPI2 out of reset with its clock on (TRM 17.3.5). */
-    PERIPH_RCC_ATOMIC() {
-        put(PERIP_CLK_EN0, get(PERIP_CLK_EN0) | SYS_SPI2);
-        put(PERIP_RST_EN0, get(PERIP_RST_EN0) | SYS_SPI2);
-        put(PERIP_RST_EN0, get(PERIP_RST_EN0) & ~SYS_SPI2);
-    }
-    d.clocked = true;
-    /* Master, half-duplex, mode 0, 1-bit, MSB first, CS0 only, no setup/hold extension: the
-     * 0.5 SPI_CLK of CS setup and hold (TRM 30.6) exceeds the W5500's 5 ns (DS p.61). */
-    put(G_CLK_GATE, CLK_GATE_ON);
-    put(G_SLAVE, 0);
-    put(G_CLOCK, clock);
-    put(G_CTRL, get(G_CTRL) & ~CTRL_MODES);
-    put(G_MISC, (get(G_MISC) & ~MISC_CLEAR) | MISC_CS_DIS);
-    put(G_USER, 0);
-    put(G_USER1, USER1_ADDR_24);
-    put(G_USER2, 0);
-    put(G_DIN_MODE, 0);
-    put(G_DIN_NUM, 0);
-    put(G_DOUT_MODE, 0);
-    put(G_DMA_CONF, 0);
-    put(G_INT_ENA, 0);
-    put(G_INT_CLR, 0xFFFFFFFFu);
-    put(G_CMD, CMD_UPDATE);
-    while (get(G_CMD) & CMD_UPDATE) {}
 
     /* Pins through the GPIO matrix (TRM 6.4.3, 6.5.2): outputs always enabled, MISO with input
      * and a weak pull-up for when the W5500 lets it float. */
@@ -452,6 +512,7 @@ esp_err_t w5500_port_start(const w5500_settings *s, w5500_bus *bus)
     output(s->mosi, SIG_FSPID);
     pad(s->miso, IOMUX_IE | IOMUX_WPU);
     put(GM_IN_SEL(SIG_FSPIQ), IN_SEL_MATRIX | (uint32_t)s->miso);
+    d.routed = true;
 
     d.cycles_per_byte = 8u * (uint32_t)(CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ * 1000000ull / hz) + 8u;
     d.busy = false;
