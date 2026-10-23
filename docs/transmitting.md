@@ -103,7 +103,9 @@ while bytes keep arriving, which the status line below does once a second during
 gives the encoder's mean and slowest frame and the slowest bank fill, in CPU cycles and as spare
 against `frame_period_cycles` and `fill_deadline_cycles`, or null if none ran. The command task
 prints it on core 0 while it waits for the run, so neither the encoder nor a fill ever prints, and
-a line the USB buffer has no room for is counted in `lines_dropped` instead of waited for.
+a line the USB buffer has no room for is counted in `lines_dropped` instead of waited for. On the
+board each line still costs the encoder one slow frame, enough for dummy frames at 8PSK 9/10
+`26m667` with TS input ([status timing](../results/2026-10-23-tx-status/README.md)).
 `board.py` neither prints nor keeps status records. `--monitor HOST:PORT` sends them and the
 command's own records to `host/monitor.py` as UDP datagrams: a 12-byte little-endian header
 (`PVMN`, version 1, type 4, a 16-bit sequence number and the low 32 bits of the host's monotonic
