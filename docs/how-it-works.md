@@ -76,13 +76,15 @@ receiver's, and removed Wi-Fi's interrupts and periodic work from both
 ([transmitter](../results/2026-10-23-tx-no-wifi/README.md),
 [receiver](../results/2026-10-23-rx-no-wifi/README.md)).
 
-After boot, neither app calls the heap. Every command or run takes its buffers from regions
-fixed at link or boot time and gives them back to the next one. ESP-IDF's heap hooks count
-heap calls after boot, `info` reports the count, and through paces, keyed runs, dumps, receive
-runs and benchmarks it stays at zero
-([transmitter](../results/2026-10-23-tx-run-memory/README.md),
-[receiver](../results/2026-10-23-rx-no-wifi/README.md)). The one exception is the
-transmitter's `callsign` command, whose flash write makes two allocations and two frees.
+After boot, no run in either app calls the heap. Every command or run takes its buffers from
+regions fixed at link or boot time and gives them back to the next one. ESP-IDF's heap hooks count successful allocations and reallocations and frees of non-null
+pointers; a separate callback counts failed allocations; `info`
+reports the count, and through the measured paces, keyed runs, dumps, receive runs and benchmarks
+it stays at zero ([transmitter](../results/2026-10-23-tx-run-memory/README.md),
+[receiver](../results/2026-10-23-rx-no-wifi/README.md)). A few transmitter setup commands are
+the exception: `spiinput` installs its SPI driver and CRC table, `spirx` swaps wires, `spisend`
+sets up its own SPI master, and `callsign` writes flash with two allocations and two frees
+([transmitting](transmitting.md#memory-after-boot)).
 
 ## Where the cycles go
 

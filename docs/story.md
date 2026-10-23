@@ -528,8 +528,9 @@ about 19 dB down; the table moved the coax to TX/RX ([keyed table](../results/20
 
 Wi-Fi left both apps. Each now powers the PHY at boot under the Bluetooth modem bit, the way a
 Bluetooth-only app would, and links no Wi-Fi code: the transmitter image went from 939 to 544 KB
-and the receiver's from 854 to 447 KB. After boot neither touches the heap; every run takes its
-buffers from regions fixed at link or boot time and hands them to the next
+and the receiver's from 854 to 447 KB. After boot no measured run in either app touches the heap
+(a few transmitter setup commands such as `spiinput` and `callsign` still do); every run takes
+its buffers from regions fixed at link or boot time and hands them to the next
 ([transmitter](../results/2026-10-23-tx-run-memory/README.md),
 [receiver](../results/2026-10-23-rx-no-wifi/README.md)).
 

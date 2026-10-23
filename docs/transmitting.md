@@ -285,9 +285,10 @@ the firmware links or boots, and the next run hands all of it back at once.
 | Receiver | Static PSRAM | 98,304 | LDPC decoder, its frame, the CRC-32 table |
 | Receiver | Static PSRAM store | 7,340,032 | An uploaded capture or a dump |
 
-ESP-IDF's heap hooks count every heap call after boot. `info` reports them as `heap_after_boot`,
-and every transmitter completion record as `heap_allocs_after_boot`. Through the ten transmitter
-commands of the run-memory record, a 10 s keyed run among them, they counted none
+ESP-IDF's heap hooks count successful allocations and reallocations and frees of non-null
+pointers; a separate callback counts failed allocations; zero-size calls and direct `multi_heap` calls are not
+seen. `info` reports the count as `heap_after_boot`, and every transmitter completion record as
+`heap_allocs_after_boot`. Through the transmitter commands of the run-memory record, a 10 s keyed run among them, they counted none
 ([TX run memory](../results/2026-10-23-tx-run-memory/README.md)). Through five receive runs, a
 dump and `membench`, none either ([RX without Wi-Fi](../results/2026-10-23-rx-no-wifi/README.md)).
 A few commands outside the runs still use the heap: `callsign`, whose flash write made 2

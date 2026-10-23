@@ -1,8 +1,9 @@
 # The transmitter
 
-One ESP32-S3 makes every DVB-S2 frame and every output sample itself, and keyed for 30 s with a
-payload that never repeats, 19 selected configurations deliver anything from 0.97 Mb/s (QPSK 1/2 at 1 Msym/s) to
-69.8 Mb/s (8PSK 9/10 at 26.67 Msym/s), every frame LeanDVB recovered exact
+One ESP32-S3 makes every DVB-S2 frame and every output sample itself. Keyed for 30 s with a
+payload that never repeats, 19 selected configurations delivered anything from 0.97 Mb/s (QPSK
+1/2 at 1 Msym/s) to 69.8 Mb/s (8PSK 9/10 at 26.67 Msym/s), and every frame LeanDVB recovered
+from the sampled bursts was exact
 ([keyed table](../results/2026-10-23-tx-table/README.md),
 [8PSK re-key](../results/2026-10-23-tx-table-8psk-rekey/README.md)). Core 0 encodes frames;
 core 1 shapes them into the radio's sample banks. Two numbers decide whether a mode works: the
@@ -250,7 +251,9 @@ last 12 to 40 symbols wrong. The transmitter never takes that path; short 8PSK r
 
 ## Memory
 
-No Wi-Fi code is linked, and after boot the transmitter never calls the heap. Each command takes
+No Wi-Fi code is linked, and after boot no run calls the heap; only the setup commands
+`spiinput`, `spirx`, `spisend` and `callsign` do ([transmitting](transmitting.md#memory-after-boot)).
+Each command takes
 its buffers from fixed run memory (`firmware/tx/main/run_memory.c`), and the next command returns
 everything at once ([run memory](../results/2026-10-23-tx-run-memory/README.md)):
 
@@ -262,8 +265,9 @@ everything at once ([run memory](../results/2026-10-23-tx-run-memory/README.md))
 
 The largest internal total in one run is 57,088 B (an 8PSK 3/4 10 Msym/s dump). Encoder and radio
 worker stacks, their task blocks and the Morse ID state are static, and the radio worker lives on
-core 1 from boot. ESP-IDF's heap hooks count zero heap calls after boot through paces, keyed runs,
-dumps, `fecbench` and `iddump`.
+core 1 from boot. ESP-IDF's heap hooks (successful allocations, reallocations and non-null frees;
+failed allocations counted separately) count zero after boot through paces, keyed runs, dumps,
+`fecbench` and `iddump`.
 
 Dropping Wi-Fi raised the internal-RAM low-water marks of the radio-off paces by 19 to 37 KB and
 let 8PSK 5/6 at 26.67 Msym/s start at all; with Wi-Fi it stopped with `ESP_ERR_NO_MEM`

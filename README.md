@@ -116,7 +116,8 @@ To pulse shape with such speed and tenacity I went a similar path to my
 [RP2350 version](https://github.com/Rivercraft911/RP2350_IQ_Benchmark/tree/88ab018e65a51805ff562842177a4d47b1b04b2e): every possible output of
 the shaping filter is computed once into a table, so producing samples is copying table rows
 instead of doing filter math. The heavy loops on both sides run on the S3's 128-bit PIE vector
-unit. Neither app starts Wi-Fi, and neither touches the heap once it has booted.
+unit. Neither app starts Wi-Fi, and once booted neither touches the heap during a run; only setup
+commands such as `spiinput` and `callsign` do.
 [How it works](docs/how-it-works.md), then the [transmitter](docs/transmitter.md) and the
 [receiver](docs/receiver.md) in depth.
 
