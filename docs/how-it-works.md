@@ -189,4 +189,4 @@ python3 host/board.py check --reset --timeout 600 --port PORT
 Timing and memory on real silicon come from the [self-check](../examples/self-check/README.md),
 which dumps, decodes and paces the transmitter with the radio off and gates each pace against
 the keyed records ([30 of 30 passed](../results/2026-10-23-tx-self-check/README.md)). RF needs a
-receiver: the [measurements index](measurements.md) lists every keyed and received run.
+receiver: the [measurements index](measurements.md) indexes the keyed and received runs.
