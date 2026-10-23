@@ -13,14 +13,18 @@
  *   8.4 ms at 1 Msym/s), so a datagram sender can send a partial datagram rather than hold it.
  *
  * Both run in the checker task on core 0 (priority 11; the release task, priority 12, preempts
- * it), after the frame's record has gone to USB. Budget at 8PSK 8/9, 5 Msym/s (12.64 Mb/s, 8,400
- * packets/s): core 0 is about half idle, so the egress may use on average about 40 us per packet
- * (9,600 cycles). It may block, but the checker holds only three frames: a call that blocks for
- * more than about two frame periods (2 ms) makes the receiver drop frames (frames_dropped).
- * Internal RAM is short (about 33 KB free during a 5 Msym/s run): keep buffers small or in
- * PSRAM. A packet inside a frame starts 2 bytes past a 4-byte boundary, so a sender that needs
+ * it), after the frame's record has gone to USB, and nowhere else. Budget, estimated from the
+ * runs without an egress (results/2026-10-23-ts-link): at 8PSK 8/9, 5 Msym/s (12.64 Mb/s,
+ * 8,400 packets/s) core 0 is about half idle, which leaves about 40 us per packet (9,600
+ * cycles) on average. A call must not block: the checker holds at most three frames, and once
+ * they are full the release task waits up to 2 ms for one while the demodulator's 0.82 ms symbol
+ * ring fills, so a stall drops frames (frames_dropped) or runs (demod dropped). So an Ethernet
+ * egress copies each packet into a bounded queue that its own sender task drains, and counts what
+ * it cannot queue; its real cost and the bursts the receiver tolerates are to be measured at
+ * bring-up. Internal RAM is short (about 33 KB free during a 5 Msym/s run): keep buffers small or
+ * in PSRAM. A packet inside a frame starts 2 bytes past a 4-byte boundary, so a sender that needs
  * aligned DMA buffers (w5500_udp_send) copies it, typically into a datagram of 7 packets
- * (1,316 bytes) that its own task sends. */
+ * (1,316 bytes). */
 typedef struct {
     void (*packet)(void *ctx, const uint8_t *packet);
     void (*flush)(void *ctx);

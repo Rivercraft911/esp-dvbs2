@@ -6,6 +6,7 @@
 // receiver from a recorded capture instead of the radio (capture_replay). In TS mode the checker
 // then deframes each good frame into TS packets for the egress (ts_egress.h); frames the decoder
 // repairs come too late for the stream and are only recorded.
+#include <assert.h>
 #include <stdio.h>
 #include <string.h>
 #include "receive.h"
@@ -168,10 +169,12 @@ static void expect(receiver_t *r, const uint8_t *p)
     s->bad += ingress_pattern_ts_differs(p, (uint16_t)seq, j) != 0;
 }
 
-/* Each packet the deframer hands on: the pattern check if asked, then the egress. */
+/* Each packet the deframer hands on: the pattern check if asked, then the egress. Only the
+ * checker task deframes, as ts_egress.h promises the egress. */
 static void emit(void *ctx, const uint8_t *packet)
 {
     receiver_t *r = ctx;
+    assert(xTaskGetCurrentTaskHandle() == r->checker);
     if (r->options.pattern) {
         uint32_t start = esp_cpu_get_cycle_count();
         expect(r, packet);
@@ -223,6 +226,11 @@ static void checker(void *arg)
             if (r->ts && length >= 0) deframe(r, f, length);
         }
         xQueueSend(r->empty, &i, portMAX_DELAY);
+    }
+    if (r->ts) {                /* the end: a packet waiting for its CRC-8 goes on unchecked */
+        rx_ts_flush(r->ts);
+        const ts_egress_t *e = r->options.egress;
+        if (e && e->flush) e->flush(e->ctx);
     }
     quit(r, &s->check_stack_free);
 }
@@ -326,9 +334,6 @@ static void finish(receiver_t *r)
         receive_write(&end, sizeof end);
         rx_demod_stats(r->demod, &s->demod);
         if (r->ts) {
-            rx_ts_flush(r->ts);
-            const ts_egress_t *e = r->options.egress;
-            if (e && e->flush) e->flush(e->ctx);
             rx_ts_stats(r->ts, &s->ts);
             while (s->ts_pids < RX_TS_PIDS && rx_ts_pid(r->ts, s->ts_pids, &s->pids[s->ts_pids]))
                 ++s->ts_pids;
