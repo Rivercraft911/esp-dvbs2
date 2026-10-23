@@ -237,9 +237,15 @@ three 64 KiB SRAM banks it owns. A timer interrupt moves ownership to the next b
 12,288 samples (768 µs, 184,320 cycles): it wakes 15 µs early, spins to the exact index and
 re-anchors, so handoffs land within a few samples. The task then processes released banks and
 may trail by a unit. If it trails by two, the interrupt takes back the newest bank it has not
-started; the loss reaches the demodulator as a jump in the sample index. Wi-Fi stays
-initialized for the whole run, because deinitializing it froze the dump data. Run memory is
-allocated after Wi-Fi starts, and both task stacks are static in internal RAM.
+started; the loss reaches the demodulator as a jump in the sample index.
+
+Wi-Fi starts only to power and calibrate the PHY. The run holds the PHY through the
+Bluetooth modem bit, as `physolo` does for the transmitter, keeps the Wi-Fi clock domain
+referenced and deinitializes Wi-Fi. Stopping Wi-Fi also clears bit 1 of
+`SYSCON_WIFI_BB_CFG_REG`, which the dump needs: without it the samples hold a constant.
+The receiver sets it again; a diff of the radio registers with Wi-Fi up and stopped found it.
+No Wi-Fi interrupt or periodic work runs during a capture. Run memory is allocated after
+the teardown, and both task stacks are static in internal RAM.
 
 **Front end.** Each 10-bit word becomes int8 I and Q, floor(s10/4), at 1.55 cycles per
 sample. A 96-tap root-raised-cosine matched filter is evaluated only at symbol times, to 1/64
@@ -267,8 +273,8 @@ early stop.
 | Demodulator per unit, mean / worst (lock) | about 85k / 124k |
 | FEC per 8.37 ms frame on core 0, mean | about 103k |
 
-Internal RAM is the scarce resource: Wi-Fi keeps about 44 KB, the demodulator 25 KB and the
-FEC 18 KB, and about 6 KB is left during a run.
+With Wi-Fi gone, about 101 KB of internal RAM is free before a run; the demodulator takes
+25 KB, the FEC 18 KB and the frame ring 8 KB, leaving about 49 KB.
 [Results](../results/2026-10-22-rx-continuous/README.md),
 [demodulator measurements](../results/2026-10-22-rx-demod/README.md).
 
