@@ -27,8 +27,8 @@ The history figures use [recorded points with per-point provenance](measurements
 DVB-S2 ([ETSI EN 302 307-1](https://www.etsi.org/deliver/etsi_en/302300_302399/30230701/01.04.01_60/en_30230701v010401p.pdf))
 is the standard behind most satellite TV. It cuts data into frames, protects them with two
 error-correcting codes, maps the bits onto QPSK or 8PSK symbols, and adds a header and pilot
-symbols so a receiver can find and follow the signal. Doing all of that on one microcontroller starts
-with one blunt question: can it even make samples fast enough?
+symbols so a receiver can find and follow the signal. Doing all of that on one microcontroller
+starts with one blunt question: can it even make samples fast enough?
 
 The S3's radio hides a test engine, which [esp-sdr-zephyr](prior-art.md) turned into a
 transmitter. It plays a bank of 16,380 samples from internal RAM into the I/Q DAC, looping until

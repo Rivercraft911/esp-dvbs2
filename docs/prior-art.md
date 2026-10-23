@@ -34,8 +34,9 @@ stage digests, numerical symbol comparisons and file-loopback evidence are docum
   DAC on the data path ([esp_sdr_paced.c](https://github.com/cyber-murmel/esp-sdr-zephyr/blob/3214c16a7c9f136414cc5ae9d245ea290c98a6ce/lib/esp_sdr/src/esp_sdr_paced.c#L203-L232)).
   Forcing the front end without it passed only the I branch on this board
   ([results](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/results/2026-10-16-radio/README.md)).
-- **Tuning (esp-sdr-zephyr):** the S3's PLL locks on air from 2180 to 2793 MHz, and with its
-  divider the LO reaches 1817 MHz ([register notes, lines 1424-1427](https://github.com/cyber-murmel/esp-sdr-zephyr/blob/3214c16a7c9f136414cc5ae9d245ea290c98a6ce/doc/undocumented-registers-esp32s3.md#L1424-L1427)), which covers the
+- **Tuning (esp-sdr-zephyr):** on their boards the S3's PLL locked on air from 2180 to 2793 MHz,
+  and with its divider the LO reached 1817 MHz; they report these as per-chip results, not
+  tested over temperature ([register notes, lines 1424-1427](https://github.com/cyber-murmel/esp-sdr-zephyr/blob/3214c16a7c9f136414cc5ae9d245ea290c98a6ce/doc/undocumented-registers-esp32s3.md#L1424-L1427)), which covers the
   13 cm band. Conducted checks here decoded exact payloads from 2000 to 2420 MHz
   ([S-band](../results/2026-10-20-s-band/README.md), [lower edge](../results/2026-10-20-band-followup/README.md)).
 - **Filter controls (esp-sdr-zephyr):** BBTOP block `0x67` registers 4/5 control the receive
@@ -75,10 +76,10 @@ stage digests, numerical symbol comparisons and file-loopback evidence are docum
 - **Capture without Wi-Fi (this project):** esp-sdr-zephyr's notes say the engine and the PHY
   calls need the Wi-Fi driver up
   ([line 1386](https://github.com/cyber-murmel/esp-sdr-zephyr/blob/3214c16a7c9f136414cc5ae9d245ea290c98a6ce/doc/undocumented-registers-esp32s3.md#L1386)).
-  Here, stopping Wi-Fi froze the dump at a constant until a register diff showed why: stopping
-  Wi-Fi clears bit 1 of `SYSCON_WIFI_BB_CFG_REG`. The receiver holds the PHY through the
-  Bluetooth modem bit, deinitializes Wi-Fi and sets that bit again
-  ([receiving](receiver.md)).
+  Here, an experiment that started and then stopped Wi-Fi froze the dump at a constant until a
+  register diff showed why: stopping Wi-Fi clears bit 1 of `SYSCON_WIFI_BB_CFG_REG`. The current
+  receiver never starts Wi-Fi at all. It powers the modem and enables the PHY directly under the
+  Bluetooth modem bit, and each run sets that bit ([receiver](receiver.md)).
 - **Self capture:** one S3 measuring its own transmission is still untested. The
   [archived feasibility assessment](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/docs/wide-filter.md#can-the-s3-measure-itself)
   separates the controls found in ROM from a working spectrum self-test. The receiver above is a
