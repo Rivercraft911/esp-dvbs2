@@ -15,6 +15,7 @@ NATIVE = r'''
 #include <string.h>
 #define ESP_OK 0
 #define ESP_ERR_NO_MEM 1
+#define ESP_ERR_INVALID_STATE 0x103
 #define MALLOC_CAP_INTERNAL 1
 #define MALLOC_CAP_8BIT 2
 #define MALLOC_CAP_SPIRAM 4
@@ -237,9 +238,16 @@ static void opening_id_backpressure(void) {
     }
 }
 int main(void) {
+    // The wake timer is made once at boot. Without it a run fails and takes nothing.
+    assert(usb_input_start(PV_GCS)==ESP_ERR_INVALID_STATE && !active);
+    usb_input_stop(); run_reset(); assert(rx_enabled && !allocated && !timer_exists);
+    fail_at=1; allocation_calls=0;
+    assert(usb_input_init()==ESP_ERR_NO_MEM && !timer_exists);
+    fail_at=0;
+    assert(usb_input_init()==ESP_OK && timer_exists && usb_input_init()==ESP_OK);
     competing_readers();
 
-    for (fail_at=1; fail_at<=3; ++fail_at) {
+    for (fail_at=1; fail_at<=2; ++fail_at) {
         allocation_calls=0;
         assert(usb_input_start(PV_GCS)==ESP_ERR_NO_MEM && !active);
         usb_input_stop(); run_reset(); assert(rx_enabled && !allocated);

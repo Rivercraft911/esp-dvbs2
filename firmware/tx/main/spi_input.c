@@ -357,8 +357,14 @@ void spi_input_command(const char *cmd, const char *args)
         usb_mode=false;
         input_type=type; replay=n>0;
         pv_mode=raw;
-        printf("@{\"cmd\":\"spiinput\",\"input\":\"%s\",\"wire\":\"%s\",\"replay\":%s}\n",
-               type==PV_TS?"ts":type==PV_GCS?"gcs":"off",type?(raw?"raw":"quad"):"off",replay?"true":"false"); return;
+        // Set the SPI drivers up now, once for this mode, so runs make no heap calls. Off gives
+        // them back. Commands run on core 0, the encoder's core, where the interrupt belongs.
+        esp_err_t err=ESP_OK;
+        if (type) err=ingress_spi_provision(raw);
+        else ingress_spi_release();
+        printf("@{\"cmd\":\"spiinput\",\"input\":\"%s\",\"wire\":\"%s\",\"replay\":%s,\"status\":\"%s\"}\n",
+               type==PV_TS?"ts":type==PV_GCS?"gcs":"off",type?(raw?"raw":"quad"):"off",replay?"true":"false",
+               esp_err_to_name(err)); return;
     }
     unsigned ms=0; int mhz=40; double mbps=0;
     unsigned type; bool raw; const char *rest; int used=0;
@@ -386,7 +392,8 @@ void spi_input_command(const char *cmd, const char *args)
         input_type=type; replay=false;
         pv_mode=raw; usb_mode=false;
         run_reset();
-        const esp_err_t err=spi_input_start();
+        esp_err_t err=ingress_spi_provision(raw);
+        if (err==ESP_OK) err=spi_input_start();
         if (err==ESP_OK) probe(ms);
         else printf("@{\"cmd\":\"spirx\",\"error\":\"setup failed\",\"status\":\"%s\"}\n",esp_err_to_name(err));
         input_type=old; replay=oldreplay; pv_mode=oldpv; usb_mode=oldusb; return;

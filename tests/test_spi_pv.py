@@ -14,6 +14,7 @@ NATIVE = r'''
 #include "ingress.h"
 #define IRAM_ATTR
 #define ESP_OK 0
+#define ESP_ERR_INVALID_STATE 0x103
 #define SPI2_HOST 2
 #define SPI_DMA_CH_AUTO 1
 #define SPI_SLAVE_NO_RETURN_RESULT 4
@@ -37,7 +38,8 @@ typedef struct {
 } spi_slave_interface_config_t;
 static spi_slave_interface_config_t callbacks;
 static spi_slave_transaction_t *queue[INGRESS_SLOTS], *active;
-static unsigned head,tail,yields,freed;
+static unsigned head,tail,yields,freed,inits;
+static bool installed;
 static int fail_init,fail_queue;
 static uint32_t esp_cpu_get_cycle_count(void) { static uint32_t t; return ++t; }
 static int spi_slave_initialize(int host,const spi_bus_config_t *b,
@@ -45,15 +47,18 @@ static int spi_slave_initialize(int host,const spi_bus_config_t *b,
     assert(host==2 && dma==1 && b->max_transfer_sz==1336 && b->miso_io_num==-1);
     assert(b->mosi_io_num==-1 && b->sclk_io_num==-1 && s->spics_io_num==-1);
     assert(s->mode==0 && s->queue_size==INGRESS_SLOTS && s->flags==4);
-    head=tail=0; active=NULL; callbacks=*s; return fail_init;
+    assert(!installed); ++inits;
+    head=tail=0; active=NULL; callbacks=*s; installed=!fail_init; return fail_init;
 }
 static int spi_slave_queue_trans(int host,spi_slave_transaction_t *t,unsigned wait) {
-    assert(host==2 && wait==0 && tail-head<INGRESS_SLOTS && t->length==1336*8);
+    assert(host==2 && installed && wait==0 && tail-head<INGRESS_SLOTS && t->length==1336*8);
     if (fail_queue) return 1;
     queue[tail++%INGRESS_SLOTS]=t; return 0;
 }
-static int spi_slave_queue_reset(int host) { assert(host==2); head=tail; active=NULL; return 0; }
-static int spi_slave_free(int host) { assert(host==2 && !active && head==tail); ++freed; return 0; }
+static int spi_slave_queue_reset(int host) { assert(host==2 && installed); head=tail; active=NULL; return 0; }
+static int spi_slave_free(int host) {
+    assert(host==2 && installed && !active && head==tail); installed=false; ++freed; return 0;
+}
 static void arm(void) {
     assert(!active);
     if (head!=tail) { active=queue[head++%INGRESS_SLOTS]; callbacks.post_setup_cb(active); }
@@ -85,7 +90,11 @@ int main(void) {
     ingress_spi_stats stats={0};
     ingress_spi_config cfg={.pv=true,.received=received,.ctx=&ring};
     ingress_init(&ring,(uint8_t *)buffers,&hw); ring.type=PV_TS;
+    // The driver is installed once, before any session, and kept between sessions.
+    assert(ingress_spi_pv_start(&ring,&cfg,&stats)==ESP_ERR_INVALID_STATE && !inits);
+    assert(ingress_spi_pv_provision()==0 && ingress_spi_pv_provision()==0 && inits==1);
     assert(ingress_spi_pv_start(&ring,&cfg,&stats)==0 && !pin);
+    assert(ingress_spi_pv_start(&ring,&cfg,&stats)==ESP_ERR_INVALID_STATE);
     ingress_update_ready(&ring); assert(!pin); arm(); assert(pin);
     uint8_t msg[1400]={0},out[1316];
     msg[12]=0x47;
@@ -118,8 +127,8 @@ int main(void) {
     assert(!pin && active);
     assert(ingress_read(&ring,out,sizeof out)==credit*188 && pin);
     assert(stats.eof_irqs==irqs+credit && stats.isr_max && yields==stats.eof_irqs);
-    ingress_spi_pv_stop(); assert(!ingress_spi_pv_armed() && freed==1);
-    ingress_spi_pv_stop(); assert(freed==1);
+    ingress_spi_pv_stop(); assert(!ingress_spi_pv_armed() && !freed && installed);
+    ingress_spi_pv_stop(); assert(!freed);
     // The same raw driver and PV parser also carry arbitrary GCS bytes.
     ingress_init(&ring,(uint8_t *)buffers,&hw); ring.type=PV_GCS;
     assert(ingress_spi_pv_start(&ring,&cfg,&stats)==0);
@@ -158,11 +167,19 @@ int main(void) {
     }
     assert(ring.left && ring.held && ring.st.ready_falls>0);
     assert(!ring.st.overruns && !ring.st.err_crc && !ring.st.lost && !ring.wrong_type);
-    ingress_spi_pv_stop(); assert(freed==2);
-    fail_init=1; assert(ingress_spi_pv_start(&ring,&cfg,&stats)!=0);
-    ingress_spi_pv_stop(); assert(freed==2);
-    fail_init=0; fail_queue=1; assert(ingress_spi_pv_start(&ring,&cfg,&stats)!=0 && freed==3);
-    puts("PV slave: real callbacks, DMA credit, CS rearm, lengths, CRC chain, NOP, backpressure, cleanup: ok");
+    ingress_spi_pv_stop(); assert(!freed && inits==1);
+    // Release frees the driver once. A failed install leaves nothing to start or free.
+    ingress_spi_pv_release(); assert(freed==1 && !installed);
+    ingress_spi_pv_release(); assert(freed==1);
+    fail_init=1; assert(ingress_spi_pv_provision()!=0 && !installed);
+    assert(ingress_spi_pv_start(&ring,&cfg,&stats)==ESP_ERR_INVALID_STATE);
+    ingress_spi_pv_stop(); ingress_spi_pv_release(); assert(freed==1);
+    // A failed queue ends the session but keeps the driver for the next one.
+    fail_init=0; assert(ingress_spi_pv_provision()==0 && inits==3);
+    fail_queue=1; assert(ingress_spi_pv_start(&ring,&cfg,&stats)!=0 && installed && freed==1);
+    fail_queue=0; assert(ingress_spi_pv_start(&ring,&cfg,&stats)==0);
+    ingress_spi_pv_stop(); ingress_spi_pv_release(); assert(freed==2 && !installed);
+    puts("PV slave: real callbacks, DMA credit, CS rearm, lengths, CRC chain, NOP, backpressure, driver kept between sessions, cleanup: ok");
 }
 '''
 

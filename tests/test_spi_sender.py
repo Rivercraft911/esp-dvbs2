@@ -154,6 +154,9 @@ esp_err_t ingress_spi_start(const ingress_spi_config *cfg,ingress_ring **ring) {
     assert(cfg->received && cfg->ctx); *ring=&receiver; return ESP_OK;
 }
 void ingress_spi_stop(void) {}
+static int held=-1; // the provisioned driver: -1 none, 0 quad, 1 raw
+esp_err_t ingress_spi_provision(bool raw) { held=raw; return ESP_OK; }
+void ingress_spi_release(void) { held=-1; }
 void ingress_spi_get_stats(ingress_spi_stats *out) { memset(out,0,sizeof *out); }
 int main(void) {
     // A partially fitting borrowed pool must fall back to run memory;
@@ -181,7 +184,7 @@ int main(void) {
     assert(spi_input_start()==ESP_OK); spi_input_stop(); run_reset();
     assert(!rx && allocations==0 && !tasks);
     spi_input_command("spiinput","on");
-    assert(pv_mode && !replay && input_type==PV_TS);
+    assert(pv_mode && !replay && input_type==PV_TS && held==1);
     spi_input_command("spiinput","on replay"); // replay is quad only: rejected without changes
     assert(pv_mode && !replay && input_type==PV_TS);
     const char *invalid[]={"on loop 9","on garbage","quad ts extra","off ts","quad replay 9","quad gcs loop 22"};
@@ -192,7 +195,7 @@ int main(void) {
     spi_input_command("spiinput","on gcs");
     assert(pv_mode && !replay && input_type==PV_GCS);
     spi_input_command("spiinput","quad ts replay");
-    assert(!pv_mode && replay && input_type==PV_TS);
+    assert(!pv_mode && replay && input_type==PV_TS && held==0);
     spi_input_command("spiinput","quad");
     assert(!pv_mode && !replay && input_type==PV_TS);
     spi_input_command("spiinput","pv"); // compatible old raw selector
@@ -220,7 +223,7 @@ int main(void) {
     spi_input_command("spiinput","on gcs");
     assert(!usb_mode && input_type==PV_GCS);
     spi_input_command("spiinput","off");
-    assert(!pv_mode && !replay && !input_type);
+    assert(!pv_mode && !replay && !input_type && held==-1);
     puts("SPI sender: real scheduler, timer sleeps, 22 Mb/s pacing, fresh READY, CRC and cleanup: ok");
 }
 '''

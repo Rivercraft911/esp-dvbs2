@@ -13,7 +13,7 @@ static struct {
     ingress_spi_config cfg;
     volatile ingress_spi_stats *stats;
     // Keep ISR flags within the byte-load offset range as the pool grows.
-    bool started, armed;
+    bool started, armed, provisioned;
     spi_slave_transaction_t trans[INGRESS_SLOTS];
 } pv;
 static portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
@@ -64,13 +64,12 @@ void ingress_spi_pv_rearm(ingress_desc *slot)
     portEXIT_CRITICAL(&lock);
 }
 
-esp_err_t ingress_spi_pv_start(ingress_ring *ring, const ingress_spi_config *cfg,
-                              volatile ingress_spi_stats *stats)
+/* The IDF slave driver allocates its state, queues, DMA channel and interrupt. Do that once,
+ * when raw input is selected, not per session; ingress_spi_pv_release gives them back. The
+ * driver claims no pins: ingress_spi connects the matrix inputs itself. */
+esp_err_t ingress_spi_pv_provision(void)
 {
-    memset(&pv, 0, sizeof pv);
-    pv.ring = ring; pv.cfg = *cfg; pv.stats = stats;
-    // ingress_spi connects the matrix inputs itself. No slave output or
-    // unused lane claims a pad.
+    if (pv.provisioned) return ESP_OK;
     const spi_bus_config_t bus = {
         .mosi_io_num=-1, .miso_io_num=-1, .sclk_io_num=-1,
         .quadwp_io_num=-1, .quadhd_io_num=-1,
@@ -81,13 +80,30 @@ esp_err_t ingress_spi_pv_start(ingress_ring *ring, const ingress_spi_config *cfg
         .spics_io_num=-1, .mode=0, .queue_size=INGRESS_SLOTS,
         .flags=SPI_SLAVE_NO_RETURN_RESULT, .post_setup_cb=setup, .post_trans_cb=done,
     };
-    esp_err_t err = spi_slave_initialize(SPI2_HOST, &bus, &slave, SPI_DMA_CH_AUTO);
-    if (err != ESP_OK) return err;
+    const esp_err_t err = spi_slave_initialize(SPI2_HOST, &bus, &slave, SPI_DMA_CH_AUTO);
+    pv.provisioned = err == ESP_OK;
+    return err;
+}
+
+void ingress_spi_pv_release(void)
+{
+    if (!pv.provisioned) return;
+    ingress_spi_pv_stop();
+    spi_slave_free(SPI2_HOST);
+    pv.provisioned = false;
+}
+
+esp_err_t ingress_spi_pv_start(ingress_ring *ring, const ingress_spi_config *cfg,
+                              volatile ingress_spi_stats *stats)
+{
+    if (!pv.provisioned || pv.started) return ESP_ERR_INVALID_STATE;
+    pv.ring = ring; pv.cfg = *cfg; pv.stats = stats;
+    pv.armed = false;
     pv.started = true;
     for (unsigned i = 0; i < INGRESS_SLOTS; ++i) {
         pv.trans[i] = (spi_slave_transaction_t){.length=INGRESS_SLOT_BYTES*8,
             .rx_buffer=ring->desc[i].buf, .user=&ring->desc[i]};
-        err = spi_slave_queue_trans(SPI2_HOST, &pv.trans[i], 0);
+        const esp_err_t err = spi_slave_queue_trans(SPI2_HOST, &pv.trans[i], 0);
         if (err != ESP_OK) { ingress_spi_pv_stop(); return err; }
     }
     return ESP_OK;
@@ -96,9 +112,7 @@ esp_err_t ingress_spi_pv_start(ingress_ring *ring, const ingress_spi_config *cfg
 void ingress_spi_pv_stop(void)
 {
     if (!pv.started) return;
-    // Detach CS in ingress_spi before this call. Disable the driver's interrupt
-    // and discard queued work before freeing its DMA channel and transaction pool.
+    // Detach CS in ingress_spi before this call. Discard queued work; the driver stays.
     spi_slave_queue_reset(SPI2_HOST);
-    spi_slave_free(SPI2_HOST);
     pv.started = pv.armed = false;
 }

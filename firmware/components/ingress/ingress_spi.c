@@ -38,6 +38,7 @@ static struct {
     portMUX_TYPE lock;
     volatile ingress_spi_stats stats;
     bool bus, connected, pv;
+    unsigned held;                   // provisioned: 0 none, 1 quad (bus + GDMA), 2 raw slave
 } s = {.lock = portMUX_INITIALIZER_UNLOCKED};
 
 static IRAM_ATTR void set_ready(void *ctx, int level)
@@ -119,6 +120,7 @@ static void connect_input(int pin, int signal, bool pull_up)
 esp_err_t ingress_spi_start(const ingress_spi_config *cfg, ingress_ring **ring)
 {
     if (s.bus || s.pv || s.crc) return ESP_ERR_INVALID_STATE;
+    if (s.held != (cfg->pv ? 2u : 1u)) return ESP_ERR_INVALID_STATE; // ingress_spi_provision first
     if (!cfg->crc) return ESP_ERR_INVALID_ARG;
     for (unsigned i = 0; i < INGRESS_SLOTS; ++i)
         if (!cfg->buffers[i]) return ESP_ERR_INVALID_ARG;
@@ -150,20 +152,8 @@ esp_err_t ingress_spi_start(const ingress_spi_config *cfg, ingress_ring **ring)
         }
         goto inputs;
     }
-    err = spicommon_bus_alloc(HOST, "ingress");
-    if (err != ESP_OK) {
-        goto fail;
-    }
     s.bus = true;
     s.spi = spi_periph_signal[HOST].hw;
-
-    const gdma_channel_alloc_config_t dma_cfg = {
-        .intr_priority = 1, .flags.isr_cache_safe = 1,
-    };
-    err = gdma_new_ahb_channel(&dma_cfg, NULL, &s.rx);
-    if (err != ESP_OK) {
-        goto fail;
-    }
     err = gdma_connect(s.rx, GDMA_MAKE_TRIGGER(GDMA_TRIG_PERIPH_SPI, 2));
     if (err != ESP_OK) goto fail;
     s.connected = true;
@@ -173,15 +163,6 @@ esp_err_t ingress_spi_start(const ingress_spi_config *cfg, ingress_ring **ring)
     if (err != ESP_OK) goto fail;
     err = gdma_set_priority(s.rx, GDMA_LL_CHANNEL_MAX_PRIORITY);
     if (err != ESP_OK) goto fail;
-    gdma_rx_event_callbacks_t cbs = {
-        .on_recv_eof = on_eof,
-        .on_descr_err = on_overrun,
-        .on_descr_empty = on_overrun,
-    };
-    err = gdma_register_rx_event_callbacks(s.rx, &cbs, NULL);
-    if (err != ESP_OK) {
-        goto fail;
-    }
 
     // Half-duplex slave, mode 0, MSB first; TRM 30.5.9.4 (single transfer).
     spi_ll_slave_hd_init(s.spi);
@@ -239,17 +220,12 @@ void ingress_spi_stop(void)
     esp_rom_gpio_connect_in_signal(GPIO_MATRIX_CONST_ZERO_INPUT,
                                    spi_periph_signal[HOST].spiclk_in, false);
     if (s.pv) { ingress_spi_pv_stop(); s.pv = false; }
-    if (s.rx) {
+    if (s.bus) {
         gdma_stop(s.rx);
         if (s.connected) gdma_disconnect(s.rx);
         s.connected = false;
-        gdma_del_channel(s.rx);
-        s.rx = NULL;
-    }
-    if (s.bus) {
         spi_ll_dma_rx_enable(s.spi, 0);
-        spicommon_bus_free(HOST);
-        s.bus = false;
+        s.bus = false; // the bus claim and GDMA channel stay provisioned
     }
     const int pins[] = {s.cfg.sclk, s.cfg.cs, s.cfg.d0, s.cfg.d1, s.cfg.d2, s.cfg.d3};
     const size_t count = s.cfg.pv ? 3 : sizeof pins / sizeof pins[0];
@@ -261,6 +237,56 @@ void ingress_spi_stop(void)
     // Keep READY actively low between sessions. A floating pad could advertise credit.
     gpio_set_level(s.cfg.ready, 0);
     gpio_set_direction(s.cfg.ready, GPIO_MODE_INPUT_OUTPUT);
+}
+
+/* Claim the bus and allocate the GDMA channel and its interrupt (quad), or the IDF slave driver
+ * (raw), once, when the input mode is chosen; sessions then start and stop without heap calls.
+ * Call on the core that will consume: the interrupt is allocated on the calling core. */
+esp_err_t ingress_spi_provision(bool raw)
+{
+    const unsigned want = raw ? 2 : 1;
+    if (s.held == want) return ESP_OK;
+    if (s.bus || s.pv) return ESP_ERR_INVALID_STATE;
+    ingress_spi_release();
+    if (raw) {
+        const esp_err_t err = ingress_spi_pv_provision();
+        if (err == ESP_OK) s.held = 2;
+        return err;
+    }
+    esp_err_t err = spicommon_bus_alloc(HOST, "ingress");
+    if (err != ESP_OK) return err;
+    const gdma_channel_alloc_config_t dma_cfg = {
+        .intr_priority = 1, .flags.isr_cache_safe = 1,
+    };
+    err = gdma_new_ahb_channel(&dma_cfg, NULL, &s.rx);
+    if (err == ESP_OK) {
+        gdma_rx_event_callbacks_t cbs = {
+            .on_recv_eof = on_eof,
+            .on_descr_err = on_overrun,
+            .on_descr_empty = on_overrun,
+        };
+        err = gdma_register_rx_event_callbacks(s.rx, &cbs, NULL);
+    }
+    if (err != ESP_OK) {
+        if (s.rx) gdma_del_channel(s.rx);
+        s.rx = NULL;
+        spicommon_bus_free(HOST);
+        return err;
+    }
+    s.held = 1;
+    return ESP_OK;
+}
+
+void ingress_spi_release(void)
+{
+    if (s.bus || s.pv) return; // a session is running
+    if (s.held == 2) ingress_spi_pv_release();
+    if (s.held == 1) {
+        gdma_del_channel(s.rx);
+        s.rx = NULL;
+        spicommon_bus_free(HOST);
+    }
+    s.held = 0;
 }
 
 void ingress_spi_get_stats(ingress_spi_stats *out)
