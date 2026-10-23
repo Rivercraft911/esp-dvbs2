@@ -93,7 +93,13 @@ pins the retained captures and reports; it does not include raw RF or the receiv
 
 ## Receiver experiments
 
-These use an experimental on-chip decoder outside main. One S3 transmitted QPSK 1/2,
+**Continuous receive.** Short-frame QPSK 3/4 at 1 Msym/s, S3 to S3 through 30 dB of coax at
+2420 MHz, decoded entirely on the receiving S3. In three 38 s runs, with the receiver started
+before the transmitter, every frame was exact: 4,581, 4,578 and 4,577 frames, 1.39 Mb/s.
+In 34,433 frames of earlier stability runs, 2 isolated frames failed FEC.
+[Records](../results/2026-10-22-rx-continuous/README.md).
+
+The finite experiments below came first. They use an earlier decoder, outside main. One S3 transmitted QPSK 1/2,
 normal frames with pilots, at 1 Msym/s through 30 dB attenuation into another S3.
 The receiving S3 collected 400 ms, stopped collection, then decoded its first two packets.
 All 8,032 payload bytes per case matched an independent source model.

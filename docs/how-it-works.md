@@ -220,34 +220,57 @@ bit-exact. Single B200 captures now recover exact prepared payloads at all three
 live input throughput at this rate remains unqualified.
 [RF records](../results/2026-10-20-wide-filter/README.md).
 
-## Receiver work
+## Receiving
 
-The experimental receiver uses the S3's own radio to collect I/Q samples at 16 MS/s.
-Two fixed-point halfband filters reduce that to 4 MS/s. It then searches for a QPSK 1/2
-header, filters the selected symbol phase, estimates carrier rotation from the header and
-pilots, and produces soft bits for LDPC correction. BCH and baseband-header checks validate
-the recovered payload.
+A second S3 decodes short-frame QPSK at 1 Msym/s on its own (`firmware/rx`, with the
+`dvbs2rx` component). Core 1 turns radio samples into frames of soft bits; core 0 checks or
+decodes each frame and sends the payload over USB.
 
 ```
-radio -> I/Q banks -> pack + 16-to-4 MS/s filter -> header search -> matched filter
-      -> carrier/phase estimate -> soft bits -> LDPC -> BCH/header checks -> payload
+core 1: dump banks, 16 MS/s -> int8 I/Q -> matched filter at each symbol time
+        -> carrier, leak and DC removal -> PL descrambling -> LLRs and hard bits -> frame ring
+core 0: re-encode check -> (if needed) layered min-sum LDPC -> BCH and BBHEADER -> USB
 ```
 
-The current decoder expects MODCOD 4, normal frames and pilots. It finds the first header
-position without being given its location, then searches a small predicted window for the
-next frame. Carrier estimation uses later pilots in the frame; continuous timing and carrier
-tracking still need work. The full decoder remains a prototype outside main; the research
-branch contains the [capture firmware](https://github.com/Rivercraft911/esp-dvbs2/tree/exp/s3-receive/firmware/rx).
+**Capture.** The radio's dump engine writes 10-bit I/Q into a 16,384-word ring in whichever of
+three 64 KiB SRAM banks it owns. A timer interrupt moves ownership to the next bank every
+12,288 samples (768 µs, 184,320 cycles): it wakes 15 µs early, spins to the exact index and
+re-anchors, so handoffs land within a few samples. The task then processes released banks and
+may trail by a unit. If it trails by two, the interrupt takes back the newest bank it has not
+started; the loss reaches the demodulator as a jump in the sample index. Wi-Fi stays
+initialized for the whole run, because deinitializing it froze the dump data. Run memory is
+allocated after Wi-Fi starts, and both task stacks are static in internal RAM.
 
-A frame carries 4,016 payload bytes in 33,282 symbols. At 1 Msym/s that is a 33.282 ms
-interval and about 965 kb/s of payload. Native tests recovered two exact packets after each
-400 ms capture at 2110, 2245 and 2420 MHz. A separate quiet collector and selected-phase
-matched filter ran together for 31.46 seconds without overruns.
+**Front end.** Each 10-bit word becomes int8 I and Q, floor(s10/4), at 1.55 cycles per
+sample. A 96-tap root-raised-cosine matched filter is evaluated only at symbol times, to 1/64
+symbol, from 64 coefficient sets of seven 16-byte vectors. On PIE that costs about 61 cycles
+per symbol including scheduling.
 
-The latest PIE matched filter cut its two-frame stage from 189.503 to 66.582 ms on the
-same saved record. The whole decode still took 1.924 seconds, so continuous payload recovery
-needs substantial improvements to acquisition, carrier processing, FEC and scheduling.
-[Native records and limits](measurements.md#receiver-experiments).
+**Synchronization.** Acquisition correlates the signs of matched-filter outputs against the
+start-of-frame and PLS code. It locks on the next PLHEADER one frame later, at the clock the
+carrier offset implies: both radios run from 40 MHz crystals, so the symbol clock offset equals
+the carrier offset divided by the carrier frequency, held to 0.01 ppm in every capture. Each
+header and pilot block then updates the timing, carrier, DC and leak estimates. The data
+between two blocks is derotated with a phase interpolated between them. Removing the
+transmitter's carrier leak, about -17 dB in its own frame, raises MER from about 16 dB to
+about 29 dB.
+
+**FEC.** A clean frame is checked by re-encoding its hard bits with the transmitter's fast BCH
+and LDPC and comparing parity: 31.6k cycles. Other frames go to a layered normalized min-sum
+decoder in int8 that uses the code's 360-column structure, 16 checks per PIE vector. It runs
+393k cycles per iteration with its 48 KB work area in PSRAM, for at most 8 iterations with an
+early stop.
+
+| Measured, 1 Msym/s QPSK 3/4 short | Cycles |
+|---|---:|
+| Capture service per 12,288-sample unit (edges, bank clear) | about 25k |
+| Demodulator per unit, mean / worst (lock) | about 85k / 124k |
+| FEC per 8.37 ms frame on core 0, mean | about 103k |
+
+Internal RAM is the scarce resource: Wi-Fi keeps about 44 KB, the demodulator 25 KB and the
+FEC 18 KB, and about 6 KB is left during a run.
+[Results](../results/2026-10-22-rx-continuous/README.md),
+[demodulator measurements](../results/2026-10-22-rx-demod/README.md).
 
 ## Rates
 
