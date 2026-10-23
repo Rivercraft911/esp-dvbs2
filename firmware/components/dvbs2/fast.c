@@ -22,8 +22,11 @@
 
 #ifdef DVBS2_IRAM
 #define HOT __attribute__((section(".iram1"), noinline))
+/* Transmitter-only 8PSK paths: their own section, so other apps can drop them. */
+#define LOFTY_HOT __attribute__((section(".iram1.lofty_read"), noinline))
 #else
 #define HOT
+#define LOFTY_HOT
 #endif
 
 #define ROW 48                  /* bytes per parity row: 360 bits + 24 spare */
@@ -1295,7 +1298,7 @@ __attribute__((noinline)) int dvbs2_fast_lofty_start(dvbs2_fast *f, const dvbs2_
     return 0;
 }
 
-const uint16_t *dvbs2_fast_lofty_read(dvbs2_fast *f, dvbs2_sign_state *s, unsigned *blocks)
+LOFTY_HOT const uint16_t *dvbs2_fast_lofty_read(dvbs2_fast *f, dvbs2_sign_state *s, unsigned *blocks)
 {
     const unsigned end = 90+f->data_symbols+36*f->pilot_blocks;
     unsigned at = (s->at+f->lofty_prefix)/4, words = (end+f->lofty_prefix)/4;

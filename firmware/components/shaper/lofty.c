@@ -63,7 +63,7 @@ int lofty_build(uint32_t *table, unsigned peak)
     return 0;
 }
 
-uint32_t lofty_prepare(uint32_t *dst, const uint16_t *src, unsigned n, uint32_t previous)
+IRAM_ATTR uint32_t lofty_prepare(uint32_t *dst, const uint16_t *src, unsigned n, uint32_t previous)
 {
     while (n && ((uintptr_t)dst&15)) {
         uint32_t h = previous<<12 | *src++;
