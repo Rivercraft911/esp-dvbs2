@@ -19,13 +19,20 @@ One ESP32-S3, one B200 capture at 2420 MHz through 40 dB of coax attenuation.
 The receiver recovered 40 exact frames from this 41.94 ms recording, using a prepared,
 repeated payload. [Capture and plotting details](results/2026-10-21-rf-figures/README.md).
 
-## Receiver work
+## Receiving on an S3
 
-An S3 can now receive QPSK 1/2 at 1 Msym/s from another S3: about **0.97 Mb/s** of payload.
-The prototype captures first, then decodes on the chip. It recovered two exact packets at
-each of 2110, 2245 and 2420 MHz through coax and 30 dB attenuation.
-Continuous on-chip decoding near 1 Mb/s is the next goal.
-[Receiver chain](docs/how-it-works.md#receiver-work), [measurements](docs/measurements.md#receiver-experiments).
+A second ESP32-S3 now receives the stream and decodes all of it on the chip: it captures
+through its own radio at 16 MS/s, matched-filters, tracks timing and carrier, runs LDPC and
+BCH, and streams the payload over USB. With short frames, QPSK 3/4 at 1 Msym/s, it decoded
+every frame of three 38 s runs exactly, **1.39 Mb/s**, starting before the transmitter keyed.
+The path was coax with 30 dB of attenuation.
+[Results](results/2026-10-22-rx-continuous/README.md), [receiver chain](docs/how-it-works.md#receiving).
+
+```sh
+(. ~/.espressif/tools/activate_idf_v6.1.sh && cd firmware/rx && idf.py build flash)
+python3 host/rx.py 7 --mhz 2420 --gain 32 --seconds 45 --port RX_PORT --callsign KJ5SCH
+python3 host/board.py "dvb 2420 7 55 0 64 --short" --port TX_PORT   # transmitter, keyed
+```
 
 ## Live video
 
@@ -188,7 +195,7 @@ explicit operator keying and exact payload verification; it also supports offlin
 
 | Path | What's there |
 |---|---|
-| `firmware/` | Console, transmitter, encoder, radio, station ID and SPI input |
+| `firmware/` | Console, transmitter, encoder, radio, station ID and SPI input; `firmware/rx` is the receiver |
 | `host/` | Board protocol, independent decode, Python reference encoder, figures |
 | `examples/` | [Self-check](examples/self-check/README.md), [live video](examples/live-video/README.md), [SPI sender](examples/pi-sender/README.md) |
 | `tests/` | Standard vectors, C/Python agreement and stream CRCs ([running them](docs/how-it-works.md#checking-changes)) |

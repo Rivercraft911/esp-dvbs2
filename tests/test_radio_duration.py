@@ -140,6 +140,7 @@ static esp_err_t fill_bank(run_t *run, unsigned bank, uint64_t start) {
     assert(bank <= 1 && start < run->samples);
     ++run->stats->fills; return ESP_OK;
 }
+static void dvbtx_set_short(bool enabled) { (void)enabled; }
 static void dvbtx_run_options(uint32_t f, unsigned m, uint32_t seconds, unsigned g,
                             unsigned p, unsigned sps, uint32_t rate, bool fixture,
                             bool solo, bool fused) {

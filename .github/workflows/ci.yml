@@ -36,6 +36,10 @@ jobs:
       - run: python tests/test_file_ota.py
       - run: python tests/test_ota_vcm.py
       - run: python tests/test_live_vcm.py
+      - run: python tests/test_rx_host.py
+      - run: python tests/test_rx_kernels.py
+      - run: python tests/test_rx_demod.py
+      - run: python tests/test_rx_fec.py
       - name: SPI input
         run: |
           python tests/test_ingress.py
@@ -60,3 +64,8 @@ jobs:
           esp_idf_version: v6.1
           target: esp32s3
           path: firmware
+      - uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v6.1
+          target: esp32s3
+          path: firmware/rx

@@ -7,6 +7,12 @@ notes/
 firmware/build/
 firmware/sdkconfig
 firmware/sdkconfig.old
+firmware/rx/build/
+firmware/rx/sdkconfig
+firmware/rx/sdkconfig.old
+tests/*_bench/build/
+tests/*_bench/sdkconfig
+tests/*_bench/sdkconfig.old
 firmware/managed_components/
 
 # Latest standalone USB sender diagnostic report
