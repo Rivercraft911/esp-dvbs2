@@ -62,6 +62,21 @@ def main():
     ok = rx.check(crcs, 7, "KJ5SCH", 40, 5e6, payloads=model)
     assert ok["passed"] and ok["first_model_frame"] == 5 and ok["payload_mbps"] == 6.9486, ok
 
+    # A live input from a file: TS packets framed as ts_model frames the counting pattern, and GCS
+    # bytes as they are. A run is placed by its first frame with a payload found once in the
+    # model, so an input that opens with zero-filled acquisition frames still lines up.
+    live = b"".join(rx.ts_messages(0, 60, False))
+    assert rx.input_model(live, 1454, 40, True) == rx.ts_model(7, 40, False)
+    assert len(rx.input_model(live[:188 * 23 + 5], 1454, 40, True)) == 2     # whole packets only
+    gcs = bytes(8 * 869) + bytes(range(256)) * 60
+    fields = rx.input_model(gcs, 869, 100, False)
+    assert len(fields) == len(gcs) // 869 and fields[9] == gcs[9 * 869:10 * 869]
+    placed = rx.check(frames(fields[2:17], 50), 4, "KJ5SCH", len(fields), keys=fields)
+    assert placed["passed"] and placed["first_model_frame"] == 2 and placed["exact"] == 15, placed  # not 0
+    wrong = frames(fields[2:17], 50)
+    wrong[7] = dict(wrong[7], payload=fields[3])              # a zero field where data belongs
+    assert not rx.check(wrong, 4, "KJ5SCH", len(fields), keys=fields)["passed"]
+
     # The TS counters must account for every exact frame: 30 frames from model frame 5 hold
     # packets 39 (the first to start in frame 5, 7,270 bytes in) to 269, all checked.
     # A deframer that stopped early, or took fewer frames, fails although every frame is exact.
