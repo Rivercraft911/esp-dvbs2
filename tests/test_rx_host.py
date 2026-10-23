@@ -60,6 +60,21 @@ def main():
     crcs = [dict(sequence=3 + k, length=len(p), payload=b"", crc=zlib.crc32(p)) for k, p in enumerate(model[5:35])]
     ok = rx.check(crcs, 7, "KJ5SCH", 40, 5e6, payloads=model)
     assert ok["passed"] and ok["first_model_frame"] == 5 and ok["payload_mbps"] == 6.9486, ok
+
+    # The TS counters must account for every exact frame: 30 frames from model frame 5 hold
+    # packets 39 (the first to start in frame 5, 7,270 bytes in) to 269, all checked.
+    # A deframer that stopped early, or took fewer frames, fails although every frame is exact.
+    assert rx.ts_packets_expected(5, 30, 1454) == (269 - 39 + 1, 0)
+    assert rx.ts_packets_expected(0, 3, 188 * 5) == (15, 1)        # ends on a packet boundary
+    assert rx.ts_packets_expected(1, 1, 100) == (0, 0)             # no packet both starts and ends
+    good = dict(decoded=0, ts=dict(frames=30, packets=231, crc_errors=0, unchecked=0, null_packets=0,
+                                   cc_errors=0, resyncs=0, late=0, not_ts=0,
+                                   pattern=dict(checked=231, bad=0, jumps=0, wraps=0)))
+    assert rx.ts_verdict([good], False, ok)["passed"]
+    for taken, packets in ((1, 1), (30, 230), (29, 231), (30, 232)):
+        bad = dict(good, ts=dict(good["ts"], frames=taken, packets=packets,
+                                 pattern=dict(good["ts"]["pattern"], checked=packets)))
+        assert not rx.ts_verdict([bad], False, ok)["passed"], (taken, packets)
     print("rx host checks passed")
 
 

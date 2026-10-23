@@ -19,9 +19,9 @@ to the last is present and exact.
 --ts: the transmitter sends its TS test input (`spiinput ... ts replay`, or a live sender's
 counting pattern), the model is that input's TS BBFRAMEs (ts_model), and the receiver also
 deframes every frame and checks each packet against the pattern (`rx ... ts pattern`). Then the
-receiver's TS counters must be clean too: no CRC-8 errors, pattern errors or jumps, restarts or
-late frames, and continuity errors only where the replay loops (it repeats 56 packets, not a
-multiple of 16).
+receiver's TS counters must account for every exact frame and the packets in them, and be clean:
+no CRC-8 errors, pattern errors or jumps, restarts or late frames, and continuity errors only
+where the replay loops (it repeats 56 packets, not a multiple of 16).
 """
 from __future__ import annotations
 
@@ -270,19 +270,36 @@ def check(frames, modcod: int, callsign: str, tx_frames: int, symbol_rate: float
     return report
 
 
-def ts_verdict(records, replay: bool) -> dict:
-    """The receiver's TS counters (`rx ... ts pattern` summary) and whether they are clean."""
-    t = next((r["ts"] for r in records if "ts" in r), None)
-    if t is None:
+def ts_packets_expected(first_frame: int, frames: int, size: int) -> tuple[int, int]:
+    """Packets a deframer must hand on from model frames first_frame .. first_frame + frames - 1
+    received in a row, data fields of `size` bytes: those that start at or after the first packet
+    start in the range and whose CRC-8 (the next packet's first byte) is in it, and the one ending
+    exactly at the end of the range, unchecked at the flush. Returns (all, unchecked)."""
+    lo, hi = first_frame * size, (first_frame + frames) * size
+    first = -(-lo // 188)
+    checked = max(0, (hi - 1) // 188 - first)
+    unchecked = int(hi % 188 == 0 and hi // 188 - 1 >= first)
+    return checked + unchecked, unchecked
+
+
+def ts_verdict(records, replay: bool, frames: dict) -> dict:
+    """The receiver's TS counters (`rx ... ts pattern` summary) against the frames check(): every
+    good frame went through the deframer (frames the LDPC decoder repaired come too late and do
+    not), and it handed on exactly the packets those frames hold. Then the counters are clean."""
+    summary = next((r for r in records if isinstance(r.get("ts"), dict)), None)
+    if summary is None:
         return dict(passed=False, error="no ts counters")
-    p = t["pattern"]
+    t, p = summary["ts"], summary["ts"]["pattern"]
+    k0, span, size = frames.get("first_model_frame"), frames.get("sequence_span", 0), frames["frame_bytes"]
+    want, want_unchecked = ts_packets_expected(k0, span, size) if k0 is not None else (None, None)
+    deframed = frames.get("decoded", 0) - summary.get("decoded", 0)
     clean = (t["crc_errors"] == p["bad"] == p["jumps"] == t["resyncs"] == t["late"] == t["not_ts"] == 0
-             and t["cc_errors"] == (p["wraps"] if replay else 0) and t["unchecked"] <= 1
-             and p["checked"] == t["packets"] > 0)
-    return dict(packets=t["packets"], crc_errors=t["crc_errors"], cc_errors=t["cc_errors"],
-                replay_wraps=p["wraps"], pattern_bad=p["bad"], pattern_jumps=p["jumps"],
-                resyncs=t["resyncs"], unchecked=t["unchecked"], null_packets=t["null_packets"],
-                passed=clean)
+             and t["cc_errors"] == (p["wraps"] if replay else 0) and t["unchecked"] == want_unchecked
+             and p["checked"] == t["packets"] == want and t["frames"] == deframed > 0)
+    return dict(packets=t["packets"], expected_packets=want, frames=t["frames"], expected_frames=deframed,
+                crc_errors=t["crc_errors"], cc_errors=t["cc_errors"], replay_wraps=p["wraps"],
+                pattern_bad=p["bad"], pattern_jumps=p["jumps"], resyncs=t["resyncs"],
+                unchecked=t["unchecked"], null_packets=t["null_packets"], passed=clean)
 
 
 def main() -> int:
@@ -319,7 +336,7 @@ def main() -> int:
     payloads = ts_model(a.modcod, tx_frames, a.ts == "replay") if a.ts else None
     result = check(frames, a.modcod, a.callsign, tx_frames, SYMBOL_RATE[a.rate], payloads)
     if a.ts:
-        result["ts"] = ts_verdict(after, a.ts == "replay")
+        result["ts"] = ts_verdict(after, a.ts == "replay", result)
         result["passed"] = result["passed"] and result["ts"]["passed"]
     summary = dict(firmware=firmware, command=command, replay=str(a.replay) if a.replay else None,
                    board=before + after, check=result,
