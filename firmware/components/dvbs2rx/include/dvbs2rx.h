@@ -5,7 +5,8 @@
 #include <stdint.h>
 
 /* DVB-S2 receiver for the S3's own radio. Short FECFRAMEs (16,200 bits), QPSK or 8PSK at
- * 1 or 5 Msym/s, pilots on, roll-off 0.35, PL scrambling code 0, GCS input, one MODCOD per run.
+ * 1 or 5 Msym/s, pilots on, roll-off 0.35, PL scrambling code 0, GCS input, one MODCOD per run,
+ * dummy PLFRAMEs between frames.
  * Portable C builds on the host; S3 PIE kernels must give identical integers.
  *
  * Input is the radio's dump stream: 16e6 complex samples/s, one 32-bit word each,
@@ -66,6 +67,7 @@ typedef struct {
     int32_t cfo_hz, clock_ppb;  /* current estimates, as in rx_frame_t */
     uint32_t rejects;       /* acquisition detections that failed the header checks */
     uint32_t dropped;       /* frames lost because the release fell behind */
+    uint32_t dummies;       /* dummy PLFRAMEs: ridden through when locked, hopped over to lock */
 } rx_demod_stats_t;
 
 typedef struct rx_demod rx_demod_t;

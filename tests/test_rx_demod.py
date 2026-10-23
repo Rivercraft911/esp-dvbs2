@@ -79,6 +79,18 @@ def fast(so):
     loss = np.mean(ref[2:]) - np.mean([R.data_mer(f, t["codeword"], 16) for f, t in pairs[1:6]])
     assert loss < 0.5, loss
 
+    # Dummy PLFRAMEs (MODCOD 0, 3,330 symbols, no pilots) from a transmitter whose input ran dry:
+    # one, two, and 40 in a row (27 ms) while the carrier drifts 2 kHz/s. The lock holds, every
+    # data frame is exact and the sequence counts data frames only.
+    dummies = (2, 4, 4) + (7,) * 40
+    link = T.Link(rate=5e6, modcod=16, frames=12, mer_db=24, seed=8, dummies=dummies, drift_hz_s=-2000)
+    d, _, truth = run_twin(so, link)
+    pairs = matched(d, truth)
+    s = d.stats()
+    assert [truth.index(t) for _, t in pairs] == list(range(1, 12)) and s["dummies"] == 43, s
+    assert all(np.array_equal(f["hard"], t["codeword"]) for f, t in pairs)
+    assert [f["sequence"] for f, _ in pairs] == list(range(11)) and s["relocks"] == s["lost"] == 0, s
+
     # Push boundaries do not change the output while the release keeps up.
     d2, _, _ = run_twin(so, link, chunk=3001)
     assert len(d2.frames) == len(d.frames)
@@ -158,6 +170,27 @@ def main():
         assert [truth.index(t) for _, t in pairs] == [2, 3, 4, 5], [truth.index(t) for _, t in pairs]
         assert all(np.array_equal(f["hard"], t["codeword"]) for f, t in pairs)
         assert d.stats()["rejects"] == 1, d.stats()
+
+        # Dummy PLFRAMEs between data frames ride through at 1 Msym/s too: one, two, then 100 in
+        # a row (0.33 s), at 18 dB. The search finds frame 0 and defers the lock to the next
+        # header, a dummy's: the lock hops over it to frame 1.
+        link = T.Link(frames=10, dummies=(0, 1, 3, 5, 5) + (8,) * 100, seed=9)
+        d, _, truth = run_twin(so, link)
+        pairs = matched(d, truth)
+        s = d.stats()
+        assert [truth.index(t) for _, t in pairs] == list(range(1, 10)), [truth.index(t) for _, t in pairs]
+        assert all(np.array_equal(f["hard"], t["codeword"]) for f, t in pairs)
+        assert s["dummies"] == 105 and s["relocks"] == s["lost"] == s["rejects"] == 0, s
+        assert [f["sequence"] for f, _ in pairs] == list(range(9))
+
+        # A transmitter starved to an eighth of its rate (seven dummies after every frame) at
+        # 15 dB: the lock hops from dummy to dummy to the next frame and every frame is exact.
+        link = T.Link(frames=8, dummies=tuple(k for k in range(8) for _ in range(7)), mer_db=15, seed=11)
+        d, _, truth = run_twin(so, link)
+        pairs = matched(d, truth)
+        assert [truth.index(t) for _, t in pairs] == list(range(1, 8)), [truth.index(t) for _, t in pairs]
+        assert all(np.array_equal(f["hard"], t["codeword"]) for f, t in pairs)
+        assert d.stats()["rejects"] == d.stats()["relocks"] == 0, d.stats()
 
         # Normal frames, as in the recorded corpus (QPSK 1/2, 2245 MHz offsets).
         link = T.Link(modcod=4, short=False, frames=3, cfo_hz=-11800, carrier_hz=2245e6, seed=5)

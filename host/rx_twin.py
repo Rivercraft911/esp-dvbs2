@@ -5,8 +5,10 @@
     python3 host/rx_twin.py --frames 10 --gap 0 0.1 --out tone.sc8      int8 pairs, for replay
     python3 host/rx_twin.py --frames 3584 --check --reference 40         30 s through the C demodulator
     python3 host/rx_twin.py --rate 5e6 --modcod 16 --frames 40 --check   8PSK 8/9 at 5 Msym/s
+    python3 host/rx_twin.py --rate 5e6 --dummies 3 3 9 --frames 40 --check
 
-Transmitter: host/dvbs2.py frames carrying the firmware's test payload (host/rx.py model), the
+Transmitter: host/dvbs2.py frames carrying the firmware's test payload (host/rx.py model), dummy
+PLFRAMEs after the frames listed, the
 firmware pulse (shaper_taps.h: inverse-hold RRC at 40 MS/s, 360 taps at 1 Msym/s, 72 taps at
 5 Msym/s), each DAC sample held for 25 ns, then band-limited to the dump's +-8 MHz. Channel and receiver: symbol clock offset
 and carrier offset that drift together (both radios run from 40 MHz crystals), Wiener phase
@@ -61,6 +63,7 @@ class Link:
     tx_leak_db: float = -17.0
     tx_image_db: float = -32.0
     gap: tuple = None            # (after this many frames, seconds of keyed tone)
+    dummies: tuple = ()          # a dummy PLFRAME after each frame listed (repeat for more)
     lead_symbols: int = 500      # receiver noise before the transmitter starts
     seed: int = 2026
 
@@ -110,6 +113,11 @@ def frames(link):
         parts.append(ph)
         active.append(np.ones(len(ph), bool))
         at += len(ph)
+        for _ in range(list(link.dummies).count(j)):
+            dummy = dvbs2.dummy_phases()
+            parts.append(dummy)
+            active.append(np.ones(len(dummy), bool))
+            at += len(dummy)
     e0, de = clock(link)
     for f in truth:                   # pulse peak 4.5 symbols in; approximate, for matching
         n = (f["symbol"] + 4.5) * FS / link.rate / (1 + e0)
@@ -278,7 +286,8 @@ def check(link, reference_frames=0):
                             round(float(np.median([r["data_mer"] for r in rows.values()])), 2)],
                cfo_hz=[min(r["cfo"] for r in rows.values()), max(r["cfo"] for r in rows.values())],
                clock_ppb=[min(r["ppb"] for r in rows.values()), max(r["ppb"] for r in rows.values())],
-               lost=stats["lost"], relocks=stats["relocks"], rejects=stats["rejects"])
+               lost=stats["lost"], relocks=stats["relocks"], rejects=stats["rejects"],
+               dummies=stats["dummies"])
     if reference_frames:
         ref = reference(np.concatenate(kept), truth[:reference_frames], link)
         pairs = [(r, rows[k]["data_mer"]) for k, r in enumerate(ref) if r is not None and k in rows]
@@ -297,13 +306,16 @@ def main():
             p.add_argument("--" + f.name.replace("_", "-"), type=f.type, default=f.default)
     p.add_argument("--normal", action="store_true")
     p.add_argument("--gap", type=float, nargs=2, metavar=("AFTER", "SECONDS"))
+    p.add_argument("--dummies", type=int, nargs="*", default=(), metavar="AFTER",
+                   help="a dummy PLFRAME after each of these frames (repeat for more)")
     p.add_argument("--out", type=pathlib.Path, help=".u32 dump words, or .sc8 int8 I, Q pairs")
     p.add_argument("--check", action="store_true", help="run the C demodulator on it")
     p.add_argument("--reference", type=int, default=0, help="frames for the float reference")
     a = p.parse_args()
     link = Link(**{f.name: getattr(a, f.name) for f in dataclasses.fields(Link)
-                   if f.name not in ("gap", "short") and hasattr(a, f.name)},
-                short=not a.normal, gap=(int(a.gap[0]), a.gap[1]) if a.gap else None)
+                   if f.name not in ("gap", "short", "dummies") and hasattr(a, f.name)},
+                short=not a.normal, gap=(int(a.gap[0]), a.gap[1]) if a.gap else None,
+                dummies=tuple(a.dummies))
     if a.check:
         out = check(link, a.reference)
         return 0 if out["exact"] == out["matched"] and not out["missing"] else 1

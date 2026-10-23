@@ -179,7 +179,7 @@ static void print_receive(const char *cmd, esp_err_t e, unsigned modcod, unsigne
            "\"stack_free\":[%lu,%lu,%lu],\"free_internal\":%lu,\"largest_internal\":%lu,"
            "\"demod\":{\"words\":%llu,\"frames\":%lu,\"lost\":%lu,\"dropped\":%lu,\"relocks\":%lu,"
            "\"rejects\":%lu,\"locked\":%u,\"cfo_hz\":%ld,\"clock_ppb\":%ld,\"acquire_cycles\":%lu,"
-           "\"dc\":[%d,%d]}",
+           "\"dc\":[%d,%d],\"dummies\":%lu}",
            cmd, esp_err_to_name(e), modcod, rate, (unsigned long)r->frames, (unsigned long)r->good,
            (unsigned long)r->failed, (unsigned long)r->decoded, (unsigned long)r->dropped,
            (unsigned long)r->max_iterations, (unsigned long)r->pushes,
@@ -193,7 +193,7 @@ static void print_receive(const char *cmd, esp_err_t e, unsigned modcod, unsigne
            (unsigned long)r->demod.lost, (unsigned long)r->demod.dropped,
            (unsigned long)r->demod.relocks, (unsigned long)r->demod.rejects, r->demod.locked,
            (long)r->demod.cfo_hz, (long)r->demod.clock_ppb, (unsigned long)r->demod.acquire_cycles,
-           r->demod.dc_i, r->demod.dc_q);
+           r->demod.dc_i, r->demod.dc_q, (unsigned long)r->demod.dummies);
 }
 
 void app_main(void)
