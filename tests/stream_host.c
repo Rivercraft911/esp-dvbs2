@@ -480,7 +480,7 @@ int main(int argc, char **argv)
     }
     const int input_takes = native_input ? (native_buffers[0] ? 1 : 2) : 0; // CRC table, slot block
     if (!moon) assert(allocations == input_takes + (sps == 40 ? 7 : 4 + (mc >= 12 && !short_pulse) +
-                          (resident && mode->t > 8 && (!native_input || quads) && !borrowed_bch) + !resident));
+                          (resident && (mode->t > 8 || mc >= 12) && (!native_input || quads) && !borrowed_bch) + !resident));
     for (unsigned i = 0; i < 64; ++i) {
         if (native_blocks[i].p == enc.ws)
             assert(!(native_blocks[i].caps & MALLOC_CAP_SPIRAM) == resident);

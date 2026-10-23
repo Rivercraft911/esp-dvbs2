@@ -12,8 +12,8 @@
 #endif
 int lofty_resident(int on);
 size_t lofty_resident_bytes(void);
-// Cache immutable PSRAM dummy descriptors after Wi-Fi starts. Keep them locked
-// until playback ends, and unlock before freeing.
+// Lock the immutable PSRAM dummy descriptors in the data cache once the radio worker
+// is ready, keep them locked until the run ends, and unlock before the run memory returns.
 int lofty_dummy_resident(const uint32_t *, size_t bytes, int on);
 
 // Eight 3-bit phases (oldest first) -> table offsets for symbols 0-2, 3-5 and 6-7.
