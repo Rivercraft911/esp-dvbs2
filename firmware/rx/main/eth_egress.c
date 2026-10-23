@@ -18,9 +18,8 @@
 #define HOLD pdMS_TO_TICKS(10)  /* the longest a packet waits for six more */
 #define DRAIN pdMS_TO_TICKS(3000)   /* at the end; a chip ARP gives up after 1.8 s (w5500.h) */
 #define SAT_US 20000            /* a SEND unfinished this long, 18 wire times: give it again */
-#define EARLY_US 15             /* the kick comes this much before the datagram should be out */
-#define SPIN_US 40              /* ... and then polls for SEND_OK for up to this long; longer
-                                 * spins at this priority starved the release (1,579 runs lost) */
+#define EARLY_US 40             /* the kick comes this much before the datagram should be out */
+#define SPIN_US 120             /* ... and then polls for SEND_OK for up to this long */
 #define STACK 3072U
 #define PRIORITY 13             /* above the release (12): see eth_egress.h */
 #if CONFIG_W5500_DIRECT_SPI
