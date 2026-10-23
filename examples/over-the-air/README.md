@@ -121,7 +121,7 @@ python3 examples/over-the-air/check.py notes/ota-uhd-first \
 
 VCM uses this same verifier: `--pattern 4,7,11 --hold 4` or
 `--pattern 4,11,13,17 --hold 1` at `--rate 5m`. Mixed modulation selects axes
-automatically; mixed `10m` is refused before device access.
+automatically; VCM at `10m` is refused before device access.
 [Measured results and exact rerun commands](../../docs/vcm.md).
 
 ## Laptop-driven live VCM

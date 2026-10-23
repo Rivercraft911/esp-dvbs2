@@ -227,15 +227,9 @@ static struct {
 // The synchronous console configures the next run. The encoder alone owns
 // requested/current mode while running, including in-band control callbacks.
 static struct { bool enabled, mixed; unsigned hold, count, pattern[16]; } vcm VCM_BSS;
-static bool vcm_axes VCM_BSS;
 
 void dvbtx_vcm_command(const char *args)
 {
-    if (!strcmp(args,"axes on") || !strcmp(args,"axes off")) {
-        vcm_axes = !strcmp(args,"axes on");
-        printf("@{\"cmd\":\"vcm\",\"axes\":%s}\n",vcm_axes ? "true" : "false");
-        return;
-    }
     if (!strcmp(args,"off") || !strcmp(args,"on") || !strcmp(args,"mixed")) {
         memset(&vcm,0,sizeof vcm);
         vcm.enabled = strcmp(args,"off") != 0;
@@ -622,7 +616,7 @@ static __attribute__((noinline)) bool vcm_memory(const char *cmd, const dvbs2_mo
     const unsigned external=MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT;
     vcm_enc.vcm=true; vcm_enc.requested=mode->modcod; enc.packed=sps != 40;
     vcm_enc.vcm_modulations=vcm.mixed ? 12 : 1u<<mode->bits_per_symbol;
-    vcm_enc.vcm_axes=sps == 8 && (vcm.mixed || vcm_axes);
+    vcm_enc.vcm_axes=vcm.mixed; // mixed runs only at 5m (8 sps)
     vcm_enc.vcm_free_before=heap_caps_get_free_size(internal);
     vcm_enc.vcm_largest_before=heap_caps_get_largest_free_block(internal);
     const unsigned bits=vcm_enc.vcm_modulations == 4 ? 2 : 3;
@@ -673,8 +667,7 @@ static __attribute__((noinline)) bool vcm_memory(const char *cmd, const dvbs2_mo
     const size_t tap_bytes=9*sps*sizeof(int32_t);
     int32_t *taps=heap_caps_malloc(tap_bytes,external);
     if (!taps) { vcm_allocation_error(cmd,"pulse taps",tap_bytes,external); return false; }
-    const int32_t *source=sps == 40 ? shaper_taps_qpsk_n40_a35 :
-                           sps == 8 ? shaper_taps_8psk_n8_a35 : shaper_taps_8psk_n4_a35;
+    const int32_t *source=sps == 40 ? shaper_taps_qpsk_n40_a35 : shaper_taps_8psk_n8_a35;
     for (unsigned i=0;i<9*sps;++i) taps[i]=(int32_t)((double)source[i]*level/WORST_PEAK);
     if (vcm_enc.vcm_axes) shaper_axes_build(&dvb.table,shaper_store,taps);
     else shaper_build(&dvb.table,shaper_store,taps,sps,bits);
@@ -718,17 +711,12 @@ static size_t start_encoder_options(const char *cmd, unsigned modcod, unsigned l
     }
     if (vcm.enabled) {
         bool valid=dac_rate == RADIO_S3_DAC_RATE && spi_input_type() != PV_TS && !fixture;
-        valid = valid && (sps == 4 || sps == 8 || (sps == 40 && modcod < 12));
+        valid = valid && (sps == 8 || (sps == 40 && modcod < 12));
         if (vcm.count && vcm.pattern[0] != modcod) valid=false;
         for (unsigned i=0;i<vcm.count;++i) if (sps == 40 && vcm.pattern[i] >= 12) valid=false;
-        if (vcm.mixed && sps == 4) {
-            printf("@{\"cmd\":\"%s\",\"error\":\"VCM mixed 10m exceeds encoder budget; use mixed 5m (automatic axes)\"}\n",cmd);
-            return 0;
-        }
         if (vcm.mixed && sps != 8) valid=false;
-        if (vcm_axes && sps != 8) valid=false;
         if (!valid) {
-            printf("@{\"cmd\":\"%s\",\"error\":\"VCM needs GCS/synthetic, 1m QPSK or 5m/10m same modulation; mixed/axes needs 5m; initial MODCOD = first pattern entry\"}\n",cmd);
+            printf("@{\"cmd\":\"%s\",\"error\":\"VCM needs GCS/synthetic, 1m QPSK or 5m; mixed needs 5m; initial MODCOD = first pattern entry\"}\n",cmd);
             return 0;
         }
     }

@@ -46,8 +46,8 @@ def settings(a):
 
 def plan(a, s):
     result = ota.plan(a, s)
-    result.update(board_setup=['vcm axes off', 'vcm on', 'spiinput usb gcs'],
-                  board_cleanup=['spiinput off', 'vcm off', 'vcm axes off'],
+    result.update(board_setup=['vcm on', 'spiinput usb gcs'],
+                  board_cleanup=['spiinput off', 'vcm off'],
                   usb_sender='examples/usb-send/send.py:stream', schedule=a.schedule,
                   steps=['Validate stored callsign and schedule fits between both IDs.',
                          'Start the existing receive-only libiio worker; require TX inhibit readbacks and pre-roll.',
@@ -105,8 +105,7 @@ def hardware(a, s, out):
             opening = send.id_seconds(call)
             if 2*opening+a.schedule[-1][0]+3 >= a.seconds:
                 raise ValueError('stored callsign IDs leave too little time for schedule; increase --seconds')
-            for text, field, value in (('vcm axes off', 'axes', False),
-                    ('vcm on', 'enabled', True), ('spiinput usb gcs', 'wire', 'usb')):
+            for text, field, value in (('vcm on', 'enabled', True), ('spiinput usb gcs', 'wire', 'usb')):
                 rows = command(text)
                 if not rows or rows[-1].get(field) != value:
                     raise RuntimeError(f'missing setup acknowledgement: {text}')
@@ -137,7 +136,7 @@ def hardware(a, s, out):
             ota.stop(process)
             cleanup = []
             for text, field, value in (('spiinput off', 'input', 'off'),
-                    ('vcm off', 'enabled', False), ('vcm axes off', 'axes', False)):
+                    ('vcm off', 'enabled', False)):
                 try:
                     if started and (not sender['sender']['complete'] or sender['sender']['recovery']):
                         raise RuntimeError('console handoff unconfirmed; no console write attempted')
@@ -176,7 +175,7 @@ def analyze(out, a):
     capture = json.loads((out/'capture.json').read_text())
     cleanup = json.loads((out/'cleanup.json').read_text())
     checks.update(capture_complete=capture.get('complete') is True and not capture.get('overflows'),
-                  cleanup_valid=([c.get('command') for c in cleanup] == ['spiinput off', 'vcm off', 'vcm axes off'] and
+                  cleanup_valid=([c.get('command') for c in cleanup] == ['spiinput off', 'vcm off'] and
                                  all(c.get('passed') is True for c in cleanup)))
     r.update(passed=all(checks.values()), checks=checks, failed_checks=[k for k,v in checks.items() if not v],
              sent_sha256=hashlib.sha256(sent).hexdigest(), sent_bytes=len(sent),

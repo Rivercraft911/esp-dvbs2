@@ -115,7 +115,7 @@ def run(receiver=None, output=None):
         folder.mkdir(parents=True, exist_ok=True)
         exe = compile_stream(Path(tmp), source='vcm_host.c', defines=('STREAM_HEAP_LIMITS',))
         for sps, hold, scope in ((40, 1, 'qpsk'), (8, 1, 'qpsk'), (8, 4, 'first'), (8, 1, '8psk'),
-                                 (4, 1, 'qpsk'), (4, 1, '8psk'), (8, 1, 'mixed'), (8, 2, 'mixed'), (8, 1, 'ota'),
+                                 (8, 1, 'mixed'), (8, 2, 'mixed'), (8, 1, 'ota'),
                                  (8, 0, 'mixed'), (8, 0, 'qpsk')):
             stem = folder/f'vcm-n{sps}-hold{hold}-{scope}'
             symbols = stem.with_suffix('.phases')

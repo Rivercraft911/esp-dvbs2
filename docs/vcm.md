@@ -11,9 +11,7 @@ and `--fec` with live USB controls are not supported.
 | 1 Msym/s | QPSK phase table | Exact, contiguous E200 OTA code-rate switching |
 | 5 Msym/s | Same-modulation phase table | QPSK 4/7/11 hold 4: 2,938 branch / 2,932 merged OTA frames, exact and contiguous |
 | 5 Msym/s | Mixed QPSK/8PSK, automatic five-level axes | 4/11/13/17 every frame: 3,523 branch / 3,522 merged OTA frames, 21,055,600 bytes exact and contiguous |
-| 10 Msym/s | Same modulation, phase table | Host-model coverage; board timing needs checking |
-| 10 Msym/s mixed | Refused before encoder/radio startup | Earlier branch decoded, but exceeded encoder budget and inserted dummies / lost data |
-| Higher rates | Refused | VCM queues and timing not qualified |
+| 10 Msym/s and higher | Refused before encoder/radio startup | Not qualified on the board; mixed 10m exceeded the encoder budget on an earlier branch |
 
 Measurements used S3 → ANTSDR E200 inside a closed Faraday box. Branch results
 are `exp/vcm` (`b893fa8`) and `exp/modswap` (`154692d`); merged results are
@@ -31,8 +29,7 @@ its cache indices; linker checks guard placement
 for VCM pace. This consumes about 5 KB internal SRAM; the earlier branch had
 about 77 KB free with Wi-Fi up.
 Same-modulation runs keep their smaller phase tables. Mixed 5m automatically
-uses axes; `vcm axes on` also selects axes explicitly at 5m, and `vcm axes off`
-restores automatic selection. Allocation failures report stage, requested bytes,
+uses axes. Allocation failures report stage, requested bytes,
 free heap and largest blocks before cleanup.
 
 Console patterns use `vcm <frames per entry> <MODCOD ...>` (1–16 entries,

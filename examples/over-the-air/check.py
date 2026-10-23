@@ -40,11 +40,9 @@ def settings(a):
                 or not 1 <= a.hold <= 65535):
             raise ValueError("need 1..16 MODCODs in 4..17 and --hold 1..65535")
         mixed = any(mc < 12 for mc in a.pattern) and any(mc >= 12 for mc in a.pattern)
-        if mixed and a.rate == "10m":
-            raise ValueError("mixed VCM 10m exceeds encoder budget; use 5m (automatic axes)")
-        if (a.rate not in ("1m", "5m", "10m") or (mixed and a.rate != "5m")
+        if (a.rate not in ("1m", "5m") or (mixed and a.rate != "5m")
                 or (a.rate == "1m" and any(mc >= 12 for mc in a.pattern))):
-            raise ValueError("VCM needs 1m QPSK or 5m/10m same modulation; mixed needs 5m")
+            raise ValueError("VCM needs 1m QPSK or 5m; mixed needs 5m")
         a.modcod = a.pattern[0]
     rs = RATES[a.rate]
     fs = 2 * rs
@@ -166,8 +164,8 @@ def plan(a, s):
         ]
     if a.pattern:
         result.update(pattern=list(a.pattern), hold_frames=a.hold,
-                      board_setup=["vcm axes off", vcm_command(a)],
-                      board_cleanup=["vcm off", "vcm axes off"])
+                      board_setup=[vcm_command(a)],
+                      board_cleanup=["vcm off"])
     if a.dry_run is not None:
         result.update(source=str(a.dry_run), dump_sample_rate=a.dump_rate, callsign=a.callsign,
                       steps=["Read saved USB int16 I/Q; scale by 512; append 4096 decoder lookahead samples.",
@@ -280,8 +278,6 @@ def hardware(a, s, out):
         (out / "settings.json").write_text(json.dumps(s, indent=2) + "\n")
         try:
             if a.pattern:
-                if command("vcm axes off")[-1].get("axes") is not False:
-                    raise RuntimeError("board did not disable manual axis override")
                 configured = command(vcm_command(a))[-1]
                 if (configured.get("pattern") != list(a.pattern) or configured.get("hold_frames") != a.hold
                         or configured.get("enabled") is not True):
@@ -322,7 +318,7 @@ def hardware(a, s, out):
             stop(process)  # Same bounded terminate/kill cleanup as live-video/receive.py.
             if a.pattern:
                 cleanup = []
-                for text, field in (("vcm off", "enabled"), ("vcm axes off", "axes")):
+                for text, field in (("vcm off", "enabled"),):
                     try:
                         if command(text)[-1].get(field) is not False:
                             raise RuntimeError("missing cleanup acknowledgement")
@@ -446,7 +442,7 @@ def recheck(a):
         report["board_error"] = str(exc)
     report["checks"].update(board_valid=board_ok,
         capture_complete=capture.get("complete") is True and not capture.get("overflows"),
-        cleanup_valid=([r.get("command") for r in cleanup] == ["vcm off", "vcm axes off"] and
+        cleanup_valid=([r.get("command") for r in cleanup] == ["vcm off"] and
                        all(r.get("passed") is True for r in cleanup)))
     report.update(passed=all(report["checks"].values()),
                   failed_checks=[k for k, passed in report["checks"].items() if not passed],

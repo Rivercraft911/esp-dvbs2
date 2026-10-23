@@ -226,7 +226,6 @@ def main():
     def vcm_dump():
         path = out / "vcm.iq"
         try:
-            assert command("vcm axes off")[-1].get("axes") is False
             configured = command("vcm 1 4 11 13 17")[-1]
             assert configured.get("pattern") == [4, 11, 13, 17] and configured.get("hold_frames") == 1
             rows = command("dvbdump 4 5m 32 128 1", save=path)
@@ -244,10 +243,7 @@ def main():
             assert r.get("vcm_axes") is True and r["paced_wifi_up"], r
             assert r["wifi_free_up"] >= 20000 and r["wifi_min_free"] >= 20000, r
         finally:
-            try:
-                assert command("vcm off")[-1].get("enabled") is False
-            finally:
-                assert command("vcm axes off")[-1].get("axes") is False
+            assert command("vcm off")[-1].get("enabled") is False
 
     def vcm_decode():
         result = subprocess.run([sys.executable, str(ROOT/"host/decode.py"), str(out/"vcm.iq"),

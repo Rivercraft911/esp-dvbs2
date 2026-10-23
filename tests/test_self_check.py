@@ -203,7 +203,7 @@ def test_keep_going():
         assert check.main() == 1
         summary = (Path(tmp)/"out/summary.tsv").read_text()
         assert "PASS\tWi-Fi startup heap" in summary and "FAIL\tdump" in summary
-    assert len(sent) == 1+len(check.DUMPS)+len(check.PACES)+1+5
+    assert len(sent) == 1+len(check.DUMPS)+len(check.PACES)+1+3
     assert all(s.split()[0] in ("info", "vcm", "dvbdump", "dvbpace", "wifimem") for s in sent)
 
 
