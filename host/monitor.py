@@ -370,10 +370,12 @@ class Demo:
             self.tx_frames += 775
             self.tx_dummies += 118
             self.tx_bytes += int(9.0e6 / 8)
-            tx = dict(cmd='status', elapsed_s=round(t, 1), freq_mhz=2420.0, modcod=14, rate='5m', short=True,
-                      frames=self.tx_frames, dummies=self.tx_dummies, underruns=0, late_fills=0,
-                      input_bytes=self.tx_bytes, input_messages=self.tx_bytes // 1316, input_rejected=0,
-                      encoder_pct=round(41 + math.sin(t / 5), 1), fill_pct=round(44 + 0.5 * math.sin(t / 4), 1))
+            tx = dict(cmd='status', run='dvb', elapsed_s=round(t, 2), freq_mhz=2420, modcod=14, rate='3/4',
+                      symbol_rate=5_000_000, short=True, frames=self.tx_frames + self.tx_dummies,
+                      frames_encoded=self.tx_frames, dummies=self.tx_dummies, late_fills=0, late_switches=0,
+                      input='ts', input_wire='spi', input_bytes=self.tx_bytes, input_messages=self.tx_bytes // 1316,
+                      input_rejected=0, input_crc_errors=0, input_lost=0, input_overruns=0,
+                      encoder_spare_pct=round(59 + math.sin(t / 5), 1), fill_spare_pct=round(56 + 0.5 * math.sin(t / 4), 1))
             out.append(pack(TX, self.next_seq(TX), t_us, json.dumps(tx).encode()))
         return out
 

@@ -482,9 +482,9 @@ function render() {
   $('nCamHow').textContent = cm5 ? `${mbps(cm5.mbps)} of video and metadata` : 'no status from pv-capture';
   $('lSpiRate').textContent = tx && typeof tx.input_mbps === 'number' ? mbps(tx.input_mbps) : cm5 ? mbps(cm5.mbps) : DASH;
   $('lSpi').dataset.on = (tx && tx.input_mbps > 0) || (cm5 && cm5.mbps > 0) ? 1 : 0;
-  node('nTx', !!tx, tx && (tx.underruns || tx.late_fills));
-  $('nTxWhat').textContent = tx ? `${modeName(tx)}, ${tx.rate === '5m' ? 5 : 1} Msym/s` : (s ? modeName(s) : DASH);
-  $('nTxHow').textContent = tx ? `${nf.format(tx.frames || 0)} frames sent` : 'no status yet';
+  node('nTx', !!tx, tx && (tx.late_fills || tx.late_switches || tx.input_lost || tx.input_overruns));
+  $('nTxWhat').textContent = tx ? `${modeName(tx)}, ${(tx.symbol_rate / 1e6).toFixed(tx.symbol_rate % 1e6 ? 2 : 0)} Msym/s` : (s ? modeName(s) : DASH);
+  $('nTxHow').textContent = tx ? `${nf.format(tx.frames_encoded ?? tx.frames ?? 0)} frames encoded` : 'no status yet';
   $('lRfMedium').textContent = s && s.freq_mhz ? `Radio, ${s.freq_mhz.toFixed(0)} MHz` : 'Radio, coax';
   const mer = rx ? (rx.mer_med_db ?? rx.mer_db) : undefined;
   $('lRfRate').textContent = rx ? (rx.state === 'track' && typeof mer === 'number' ? `${mer.toFixed(1)} dB MER` : 'searching') : DASH;
@@ -502,14 +502,18 @@ function render() {
   $('tRate').innerHTML = rx && typeof rx.mbps === 'number' ? `${rx.mbps.toFixed(2)}<small>Mb/s</small>` : '&ndash;';
   $('tMer').innerHTML = typeof mer === 'number' ? `${mer.toFixed(1)}<small>dB</small>` : '&ndash;';
 
-  $('txMeta').textContent = tx ? `ESP32-S3, keyed ${duration(tx.elapsed_s || 0)}` : 'ESP32-S3, no status yet';
+  const wire = tx && tx.input_wire ? ` over ${tx.input_wire === 'usb' ? 'USB' : 'SPI'}` : '';
+  $('txMeta').textContent = tx ? `ESP32-S3, ${tx.input === 'synthetic' ? 'test payload' : (tx.input || '').toUpperCase() + wire}, ${duration(tx.elapsed_s || 0)}` : 'ESP32-S3, no status yet';
+  const busy = pct => typeof pct === 'number' ? 100 - pct : undefined;
+  const inErrors = tx && tx.input_bytes !== undefined ? (tx.input_rejected || 0) + (tx.input_lost || 0) + (tx.input_overruns || 0) : undefined;
   fill('txRows', [
     ['Input', mbps(tx && tx.input_mbps)],
-    ['Data frames sent', tx && tx.frames],
+    ['Frames encoded', tx && tx.frames_encoded],
     ['Filler frames', tx && tx.dummies],
-    ['Underruns / late fills', tx ? pair(tx.underruns, tx.late_fills) : undefined],
-    ['Encoder, core 0', meter(tx && tx.encoder_pct)],
-    ['Bank fill, core 1', meter(tx && tx.fill_pct)],
+    ['Input errors', tx ? zeroish(inErrors, true) : undefined],
+    ['Late fills / bank switches', tx ? pair(tx.late_fills, tx.late_switches) : undefined],
+    ['Encoder, core 0', meter(busy(tx && tx.encoder_spare_pct))],
+    ['Bank fill, core 1', meter(busy(tx && tx.fill_spare_pct))],
   ]);
   $('rxMeta').textContent = rx ? `ESP32-S3, gain ${rx.gain ?? DASH} dB` : 'ESP32-S3, no reports yet';
   fill('rxRows', [
