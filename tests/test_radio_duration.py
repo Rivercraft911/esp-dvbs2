@@ -70,22 +70,14 @@ static const char *station_store_get(void) { return call; }
 static bool station_require(const char *cmd) { (void)cmd; return call[0] != 0; }
 static int xSemaphoreCreateBinaryStatic(int *p) { (void)p; return 1; }
 static void xSemaphoreTake(int s, unsigned t) { assert(s == 1 && t == portMAX_DELAY); }
-typedef int StackType_t;
-typedef struct { int unused; } StaticTask_t;
+// The persistent core-1 worker (radio_s3_init): giving it a job runs the job.
 typedef void *TaskHandle_t;
-static StackType_t worker_stack[1536];
-static StaticTask_t worker_tcb;
+static int worker_tcb, job_ready = 2;
+static TaskHandle_t worker_task = &worker_tcb;
+static TaskFunction_t job_task;
+static void *job_arg;
 static station_id_t worker_id;
-static TaskHandle_t xTaskCreateStaticPinnedToCore(TaskFunction_t task, const char *name, unsigned stack,
-        void *arg, unsigned priority, StackType_t *buffer, StaticTask_t *tcb, int core) {
-    (void)name; (void)priority; assert(core == 1 && buffer == worker_stack && tcb == &worker_tcb);
-    assert(stack == sizeof worker_stack);
-    ++tasks; task(arg); return &worker_tcb;
-}
-static void vTaskDelete(TaskHandle_t t) { assert(t == &worker_tcb); }
-typedef enum { eRunning, eReady, eBlocked, eSuspended, eDeleted } eTaskState;
-static eTaskState eTaskGetState(TaskHandle_t t) { assert(t == &worker_tcb); return eSuspended; }
-static void vTaskDelay(unsigned ticks) { (void)ticks; assert(0); }
+static void xSemaphoreGive(int s) { assert(s == 2); ++tasks; job_task(job_arg); }
 radio_filter_mode_t radio_filter_get(void) { return RADIO_FILTER_AUTO; }
 static uint64_t clock_cycles;
 static uint32_t cycles(void) { return (uint32_t)clock_cycles++; }

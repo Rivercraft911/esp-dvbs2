@@ -21,6 +21,7 @@
 #include "spi_input.h"
 #include "usb_input.h"
 #include "radio_s3.h"
+#include "run_memory.h"
 #include "radio_signals.h"
 #include "shaper.h"
 #include "station_commands.h"
@@ -251,6 +252,7 @@ static void cmd_tx(char *args)
 }
 
 static esp_err_t radio = ESP_ERR_INVALID_STATE;
+static int memory = 1;
 
 static void cmd_info(void)
 {
@@ -259,12 +261,20 @@ static void cmd_info(void)
     const esp_app_desc_t *app = esp_app_get_description();
     printf("@{\"callsign\":\"%s\",\"cmd\":\"info\",\"firmware\":\"%s\",\"idf\":\"%s\",\"cores\":%d,"
            "\"revision\":%d,\"cpu_mhz\":%d,\"radio\":\"%s\",\"psram_bytes\":%u,\"free_internal\":%u,"
-           "\"largest_internal\":%u,\"free_psram\":%u,\"uptime_ms\":%lld}\n",
+           "\"largest_internal\":%u,\"free_psram\":%u,\"uptime_ms\":%lld",
            station_store_get(), app->version, app->idf_ver, chip.cores, chip.revision,
            CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ, esp_err_to_name(radio), (unsigned)esp_psram_get_size(),
            (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
            (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
            (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM), esp_timer_get_time() / 1000);
+    arena_heap_t h;
+    arena_heap(&h);
+    printf(",\"run_memory_ready\":%s", memory ? "false" : "true");
+    run_memory_print();
+    // Heap calls since boot ended, by anyone (run_arena.h); the transmitter's own code makes none.
+    printf(",\"heap_after_boot\":{\"allocs\":%u,\"frees\":%u,\"failed\":%u,\"bytes\":%u,"
+           "\"last_size\":%u}}\n", (unsigned)h.allocs, (unsigned)h.frees, (unsigned)h.failed,
+           (unsigned)h.bytes, (unsigned)h.last_size);
 }
 
 void app_main(void)
@@ -279,11 +289,13 @@ void app_main(void)
     setvbuf(stdin, NULL, _IONBF, 0);
 
     radio = radio_s3_init(); // PHY calibration, once
+    memory = run_memory_init();
     const esp_err_t storage = station_store_init();
     if (storage != ESP_OK) {
         printf("@{\"cmd\":\"callsign\",\"error\":\"NVS unavailable or invalid callsign\","
                "\"status\":\"%s\"}\n", esp_err_to_name(storage));
     }
+    arena_booted(); // from here on, count every heap call
     char line[128];
     for (;;) {
         if (!fgets(line, sizeof line, stdin)) {
@@ -344,8 +356,11 @@ void app_main(void)
         usb_input_finish();
         // ESP-IDF reports the minimum unused stack in bytes, since task start.
         // Sample after result printing and USB recovery too, on the main task.
+        arena_heap_t heap;
+        arena_heap(&heap);
         printf("@{\"cmd\":\"%.40s\",\"done\":true,\"main_stack_bytes\":%u,"
-               "\"main_stack_min_free\":%u}\n",line,(unsigned)CONFIG_ESP_MAIN_TASK_STACK_SIZE,
-               (unsigned)uxTaskGetStackHighWaterMark(NULL));
+               "\"main_stack_min_free\":%u,\"heap_allocs_after_boot\":%u}\n",line,
+               (unsigned)CONFIG_ESP_MAIN_TASK_STACK_SIZE,(unsigned)uxTaskGetStackHighWaterMark(NULL),
+               (unsigned)heap.allocs);
     }
 }

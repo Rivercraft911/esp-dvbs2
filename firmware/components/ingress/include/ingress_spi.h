@@ -25,7 +25,8 @@ typedef struct {
     int sclk, cs, d0, d1, d2, d3, ready; /* seven distinct GPIO numbers */
     bool (*received)(void *ctx); /* optional EOF ISR notification; return task-woken flag */
     void *ctx;
-    uint8_t *buffers[INGRESS_SLOTS]; /* optional borrowed internal DMA slots, each 1336 B */
+    uint8_t *buffers[INGRESS_SLOTS]; /* internal DMA slots, each 1336 B, owned by the caller */
+    uint32_t *crc; /* 1024-word internal CRC-32 table space, owned by the caller */
     bool replay; /* diagnostic: presealed ring, DMA idle, no external sender */
     bool pv; /* raw PV-SPI v1, single-line, no command/address/dummy prefix; <=20 MHz */
 } ingress_spi_config;

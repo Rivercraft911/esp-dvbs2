@@ -58,8 +58,9 @@ void radio_s3_lo_command(const char *args);
 typedef esp_err_t (*radio_s3_fill_fn)(uint32_t *dst, uint64_t first_sample,
                                     size_t count, void *ctx);
 
-/* Bring the PHY up once, at boot, without Wi-Fi: it is calibrated then and held under the
- * Bluetooth modem bit for good. Keyed runs need it; no Wi-Fi or Bluetooth stack may coexist. */
+/* Once, at boot: start the core-1 radio worker that every run uses, and bring the PHY up without
+ * Wi-Fi (calibrated then and held under the Bluetooth modem bit for good). Keyed runs need the
+ * PHY; no Wi-Fi or Bluetooth stack may coexist. */
 esp_err_t radio_s3_init(void);
 
 /* Optional stream preparation on the worker, before timing or keyed register access. A

@@ -180,7 +180,8 @@ def test_keep_going():
     def run(port, command, **kwargs):
         sent.append(command)
         if command == "info":
-            assert kwargs["reset"]
+            if not kwargs["reset"]:
+                return [dict(heap_after_boot=dict(allocs=0, frees=0, failed=0))]
             return [dict(firmware=revision, callsign="N0CALL")]
         if command.startswith("dvbdump"):
             raise RuntimeError("simulated USB dump failure")
@@ -200,7 +201,8 @@ def test_keep_going():
         assert check.main() == 1
         summary = (Path(tmp)/"out/summary.tsv").read_text()
         assert "PASS\tdvbpace 11 33m333 10" in summary and "FAIL\tdump" in summary
-    assert len(sent) == 1+len(check.DUMPS)+len(check.PACES)+3
+    assert len(sent) == 1+len(check.DUMPS)+len(check.PACES)+3+1
+    assert "PASS\tno heap after boot" in summary
     assert all(s.split()[0] in ("info", "vcm", "dvbdump", "dvbpace") for s in sent)
 
 

@@ -44,14 +44,19 @@ static unsigned allocated, allocation_calls, fail_at, restarts, notifications;
 static int64_t now;
 static bool timer_active, timer_exists;
 static void (*timer_callback)(void *);
-static void *heap_caps_malloc(size_t n,int caps) {
-    (void)caps;
+// Run memory (run_memory.h), counted and failed on request; the command that started the run
+// returns it with run_reset (here: the test, after usb_input_finish).
+static void *native_taken[16];
+static unsigned native_takes;
+static void *run_take(size_t n,size_t align,uint32_t caps) {
+    (void)align; (void)caps;
     if (++allocation_calls==fail_at) return NULL;
-    ++allocated; return malloc(n);
+    assert(native_takes<16); ++allocated; return native_taken[native_takes++]=calloc(1,n);
 }
-static void heap_caps_free(void *p) { if(p) { --allocated; free(p); } }
+static void run_reset(void) { while (native_takes) { free(native_taken[--native_takes]); --allocated; } }
 static int esp_timer_create(const esp_timer_create_args_t *cfg,esp_timer_handle_t *out) {
     if (++allocation_calls==fail_at) return ESP_ERR_NO_MEM;
+    assert(!timer_exists); // created once, then kept
     timer_callback=cfg->callback; *out=(void *)1; timer_exists=true; return 0;
 }
 static int esp_timer_start_once(esp_timer_handle_t t,int64_t us) {
@@ -60,7 +65,6 @@ static int esp_timer_start_once(esp_timer_handle_t t,int64_t us) {
 static int esp_timer_stop_blocking(esp_timer_handle_t t,unsigned wait) {
     assert(t && wait==portMAX_DELAY); timer_active=false; return 0;
 }
-static void esp_timer_delete(esp_timer_handle_t t) { assert(t && !timer_active); timer_exists=false; }
 static TaskHandle_t xTaskGetCurrentTaskHandle(void) { return (void *)1; }
 static void xTaskNotifyGive(TaskHandle_t t) { assert(t); ++notifications; }
 static unsigned ulTaskNotifyTake(int clear,unsigned wait) {
@@ -128,7 +132,7 @@ static void usb_serial_jtag_ll_clr_intsts_mask(unsigned mask) {
     assert(mask==4 && critical_depth); fifo_acknowledged=true;
 }
 static int usb_serial_jtag_wait_tx_done(unsigned wait) { assert(wait==500); return 0; }
-static void esp_restart(void) { assert(!allocated && !timer_exists); ++restarts; rx_enabled=true; }
+static void esp_restart(void) { assert(!timer_active); ++restarts; rx_enabled=true; }
 
 '''
 APP = r'''
@@ -227,8 +231,8 @@ static void opening_id_backpressure(void) {
             // Discarding an uncertain write must recover through restart.
             wire_len=wire_at; acknowledged=wire_at;
         }
-        usb_input_stop(); usb_input_print(); puts(""); usb_input_finish();
-        assert(!allocated && !active && rx_enabled && !timer_exists);
+        usb_input_stop(); usb_input_print(); puts(""); usb_input_finish(); run_reset();
+        assert(!allocated && !active && rx_enabled && !timer_active);
         host_timeout=0; host_failed=false;
     }
 }
@@ -237,8 +241,8 @@ int main(void) {
 
     for (fail_at=1; fail_at<=3; ++fail_at) {
         allocation_calls=0;
-        assert(usb_input_start(PV_GCS)==ESP_ERR_NO_MEM && !allocated && !active);
-        usb_input_stop(); assert(rx_enabled);
+        assert(usb_input_start(PV_GCS)==ESP_ERR_NO_MEM && !active);
+        usb_input_stop(); run_reset(); assert(rx_enabled && !allocated);
     }
     fail_at=0;
     const size_t fragments[]={1,13,64,1332};
@@ -264,7 +268,7 @@ int main(void) {
         assert(ring.st.err_crc==1 && ring.st.lost==1 && ring.st.seq_back==2 && ring.wrong_type==1);
         assert(ring.seq_next==4 && wire_at==wire_len);
         assert(driver_bytes==37 && fifo_bytes==wire_len-37 && notifications>0);
-        usb_input_stop(); usb_input_print(); puts(""); usb_input_finish();
+        usb_input_stop(); usb_input_print(); puts(""); usb_input_finish(); run_reset();
         assert(!allocated && !active && rx_enabled);
     }
     // Stop in the middle of a PV message. The command-task drain must finish
@@ -278,8 +282,8 @@ int main(void) {
     // forever or return these bytes to the console parser.
     wire_len=17; queued=0;
     assert(usb_input_read(&byte,1)==0 && partial==17 && !rx_enabled);
-    usb_input_stop(); usb_input_finish();
-    assert(restarts==1 && !allocated && !active && rx_enabled && !timer_exists);
+    usb_input_stop(); usb_input_finish(); run_reset();
+    assert(restarts==1 && !allocated && !active && rx_enabled && !timer_active);
     // A fresh session after recovery is usable with no saved partial message.
     wire_len=wire_at=calls=0; fragment=64;
     append(PV_GCS,0,1316,0); append(PV_NOP,1,0,0);
@@ -287,8 +291,8 @@ int main(void) {
     uint8_t output[1317]; size_t got=0;
     while(!ended) got+=usb_input_read(output+got,sizeof output-got);
     assert(got==1316 && ring.st.msgs==1 && ring.st.nops==1 && partial==0);
-    usb_input_stop(); usb_input_finish();
-    assert(!allocated && !active && rx_enabled && !timer_exists && restarts==1);
+    usb_input_stop(); usb_input_finish(); run_reset();
+    assert(!allocated && !active && rx_enabled && !timer_active && restarts==1);
     assert(pauses>200 && resumes==5); // re-mask every read, restore once per session
     // Restore exactly the previous RX mask, preserving the console TX bit.
     wire_len=wire_at=queued=0; fragment=64; rx_enabled=false;
@@ -326,8 +330,8 @@ int main(void) {
         const double modeled=ring.st.bytes*8.0/(last-first);
         assert(modeled>3.5 && modeled<4.6);
         printf("USB finite FIFO + PSRAM model: 2000 intact messages, late driver bytes %zu, %.3f Mb/s (simulation only)\n",stolen,modeled);
-        usb_input_stop(); usb_input_finish();
-        assert(!allocated && !active && rx_enabled && !timer_exists && restarts==1);
+        usb_input_stop(); usb_input_finish(); run_reset();
+        assert(!allocated && !active && rx_enabled && !timer_active && restarts==1);
     }
     opening_id_backpressure();
     puts("USB adapter: short/idle reads, stream splits, wrap, CRC, gaps, duplicates, type, FIFO ownership without RX edges, bounded restart recovery and allocation failures: ok");
@@ -347,6 +351,7 @@ def main():
         exe = folder/'usb'
         subprocess.run(['cc', '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror', '-I'+tmp,
                         '-I'+str(ROOT/'firmware/tx/main'), '-I'+str(ingress/'include'),
+                        '-I'+str(ROOT/'firmware/components/platform/include'),
                         str(folder/'app.c'), str(ingress/'ingress.c'), str(ingress/'ingress_pattern.c'),
                         '-o', str(exe)], check=True)
         output = subprocess.check_output([str(exe)], text=True, timeout=10)

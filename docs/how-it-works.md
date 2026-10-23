@@ -162,10 +162,8 @@ core 1 renders them directly into the DAC banks. All three measured code rates,
 2/3, 5/6 and 9/10, ran at full rate in [30 s keyed tests](measurements.md#8psk-at-36-mhz).
 
 The encoder keeps BCH, PRBS, Gold and mapper tables in internal RAM to avoid
-competing with the renderer for flash cache. Its largest table allocation comes
-first, before the context and 8,144-byte FEC workspace, so smaller allocations
-cannot fragment that block. Cold cache tails, extra BCH data, dummy descriptors
-and prepared input use PSRAM. These allocations exist only for 8PSK `26m667`.
+competing with the renderer for flash cache. Cold cache tails, extra BCH data, dummy
+descriptors and prepared input use PSRAM. These buffers exist only for 8PSK `26m667`.
 The vector renderer stays in IRAM. Its small control path is flash-backed and
 locked in instruction cache only while this mode is active, occupying at most
 one 4 KiB way of the configured 16 KiB cache. Setup repeats once the radio worker is ready;
@@ -181,12 +179,18 @@ stream mux, with no extra queue allocation:
 Each page contains 128 four-symbol descriptors, a prefetch guard and metadata,
 representing up to 1,536 samples. A normal 22,194-symbol frame needs 44 pages.
 Ten spare pages let mapping bursts overlap playback; mean encoder time alone
-was insufficient to choose the depth. After the worker allocations exist,
-startup samples free internal heap and its command low-water mark. It selects
-all 54 resident pages only with at least 20,000 B minimum free and 22,048 B
-currently free (including a 2,048 B transient guard); otherwise it aborts before
-playback. It then prefills the queue without allocating.
-Radio-off dumps use 54/50/46 pages at MODCOD 13/15/17.
+was insufficient to choose the depth. Paced and keyed runs use all 54 pages; radio-off dumps
+use 54/50/46 pages at MODCOD 13/15/17.
+
+**Memory.** Nothing on the transmitter allocates from the heap after boot. Each command takes
+its buffers from fixed run memory (`firmware/tx/main/run_memory.c`): two internal regions that
+the heap never sees, 38,672 B above the DAC banks and the 32,768 B the 32 KB data cache leaves
+as DRAM, and a 384 KiB PSRAM block taken once at boot. A take goes to the first region with
+room; the next command returns everything at once. The largest run takes 57,088 B of internal
+memory (8PSK 3/4 at 10 Msym/s) and 294,848 B of PSRAM (QPSK at 1 Msym/s). Task stacks are static, and the
+core-1 radio worker is created once at boot. ESP-IDF's heap hooks count every heap call after
+boot (`info` prints `heap_after_boot`); after paces, keyed runs, dumps and benchmarks the count
+is zero. Payload input over SPI still installs ESP-IDF's SPI and DMA drivers per run.
 
 Payload, BB, BCH and LDPC for the next frame run before waiting for pages; only
 mapping and PL publication block. Scratch cannot be reused until the mapped
@@ -412,7 +416,7 @@ The compact CI suite tests the Python reference against standard vectors and ind
 stage digests, compares every portable C encoder stage with Python, and runs the actual
 stream lifecycle with host task stubs. All pinned dump CRCs must remain exact. The
 fractional stream is also checked sample by sample against independent integer convolution.
-Allocation failures, heap admission, dummy transitions, repeated commands, frame seams,
+Run-memory exhaustion and cleanup, dummy transitions, repeated commands, frame seams,
 bank wraps and counter wrap are covered.
 Host clocks and heaps are synthetic; only [the board example](../examples/self-check/README.md)
 can check deadlines and startup memory. RF decoding and spectral measurements remain separate work.

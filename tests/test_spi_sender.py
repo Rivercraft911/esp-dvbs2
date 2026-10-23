@@ -91,6 +91,14 @@ static inline size_t heap_caps_get_free_size(int caps) { (void)caps; return 1000
 static inline void *heap_caps_malloc(size_t n,int caps) { (void)caps; ++allocations; return malloc(n); }
 static inline void *heap_caps_calloc(size_t n,size_t m,int caps) { (void)caps; ++allocations; return calloc(n,m); }
 static inline void heap_caps_free(void *p) { if(p) { --allocations; free(p); } }
+// Run memory (run_memory.h): counted like the heap above, returned by run_reset.
+static void *native_taken[64];
+static unsigned native_takes;
+static void *run_take(size_t n,size_t align,uint32_t caps) {
+    (void)align; (void)caps; assert(native_takes<64);
+    ++allocations; return native_taken[native_takes++]=calloc(1,n);
+}
+static void run_reset(void) { while (native_takes) { free(native_taken[--native_takes]); --allocations; } }
 static inline int spi_bus_initialize(int h,const spi_bus_config_t *c,int dma) { (void)h;(void)c;(void)dma; return 0; }
 static inline void spi_bus_free(int h) { (void)h; }
 static inline int spi_bus_add_device(int h,const spi_device_interface_config_t *c,spi_device_handle_t *d) {
@@ -148,7 +156,7 @@ esp_err_t ingress_spi_start(const ingress_spi_config *cfg,ingress_ring **ring) {
 void ingress_spi_stop(void) {}
 void ingress_spi_get_stats(ingress_spi_stats *out) { memset(out,0,sizeof *out); }
 int main(void) {
-    // A partially fitting borrowed pool must fall back to heap allocation;
+    // A partially fitting borrowed pool must fall back to run memory;
     // two disjoint regions may supply the complete eight-slot pool.
     uint32_t pool[INGRESS_SLOTS*INGRESS_SLOT_BYTES/4];
     uint8_t *base=(uint8_t *)pool;
@@ -167,10 +175,10 @@ int main(void) {
         tx_run();
         assert(tx.errors==0 && transfers>14 && alarms>10 && first_tx>=ready_at);
         assert(first_tx < ready_at+100 && delays==0); // READY resumes within a poll, no 1 ms sleep
-        tx_free(); assert(allocations==0 && !tx.timer);
+        tx_free(); run_reset(); assert(allocations==0 && !tx.timer);
     }
     pv_mode=false; input_type=PV_TS;
-    assert(spi_input_start()==ESP_OK); spi_input_stop();
+    assert(spi_input_start()==ESP_OK); spi_input_stop(); run_reset();
     assert(!rx && allocations==0 && !tasks);
     spi_input_command("spiinput","on");
     assert(pv_mode && !replay && input_type==PV_TS);
@@ -230,6 +238,7 @@ def main():
         exe=folder/'sender'
         subprocess.run(['cc','-std=c11','-O2','-Wall','-Wextra','-Werror','-I'+tmp,
                         '-I'+str(ROOT/'firmware/tx/main'),'-I'+str(ingress/'include'),
+                        '-I'+str(ROOT/'firmware/components/platform/include'),
                         str(folder/'app.c'),str(ingress/'ingress.c'),str(ingress/'ingress_pattern.c'),
                         '-o',str(exe)],check=True)
         subprocess.run([str(exe)],check=True,timeout=10)

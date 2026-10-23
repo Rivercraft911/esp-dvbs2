@@ -110,8 +110,6 @@ static inline size_t heap_caps_get_largest_free_block(unsigned c) {
     return free;
 }
 #define heap_caps_get_minimum_free_size heap_caps_get_free_size
-static inline int heap_caps_monitor_local_minimum_free_size_start(void) { return 0; }
-static inline int heap_caps_monitor_local_minimum_free_size_stop(void) { return 0; }
 typedef struct {
     pthread_t thread; pthread_mutex_t mutex; pthread_cond_t cond;
     unsigned notifications, notifications_sent, priority; void (*fn)(void *); void *arg;
@@ -224,6 +222,7 @@ def compile_stream(folder, source="stream_host.c", defines=()):
                     "-I" + str(ROOT / "firmware/components/dvbs2/include"),
                     "-I" + str(ROOT / "firmware/components/radio_s3/include"),
                     "-I" + str(ROOT / "firmware/components/station_id/include"),
+                    "-I" + str(ROOT / "firmware/components/platform/include"),
                     str(ROOT / "tests" / source), str(ROOT / "tests/ingress_sim.c"),
                     str(ROOT / "firmware/components/ingress/ingress.c"),
                     str(ROOT / "firmware/components/ingress/ingress_pattern.c"), str(ROOT / "firmware/tx/main/ring.c"),
@@ -306,12 +305,15 @@ def test_stream(output=None, receiver=None, input_only=False):
                 assert r["ring_format"] == ("quads" if quads else "packed" if packed else "raw")
                 assert r["workspace_memory"] == ("internal" if packed and (mc < 12 or sps == 4) else "psram")
                 assert r["workspace_bytes"] == 12420
-                assert r["workspace_heap_bytes"] == (0 if quads else r["workspace_bytes"])
-                assert r["fast_heap_bytes"] == r["fast_bytes"]
+                # Borrowed buffers lie in the 64 KiB shaping store; the rest is run memory.
+                store = int(r["layout"]["table"], 16)
+                in_store = lambda name: store <= int(r["layout"][name], 16) < store + 65536
+                assert in_store("workspace") == quads
+                assert not in_store("fast")
                 cached = packed and (mc < 12 or sps == 4) and mc not in (10, 11, 16, 17)
                 assert r["bch_cache_bytes"] == (8192 if cached else 0)
                 borrowed_bch = mc >= 12 and sps == 4 and (short or mc == 13) and cached
-                assert r["bch_cache_heap_bytes"] == (0 if borrowed_bch else r["bch_cache_bytes"])
+                if cached: assert in_store("bch") == borrowed_bch
                 # The host build has no PIE kernels: dvbs2_fast_bch takes the C nibble rows.
                 assert r["bch_variant"] == "nibble" and r["bch_pair_memory"] == "none"
                 assert r["packed_mapper"] == ("none" if not packed else "quads" if quads else "direct" if mc < 12 or sps == 4 else "sparse")
@@ -329,7 +331,8 @@ def test_stream(output=None, receiver=None, input_only=False):
                     assert filler == table+12288*sps+(stored*8352 if sps == 3 else 12432)
                     if sps == 4: assert int(r['layout']['workspace'],16) == table+49152
                     assert filler+864 <= table+65536
-                    assert r['ring_heap_bytes'] == (r['ring_slots']-stored)*8352
+                    assert slots[stored:] == [slots[stored]+i*8352 for i in range(r['ring_slots']-stored)]
+                    assert all(not store <= a < store+65536 for a in slots[stored:])
                     assert all(a%16 == 0 for a in slots)
                 elif packed:
                     # Two packed frames, the packed dummy, then the payload, each with the
@@ -348,19 +351,18 @@ def test_stream(output=None, receiver=None, input_only=False):
                         used = 4096 if sps == 4 else 8192
                         assert slots[0] == int(r["layout"]["table"], 16) + used
                         assert slots == [slots[0] + i * frame for i in range(r["ring_slots"])]
-                        assert used + need <= 65536 and r["ring_heap_bytes"] == 0
+                        assert used + need <= 65536 and all(store <= a < store+65536 for a in slots)
                     elif short:
                         assert slots[0] == int(r["layout"]["table"], 16) + 16384
                         assert slots[2] >= filler+1696
                         assert slots[2] + frame <= int(r["layout"]["table"], 16) + 65536
-                        assert r["ring_heap_bytes"] == 0
                     elif sps == 4:
-                        # Two frames, dummy and payload in the store; the third on the heap.
+                        # Two frames, dummy and payload in the store; the third in run memory.
                         assert slots[0] == int(r["layout"]["table"], 16) + 32768
-                        assert need <= 32768 and r["ring_heap_bytes"] == frame
+                        assert need <= 32768 and not store <= slots[2] < store+65536
                         assert not slots[0] <= slots[2] < slots[0] + 32768
                     else:
-                        assert r["ring_heap_bytes"] == 2*frame
+                        assert all(not store <= a < store+65536 for a in slots)
                 assert all(p["calls"] == r["frames_encoded"] for p in r["profile"]["encoder"].values())
                 assert r["symbol_rate"] == rate * 1000000 // sps
             if receiver and (mc < 12 or mc in (13, 15, 17)):

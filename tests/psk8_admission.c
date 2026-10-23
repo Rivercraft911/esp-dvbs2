@@ -136,6 +136,6 @@ int main(int argc, char **argv)
            "\"streamed\":%u,\"startup\":%u,\"steady\":%u,\"threshold\":%u,\"lead\":%lld}\n",
            mc,slow,prefill,lofty_mux.frames,lofty_mux.streaming,lofty_mux.startup,lofty_mux.steady,
            lofty_mux.admission_pages&255,(long long)lofty_mux.head[2]/3);
-    free(dst); release(); assert(!live_allocations);
+    free(dst); release(); assert(run_returned());
     return 0;
 }

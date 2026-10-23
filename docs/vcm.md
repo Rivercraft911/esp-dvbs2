@@ -29,8 +29,8 @@ its cache indices; linker checks guard placement
 for VCM pace. This consumes about 5 KB internal SRAM; the earlier branch had
 about 77 KB free with Wi-Fi up.
 Same-modulation runs keep their smaller phase tables. Mixed 5m automatically
-uses axes. Allocation failures report stage, requested bytes,
-free heap and largest blocks before cleanup.
+uses axes. Run-memory failures report stage, requested bytes
+and the run-memory levels before cleanup.
 
 Console patterns use `vcm <frames per entry> <MODCOD ...>` (1–16 entries,
 hold 1–65535); the run must start at the first MODCOD. For example:
@@ -75,7 +75,7 @@ python3 host/board.py --port "$PORT" 'vcm off'
 The self-check adds a 32-frame radio-off 4/11/13/17 dump and independent decode:
 CRC and sample geometry must agree, at least 30 contiguous exact full BBFRAMEs
 must include every requested MODCOD, and FEC must need no corrections.
-A 5 s VCM pace checks bank deadlines and the 20 KB Wi-Fi heap floor.
+A 5 s VCM pace checks bank deadlines and that at least 20 KB of heap stays free.
 Existing golden CRCs and paced timing gates remain intact.
 
 ## Two contained OTA reruns

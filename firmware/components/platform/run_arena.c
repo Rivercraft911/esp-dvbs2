@@ -1,16 +1,16 @@
 // The heap-call counter behind run memory (run_arena.h).
 #include "run_arena.h"
 
-#include "esp_attr.h"
 #include "esp_heap_caps.h"
 
 /* ESP-IDF calls these after each successful allocation or reallocation and each free of a
  * non-null pointer (CONFIG_HEAP_USE_HOOKS), and the failed-allocation callback once registered.
- * In IRAM, since the heap's own code may be there and run with the flash cache off. */
+ * Both applications keep the heap code in flash (CONFIG_HEAP_PLACE_FUNCTION_INTO_FLASH), so
+ * these may be in flash too. */
 static volatile int booted;
 static arena_heap_t heap;
 
-void IRAM_ATTR esp_heap_trace_alloc_hook(void *ptr, size_t size, uint32_t caps)
+void esp_heap_trace_alloc_hook(void *ptr, size_t size, uint32_t caps)
 {
     if (!booted || !ptr) return;
     __atomic_fetch_add(&heap.allocs, 1, __ATOMIC_RELAXED);
@@ -19,7 +19,7 @@ void IRAM_ATTR esp_heap_trace_alloc_hook(void *ptr, size_t size, uint32_t caps)
     __atomic_store_n(&heap.last_caps, caps, __ATOMIC_RELAXED);
 }
 
-void IRAM_ATTR esp_heap_trace_free_hook(void *ptr)
+void esp_heap_trace_free_hook(void *ptr)
 {
     if (booted && ptr) __atomic_fetch_add(&heap.frees, 1, __ATOMIC_RELAXED);
 }

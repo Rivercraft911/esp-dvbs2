@@ -8,6 +8,7 @@
 
 #include "esp_cpu.h"
 #include "esp_heap_caps.h"
+#include "run_memory.h"
 #include "esp_rom_crc.h"
 #include "dvbs2.h"
 
@@ -40,12 +41,13 @@ void fecbench_command(unsigned modcod, bool short_frame)
     const uint32_t internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     const size_t used = short_frame ? DVBS2_SHORT_FAST_WORKSPACE_USED : DVBS2_FAST_WORKSPACE_USED;
     const size_t fec = (short_frame ? DVBS2_SHORT_FEC_BYTES : DVBS2_FEC_BYTES);
-    dvbs2_fast *f = heap_caps_aligned_alloc(16, dvbs2_fast_mode_size(mode), internal);
-    uint8_t *raw = heap_caps_aligned_alloc(16, used + GUARD, internal);
-    uint8_t *table = heap_caps_aligned_alloc(16, DVBS2_BCH_CACHE_BYTES, internal);
+    run_reset();
+    dvbs2_fast *f = run_take(dvbs2_fast_mode_size(mode), 16, internal);
+    uint8_t *raw = run_take(used + GUARD, 16, internal);
+    uint8_t *table = run_take(DVBS2_BCH_CACHE_BYTES, 16, internal);
     if (!f || !raw || !table) {
         printf("@{\"cmd\":\"fecbench\",\"error\":\"allocation failed\"}\n");
-        goto out;
+        return;
     }
     dvbs2_workspace *ws = (dvbs2_workspace *)raw;
     printf("@{\"cmd\":\"fecbench\",\"modcod\":%u,\"short\":%s,\"kbch\":%u,\"nbch\":%u,\"context_bytes\":%u,"
@@ -81,6 +83,4 @@ void fecbench_command(unsigned modcod, bool short_frame)
         show("bch", &bch); printf(","); show("ldpc", &ldpc); printf("}");
     }
     printf("]}\n");
-out:
-    heap_caps_free(f); heap_caps_free(raw); heap_caps_free(table);
 }

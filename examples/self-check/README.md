@@ -3,7 +3,8 @@
 Pass means the firmware revision matches the checkout, all seven fixed-mode dumps match their
 original CRCs, the VCM dump matches its host model, all decode as contiguous exact
 payloads in LeanDVB, every paced run keeps
-its bank deadlines, and the queued modes keep their internal RAM floor. A failure makes
+its bank deadlines, the queued modes keep their internal RAM floor, and nothing calls the heap
+after boot. A failure makes
 the final exit status nonzero. The script prints the complete criteria before any command,
 keeps going after a failed dump/decode/pace, and writes each verdict to `summary.tsv`.
 
@@ -118,7 +119,7 @@ The measured 20 s paces added up to 3,894 fill and 7,023 mean encoder cycles,
 with 173.6 / 213.1 / 5.0 steady dummies per second. These limits bound that cost;
 they do not assert zero dummies or full-rate payload in a profiled pace. At most
 four startup dummies and one cold production-bound miss are allowed. All 54 pages
-must pass automatic heap admission. For payload duration T and steady-dummy cap C,
+must be admitted automatically. For payload duration T and steady-dummy cap C,
 at least `floor((T*80e6/3 - (C+4)*3330)/22194)-1` data frames must play. The extra
 frame accounts for the ending partial frame. This rejects excessive lost airtime
 independently of the dummy counters. [Keyed and pace evidence](../../docs/measurements.md#8psk-at-36-mhz).
