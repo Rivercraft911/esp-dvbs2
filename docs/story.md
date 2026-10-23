@@ -1,14 +1,15 @@
 # How it got here
 
 The [README](../README.md) shows where the transceiver stands today: one ESP32-S3 transmits
-DVB-S2 at up to 69.8 Mb/s, and a second one receives and decodes 12.64 Mb/s entirely on the
-chip. This page is the long way round. It is what I measured, in the order I measured it, and
+DVB-S2 at up to 69.8 Mb/s with a prepared payload, and a second one receives and decodes
+12.64 Mb/s entirely on the chip, both over coax. This page is the long way round. It is what I measured, in the order I measured it, and
 everything that broke along the way.
 
 Three words come up a lot:
 
-- **Keyed**: the S3's radio really transmitted. Early runs went into a closed lab Faraday box;
-  later ones went down coax through 30 or 40 dB of attenuation into a receiver.
+- **Keyed**: the S3's radio really transmitted: on the first day through an attenuator into an
+  antenna, then into a closed lab Faraday box, later down coax through 30 to 60 dB of attenuation
+  into a receiver.
 - **Radio off**: the same encoder and bank schedule ran in real time, but the samples went
   nowhere, or over USB into a file.
 - **Prepared payload**: one buffer of payload bytes, encoded again for every frame. A
@@ -38,7 +39,7 @@ against that number.
 The first benchmark gave the answer. Copying 8-sample rows from a precomputed table filled a
 bank in 179 µs, half the deadline. Building each sample from separate I and Q tables in plain C
 took 401 µs and missed. PSRAM, the 8 MB external RAM, read at 59 MB/s while the DAC consumes
-160 MB/s, so samples have to be made in internal RAM, and PSRAM can only hold payload.
+160 MB/s, so samples have to be made in internal RAM.
 ([memory](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/results/2026-10-16-memory/README.md))
 
 ## Coding and shaping
@@ -111,6 +112,7 @@ internal RAM left. Shrinking Wi-Fi's buffers and moving its code and allocations
 RAM raised idle free RAM from 69.0 to 86.8 KB. The next run sent 8PSK 2/3 at 5 Msym/s, 9.68 Mb/s,
 for 30 s inside the Faraday box: 84,105 bank fills, none late, smallest slack 6,390 cycles.
 Nothing received it, so this proved the transmit path kept time, not that the signal was any good.
+The same holds for every keyed box run in the next five sections, until the E200 joined the box.
 ([keyed run](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/results/2026-10-16-keyed-box/README.md))
 
 ## 10 Msym/s
@@ -152,7 +154,7 @@ for 30 s each with every deadline met. The tightest fill left 1,842 cycles to sp
 
 ## QPSK at 26.67 Msym/s
 
-Four-symbol QPSK tables and a packed ring took QPSK 9/10 to 80/3 Msym/s. The radio-off run's
+A packed QPSK ring and a new 3-samples-per-symbol fill took QPSK 9/10 to 80/3 Msym/s. The radio-off run's
 worst bank took 39,139 of 47,220 cycles, and every dumped sample decoded bit for bit. Keyed in the
 box for 30 s, every deadline held while carrying 46.6 Mb/s in 36 MHz. The encoder's slowest frame,
 524k cycles with Wi-Fi active against a 299,538-cycle frame, vanished into a lead of 32,155 queued
@@ -221,7 +223,7 @@ and their samples had only been decoded from USB dumps. RF came later.
 
 The E200 finally went into the closed Faraday box with the S3, receive only, running Pluto
 firmware. At 2420 MHz, QPSK 1/2 at 1 Msym/s came back as 587 frames, every payload byte matching
-the host model, at 16.7 dB MER. QPSK 3/4 at 5 Msym/s followed with 1,436 frames, then a 124-frame
+the host model, at 16.7 dB MER (LeanDVB's header MER). QPSK 3/4 at 5 Msym/s followed with 1,436 frames, then a 124-frame
 burst at 10 Msym/s with zero LDPC flips. The samples had made it through the radio.
 ([runs](measurements.md#over-the-air))
 
@@ -240,7 +242,8 @@ could be dropped on purpose and still come back. ([VCM](vcm.md), [file transfer]
 Then a ±30 MHz chirp, received with the E200 tuned to 2405, 2420 and 2435 MHz and stitched from
 the middle of each capture, exposed the S3's transmit filter: about 20 MHz wide, down 3 dB at
 ±10 MHz and about 20 dB by ±14 MHz. The 36 and 40 MHz modes met every deadline and generated
-correct samples, and the filter cut their edges clean off. Neither decoded over the air.
+correct samples, and the filter cut their edges clean off. Through that filter, neither decoded
+over the air.
 
 ## The wide filter
 
@@ -253,8 +256,8 @@ test-tone setup reset it. The B200 captured a whole 40 MHz channel in one 83.886
 489,321 payload bytes. ([wideband experiments](measurements.md#wideband-experiments))
 
 On main the fix is one register and a readback. The CW bring-up resets PBUS(4,2), and the
-digital bandwidth call, the one earlier records read back as wide, leaves it unchanged. Before
-the fix, main's wide fixtures decoded zero frames. After it, stock LeanDVB recovered exact
+digital bandwidth call, the one earlier records read back as wide, leaves it unchanged
+([fix](https://github.com/Rivercraft911/esp-dvbs2/commit/4209d1caf2ee86b48565831bce9d30d79fbe28ba)). Before the fix, main's wide fixtures decoded zero frames. After it, stock LeanDVB recovered exact
 payloads from single 41.94 ms B200 captures in every 36 and 40 MHz mode: 47 frames of 8PSK 9/10
 in 36 MHz (69.8 Mb/s) and 40 of QPSK 9/10 in 40 MHz (58.2 Mb/s), both with prepared, repeated
 payloads, plus changing payloads at 20 and 26.67 Msym/s.
@@ -276,7 +279,7 @@ not sustained wideband video. [Capture and plotting details](../results/2026-10-
 On October 19 the transmitter carried real pictures. A CM5 sent two camera streams as a 9 Mb/s
 MPEG transport stream (TS: the 188-byte packets broadcast video travels in) over 16 MHz SPI to a
 XIAO S3. The S3 sent 8PSK 2/3 at 5 Msym/s, 9.68 Mb/s of capacity in 6.75 MHz. A B200 behind
-40 dB of coax attenuation fed LeanDVB, which recovered both streams with no TS continuity gaps in
+40 dB of coax attenuation, at 20 dB of receive gain, fed LeanDVB, which recovered both streams with no TS continuity gaps in
 a 111 s interval. A completed 140 s run accepted 106,227 SPI messages with no protocol errors and
 no late bank events. ([live RF](../results/2026-10-19-live-rf/README.md),
 [example](../examples/live-video/README.md))
@@ -300,7 +303,9 @@ six-fifths of the RF frequency. QPSK 3/4 at 5 Msym/s passed 30 s there with 4,50
 exact packets. ([lower edge](../results/2026-10-20-band-followup/README.md))
 
 Two sustained attempts failed, and they stay failed in the records: QPSK at 2025 MHz with 40 dB
-of receive gain, and 8PSK at 2245 MHz after 461 exact frames. Both causes are unresolved.
+of receive gain, and 8PSK at 2245 MHz after 461 exact frames. A private soft-FEC prototype later
+passed 30 s of 8PSK at 2245 MHz; why the stock decoder lost lock is still unresolved
+([soft FEC](../results/2026-10-20-band-followup/README.md)).
 
 ## Short frames
 
@@ -312,11 +317,11 @@ paths, on the board and in decoded waveforms.
 
 LeanDVB then reported about 292 LDPC bit flips per frame on perfectly clean short 3/4 samples.
 The bug was in the receiver. Its `ldpc_sf_fec34` table lists 12 addresses in the first row but
-sets `ncols` to 3. With 12, the same dump decodes with zero flips. Our row matches the standard
-and GNU Radio's gr-dtv. Later short-frame decodes use that one-line fix.
+sets `ncols` to 3. With 12, the same dump decodes with zero flips. My table row matches the
+standard and GNU Radio's gr-dtv. Later short-frame decodes use that one-line fix.
 
-Over RF the B200 and LeanDVB delivered 77% to 94% of short frames, every delivered frame exact; a
-normal-frame control in the same setup delivered 64%. Many failed attempts in the receiver log
+Over RF the B200 and LeanDVB delivered between 2,764 of 3,552 and 3,389 of 3,575 short frames (78%
+to 95%), every delivered frame exact; a normal-frame control in the same setup delivered 64%. Many failed attempts in the receiver log
 were wrong-MODCOD header guesses, so the losses look like lost lock, not payload errors.
 
 ## The receiver
@@ -362,8 +367,9 @@ The demodulator was built against real dumps first. On the S3's own short-frame 
 12,288-sample unit from 418,800 to 127,497 cycles. Two findings made it better than I expected:
 
 - The transmitter's carrier leak sits about 17 dB below its own signal. Removing it after
-  derotation raised MER from about 16 dB to about 29 dB. On the same samples LeanDVB, which does
-  not remove it, reported 7 to 16 dB.
+  derotation raised MER from about 16 dB to about 29 dB ([receiving](how-it-works.md#receiving)).
+  On most unclipped captures the demodulator measured 26 to 31 dB, where LeanDVB, which does
+  not remove the leak, reported 7 to 16 dB.
 - Both radios run from 40 MHz crystals, so the symbol clock offset equals the carrier offset
   divided by the carrier frequency, as esp-sdr-zephyr's QAM receiver also assumes. A float fit
   here agreed within 0.01 ppm on 13 of 15 captures. The timing loop starts at that clock and
@@ -378,11 +384,10 @@ A digital twin with the measured impairments decoded 3,583 of 3,583 frames at 18
 On October 22 the receiving S3 decoded 30.0 s of capture: 3,583 consecutive frames, every one
 byte exact, 5,209,682 payload bytes at 1.390 Mb/s. Goal met, first run.
 
-Run 2 faulted. So did runs 3 and 4, each after three units, still searching for a frame. The
-search cost about 238k cycles per 184k-cycle unit on noise or on the Morse ID tone, and three
-slow units in a row emptied the bank handoff's slack. Run 5 decoded 3,541 frames exactly, then
-faulted the moment the closing Morse ID began. Tracked frames never faulted; the search did, and
-the receiver had to start inside the data to stand a chance.
+Run 2 faulted. So did runs 3 and 4, each after three units, still acquiring. Acquisition cost
+about 238k cycles per 184k-cycle unit, and three slow units in a row emptied the bank handoff's
+slack. Run 5 decoded 3,541 frames exactly, then faulted the moment the closing Morse ID began.
+Tracked frames never faulted. The search did.
 ([first receive](../results/2026-10-22-rx-first/README.md))
 
 ### Stacks in the slow lane

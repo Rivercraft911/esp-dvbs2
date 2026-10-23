@@ -4,7 +4,8 @@ Most of the radio tricks in this transceiver were found by other people first. T
 are cited here with links to the exact revisions I read; none of their code is in this
 repository. Independent host receivers run as separate, locally installed tools.
 
-The reference was checked against separate transmitter harnesses using
+The reference's 16APSK and 32APSK modes were also checked against separate transmitter
+harnesses using
 [GNU Radio gr-dtv at aee9fd3](https://github.com/gnuradio/gnuradio/tree/aee9fd3f79389c4282a98e8d62c8405c73fd91df/gr-dtv)
 and the LeanSDR revision below. Their code stays outside this repository. Independent
 stage digests, numerical symbol comparisons and file-loopback evidence are documented in
@@ -18,7 +19,7 @@ stage digests, numerical symbol comparisons and file-loopback evidence are docum
 | [esp-sdr-zephyr](https://github.com/cyber-murmel/esp-sdr-zephyr/tree/3214c16a7c9f136414cc5ae9d245ea290c98a6ce) | S3 | Arbitrary I/Q transmit through the dump/DAC engine at 40 or 80 MS/s, gapless streaming from two banks, 20 Mbaud QAM at about 31.5 dB MER S3 to S3 through 30 dB. Register notes for the S3, including the dump engine the receiver here relies on. | [GPL-3.0-or-later](https://github.com/cyber-murmel/esp-sdr-zephyr/blob/3214c16a7c9f136414cc5ae9d245ea290c98a6ce/LICENSE) |
 | [eSpDR](https://github.com/h0m3us3r/eSpDR/tree/f279bf823eee41796dfd1ac21f13e1ed9b418c82) | S3 | Receiver; [issue 3](https://github.com/h0m3us3r/eSpDR/issues/3) documents the DAC channel and the PLL tuning register. | [0BSD](https://github.com/h0m3us3r/eSpDR/blob/f279bf823eee41796dfd1ac21f13e1ed9b418c82/LICENSE) |
 | [esp32-sdr-trx](https://github.com/jochenhammes/esp32-sdr-trx/tree/e1aebbf2ef508c7199a9b6c6c277b57fe0b51aa9) (DA2JH) | S3 | Receiver for SDR++, and FM/SSB voice on 13 cm by steering the test tone 40,000 times per second. | [0BSD](https://github.com/jochenhammes/esp32-sdr-trx/blob/e1aebbf2ef508c7199a9b6c6c277b57fe0b51aa9/LICENSE) |
-| [ESP32SDR](https://github.com/lozaning/ESP32SDR/tree/dbff7bb8ca8470e92e18de9cfd3f81aabe55f6f1) | S3 | Tone keying (OOK/FSK); reported that DAC replay did not radiate, which later work explains as a setup issue. | none stated |
+| [ESP32SDR](https://github.com/lozaning/ESP32SDR/tree/dbff7bb8ca8470e92e18de9cfd3f81aabe55f6f1) | S3 | Tone keying (OOK/FSK); reported that DAC replay did not radiate. | none stated |
 | [LeanSDR / LeanDVB](https://github.com/pabr/leansdr/tree/84c59e1c7a1a79338d5722d63f28640cc9d350f3) (pabr) | host | Independent DVB-S2 IQ receiver. `host/decode.py` runs a separate local executable; its BBFRAME output supports GCS payload comparison. Receiver source stays outside this repository; the self-check supports stock debug output and extended status. Its short 3/4 LDPC table needs a one-line fix, below. | [GPL-3.0-or-later](https://github.com/pabr/leansdr/blob/84c59e1c7a1a79338d5722d63f28640cc9d350f3/LICENSE.txt) |
 
 ## What this project takes from them
@@ -33,7 +34,8 @@ stage digests, numerical symbol comparisons and file-loopback evidence are docum
   DAC on the data path ([esp_sdr_paced.c](https://github.com/cyber-murmel/esp-sdr-zephyr/blob/3214c16a7c9f136414cc5ae9d245ea290c98a6ce/lib/esp_sdr/src/esp_sdr_paced.c#L203-L232)).
   Forcing the front end without it passed only the I branch on this board
   ([results](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/results/2026-10-16-radio/README.md)).
-- **Tuning:** the S3's PLL locks from about 1.8 to 2.8 GHz (esp-sdr-zephyr), which covers the
+- **Tuning (esp-sdr-zephyr):** the S3's PLL locks on air from 2180 to 2793 MHz, and with its
+  divider the LO reaches 1817 MHz ([register notes, lines 1424-1427](https://github.com/cyber-murmel/esp-sdr-zephyr/blob/3214c16a7c9f136414cc5ae9d245ea290c98a6ce/doc/undocumented-registers-esp32s3.md#L1424-L1427)), which covers the
   13 cm band. Conducted checks here decoded exact payloads from 2000 to 2420 MHz
   ([S-band](../results/2026-10-20-s-band/README.md), [lower edge](../results/2026-10-20-band-followup/README.md)).
 - **Filter controls (esp-sdr-zephyr):** BBTOP block `0x67` registers 4/5 control the receive
@@ -43,8 +45,9 @@ stage digests, numerical symbol comparisons and file-loopback evidence are docum
   end-to-end measurement between two S3s, including both filters
   ([hardware quirks, lines 56-65](https://github.com/cyber-murmel/esp-sdr-zephyr/blob/3214c16a7c9f136414cc5ae9d245ea290c98a6ce/doc/hardware-quirks.md#L56-L65)).
   One addition from this project: the CW bring-up resets PBUS(4,2), which the bandwidth call
-  leaves alone, so the transmitter here restores it to 32 after setup and reads it back. Before
-  that fix our E200 chirp measured about 20 MHz (-3 dB at ±10 MHz); after it, single B200
+  leaves alone ([commit](https://github.com/Rivercraft911/esp-dvbs2/commit/4209d1caf2ee86b48565831bce9d30d79fbe28ba)), so the transmitter here restores it to 32 after setup and reads
+  it back. Before
+  that fix the E200 chirp here measured about 20 MHz (-3 dB at ±10 MHz); after it, single B200
   captures decode exact payloads at 36 and 40 MHz
   ([wide filter](../results/2026-10-20-wide-filter/README.md)).
 - **Receive path (ESPARGOS, esp-sdr-zephyr):** the receiver captures 16 MS/s continuously
@@ -81,12 +84,12 @@ stage digests, numerical symbol comparisons and file-loopback evidence are docum
   separates the controls found in ROM from a working spectrum self-test. The receiver above is a
   second board.
 - **LeanDVB's short 3/4 table:** its `ldpc_sf_fec34` table lists 12 addresses in the first row
-  but sets `ncols` to 3, which costs about 292 LDPC bit flips per clean frame. Our row matches
-  the standard and gr-dtv; with `ncols` 12 the same samples decode with zero flips. Short-frame
+  but sets `ncols` to 3, which costs about 292 LDPC bit flips per clean frame. My table row
+  matches the standard and gr-dtv; with `ncols` 12 the same samples decode with zero flips. Short-frame
   decodes here use that one-line local fix
   ([short frames](../results/2026-10-22-short-frames/README.md#leandvb-short-34-table-error)).
 
-## MER, theirs and ours
+## MER, theirs and mine
 
 MER (modulation error ratio) is the power of the ideal symbols over the mean power of the error
 between each received symbol and its ideal point.
@@ -100,12 +103,13 @@ Its S3-to-S3 link app measured about 31.5 dB through a 30 dB attenuator
 The S3 receiver here measured a median pilot MER of 29.9 dB (lowest 26.8 dB) on 8PSK 8/9 at
 5 Msym/s, S3 to S3 through coax and 30 dB at 2420 MHz, and 30.4 dB on QPSK 3/4 at 1 Msym/s
 ([results](../results/2026-10-23-rx-5m-margin/README.md)). The two are close but not the same
-measurement. Ours comes from the DVB-S2 header and pilot symbols, after the demodulator removes
-the transmitter's carrier leak, about 17 dB below the signal. That removal alone moves our figure
-from about 16 dB to about 29 dB, and LeanDVB, which does not do it, reports 7 to 16 dB on the
-same samples ([demodulator](../results/2026-10-22-rx-demod/README.md)).
+measurement. Mine comes from the DVB-S2 header and pilot symbols, after the demodulator removes
+the transmitter's carrier leak, about 17 dB below the signal; removing it raises MER from about
+16 dB to about 29 dB ([receiving](how-it-works.md#receiving)). On 1 Msym/s captures where my
+demodulator measures 26 to 31 dB, LeanDVB, which does not remove the leak, reports 7 to 16 dB
+([demodulator](../results/2026-10-22-rx-demod/README.md)).
 
-## Our own earlier work
+## My own earlier work
 
 The DVB-S2 reference model, its tests and the table-driven pulse shaping come from the
 [RP2350 I/Q benchmark at 88ab018](https://github.com/Rivercraft911/RP2350_IQ_Benchmark/tree/88ab018e65a51805ff562842177a4d47b1b04b2e), where the same
