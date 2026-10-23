@@ -194,8 +194,9 @@ and carries the most data of any mode: 69.8 Mb/s at 9/10. Core 0 publishes compa
 descriptors and core 1 renders them straight into the DAC banks.
 
 The encoder keeps its BCH, PRBS, Gold and mapper tables in internal RAM so that it never fights
-the renderer for the flash cache, and the renderer's small control path is locked into one 4 KiB
-way of the instruction cache while this mode runs. One 65,536-byte store holds the whole pulse
+the renderer for the flash cache, and the renderer's small control path (1,888 bytes) is locked
+into the instruction cache while this mode runs. That cache is 16 KiB in 8 ways of 2 KiB, so the
+locked code takes one line in 59 of its 64 sets. One 65,536-byte store holds the whole pulse
 table, the queue and the stream mux:
 
 ```
