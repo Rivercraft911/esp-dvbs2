@@ -57,9 +57,12 @@
  * which depends on when RECV is processed), then the header and payload at its own read
  * pointer, and finally writes Sn_RX_RD and commands RECV once everything known has been read
  * and the previous RECV was accepted. Sn_RX_WR only grows while the driver reads, and its MSB is
- * read first, so a read that straddles an update is never high: a low read only delays data, and
- * a header that disagrees with it is re-checked against a stable value (read until two agree, as
- * DS p.55 advises for the size registers) before the buffer is declared malformed and flushed.
+ * read first, so a read that straddles an update is never high. When Sn_RX_WR covers only part of
+ * the next datagram (a straddling read, or a chip that publishes a datagram in parts, which the
+ * datasheet does not rule out), the driver re-reads it until two reads agree (DS p.55 advice for
+ * the size registers) and waits up to 2.5 ms for the rest; only a stable value that stays short
+ * that long is declared malformed and flushed. `deferred` counts the calls that gave up because
+ * Sn_RX_WR never held still.
  *
  * Throughput (derived; the board measures it, `eth send` and `eth recv`). Each access is one SPI
  * frame: 3 header bytes plus data. The ESP backend polls frames of at most W5500_SMALL_MAX data
@@ -153,6 +156,7 @@ typedef struct {
                           * possible loss (TS continuity counters downstream measure real loss) */
     uint32_t discarded;  /* received datagrams skipped: empty or longer than the caller's buffer */
     uint32_t malformed;  /* headers inconsistent with Sn_RX_WR; the buffer was flushed */
+    uint32_t deferred;   /* receive calls that gave up waiting for Sn_RX_WR to hold still */
 } w5500_stats;
 
 typedef struct {

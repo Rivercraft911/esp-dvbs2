@@ -30,7 +30,7 @@ BROADCAST = bytes([255] * 4)
 SN_MR, SN_SR, SN_PORT, SN_RX_WR = 0x00, 0x03, 0x04, 0x2A
 
 STATS = ("sent", "sent_bytes", "full", "dropped", "received", "received_bytes", "overruns",
-         "discarded", "malformed")
+         "discarded", "malformed", "deferred")
 FAKE = ("frames", "polled", "queued", "bytes", "violations", "rx_dropped", "arp_requests",
         "resets", "logged")
 
@@ -88,6 +88,8 @@ class Native:
             "fake_advance": (None, [p, ct.c_double]),
             "fake_inject": (ct.c_int, [p, b, u16, u16, b, ct.c_size_t]),
             "fake_tear": (None, [p, b, u16, u16, b, ct.c_size_t]),
+            "fake_inject_split": (ct.c_int, [p, b, u16, u16, b, ct.c_size_t, ct.c_uint,
+                                             ct.c_double]),
             "fake_take": (ct.c_int, [p, p, ct.POINTER(u16), ct.POINTER(u16), p]),
             "fake_peek": (ct.c_int, [p, ct.c_uint, ct.c_uint]),
             "fake_poke": (None, [p, ct.c_uint, ct.c_uint, ct.c_uint]),
@@ -177,6 +179,10 @@ class Chip:
 
     def inject(self, data, ip=LAPTOP, sport=40000, dport=5004):
         return self.lib.fake_inject(self.f, bytes(ip), sport, dport, data, len(data))
+
+    def inject_split(self, data, first, delay_us, ip=LAPTOP, sport=40000, dport=5004):
+        return self.lib.fake_inject_split(self.f, bytes(ip), sport, dport, data, len(data), first,
+                                          delay_us)
 
     def tear(self, data, ip=LAPTOP, sport=40000, dport=5004):
         self.lib.fake_tear(self.f, bytes(ip), sport, dport, data, len(data))
@@ -569,13 +575,15 @@ def test_receive(native):
 
 def test_malformed(native):
     good = ts_datagram(9)
-    # Header length beyond what Sn_RX_WR says was received.
+    # A header length beyond what Sn_RX_WR covers is first waited for, then flushed.
     chip = receiver(native)
     chip.inject(bytes(100))
     rd = chip.peek16(0, 0x28)
     chip.poke(rxbuf(0), (rd + 6) & 0xFFFF, 0)
     chip.poke(rxbuf(0), (rd + 7) & 0xFFFF, 200)
+    before = chip.fake()["now_us"]
     check(chip.recv(0)[0] == 0 and chip.stats()["malformed"] == 1, "length past Sn_RX_WR")
+    check(chip.fake()["now_us"] - before >= 2475, "flushed only after 2.5 ms of stable reads")
     chip.inject(good)
     check(chip.recv(0)[1] == good, "next datagram after the flush")
     chip.close()
@@ -587,6 +595,17 @@ def test_malformed(native):
     chip.inject(good)
     n, data, _ = chip.recv(0, cap=TS_DATAGRAM)
     check(data == good and chip.stats()["discarded"] == 2, "empty and oversize skipped")
+    chip.close()
+
+    # A length no UDP datagram can have is flushed at once.
+    chip = receiver(native)
+    chip.inject(bytes(100))
+    rd = chip.peek16(0, 0x28)
+    chip.poke(rxbuf(0), (rd + 6) & 0xFFFF, 0x06)
+    chip.poke(rxbuf(0), (rd + 7) & 0xFFFF, 0x00)
+    check(chip.recv(0)[0] == 0 and chip.stats()["malformed"] == 1, "length 1,536")
+    chip.inject(good)
+    check(chip.recv(0)[1] == good, "next datagram after the flush")
     chip.close()
 
     # Fewer than 8 bytes received: no header can be read.
@@ -657,6 +676,38 @@ def test_handshake(native):
     chip.close()
 
 
+def test_publication(native):
+    """Sn_RX_WR covering only part of a datagram, or moving during every read, delays delivery
+    but never discards valid data."""
+    rng = random.Random(7)
+    for first, delay in ((8 + 500, 80.0), (4, 30.0), (8, 2000.0)):
+        chip = receiver(native)
+        d = payload(rng, TS_DATAGRAM)
+        check(chip.inject_split(d, first, delay) == 1, "inject")
+        got = b""
+        for _ in range(100):
+            n, got, _ = chip.recv(0)
+            if n:
+                break
+            chip.lib.fake_advance(chip.f, 20.0)
+        check(got == d and chip.stats()["malformed"] == 0,
+              f"datagram published in two steps ({first} bytes, then {delay} us later)")
+        chip.close()
+    chip = receiver(native, churn=40)
+    big = payload(rng, TS_DATAGRAM)
+    check(chip.inject(big) == 1, "inject")
+    out = []
+    for _ in range(200):
+        n, d, peer = chip.recv(0)
+        if n:
+            out.append(d)
+        if len(out) == 41:
+            break
+    check(out[0] == big and out[1:] == [b"tiny"] * 40 and chip.stats()["malformed"] == 0,
+          "Sn_RX_WR moving during every read")
+    chip.close()
+
+
 def test_settings(native):
     lib = native.lib
     s = Settings()
@@ -712,9 +763,10 @@ def main():
         test_receive(native)
         test_malformed(native)
         test_handshake(native)
+        test_publication(native)
         test_settings(native)
     print("w5500: fake checks, frames, init, open, send, full, ARP timeout, receive, malformed, "
-          f"command handshake, settings: ok (driver state {size} bytes)")
+          f"command handshake, partial publication, settings: ok (driver state {size} bytes)")
     for mhz, row in table.items():
         print(f"  {mhz:5.2f} MHz: send {row[0]:6.1f} us {row[1]:4.1f} Mb/s {row[4]:4.1f} us CPU, "
               f"receive {row[2]:6.1f} us {row[3]:4.1f} Mb/s {row[5]:4.1f} us CPU")

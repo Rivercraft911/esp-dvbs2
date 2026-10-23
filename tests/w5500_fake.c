@@ -11,9 +11,10 @@
  * interrupt transaction) and then byte by byte at f_SCK, so the chip can act between two bytes of
  * one frame. A SEND holds the wire for its Ethernet frame. Sn_CR clears cmd_us after a command
  * (acceptance, DS p.46) and Sn_SR changes state_us after OPEN or CLOSE (completion, DS pp.46-49),
- * independently. Sn_RX_WR can change between the two bytes of a read. What the datasheet forbids,
- * and what the driver must never do, is counted as a violation with a reason. After a TIMEOUT the
- * model leaves Sn_TX_RD where it was (the datasheet does not say). */
+ * independently. Datagrams can be published in two steps (Sn_RX_WR first covering part of one)
+ * and Sn_RX_WR can change between the two bytes of a read. What the datasheet forbids, and what
+ * the driver must never do, is counted as a violation with a reason. After a TIMEOUT the model
+ * leaves Sn_TX_RD where it was (the datasheet does not say). */
 #include "w5500.h"
 
 #include <stdarg.h>
@@ -49,6 +50,11 @@ typedef struct {
     double send_done[8], cmd_done[8];
     int state_to[8];            /* Sn_SR after a pending OPEN or CLOSE, -1 if none */
     double state_at[8];
+    double publish_at;          /* a datagram's second part appears in Sn_RX_WR */
+    int publish_sock;
+    uint16_t publish_wr;
+    unsigned churn;             /* Sn_RX_WR reads that see a tiny datagram arrive mid-read */
+    int last_sock;
     uint8_t arp_ip[8][4];
     bool arp_valid[8];
     uint8_t tx[MEM], rx[MEM];
@@ -125,6 +131,7 @@ static void reset(fake *f)
         f->state_to[s] = -1;
         f->arp_valid[s] = false;
     }
+    f->publish_sock = -1;
 }
 
 fake *fake_new(void)
@@ -161,6 +168,7 @@ int fake_set(fake *f, const char *key, double v)
     else if (!strcmp(key, "wire_bps")) f->wire_bps = v;
     else if (!strcmp(key, "cmd_us")) f->cmd_us = v;
     else if (!strcmp(key, "state_us")) f->state_us = v;
+    else if (!strcmp(key, "churn")) f->churn = (unsigned)v;
     else if (!strcmp(key, "arp_us")) f->arp_us = v;
     else if (!strcmp(key, "arp_reply")) f->arp_reply = v != 0;
     else if (!strcmp(key, "reset_us")) f->reset_us = v;
@@ -225,6 +233,10 @@ static void update(fake *f)
     for (unsigned s = 0; s < 8; ++s) {
         if (f->sending[s] && f->st.now_us >= f->send_done[s]) complete(f, s);
         if (f->state_to[s] >= 0 && f->st.now_us >= f->state_at[s]) settle_state(f, s);
+    }
+    if (f->publish_sock >= 0 && f->st.now_us >= f->publish_at) {
+        w16(f->reg[f->publish_sock] + 0x2A, f->publish_wr);
+        f->publish_sock = -1;
     }
 }
 
@@ -332,6 +344,7 @@ static int inject(fake *f, const uint8_t ip[4], uint16_t sport, uint16_t dport, 
             f->rx[b + ((uint16_t)(wr + i) & (size - 1))] = i < 8 ? head[i] : data[i - 8];
         w16(r + 0x2A, (uint16_t)(wr + 8 + n));
         r[0x02] |= 0x04;   /* RECV */
+        f->last_sock = (int)s;
         return 1;
     }
     return -1;
@@ -342,6 +355,22 @@ int fake_inject(fake *f, const uint8_t ip[4], uint16_t sport, uint16_t dport, co
 {
     update(f);
     return inject(f, ip, sport, dport, data, n);
+}
+
+/* Store a datagram but let Sn_RX_WR cover only its first `first` bytes until delay_us later. */
+int fake_inject_split(fake *f, const uint8_t ip[4], uint16_t sport, uint16_t dport,
+                      const uint8_t *data, size_t n, unsigned first, double delay_us)
+{
+    update(f);
+    if (f->publish_sock >= 0) return -3;
+    const int r = inject(f, ip, sport, dport, data, n);
+    if (r != 1) return r;
+    uint8_t *reg = f->reg[f->last_sock];
+    f->publish_wr = r16(reg + 0x2A);
+    w16(reg + 0x2A, (uint16_t)(f->publish_wr - (8 + n) + first));
+    f->publish_sock = f->last_sock;
+    f->publish_at = f->st.now_us + delay_us;
+    return 1;
 }
 
 /* Deliver this datagram between the two bytes of the next Sn_RX_WR read. */
@@ -522,6 +551,11 @@ static int frame(void *ctx, uint16_t offset, uint8_t control, const uint8_t *tx,
             f->tear = false;
             inject(f, f->tear_dg.ip, f->tear_dg.sport, f->tear_dg.port, f->tear_dg.data,
                    f->tear_dg.len);
+        }
+        if (f->churn && bsb % 4 == 1 && a == 0x2A) {
+            static const uint8_t from[4] = {10, 0, 0, 9};
+            f->churn--;
+            inject(f, from, 7777, r16(f->reg[bsb / 4] + 0x04), (const uint8_t *)"tiny", 4);
         }
     }
     return 0;

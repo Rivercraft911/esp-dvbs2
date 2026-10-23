@@ -43,6 +43,7 @@
 #define RESET_POLLS 100    /* x 100 us */
 #define COMMAND_POLLS 100  /* x 10 us: Sn_CR acceptance */
 #define STATE_POLLS 100    /* x 100 us: Sn_SR after OPEN or CLOSE */
+#define SETTLE_POLLS 100   /* x 25 us: the rest of a partly published datagram */
 
 static uint16_t get16(const uint8_t *p)
 {
@@ -340,23 +341,51 @@ static void flush(w5500_socket *k)
     k->st.malformed++;
 }
 
-/* Set rx_left = Sn_RX_WR - rx_rd. A straddling read is low (w5500.h), or wraps below rx_rd and
- * so exceeds the buffer size; then, or when stable is asked for, read until two reads agree. */
+/* rx_left = Sn_RX_WR - rx_rd. Sn_RX_WR only grows while we read and its MSB comes first, so a
+ * single read that straddles an update is low, or wraps below rx_rd and exceeds the buffer size.
+ * With `stable`, read until two consecutive reads agree (DS p.55 advice for the size registers).
+ * Returns 1 when rx_left was set, 0 when no trustworthy value was found (try again later), or an
+ * error. */
 static int level(w5500 *w, unsigned s, bool stable)
 {
     w5500_socket *k = &w->sock[s];
     uint8_t a[2], b[2];
     int e = rd(w, BSB_REG(s), SN_RX_WR, a, 2);
-    if (!e && !stable) stable = (uint16_t)(get16(a) - k->rx_rd) > k->rx_size;
-    for (unsigned i = 0; !e && stable && i < 4; ++i) {
-        if ((e = rd(w, BSB_REG(s), SN_RX_WR, b, 2))) break;
+    if (e) return e;
+    if (!stable && (uint16_t)(get16(a) - k->rx_rd) > k->rx_size) stable = true;
+    for (unsigned i = 0; stable; ++i) {
+        if (i == 4) return 0;
+        if ((e = rd(w, BSB_REG(s), SN_RX_WR, b, 2))) return e;
         if (!memcmp(a, b, 2)) break;
         memcpy(a, b, 2);
     }
-    if (e) return e;
-    k->rx_left = (uint16_t)(get16(a) - k->rx_rd);
-    if (k->rx_left > k->rx_size) flush(k);   /* our pointer is wrong (a chip reset): resync */
-    return W5500_OK;
+    const uint16_t n = (uint16_t)(get16(a) - k->rx_rd);
+    k->rx_left = n;
+    if (n > k->rx_size) {
+        flush(k);   /* stable and impossible: our pointer is wrong (a chip reset); resync */
+        return 0;
+    }
+    return 1;
+}
+
+/* Sn_RX_WR covers fewer than `need` bytes of the datagram at rx_rd: a straddling read, or the
+ * chip publishing a datagram in parts (the datasheet does not rule it out). Look again every
+ * 25 us for up to 2.5 ms, twice the time a 1,500-byte frame takes on a 10 Mb/s wire. Returns 1
+ * once the datagram is covered. Otherwise 0: if stable reads still came up short, nothing valid
+ * is coming and the buffer is flushed as malformed; if Sn_RX_WR never held still, try later. */
+static int settle(w5500 *w, unsigned s, unsigned need)
+{
+    w5500_socket *k = &w->sock[s];
+    int r = 0;
+    for (unsigned i = 0; i < SETTLE_POLLS; ++i) {
+        if (i) w->bus.delay_us(w->bus.ctx, 25);
+        if ((r = level(w, s, true)) < 0) return r;
+        if (r && k->rx_left >= need) return 1;
+        if (r && !k->rx_left) return 0;
+    }
+    if (r) flush(k);
+    else k->st.deferred++;
+    return 0;
 }
 
 int w5500_udp_recv(w5500 *w, unsigned s, uint8_t *buf, size_t cap, w5500_peer *from)
@@ -366,28 +395,24 @@ int w5500_udp_recv(w5500 *w, unsigned s, uint8_t *buf, size_t cap, w5500_peer *f
     if (!k->open || !k->rx_size) return W5500_ERR_ARG;
     int e, got = 0;
     if (!k->rx_left) {
-        if ((e = level(w, s, false))) return e;
+        if ((e = level(w, s, false)) < 0) return e;
         const unsigned next = W5500_UDP_HEADER + (k->rx_last ? k->rx_last : W5500_UDP_MAX);
-        if ((unsigned)(k->rx_size - k->rx_left) < next) k->st.overruns++;
+        if (e && (unsigned)(k->rx_size - k->rx_left) < next) k->st.overruns++;
     }
     while (k->rx_left) {
-        /* Short of a header, or of the length the header gives: a low Sn_RX_WR read or a
-         * malformed buffer. Decide on a stable value. */
-        if (k->rx_left < W5500_UDP_HEADER) {
-            if ((e = level(w, s, true))) return e;
-            if (k->rx_left < W5500_UDP_HEADER) {
-                if (k->rx_left) flush(k);
-                break;
-            }
+        if (k->rx_left < W5500_UDP_HEADER && (e = settle(w, s, W5500_UDP_HEADER)) <= 0) {
+            if (e < 0) return e;
+            break;
         }
         if ((e = rd(w, BSB_RX(s), k->rx_rd, w->hdr, W5500_UDP_HEADER))) return e;
         const unsigned n = get16(w->hdr + 6), whole = W5500_UDP_HEADER + n;
-        if (whole > k->rx_left) {
-            if ((e = level(w, s, true))) return e;
-            if (whole > k->rx_left) {
-                if (k->rx_left) flush(k);
-                break;
-            }
+        if (n > W5500_UDP_MAX || whole > k->rx_size) {   /* no such datagram can arrive */
+            flush(k);
+            break;
+        }
+        if (whole > k->rx_left && (e = settle(w, s, whole)) <= 0) {
+            if (e < 0) return e;
+            break;
         }
         if (!n || n > cap) {
             k->rx_rd = (uint16_t)(k->rx_rd + whole);
