@@ -237,10 +237,10 @@ int dvbs2_fast_prepare(dvbs2_fast *f, const dvbs2_mode *mode, int pilots, unsign
 
 int dvbs2_fast_cache_bch(dvbs2_fast *f, uint8_t *table)
 {
-    if (!f || !f->mode || f->mode->t == 8 || ((uintptr_t)table & 15)) {
+    if (!f || !f->mode || ((uintptr_t)table & 15)) {
         return -1;
     }
-    const uint8_t *source = f->mode->short_frame ? fast_bch_byte_12s :
+    const uint8_t *source = f->mode->short_frame ? fast_bch_byte_12s : f->mode->t == 8 ? fast_bch_pair_8 :
                             f->mode->t == 12 ? fast_bch_byte_12 : fast_bch_byte_10;
     if (table) memcpy(table, source, DVBS2_BCH_CACHE_BYTES);
     f->byte_bch = table ? table : source;

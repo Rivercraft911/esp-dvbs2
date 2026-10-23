@@ -126,10 +126,10 @@ size_t dvbs2_fast_size(void);
  * and either pilot setting; allocate fast_size() to switch freely. */
 size_t dvbs2_fast_mode_size(const dvbs2_mode *mode);
 int dvbs2_fast_prepare(dvbs2_fast *f, const dvbs2_mode *mode, int pilots, unsigned pie);
-/* Optional resident byte-BCH table for t = 10/12. After prepare, copy once to
- * an owned 16-byte-aligned buffer of this size, outside context/workspace/output.
- * It stays valid until the next prepare or cache_bch call. NULL restores flash.
- * Returns -1 for invalid context/alignment or t = 8. No allocation is hidden. */
+/* Optional resident BCH table: byte table for t = 10/12, pair tables for t = 8. After
+ * prepare, copy once to an owned 16-byte-aligned buffer of this size, outside
+ * context/workspace/output. It stays valid until the next prepare or cache_bch call.
+ * NULL restores flash. Returns -1 for invalid context/alignment. No allocation is hidden. */
 #define DVBS2_BCH_CACHE_BYTES 8192
 int dvbs2_fast_cache_bch(dvbs2_fast *f, uint8_t *table);
 /* Optional t=10/12 pairs, even byte counts only. Call after cache_tables, with a

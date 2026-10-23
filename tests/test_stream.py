@@ -310,9 +310,10 @@ def test_stream(output=None, receiver=None, input_only=False):
                 in_store = lambda name: store <= int(r["layout"][name], 16) < store + 65536
                 assert in_store("workspace") == quads
                 assert not in_store("fast")
-                cached = packed and (mc < 12 or sps == 4) and mc not in (10, 11, 16, 17)
+                cached = packed and (mc < 12 or sps == 4) and mc not in (10, 11)
                 assert r["bch_cache_bytes"] == (8192 if cached else 0)
-                borrowed_bch = mc >= 12 and sps == 4 and (short or mc == 13) and cached
+                # t = 8 (16, 17) takes its pair tables from run memory, never the store.
+                borrowed_bch = mc >= 12 and sps == 4 and (short or mc == 13) and cached and mc < 16
                 if cached: assert in_store("bch") == borrowed_bch
                 # The host build has no PIE kernels: dvbs2_fast_bch takes the C nibble rows.
                 assert r["bch_variant"] == "nibble" and r["bch_pair_memory"] == "none"

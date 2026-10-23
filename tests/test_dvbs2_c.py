@@ -464,9 +464,6 @@ def test_bch_cache(native):
         mode, c = lib.dvbs2_find_mode(modcod), d.code(rate)
         assert lib.dvbs2_fast_prepare(native.fast, mode, 1, 15) == 0
         assert lib.dvbs2_fast_cache_bch(native.fast, cache[at + 1:].ctypes.data_as(U8P)) == -1
-        if c.t == 8:
-            assert lib.dvbs2_fast_cache_bch(native.fast, table) == -1
-            continue
         data = np.random.default_rng(modcod).integers(0, 2, c.kbch, dtype=np.uint8)
         native.load(data)
         assert lib.dvbs2_fast_cache_bch(native.fast, table) == 0
@@ -478,7 +475,7 @@ def test_bch_cache(native):
         np.testing.assert_array_equal(native.bits(c.nbch), d.bch_encode(data, rate))
         np.testing.assert_array_equal(cache, saved)
         assert np.all(cache[:at] == 0xA5) and np.all(cache[at + 8192:] == 0xA5)
-    print("resident BCH: every t=10/12 mode, canonical parity, guards, restore and invalid alignment")
+    print("resident BCH: every mode (t=8 pair tables too), canonical parity, guards, restore and invalid alignment")
 
 
 def test_short(native):
