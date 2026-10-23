@@ -997,7 +997,8 @@ static size_t start_encoder_options(const char *cmd, unsigned modcod, unsigned l
         }
     }
     if (lofty && mode->t > 8) {
-        enc.pair_bch = heap_caps_aligned_alloc(16,DVBS2_BCH_PAIR_BYTES,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+        // T1's low halves are read every two bytes: keep them internal, beside T0.
+        enc.pair_bch = heap_caps_aligned_alloc(16,DVBS2_BCH_PAIR_BYTES,internal);
         if (!enc.pair_bch || dvbs2_fast_cache_bch_pair(enc.fast,enc.pair_bch)) {
             printf("@{\"cmd\":\"%s\",\"error\":\"BCH pair allocation failed\"}\n",cmd);
             heap_caps_free(taps); release(); return 0;
@@ -1282,7 +1283,7 @@ static void stop_encoder(void)
         ",\"producer_phase\":%"PRIu32",\"last_wait_produced\":%"PRIu32",\"last_wait_consumed\":%"PRIu32"}",
         dvb.queue_fault.put,dvb.queue_fault.get,dvb.queue_fault.phase,
         dvb.queue_fault.wait_put,dvb.queue_fault.wait_get);
-    if (dvb.moon) printf(",\"bch_pair_psram_bytes\":%u",enc.pair_bch ? DVBS2_BCH_PAIR_BYTES : 0);
+    if (dvb.moon) printf(",\"bch_pair_bytes\":%u",enc.pair_bch ? DVBS2_BCH_PAIR_BYTES : 0);
     if (dvb.lofty) {
         printf(",\"queue_sizing\":{\"automatic\":%s,\"ready\":%s,\"target_pages\":%u,"
                "\"floor_bytes\":%u,\"guard_bytes\":%u,\"free_before\":%u,\"free_after\":%u,\"min_before\":%u},"

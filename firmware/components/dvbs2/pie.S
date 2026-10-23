@@ -227,7 +227,7 @@ dvbs2_pie_bch_byte:
  * padding and T1 low in the caller's 4 KiB table. High loads preserve their
  * zero upper halves. R' = R>>16 XOR T1[u0] XOR T0[u1] in byte order.
  * msg, pairs, T0, T1-low, remainder. */
-    .section .text.bch_pair32,"ax"
+    .section .iram1,"ax"
     .align 4
     .global dvbs2_pie_bch_pair32
     .type dvbs2_pie_bch_pair32,@function
