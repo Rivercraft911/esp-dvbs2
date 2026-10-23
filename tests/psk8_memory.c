@@ -80,11 +80,10 @@ static esp_err_t pace(bool ready, uint32_t sec, uint32_t rate, radio_s3_fill_fn 
     }
     assert(!dvb.queue_empty && !dvb.ring.underruns);
     if (dvb.lofty && !getenv("FORCE_DUMMIES")) assert(lofty_mux.frames == 8 && !lofty_mux.startup && !lofty_mux.steady);
-    if (dvb.lofty) {
-        assert(!dvb.copy.calls && !dvb.whole.calls && !dvb.save.calls && !dvb.notify.calls);
-        assert(dvb.fill_calls);
-        if (dvb.profile) assert(enc.stage[0].calls && enc.stage[4].calls);
-    } else assert(dvb.copy.calls && dvb.whole.calls);
+    // Paces time whole fills only: per-phase marks belong to dumps (dvb_fill.inc).
+    assert(!dvb.copy.calls && !dvb.whole.calls && !dvb.save.calls && !dvb.notify.calls);
+    assert(dvb.fill_calls);
+    if (dvb.lofty && dvb.profile) assert(enc.stage[0].calls && enc.stage[4].calls);
     memset(stats,0,sizeof *stats);
     return ESP_OK;
 }

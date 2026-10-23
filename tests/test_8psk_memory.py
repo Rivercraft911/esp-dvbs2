@@ -103,8 +103,8 @@ int main(void) {
     rows = [json.loads(l[1:]) for l in run.stdout.splitlines() if l.startswith('@{')]
     pace = [r for r in rows if r.get('cmd') == 'dvbpace' and 'status' in r]
     assert len(pace) == 2 and all(r['status'] == 'ESP_OK' for r in pace)
-    assert not pace[0]['profile']['fill_phase_cycles'] and not pace[0]['profile']['fill']['whole']['calls']
-    assert pace[1]['profile']['fill_phase_cycles'] and pace[1]['profile']['fill']['whole']['calls'] > 0
+    # Paces time the fill without per-phase marks (dumps keep them: test_8psk_26m667).
+    assert not any(r['profile']['fill_phase_cycles'] or r['profile']['fill']['whole']['calls'] for r in pace)
     checks = [r for r in rows if r.get('test') == 'queue_check']
     assert len(checks) == 12
     for mc in (13,15,17):
