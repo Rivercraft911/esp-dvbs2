@@ -166,12 +166,17 @@ def upload(port: str, data: bytes) -> dict:
 
 def check(frames, modcod: int, callsign: str, tx_frames: int, symbol_rate: float = 1e6) -> dict:
     """Frames carry a payload, or at 5 Msym/s its CRC-32 ("crc"); either must match the model
-    frame that the sequence implies. Records arrive in sequence order except decoded ones."""
+    frame that the sequence implies. Records arrive in sequence order except decoded ones.
+    Tens of thousands of model frames share some CRC-32s (birthday collisions), so a frame is
+    compared with the model frame its sequence implies, and the lookup is only a fallback."""
     size = frame_bytes(modcod)
     expected = model(size, tx_frames, callsign)
-    key = (lambda f: f["crc"]) if any("crc" in f for f in frames) else (lambda f: f["payload"])
-    index = ({zlib.crc32(p): k for k, p in enumerate(expected)} if any("crc" in f for f in frames)
-             else {p: k for k, p in enumerate(expected)})
+    crc = any("crc" in f for f in frames)
+    key = (lambda f: f["crc"]) if crc else (lambda f: f["payload"])
+    keys = [zlib.crc32(p) for p in expected] if crc else expected
+    index = {}
+    for k, v in enumerate(keys):
+        index.setdefault(v, k)
     good = sorted((f for f in frames if f["length"] == size), key=lambda f: f["sequence"])
     report = dict(frame_bytes=size, records=len(frames), decoded=len(good),
                   failed=sum(f["length"] < 0 for f in frames))
@@ -179,14 +184,19 @@ def check(frames, modcod: int, callsign: str, tx_frames: int, symbol_rate: float
         return report | dict(exact=0, passed=False)
     k0 = index.get(key(good[0]))
     s0 = good[0]["sequence"]
-    exact = sum(index.get(key(f)) == k0 + f["sequence"] - s0 for f in good) if k0 is not None else 0
+    implied = lambda f: k0 + f["sequence"] - s0
+    matches = [k0 is not None and 0 <= implied(f) < len(keys) and keys[implied(f)] == key(f) for f in good]
+    found = [implied(f) if ok else index.get(key(f)) for f, ok in zip(good, matches)]
+    found = [k for k in found if k is not None]
+    exact = sum(matches)
     span = good[-1]["sequence"] - s0 + 1
     period = frame_symbols(modcod) / symbol_rate
-    found = [k for k in (index.get(key(f)) for f in good) if k is not None]
-    report.update(valid=len(found), in_order=all(b > a for a, b in zip(found, found[1:])),
+    report.update(mislabelled=[dict(sequence=f["sequence"], model=index.get(key(f)), implied=implied(f))
+                               for f, ok in zip(good, matches) if k0 is not None and not ok][:8],
+                  valid=len(found), in_order=all(b > a for a, b in zip(found, found[1:])),
                   model_span=found[-1] - found[0] + 1 if found else 0,
-                  lost=found[-1] - found[0] + 1 - len(found) if found else 0)
-    report.update(first_model_frame=k0, sequence_span=span, span_seconds=round(span * period, 3),
+                  lost=found[-1] - found[0] + 1 - len(found) if found else 0,
+                  first_model_frame=k0, sequence_span=span, span_seconds=round(span * period, 3),
                   exact=exact, missing=span - len(good), payload_mbps=round(8 * size / period / 1e6, 4),
                   exact_bytes=exact * size, passed=k0 is not None and exact == span == len(good))
     return report
