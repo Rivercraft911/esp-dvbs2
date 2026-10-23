@@ -3,170 +3,184 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>S3 receiver</title>
+<title>Live link</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&display=swap" rel="stylesheet">
 <style>
 :root {
-  --housing: #1c1f22;
-  --well: #16191c;
-  --rule: #2a2e33;
-  --ink: #ede8de;
-  --ink-2: #a6aaae;
-  --ink-3: #6c7277;
-  --brass: #e7c273;
-  --good: #8bc59a;
-  --warn: #f0934f;
-  --bad: #ff6a5c;
-  --u: clamp(1px, 0.0625vw, 1.5px);
-  --gutter: clamp(16px, 2.2vw, 56px);
+  --bg: #0e1218;
+  --panel: #141a22;
+  --line: #222b36;
+  --grid: rgba(150, 175, 200, 0.09);
+  --ink: #e6edf5;
+  --ink-2: #9fb0c2;
+  --ink-3: #5f6f81;
+  --blue: #7cc8ff;
+  --amber: #ffb86b;
+  --good: #4fd6a2;
+  --warn: #ffc457;
+  --bad: #ff5f6f;
+  --u: clamp(1px, 0.0625vw, 1.45px);
+  --gap: calc(12 * var(--u));
+  --r: 8px;
   color-scheme: dark;
 }
 * { box-sizing: border-box; margin: 0; }
 html, body { height: 100%; }
 body {
-  background: var(--housing);
-  color: var(--ink);
-  font: 400 calc(15 * var(--u))/1.35 "Archivo", "Avenir Next", "Helvetica Neue", sans-serif;
+  background: var(--bg); color: var(--ink);
+  font: 400 calc(14 * var(--u))/1.3 "Archivo", "Avenir Next", "Helvetica Neue", sans-serif;
   font-variant-numeric: tabular-nums;
-  font-variation-settings: "wdth" 100;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
-  gap: clamp(14px, 2.2vh, 28px);
-  padding: clamp(14px, 2.6vh, 32px) var(--gutter);
+  display: grid; grid-template-rows: auto auto minmax(0, 1fr);
+  gap: var(--gap); padding: calc(14 * var(--u)) calc(18 * var(--u));
   min-height: 100vh;
 }
 
-/* Header: what is being received, and whether it is */
-.head { display: flex; align-items: baseline; gap: clamp(16px, 3vw, 56px); flex-wrap: wrap; }
-.title {
-  font-size: calc(21 * var(--u)); font-weight: 620; font-variation-settings: "wdth" 120;
-  letter-spacing: 0.005em; margin-right: auto;
+/* Header */
+.head { display: flex; align-items: center; gap: calc(28 * var(--u)); }
+.title { font-size: calc(19 * var(--u)); font-weight: 640; font-variation-settings: "wdth" 118; margin-right: auto; }
+.tune { display: flex; align-items: baseline; gap: calc(12 * var(--u)); color: var(--ink-2); }
+.tune b { color: var(--ink); font-size: calc(22 * var(--u)); font-weight: 420; font-variation-settings: "wdth" 84; }
+.state {
+  display: inline-flex; align-items: center; gap: 8px; padding: 5px 12px; border-radius: 999px;
+  border: 1px solid var(--line); font-weight: 560; min-width: 13em; justify-content: center;
 }
-.tune { display: flex; align-items: baseline; gap: 14px; }
-.freq { font-size: calc(28 * var(--u)); font-weight: 340; font-variation-settings: "wdth" 84; }
-.freq small { font-size: calc(15 * var(--u)); color: var(--ink-2); margin-left: 3px; }
-.mode { color: var(--ink-2); }
-.status { display: inline-flex; align-items: center; gap: 9px; font-weight: 500; min-width: 15em; justify-content: flex-end; }
-.status svg { width: calc(15 * var(--u)); height: calc(15 * var(--u)); flex: none; }
-.status[data-state="track"] { color: var(--good); }
-.status[data-state="acquire"] { color: var(--warn); }
-.status[data-state="none"] { color: var(--ink-3); }
+.state i { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.state[data-s="good"] { color: var(--good); border-color: rgba(79, 214, 162, 0.35); }
+.state[data-s="warn"] { color: var(--warn); border-color: rgba(255, 196, 87, 0.35); }
+.state[data-s="idle"] { color: var(--ink-3); }
 
-/* Main: the constellation, then what the radio hears */
-.main {
-  display: grid; min-height: 0;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: clamp(18px, 2.4vw, 44px);
+/* Panels */
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+.ph { display: flex; align-items: baseline; gap: 10px; padding: calc(8 * var(--u)) calc(12 * var(--u)) calc(5 * var(--u)); }
+.ph h2 { font-size: calc(13.5 * var(--u)); font-weight: 600; }
+.ph > span { color: var(--ink-3); font-size: calc(12.5 * var(--u)); margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pb { position: relative; flex: 1; min-height: 0; }
+.pb canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.legend { display: inline-flex; gap: 12px; margin-left: auto; color: var(--ink-2); font-size: calc(12.5 * var(--u)); }
+.legend i { display: inline-block; width: 14px; height: 2px; vertical-align: middle; margin-right: 6px; }
+
+/* The chain: four machines, three links */
+.chain { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr auto 1fr; align-items: stretch; padding: calc(8 * var(--u)) calc(14 * var(--u)); }
+.node { display: grid; gap: 2px; padding: 2px 4px; min-width: 0; }
+.node .who { display: flex; align-items: center; gap: 8px; color: var(--ink-2); font-size: calc(12.5 * var(--u)); }
+.node .who i { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); flex: none; }
+.node[data-s="good"] .who i { background: var(--good); box-shadow: 0 0 0 3px rgba(79, 214, 162, 0.15); }
+.node[data-s="warn"] .who i { background: var(--warn); }
+.node[data-s="bad"] .who i { background: var(--bad); }
+.node .what { font-size: calc(18 * var(--u)); font-weight: 520; font-variation-settings: "wdth" 92; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.node .how { color: var(--ink-2); font-size: calc(13 * var(--u)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.link { display: grid; grid-template-rows: 1fr auto 1fr; align-items: center; width: clamp(130px, 11vw, 230px); padding: 0 calc(10 * var(--u)); text-align: center; }
+.link .medium { color: var(--ink-2); font-size: calc(12.5 * var(--u)); align-self: end; padding-bottom: 5px; white-space: nowrap; }
+.link .rate { color: var(--ink); font-size: calc(13.5 * var(--u)); align-self: start; padding-top: 5px; white-space: nowrap; }
+.link svg { width: 100%; height: 10px; overflow: visible; }
+.link line { stroke: var(--line); stroke-width: 2; }
+.link .flow { stroke: var(--blue); stroke-width: 2; stroke-dasharray: 3 9; opacity: 0; }
+.link[data-on="1"] .flow { opacity: 1; }
+@media (prefers-reduced-motion: no-preference) {
+  .link[data-on="1"] .flow { animation: flow 0.9s linear infinite; }
+  @keyframes flow { to { stroke-dashoffset: -12; } }
 }
-.scope { display: grid; grid-template-rows: minmax(0, 1fr) auto; gap: 10px; min-height: 0; height: 100%; }
-.scope .well { aspect-ratio: 1; height: 100%; max-width: 46vw; }
-.rf { display: grid; grid-template-rows: minmax(0, 33fr) minmax(0, 67fr) auto; gap: 6px; min-height: 0; }
-.well { position: relative; background: var(--well); border-radius: 3px; overflow: hidden; min-height: 0; }
-.well canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
-.caption { display: flex; justify-content: space-between; gap: 16px; color: var(--ink-3); font-size: calc(13.5 * var(--u)); }
-.caption b { color: var(--ink-2); font-weight: 500; }
-.axis { position: relative; height: calc(18 * var(--u)); color: var(--ink-3); font-size: calc(12.5 * var(--u)); }
-.axis span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+
+/* Main: radio views on the left, the devices on the right */
+.main { display: grid; grid-template-columns: minmax(0, 1fr) clamp(340px, 25vw, 560px); gap: var(--gap); min-height: 0; }
+.radio { display: grid; grid-template-rows: minmax(0, 23fr) minmax(0, 43fr) minmax(0, 34fr); gap: var(--gap); min-height: 0; }
+.lower { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--gap); min-height: 0; }
+.lower .square { aspect-ratio: 1; height: 100%; }
+.axis { position: relative; height: calc(20 * var(--u)); flex: none; color: var(--ink-3); font-size: calc(12 * var(--u)); }
+.axis span { position: absolute; top: 2px; transform: translateX(-50%); white-space: nowrap; }
 .readout {
-  position: absolute; pointer-events: none; padding: 5px 8px; border-radius: 3px;
-  background: rgba(28, 31, 34, 0.92); color: var(--ink); font-size: calc(13 * var(--u)); white-space: nowrap;
-  border: 1px solid var(--rule); display: none; z-index: 2;
+  position: absolute; pointer-events: none; padding: 5px 8px; border-radius: 4px; z-index: 2; display: none;
+  background: rgba(14, 18, 24, 0.94); border: 1px solid var(--line); font-size: calc(12.5 * var(--u)); white-space: nowrap;
 }
-.empty {
-  position: absolute; inset: 0; display: grid; place-content: center; text-align: center;
-  gap: 6px; padding: 24px; color: var(--ink-2); z-index: 1;
-}
-.empty p:first-child { color: var(--ink); font-size: calc(17 * var(--u)); font-weight: 500; }
+.empty { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; color: var(--ink-3); padding: 16px; font-size: calc(13 * var(--u)); }
 .empty[hidden] { display: none; }
 
-/* The signal path, left to right, under the core that runs each stage */
-.path { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); column-gap: clamp(12px, 1.6vw, 28px); }
-.core { grid-row: 1; display: flex; align-items: baseline; gap: 8px; padding-bottom: 9px; color: var(--ink-2); font-size: calc(13.5 * var(--u)); border-bottom: 1px solid var(--rule); }
-.core b { color: var(--ink); font-weight: 560; }
-.core.c1 { grid-column: 1 / span 2; }
-.core.c0 { grid-column: 3 / span 4; }
-.stage { grid-row: 2; position: relative; padding-top: 16px; min-width: 0; }
-.stage::before {
-  content: ""; position: absolute; top: -4.5px; left: 0; width: 8px; height: 8px;
-  border-radius: 50%; background: var(--housing); border: 1.5px solid var(--ink-3);
-  transition: background 300ms, border-color 300ms;
-}
-.stage[data-flow="on"]::before { background: var(--brass); border-color: var(--brass); }
-.stage[data-flow="fault"]::before { background: var(--bad); border-color: var(--bad); }
-.stage .name { color: var(--ink-2); font-size: calc(14 * var(--u)); font-weight: 500; }
-.stage .value {
-  display: block; font-size: calc(clamp(26px, 2.5vw, 40px) * var(--u) / 1px); line-height: 1.12; font-weight: 320;
-  font-variation-settings: "wdth" 78; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.stage .value small { font-size: 0.48em; color: var(--ink-2); font-weight: 400; margin-left: 4px; font-variation-settings: "wdth" 100; }
-.stage .detail { color: var(--ink-3); font-size: calc(13.5 * var(--u)); margin-top: 3px; }
-.stage .detail .bad { color: var(--bad); }
-.spark { display: block; width: 100%; height: calc(30 * var(--u)); margin-top: 8px; }
+.rail { display: flex; flex-direction: column; gap: var(--gap); min-height: 0; overflow: auto; }
+.rail > * { flex: none; }
+.tiles { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gap); }
+.tile .pb { height: calc(62 * var(--u)); flex: none; }
+.tile .big { position: absolute; left: calc(12 * var(--u)); top: 0; font-size: calc(34 * var(--u)); font-weight: 430; font-variation-settings: "wdth" 80; line-height: 1; z-index: 1; }
+.tile .big small { font-size: 0.45em; color: var(--ink-2); margin-left: 4px; font-variation-settings: "wdth" 100; }
+.rows { padding: 0 calc(12 * var(--u)) calc(6 * var(--u)); display: grid; }
+.row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; min-height: calc(20.5 * var(--u)); font-size: calc(13.5 * var(--u)); line-height: 1.2; border-top: 1px solid rgba(34, 43, 54, 0.7); }
+.row:first-child { border-top: 0; }
+.row span { color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row b { font-weight: 500; text-align: right; }
+.row b.bad { color: var(--bad); }
+.row b.zero { color: var(--ink-2); font-weight: 400; }
+.meter { display: grid; grid-template-columns: auto calc(90 * var(--u)); gap: 10px; align-items: center; }
+.meter em { display: block; height: 6px; border-radius: 3px; background: rgba(124, 200, 255, 0.12); overflow: hidden; }
+.meter em i { display: block; height: 100%; width: 0; background: var(--blue); border-radius: 3px; transition: width 400ms; }
+.meter em i.hot { background: var(--warn); }
 
-@media (prefers-reduced-motion: no-preference) {
-  .path.sweep .stage::before { animation: sweep 900ms ease-out both; animation-delay: calc(var(--i) * 110ms); }
-  @keyframes sweep { 0% { transform: scale(1); } 40% { transform: scale(1.9); background: var(--brass); border-color: var(--brass); } 100% { transform: scale(1); } }
-}
-@media (max-width: 1100px) {
+@media (max-width: 1150px) {
+  body { min-height: auto; }
+  .chain { grid-template-columns: 1fr 1fr; row-gap: 12px; }
+  .link { display: none; }
   .main { grid-template-columns: 1fr; }
-  .scope .well { height: auto; width: min(100%, 520px); max-width: none; }
-  .rf { min-height: 480px; }
-  .path { grid-template-columns: repeat(3, minmax(0, 1fr)); row-gap: 22px; }
-  .core { display: none; }
-  .stage { grid-row: auto; border-top: 1px solid var(--rule); }
+  .radio { grid-template-rows: 240px 360px auto; }
+  .lower { grid-template-columns: 1fr; }
+  .lower .square { height: auto; width: 100%; max-width: 420px; }
+  .lower .wave { height: 220px; }
 }
 </style>
 </head>
 <body>
 <header class="head">
-  <h1 class="title">Receiving on an ESP32-S3</h1>
-  <div class="tune"><span class="freq" id="freq">&ndash;<small>MHz</small></span><span class="mode" id="mode">Waiting for the first report</span></div>
-  <div class="status" id="status" data-state="none" role="status">
-    <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.6"/><circle id="statusDot" cx="8" cy="8" r="3" fill="currentColor" opacity="0"/></svg>
-    <span id="statusText">No data from the receiver</span>
-  </div>
+  <h1 class="title">Camera to screen through two ESP32-S3s</h1>
+  <div class="tune"><b id="freq">&ndash;</b><span id="mode">waiting for the receiver</span></div>
+  <div class="state" id="state" data-s="idle" role="status"><i></i><span id="stateText">No data yet</span></div>
 </header>
 
+<section class="panel chain" aria-label="The link, end to end">
+  <div class="node" id="nCam"><div class="who"><i></i>Cameras and encoder, CM5</div><div class="what" id="nCamWhat">Two IMX900 fisheyes</div><div class="how" id="nCamHow">&nbsp;</div></div>
+  <div class="link" id="lSpi"><div class="medium">SPI, PV messages</div><svg viewBox="0 0 100 10" preserveAspectRatio="none"><line x1="0" y1="5" x2="100" y2="5"/><line class="flow" x1="0" y1="5" x2="100" y2="5"/></svg><div class="rate" id="lSpiRate">&ndash;</div></div>
+  <div class="node" id="nTx"><div class="who"><i></i>Transmitter, ESP32-S3</div><div class="what" id="nTxWhat">&ndash;</div><div class="how" id="nTxHow">&nbsp;</div></div>
+  <div class="link" id="lRf"><div class="medium" id="lRfMedium">Radio, coax</div><svg viewBox="0 0 100 10" preserveAspectRatio="none"><line x1="0" y1="5" x2="100" y2="5"/><line class="flow" x1="0" y1="5" x2="100" y2="5"/></svg><div class="rate" id="lRfRate">&ndash;</div></div>
+  <div class="node" id="nRx"><div class="who"><i></i>Receiver, ESP32-S3</div><div class="what" id="nRxWhat">&ndash;</div><div class="how" id="nRxHow">&nbsp;</div></div>
+  <div class="link" id="lEth"><div class="medium" id="lEthMedium">Ethernet, UDP</div><svg viewBox="0 0 100 10" preserveAspectRatio="none"><line x1="0" y1="5" x2="100" y2="5"/><line class="flow" x1="0" y1="5" x2="100" y2="5"/></svg><div class="rate" id="lEthRate">&ndash;</div></div>
+  <div class="node" id="nView"><div class="who"><i></i>Viewer, MacBook</div><div class="what" id="nViewWhat">PigeonVision</div><div class="how" id="nViewHow">&nbsp;</div></div>
+</section>
+
 <main class="main">
-  <section class="scope" aria-label="Constellation">
-    <div class="well" id="constWell">
-      <canvas id="constellation"></canvas>
-      <div class="empty" id="emptyConst"><p>Waiting for the receiver</p><p>Start a run with <b>ts eth</b>. Its monitor reports arrive on UDP port 1235.</p></div>
+  <section class="radio" aria-label="What the receiver hears">
+    <div class="panel"><div class="ph"><h2>Spectrum</h2><span>16 MHz around the carrier, as the receiving S3 hears it</span></div>
+      <div class="pb" id="specWell"><canvas id="spectrum"></canvas><div class="readout" id="specRead"></div><div class="empty" id="emptySpec">Waiting for the receiver's samples on UDP port 1235</div></div></div>
+    <div class="panel"><div class="ph"><h2>Waterfall</h2><span>newest at the top</span></div>
+      <div class="pb" id="fallWell"><canvas id="waterfall"></canvas><div class="readout" id="fallRead"></div></div><div class="axis" id="freqAxis"></div></div>
+    <div class="lower">
+      <div class="panel square"><div class="ph"><h2>Constellation</h2><span id="constMeta">&nbsp;</span></div>
+        <div class="pb"><canvas id="constellation"></canvas><div class="empty" id="emptyConst">Waiting for symbols</div></div></div>
+      <div class="panel wave"><div class="ph"><h2>I/Q waveform</h2><span class="legend"><span><i style="background:var(--blue)"></i>I</span><span><i style="background:var(--amber)"></i>Q</span></span></div>
+        <div class="pb"><canvas id="waveform"></canvas><div class="empty" id="emptyWave">Waiting for samples</div></div></div>
     </div>
-    <div class="caption"><span><b>Demodulator output</b></span><span id="constNote"></span></div>
   </section>
 
-  <section class="rf" aria-label="Spectrum and waterfall">
-    <div class="well" id="specWell"><canvas id="spectrum"></canvas><div class="readout" id="specRead"></div></div>
-    <div class="well" id="fallWell"><canvas id="waterfall"></canvas><div class="readout" id="fallRead"></div></div>
-    <div class="axis" id="freqAxis"></div>
-  </section>
+  <aside class="rail" aria-label="Devices">
+    <div class="tiles">
+      <div class="panel tile"><div class="ph"><h2>Video out</h2><span>last 10 min</span></div><div class="pb"><div class="big" id="tRate">&ndash;</div><canvas id="rateSpark"></canvas></div></div>
+      <div class="panel tile"><div class="ph"><h2>Signal quality</h2><span>MER</span></div><div class="pb"><div class="big" id="tMer">&ndash;</div><canvas id="merSpark"></canvas></div></div>
+    </div>
+    <div class="panel"><div class="ph"><h2>Transmitter</h2><span id="txMeta">ESP32-S3, no status yet</span></div><div class="rows" id="txRows"></div></div>
+    <div class="panel"><div class="ph"><h2>Receiver</h2><span id="rxMeta">ESP32-S3, no reports yet</span></div><div class="rows" id="rxRows"></div></div>
+    <div class="panel"><div class="ph"><h2>Ethernet and viewer</h2><span>W5500 to pv view</span></div><div class="rows" id="viewRows"></div></div>
+    <div class="panel"><div class="ph"><h2>Cameras and encoder</h2><span>CM5, pv-capture</span></div><div class="rows" id="camRows"></div></div>
+  </aside>
 </main>
-
-<footer class="path" id="path" aria-label="Signal path">
-  <div class="core c1"><b>Core 1</b><span id="core1">captures and demodulates every sample</span></div>
-  <div class="core c0"><b>Core 0</b><span id="core0">checks, deframes and sends</span></div>
-  <div class="stage" style="--i:0" id="sRadio"><span class="name">Radio</span><span class="value" id="vRadio">&ndash;</span><div class="detail" id="dRadio">&nbsp;</div></div>
-  <div class="stage" style="--i:1" id="sSync"><span class="name">Sync</span><span class="value" id="vSync">&ndash;</span><div class="detail" id="dSync">&nbsp;</div></div>
-  <div class="stage" style="--i:2" id="sDemap"><span class="name">Demap</span><span class="value" id="vDemap">&ndash;</span><div class="detail" id="dDemap">&nbsp;</div><canvas class="spark" id="merSpark"></canvas></div>
-  <div class="stage" style="--i:3" id="sCheck"><span class="name">Check</span><span class="value" id="vCheck">&ndash;</span><div class="detail" id="dCheck">&nbsp;</div></div>
-  <div class="stage" style="--i:4" id="sTs"><span class="name">Transport stream</span><span class="value" id="vTs">&ndash;</span><div class="detail" id="dTs">&nbsp;</div></div>
-  <div class="stage" style="--i:5" id="sEth"><span class="name">Ethernet</span><span class="value" id="vEth">&ndash;</span><div class="detail" id="dEth">&nbsp;</div><canvas class="spark" id="rateSpark"></canvas></div>
-</footer>
 
 <script>
 'use strict';
 const $ = id => document.getElementById(id);
-const ui = () => Math.min(1.5, Math.max(1, innerWidth / 1600));
-const gutter = () => 62 * ui();            // CSS px left of the spectrum and waterfall plots
 const nf = new Intl.NumberFormat('en-US');
 const css = getComputedStyle(document.documentElement);
 const token = name => css.getPropertyValue(name).trim();
+const ui = () => Math.min(1.45, Math.max(1, innerWidth / 1600));
+const gutter = () => 58 * ui();                       // CSS px left of the spectrum and waterfall plots
 
-// One brass ramp for both densities: received power over time, and symbols over the I/Q plane.
-const RAMP = ['#16191c', '#241f17', '#4e3f22', '#8a6a31', '#c29546', '#e7c273', '#fff0c8'];
+// One light-blue ramp for both densities: power over time and frequency, symbols over I and Q.
+const RAMP = ['#141a22', '#0f2236', '#0f375c', '#145487', '#2378bb', '#4aa3e3', '#8fd0ff', '#e2f5ff'];
 const LUT = (() => {
   const rgb = RAMP.map(h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16)));
   const lut = new Uint8ClampedArray(256 * 4);
@@ -184,28 +198,32 @@ function fit(canvas) {
   if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
   return [w, h, d];
 }
+function niceTicks(lo, hi, step) {
+  const out = [];
+  for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) out.push(v);
+  return out;
+}
+const font = (d, px = 12) => `${px * d * ui()}px Archivo, sans-serif`;
 
-const state = { stats: null, rate: 16e6, center: null, lastStats: 0, lockedAt: null, prev: {}, history: [] };
+const seen = {};                                      // when each source last reported
+const fresh = (name, ms = 2500) => seen[name] && performance.now() - seen[name] < ms;
+const state = { rx: null, tx: null, cm5: null, viewer: null, rate: 16e6, lockedAt: null, history: [] };
 
-// ---- Constellation: a two-second exposure of the demodulator's output ----------------------
-const N = 512, SPAN = 84;                         // grid cells, and the I/Q half-width shown
+// ---- Constellation: two seconds of the demodulator's output ----------------------------------
+const N = 512, SPAN = 84;
 const density = new Float32Array(N * N);
 let densityPeak = 1, bitsPerSymbol = 3, shown = 0;
-const constImg = new ImageData(N, N);
-const constOff = new OffscreenCanvas(N, N);
+const constImg = new ImageData(N, N), constOff = new OffscreenCanvas(N, N);
 
 function addSymbols(iq, bits) {
   bitsPerSymbol = bits;
   for (let i = 0; i < density.length; i++) density[i] *= 0.9;
-  shown = shown * 0.9;
+  shown *= 0.9;
   for (let k = 0; k + 1 < iq.length; k += 2) {
-    const i = iq[k] + Math.random() - 0.5, q = iq[k + 1] + Math.random() - 0.5;
-    const x = Math.round((i + SPAN) / (2 * SPAN) * (N - 1));
-    const y = Math.round((SPAN - q) / (2 * SPAN) * (N - 1));
-    if (x >= 1 && x < N - 1 && y >= 1 && y < N - 1) {
-      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++)
-        density[(y + dy) * N + x + dx] += (dx ? 0.5 : 1) * (dy ? 0.5 : 1);
-    }
+    const i = iq[k] + Math.random() - 0.5, q = iq[k + 1] + Math.random() - 0.5;   // undo the int8 lattice
+    const x = Math.round((i + SPAN) / (2 * SPAN) * (N - 1)), y = Math.round((SPAN - q) / (2 * SPAN) * (N - 1));
+    if (x >= 1 && x < N - 1 && y >= 1 && y < N - 1)
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) density[(y + dy) * N + x + dx] += (dx ? 0.5 : 1) * (dy ? 0.5 : 1);
     shown++;
   }
   let peak = 0;
@@ -217,37 +235,70 @@ function addSymbols(iq, bits) {
     constImg.data.set(LUT.subarray(v * 4, v * 4 + 4), i * 4);
   }
   constOff.getContext('2d').putImageData(constImg, 0, 0);
-  $('constNote').textContent = `${nf.format(Math.round(shown / 100) * 100)} symbols, fading over 2 s`;
+  $('constMeta').textContent = `last ${nf.format(Math.round(shown / 100) * 100)} symbols`;
+  $('emptyConst').hidden = true;
 }
 
 function drawConstellation() {
   const c = $('constellation'), [w, h, d] = fit(c), g = c.getContext('2d');
-  g.imageSmoothingEnabled = true;
-  g.imageSmoothingQuality = 'high';
-  g.drawImage(constOff, 0, 0, w, h);
-  const cx = w / 2, cy = h / 2, r = 64 / SPAN * w / 2;
-  g.lineWidth = d;
-  g.strokeStyle = 'rgba(166,170,174,0.16)';
-  g.beginPath(); g.moveTo(0, cy); g.lineTo(w, cy); g.moveTo(cx, 0); g.lineTo(cx, h); g.stroke();
-  g.setLineDash([2 * d, 5 * d]);
-  g.beginPath(); g.arc(cx, cy, r, 0, 2 * Math.PI); g.stroke();
-  g.setLineDash([]);
+  g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
+  g.clearRect(0, 0, w, h);
+  const side = Math.min(w, h), ox = (w - side) / 2, oy = (h - side) / 2;
+  g.drawImage(constOff, ox, oy, side, side);
+  const cx = ox + side / 2, cy = oy + side / 2, r = 64 / SPAN * side / 2;
+  g.lineWidth = d; g.strokeStyle = token('--grid');
+  g.beginPath(); g.moveTo(ox, cy); g.lineTo(ox + side, cy); g.moveTo(cx, oy); g.lineTo(cx, oy + side); g.stroke();
+  g.setLineDash([2 * d, 5 * d]); g.strokeStyle = 'rgba(150,175,200,0.18)';
+  g.beginPath(); g.arc(cx, cy, r, 0, 2 * Math.PI); g.stroke(); g.setLineDash([]);
   const points = bitsPerSymbol === 3 ? 8 : 4, offset = bitsPerSymbol === 3 ? 0 : Math.PI / 4;
-  g.strokeStyle = 'rgba(237,232,222,0.22)';            // where each symbol should land
+  g.strokeStyle = 'rgba(226,245,255,0.22)';
   for (let k = 0; k < points; k++) {
-    const a = offset + k * 2 * Math.PI / points, x = cx + r * Math.cos(a), y = cy - r * Math.sin(a);
-    g.beginPath(); g.arc(x, y, 0.13 * r, 0, 2 * Math.PI); g.stroke();
+    const a = offset + k * 2 * Math.PI / points;
+    g.beginPath(); g.arc(cx + r * Math.cos(a), cy - r * Math.sin(a), 0.14 * r, 0, 2 * Math.PI); g.stroke();
   }
-  g.fillStyle = token('--ink-3');
-  g.font = `${12.5 * d * ui()}px Archivo, sans-serif`;
-  g.fillText('I', w - 16 * d, cy - 8 * d);
-  g.fillText('Q', cx + 8 * d, 18 * d);
 }
 
-// ---- Spectrum and waterfall: 16 MHz around the carrier, ten rows a second -------------------
-const ROWS = 420, BINS = 512;
-const fallOff = new OffscreenCanvas(BINS, ROWS);
-const fallCtx = fallOff.getContext('2d');
+// ---- I/Q waveform: the first 32 us of each snapshot, with a short persistence ---------------
+const traces = [];
+function addSamples(iq, rate) {
+  traces.unshift({ iq, rate });
+  if (traces.length > 6) traces.pop();
+  $('emptyWave').hidden = true;
+}
+function drawWaveform() {
+  const c = $('waveform'), [w, h, d] = fit(c), g = c.getContext('2d');
+  g.clearRect(0, 0, w, h);
+  const gx = 46 * d * ui(), pad = 10 * d, base = h - 18 * d * ui(), n = 512;
+  const y = v => (base + pad) / 2 - v / 128 * ((base - pad) / 2);
+  g.lineWidth = d; g.font = font(d); g.textAlign = 'right';
+  for (const v of [-96, -48, 0, 48, 96]) {
+    g.strokeStyle = token('--grid'); g.beginPath(); g.moveTo(gx, y(v)); g.lineTo(w, y(v)); g.stroke();
+    g.fillStyle = token('--ink-3'); g.fillText(v ? `${v > 0 ? '+' : ''}${(v / 128).toFixed(2)}` : '0', gx - 8 * d, y(v) + 4 * d);
+  }
+  g.textAlign = 'left';
+  if (!traces.length) return;
+  const rate = traces[0].rate, X = k => gx + k / (n - 1) * (w - gx);
+  for (let t = traces.length - 1; t >= 0; t--) {
+    const iq = traces[t].iq;
+    for (const [off, color] of [[1, token('--amber')], [0, token('--blue')]]) {
+      g.strokeStyle = color; g.globalAlpha = t === 0 ? 1 : 0.2 * (1 - t / traces.length);
+      g.lineWidth = (t ? 1 : 1.4) * d; g.lineJoin = 'round';
+      g.beginPath();
+      for (let k = 0; k < n; k++) { const v = iq[2 * k + off]; k ? g.lineTo(X(k), y(v)) : g.moveTo(X(k), y(v)); }
+      g.stroke();
+    }
+  }
+  g.globalAlpha = 1; g.fillStyle = token('--ink-3');
+  const us = n / rate * 1e6;
+  for (const t of niceTicks(0, us, 8)) {
+    const label = `${t} µs`, x = X(t / us * (n - 1));
+    g.fillText(label, Math.min(x - (t ? g.measureText(label).width / 2 : 0), w - g.measureText(label).width - 4 * d), h - 4 * d);
+  }
+}
+
+// ---- Spectrum and waterfall ------------------------------------------------------------------
+const ROWS = 600, BINS = 512;
+const fallOff = new OffscreenCanvas(BINS, ROWS), fallCtx = fallOff.getContext('2d');
 fallCtx.fillStyle = RAMP[0]; fallCtx.fillRect(0, 0, BINS, ROWS);
 const rowImg = new ImageData(BINS, 1);
 let avg = null, peak = null, floorDb = -90, topDb = -30, rows = 0;
@@ -259,79 +310,64 @@ function addSpectrum(db, rate) {
   const avgDb = avg.map(v => 10 * Math.log10(v));
   peak = peak ? peak.map((p, i) => Math.max(p - 0.15, avgDb[i])) : avgDb.slice();
   const sorted = avgDb.slice().sort((a, b) => a - b);
-  floorDb = floorDb * 0.95 + (sorted[Math.floor(BINS * 0.1)] - 4) * 0.05;
-  topDb = topDb * 0.95 + (sorted[BINS - 3] + 3) * 0.05;
+  const f0 = sorted[Math.floor(BINS * 0.1)] - 4, t0 = sorted[BINS - 3] + 3;
+  floorDb = rows ? floorDb * 0.95 + f0 * 0.05 : f0;
+  topDb = rows ? topDb * 0.95 + t0 * 0.05 : t0;
   for (let i = 0; i < BINS; i++) {
-    const t = 0.8 * Math.max(0, Math.min(1, (db[i] - floorDb) / (topDb - floorDb)));
+    const t = 0.85 * Math.max(0, Math.min(1, (db[i] - floorDb) / (topDb - floorDb)));
     rowImg.data.set(LUT.subarray((t * 255 | 0) * 4, (t * 255 | 0) * 4 + 4), i * 4);
   }
   fallCtx.drawImage(fallOff, 0, 1);
   fallCtx.putImageData(rowImg, 0, 0);
   rows++;
-}
-
-function niceTicks(lo, hi, step) {
-  const out = [];
-  for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) out.push(v);
-  return out;
+  $('emptySpec').hidden = true;
 }
 
 function drawSpectrum() {
   const c = $('spectrum'), [w, h, d] = fit(c), g = c.getContext('2d');
   g.clearRect(0, 0, w, h);
   const lo = Math.floor((floorDb - 6) / 10) * 10, hi = Math.ceil((topDb + 6) / 10) * 10;
-  const top = 34 * d * ui(), y = v => h - (v - lo) / (hi - lo) * (h - top);
-  const gx = gutter() * d, X = f => gx + f * (w - gx);
-  g.font = `${12 * d * ui()}px Archivo, sans-serif`;
-  g.lineWidth = d;
-  for (const v of niceTicks(lo, hi, 10)) {
-    g.strokeStyle = 'rgba(166,170,174,0.09)';
-    g.beginPath(); g.moveTo(gx, y(v)); g.lineTo(w, y(v)); g.stroke();
-  }
-  const labels = () => {
-    g.fillStyle = token('--ink-3');
-    g.textAlign = 'right';
-    for (const v of niceTicks(lo, hi, 10)) {
-      if (y(v) < top || y(v) > h - 4 * d) continue;
-      g.fillText(`${v} dB`, gx - 10 * d, y(v) + 4 * d);
-    }
-    g.textAlign = 'left';
-  };
-  if (!avg) { labels(); return; }
-  const s = state.stats;
-  if (s && s.rate) {                                // the DVB-S2 channel, 1.35 x the symbol rate
-    const rs = s.rate === '5m' ? 5e6 : 1e6, half = rs * 1.35 / 2 / state.rate * (w - gx), mid = X(0.5);
-    g.strokeStyle = 'rgba(237,232,222,0.35)';
-    const by = 10 * d * ui();
+  const top = 24 * d * ui(), gx = gutter() * d, X = f => gx + f * (w - gx);
+  const y = v => h - 4 * d - (v - lo) / (hi - lo) * (h - top - 4 * d);
+  g.font = font(d); g.lineWidth = d;
+  const step = (h - top) / d / ((hi - lo) / 10) < 22 * ui() ? 20 : 10;    // keep labels apart
+  for (const v of niceTicks(lo, hi, step)) { g.strokeStyle = token('--grid'); g.beginPath(); g.moveTo(gx, y(v)); g.lineTo(w, y(v)); g.stroke(); }
+  g.fillStyle = token('--ink-3'); g.textAlign = 'right';
+  for (const v of niceTicks(lo, hi, step)) if (y(v) > top - 2 && y(v) < h - 2 * d) g.fillText(`${v} dB`, gx - 10 * d, y(v) + 4 * d);
+  g.textAlign = 'left';
+  if (!avg) return;
+  const s = state.rx;
+  if (s && s.rate) {                                  // the DVB-S2 channel: 1.35 times the symbol rate
+    const rs = s.rate === '5m' ? 5e6 : 1e6, half = rs * 1.35 / 2 / state.rate * (w - gx), mid = X(0.5), by = 8 * d * ui();
+    g.strokeStyle = 'rgba(226,245,255,0.35)';
     g.beginPath(); g.moveTo(mid - half, by + 6 * d); g.lineTo(mid - half, by); g.lineTo(mid + half, by); g.lineTo(mid + half, by + 6 * d); g.stroke();
     g.fillStyle = token('--ink-2');
-    const label = `${(rs * 1.35 / 1e6).toFixed(2)} MHz channel`;
-    g.fillText(label, mid + half + 8 * d, by + 8 * d);
+    g.fillText(`${(rs * 1.35 / 1e6).toFixed(2)} MHz channel`, mid + half + 8 * d, by + 8 * d);
   }
-  const trace = (arr, style, width) => {
-    g.strokeStyle = style; g.lineWidth = width * d; g.lineJoin = 'round';
-    g.beginPath();
-    arr.forEach((v, i) => { const x = X((i + 0.5) / BINS); i ? g.lineTo(x, y(v)) : g.moveTo(x, y(v)); });
-    g.stroke();
-  };
-  trace(peak, 'rgba(166,170,174,0.28)', 1);
-  trace(avg.map(v => 10 * Math.log10(v)), token('--brass'), 1.6);
-  labels();
+  const path = arr => { g.beginPath(); arr.forEach((v, i) => { const x = X((i + 0.5) / BINS); i ? g.lineTo(x, y(v)) : g.moveTo(x, y(v)); }); };
+  const cur = avg.map(v => 10 * Math.log10(v));
+  path(cur); g.lineTo(w, h); g.lineTo(gx, h); g.closePath();
+  const grad = g.createLinearGradient(0, top, 0, h);
+  grad.addColorStop(0, 'rgba(124,200,255,0.22)'); grad.addColorStop(1, 'rgba(124,200,255,0.02)');
+  g.fillStyle = grad; g.fill();
+  g.strokeStyle = 'rgba(159,176,194,0.35)'; g.lineWidth = d; path(peak); g.stroke();
+  g.strokeStyle = token('--blue'); g.lineWidth = 1.5 * d; g.lineJoin = 'round'; path(cur); g.stroke();
 }
 
 function drawWaterfall() {
   const c = $('waterfall'), [w, h, d] = fit(c), g = c.getContext('2d');
+  g.clearRect(0, 0, w, h);
+  const gx = gutter() * d;
+  if (!rows) return;
+  // Always fill the panel: a young waterfall stretches its rows until there is one per pixel.
+  const visible = Math.max(1, Math.min(rows, ROWS, Math.round(h / d)));
   g.imageSmoothingEnabled = true;
-  const visible = Math.min(ROWS, Math.round(h / d / 1.0)), gx = gutter() * d;
-  g.clearRect(0, 0, gx, h);
   g.drawImage(fallOff, 0, 0, BINS, visible, gx, 0, w - gx, h);
-  g.fillStyle = token('--ink-3');
-  g.textAlign = 'right';
-  g.font = `${12 * d * ui()}px Archivo, sans-serif`;
-  const secs = visible / 10;
-  for (const t of niceTicks(0, secs, 10)) {
+  const secs = visible / 10, step = secs > 40 ? 20 : secs > 16 ? 10 : secs > 6 ? 4 : 1;
+  g.font = font(d); g.fillStyle = token('--ink-3'); g.textAlign = 'right'; g.lineWidth = d;
+  for (const t of niceTicks(0, secs, step)) {
     const yy = t / secs * h;
-    g.strokeStyle = 'rgba(237,232,222,0.18)';
+    g.strokeStyle = 'rgba(226,245,255,0.2)';
     g.beginPath(); g.moveTo(gx - 6 * d, yy); g.lineTo(gx, yy); g.stroke();
     if (t && yy < h - 8 * d) g.fillText(`${t} s`, gx - 10 * d, yy + 4 * d);
   }
@@ -340,186 +376,190 @@ function drawWaterfall() {
 }
 
 function drawAxis() {
-  const axis = $('freqAxis'), s = state.stats;
-  const center = s && s.freq_mhz ? s.freq_mhz : null;
+  const axis = $('freqAxis'), s = state.rx, center = s && s.freq_mhz ? s.freq_mhz : null;
   const key = `${center}|${state.rate}|${axis.clientWidth}|${gutter()}`;
   if (axis.dataset.key === key) return;
-  axis.dataset.key = key;
-  axis.textContent = '';
+  axis.dataset.key = key; axis.textContent = '';
   const half = state.rate / 2e6;
   for (const off of niceTicks(-half, half, 2)) {
+    if (Math.abs(off) >= half) continue;
     const el = document.createElement('span');
     el.style.left = `calc(${gutter()}px + ${(off + half) / (2 * half)} * (100% - ${gutter()}px))`;
-    el.textContent = center === null ? `${off > 0 ? '+' : ''}${off} MHz` : `${(center + off).toFixed(0)}`;
-    if (Math.abs(off) < half) axis.appendChild(el);
+    el.textContent = center === null ? `${off > 0 ? '+' : ''}${off}` : `${(center + off).toFixed(0)}`;
+    axis.appendChild(el);
   }
   const unit = document.createElement('span');
-  unit.style.left = '100%'; unit.style.transform = 'translateX(-100%)';
-  unit.textContent = 'MHz';
+  unit.style.left = `${gutter() / 2}px`; unit.textContent = 'MHz';
   axis.appendChild(unit);
 }
 
-// Hover readouts: frequency and level, and on the waterfall how long ago.
 function hover(wellId, readId, fn) {
   const well = $(wellId), read = $(readId);
   well.addEventListener('pointermove', e => {
     const r = well.getBoundingClientRect(), gx = gutter();
     const fx = (e.clientX - r.left - gx) / (r.width - gx), fy = (e.clientY - r.top) / r.height;
-    if (fx < 0) { read.style.display = 'none'; return; }
-    const text = fn(fx, fy);
+    const text = fx >= 0 && fn(fx, fy);
     if (!text) { read.style.display = 'none'; return; }
-    read.textContent = text;
-    read.style.display = 'block';
+    read.textContent = text; read.style.display = 'block';
     read.style.left = `${Math.min(e.clientX - r.left + 14, r.width - read.offsetWidth - 6)}px`;
     read.style.top = `${Math.max(6, e.clientY - r.top - 34)}px`;
   });
   well.addEventListener('pointerleave', () => { read.style.display = 'none'; });
 }
 const freqAt = fx => {
-  const center = state.stats && state.stats.freq_mhz, off = (fx - 0.5) * state.rate / 1e6;
+  const center = state.rx && state.rx.freq_mhz, off = (fx - 0.5) * state.rate / 1e6;
   return center ? `${(center + off).toFixed(3)} MHz` : `${off >= 0 ? '+' : ''}${off.toFixed(3)} MHz`;
 };
 hover('specWell', 'specRead', fx => avg && `${freqAt(fx)}, ${(10 * Math.log10(avg[Math.min(BINS - 1, fx * BINS | 0)])).toFixed(1)} dBFS`);
-hover('fallWell', 'fallRead', (fx, fy) => {
-  if (!rows) return null;
-  const h = $('waterfall').clientHeight, ago = fy * Math.min(ROWS, h) / 10;
-  return ago * 10 > rows ? null : `${freqAt(fx)}, ${ago.toFixed(1)} s ago`;
-});
+hover('fallWell', 'fallRead', (fx, fy) => rows && `${freqAt(fx)}, ${(fy * Math.min(rows, ROWS, $('waterfall').clientHeight) / 10).toFixed(1)} s ago`);
 
-// ---- Stats: the header and the six stages ---------------------------------------------------
+// ---- Tiles: the two numbers that say the link works, with ten minutes of history --------------
+function area(id, idx, unit, digits) {
+  const c = $(id), [w, h, d] = fit(c), g = c.getContext('2d');
+  g.clearRect(0, 0, w, h);
+  const pts = state.history.filter(p => typeof p[idx] === 'number');
+  if (pts.length < 2) return;
+  const t1 = pts[pts.length - 1][0], t0 = Math.max(pts[0][0], t1 - 600), use = pts.filter(p => p[0] >= t0);
+  let lo = Math.min(...use.map(p => p[idx])), hi = Math.max(...use.map(p => p[idx]));
+  const pad = Math.max((hi - lo) * 0.3, Math.abs(hi) * 0.02, 0.1); lo -= pad; hi += pad;
+  const top = 44 * d * ui(), X = t => (t - t0) / Math.max(1, t1 - t0) * w, Y = v => h - (v - lo) / (hi - lo) * (h - top);
+  const line = () => { g.beginPath(); use.forEach((p, i) => i ? g.lineTo(X(p[0]), Y(p[idx])) : g.moveTo(X(p[0]), Y(p[idx]))); };
+  line(); g.lineTo(w, h); g.lineTo(0, h); g.closePath();
+  const grad = g.createLinearGradient(0, top, 0, h);
+  grad.addColorStop(0, 'rgba(124,200,255,0.28)'); grad.addColorStop(1, 'rgba(124,200,255,0.02)');
+  g.fillStyle = grad; g.fill();
+  line(); g.strokeStyle = token('--blue'); g.lineWidth = 1.5 * d; g.lineJoin = 'round'; g.stroke();
+  c.title = `${lo.toFixed(digits)} to ${hi.toFixed(digits)} ${unit} over the last ${Math.max(1, Math.round((t1 - t0) / 60))} min`;
+}
+
+// ---- Rows ------------------------------------------------------------------------------------
+const DASH = '–';
+const fmt = v => v === undefined || v === null ? DASH : typeof v === 'number' ? nf.format(v) : v;
+const zeroish = (v, errors) => ({ text: fmt(v), cls: v === undefined || v === null ? '' : v ? (errors ? 'bad' : '') : 'zero' });
+function meter(pct) {
+  if (typeof pct !== 'number') return { text: DASH };
+  return { html: `<span class="meter">${pct.toFixed(0)}%<em><i class="${pct > 85 ? 'hot' : ''}" style="width:${Math.min(100, pct)}%"></i></em></span>` };
+}
+const pair = (a, b) => (a === undefined && b === undefined) ? { text: DASH }
+  : { text: `${fmt(a)} / ${fmt(b)}`, cls: (a || 0) + (b || 0) ? 'bad' : 'zero' };
+const mbps = v => typeof v === 'number' ? `${v.toFixed(2)} Mb/s` : DASH;
+function fill(id, list) {
+  const el = $(id);
+  if (el.children.length !== list.length) el.innerHTML = list.map(() => '<div class="row"><span></span><b></b></div>').join('');
+  list.forEach(([label, v], i) => {
+    const row = el.children[i], value = v && typeof v === 'object' ? v : { text: fmt(v) };
+    row.children[0].textContent = label;
+    const b = row.children[1];
+    if (value.html !== undefined) b.innerHTML = value.html; else b.textContent = value.text;
+    b.className = value.cls || '';
+  });
+}
+
 const MODCODS = { 4: 'QPSK 1/2', 5: 'QPSK 3/5', 6: 'QPSK 2/3', 7: 'QPSK 3/4', 8: 'QPSK 4/5', 9: 'QPSK 5/6', 10: 'QPSK 8/9',
   11: 'QPSK 9/10', 12: '8PSK 3/5', 13: '8PSK 2/3', 14: '8PSK 3/4', 15: '8PSK 5/6', 16: '8PSK 8/9', 17: '8PSK 9/10' };
-
+const modeName = s => s ? `${MODCODS[s.modcod] || 'MODCOD ' + s.modcod}${s.short ? ' short' : ''}` : DASH;
 function duration(s) {
   if (s < 60) return `${Math.floor(s)} s`;
   const m = Math.floor(s / 60);
   return m < 60 ? `${m} min ${Math.floor(s % 60)} s` : `${Math.floor(m / 60)} h ${m % 60} min`;
 }
 
-function flow(id, advanced, fault) {
-  $(id).dataset.flow = fault ? 'fault' : advanced ? 'on' : 'off';
+function render() {
+  const rx = fresh('rx') ? state.rx : null, tx = fresh('tx', 3500) ? state.tx : null;
+  const cm5 = fresh('cm5', 3500) ? state.cm5 : null, view = fresh('viewer', 3500) ? state.viewer : null;
+  const s = state.rx;
+
+  if (s && s.freq_mhz) $('freq').textContent = `${s.freq_mhz.toFixed(3)} MHz`;
+  if (s) $('mode').textContent = `${modeName(s)}, ${s.rate === '5m' ? '5' : '1'} Msym/s`;
+  const st = $('state');
+  if (!rx) { st.dataset.s = 'idle'; $('stateText').textContent = s ? 'Receiver silent' : 'No data yet'; }
+  else if (rx.state === 'track') { st.dataset.s = 'good'; $('stateText').textContent = `Locked for ${duration((Date.now() - state.lockedAt) / 1000)}`; }
+  else { st.dataset.s = 'warn'; $('stateText').textContent = 'Searching for the signal'; }
+
+  const node = (id, on, bad) => { $(id).dataset.s = bad ? 'bad' : on ? 'good' : 'idle'; };
+  const viewFps = view && view.fps ? Object.values(view.fps).filter(v => typeof v === 'number') : [];
+  node('nCam', cm5 && cm5.lifecycle !== 'stopped', cm5 && cm5.failed);
+  $('nCamHow').textContent = cm5 ? `${mbps(cm5.mbps)} of video and metadata` : 'no status from pv-capture';
+  $('lSpiRate').textContent = tx && typeof tx.input_mbps === 'number' ? mbps(tx.input_mbps) : cm5 ? mbps(cm5.mbps) : DASH;
+  $('lSpi').dataset.on = (tx && tx.input_mbps > 0) || (cm5 && cm5.mbps > 0) ? 1 : 0;
+  node('nTx', !!tx, tx && (tx.underruns || tx.late_fills));
+  $('nTxWhat').textContent = tx ? `${modeName(tx)}, ${tx.rate === '5m' ? 5 : 1} Msym/s` : (s ? modeName(s) : DASH);
+  $('nTxHow').textContent = tx ? `${nf.format(tx.frames || 0)} frames sent` : 'no status yet';
+  $('lRfMedium').textContent = s && s.freq_mhz ? `Radio, ${s.freq_mhz.toFixed(0)} MHz` : 'Radio, coax';
+  const mer = rx ? (rx.mer_med_db ?? rx.mer_db) : undefined;
+  $('lRfRate').textContent = rx ? (rx.state === 'track' && typeof mer === 'number' ? `${mer.toFixed(1)} dB MER` : 'searching') : DASH;
+  $('lRf').dataset.on = rx && rx.state === 'track' ? 1 : 0;
+  node('nRx', rx && rx.state === 'track', rx && (rx.failed || rx.crc8 || rx.cc || rx.eth_dropped));
+  $('nRxWhat').textContent = rx ? (rx.state === 'track' ? 'Locked' : 'Searching') : DASH;
+  $('nRxHow').textContent = rx && typeof rx.frames === 'number' ? `${nf.format(rx.frames)} frames exact` : 'no reports yet';
+  $('lEthMedium').textContent = rx && rx.eth_mbps_link ? `Ethernet, ${rx.eth_mbps_link} Mb/s link` : 'Ethernet, UDP';
+  $('lEthRate').textContent = rx ? mbps(rx.mbps) : DASH;
+  $('lEth').dataset.on = rx && rx.mbps > 0 ? 1 : 0;
+  node('nView', viewFps.some(v => v > 0), view && (view.corrupt || view.gaps));
+  $('nViewWhat').textContent = view ? 'PigeonVision, stitched' : 'PigeonVision';
+  $('nViewHow').textContent = viewFps.length ? `${viewFps.map(v => v.toFixed(0)).join(' + ')} fps decoded` : 'pv view not answering';
+
+  $('tRate').innerHTML = rx && typeof rx.mbps === 'number' ? `${rx.mbps.toFixed(2)}<small>Mb/s</small>` : '&ndash;';
+  $('tMer').innerHTML = typeof mer === 'number' ? `${mer.toFixed(1)}<small>dB</small>` : '&ndash;';
+
+  $('txMeta').textContent = tx ? `ESP32-S3, keyed ${duration(tx.elapsed_s || 0)}` : 'ESP32-S3, no status yet';
+  fill('txRows', [
+    ['Input', mbps(tx && tx.input_mbps)],
+    ['Data frames sent', tx && tx.frames],
+    ['Filler frames', tx && tx.dummies],
+    ['Underruns / late fills', tx ? pair(tx.underruns, tx.late_fills) : undefined],
+    ['Encoder, core 0', meter(tx && tx.encoder_pct)],
+    ['Bank fill, core 1', meter(tx && tx.fill_pct)],
+  ]);
+  $('rxMeta').textContent = rx ? `ESP32-S3, gain ${rx.gain ?? DASH} dB` : 'ESP32-S3, no reports yet';
+  fill('rxRows', [
+    ['Frames exact', rx && rx.frames],
+    ['Failed / LDPC repaired', rx ? pair(rx.failed, rx.ldpc) : undefined],
+    ['TS packets', rx && rx.packets],
+    ['CRC-8 / continuity errors', rx ? pair(rx.crc8, rx.cc) : undefined],
+    ['Carrier offset / clock', rx && typeof rx.cfo_hz === 'number' ? `${(rx.cfo_hz / 1000).toFixed(1)} kHz / ${(rx.clock_ppm ?? 0).toFixed(1)} ppm` : DASH],
+    ['Core 0', meter(rx && rx.core0_pct)],
+  ]);
+  fill('viewRows', [
+    ['Datagrams sent / packets dropped', rx && rx.eth_sent !== undefined
+      ? { text: `${fmt(rx.eth_sent)} / ${fmt(rx.eth_dropped ?? 0)}`, cls: rx.eth_dropped ? 'bad' : '' } : undefined],
+    ['Frames decoded, A / B', view && view.frames ? `${fmt(view.frames.A)} / ${fmt(view.frames.B)}` : DASH],
+    ['Corrupt packets / gaps', view ? pair(view.corrupt, view.gaps) : undefined],
+  ]);
+  fill('camRows', [
+    ['Transport stream out', mbps(cm5 && cm5.mbps)],
+    ['SPI messages', cm5 && cm5.messages],
+    ['READY timeouts', cm5 ? zeroish(cm5.ready_timeouts, true) : undefined],
+    ['Queue age', cm5 && typeof cm5.queue_age_ms === 'number' ? `${cm5.queue_age_ms.toFixed(0)} ms` : DASH],
+  ]);
 }
 
-function setStatus(kind, text) {
-  const el = $('status');
-  el.dataset.state = kind;
-  $('statusText').textContent = text;
-  $('statusDot').setAttribute('opacity', kind === 'track' ? 1 : 0);
-}
-
-function compact(n) {
-  return n >= 1e6 ? `${(n / 1e6).toFixed(2)} M` : n >= 1e4 ? `${(n / 1e3).toFixed(1)} k` : nf.format(n);
-}
-
-function onStats(s) {
-  const p = state.prev, now = performance.now();
-  state.lastStats = now;
-  if (s.state === 'track' && (!state.stats || state.stats.state !== 'track')) {
-    state.lockedAt = Date.now();
-    const path = $('path');
-    path.classList.remove('sweep'); void path.offsetWidth; path.classList.add('sweep');
-  }
+// ---- Events ----------------------------------------------------------------------------------
+const decode = b64 => { const raw = atob(b64), out = new Int8Array(raw.length); for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i) << 24 >> 24; return out; };
+function onRx(s) {
+  if (s.state === 'track' && !state.lockedAt) state.lockedAt = Date.now();
   if (s.state !== 'track') state.lockedAt = null;
-  state.stats = s;
-  $('emptyConst').hidden = true;
-
-  if (s.freq_mhz) $('freq').innerHTML = `${s.freq_mhz.toFixed(3)}<small>MHz</small>`;
-  const rs = s.rate === '5m' ? '5 Msym/s' : '1 Msym/s';
-  $('mode').textContent = `${MODCODS[s.modcod] || 'MODCOD ' + s.modcod}${s.short ? ', short frames' : ''}, ${rs}`;
-
-  const has = k => s[k] !== undefined && s[k] !== null;
-  const grew = k => has(k) && p[k] !== undefined && s[k] > p[k];
-
-  $('vRadio').innerHTML = `16<small>MS/s</small>`;
-  $('dRadio').innerHTML = `${has('gain') ? `gain ${s.gain} dB, ` : ''}${has('capture_drops') ? (s.capture_drops ? `<span class="bad">${nf.format(s.capture_drops)} drops</span>` : 'no samples dropped') : ''}`;
-  flow('sRadio', s.state === 'track' || s.state === 'acquire', s.capture_drops > (p.capture_drops || 0));
-
-  $('vSync').textContent = s.state === 'track' ? 'Locked' : 'Searching';
-  const sync = [];
-  if (has('cfo_hz')) sync.push(`carrier ${(s.cfo_hz / 1000).toFixed(1)} kHz`);
-  if (has('clock_ppm')) sync.push(`clock ${s.clock_ppm.toFixed(1)} ppm`);
-  if (s.relocks) sync.push(`${s.relocks} relocks`);
-  $('dSync').textContent = sync.join(', ') || ' ';
-  flow('sSync', s.state === 'track', false);
-
-  const mer = has('mer_med_db') ? s.mer_med_db : s.mer_db;
-  $('vDemap').innerHTML = mer !== undefined ? `${mer.toFixed(1)}<small>dB MER</small>` : '&ndash;';
-  $('dDemap').textContent = has('mer_med_db') ? 'median over the last second' : 'pilots of the last frame';
-  flow('sDemap', s.state === 'track', false);
-
-  $('vCheck').textContent = has('frames') ? nf.format(s.frames) : '\u2013';
-  const failed = s.failed || 0, repaired = s.ldpc || 0;
-  $('dCheck').innerHTML = failed ? `<span class="bad">${nf.format(failed)} failed</span>${repaired ? `, ${nf.format(repaired)} repaired` : ''}`
-    : `frames, every one exact${repaired ? `, ${nf.format(repaired)} repaired` : ''}`;
-  flow('sCheck', grew('frames'), failed > (p.failed || 0));
-
-  $('vTs').textContent = has('packets') ? nf.format(s.packets) : '\u2013';
-  const tsErrors = (s.crc8 || 0) + (s.cc || 0);
-  $('dTs').innerHTML = has('packets') ? (tsErrors
-    ? `<span class="bad">${nf.format(s.crc8 || 0)} CRC, ${nf.format(s.cc || 0)} continuity errors</span>`
-    : 'packets, none corrupt or missing') : '&nbsp;';
-  flow('sTs', grew('packets'), tsErrors > (p.crc8 || 0) + (p.cc || 0));
-
-  $('vEth').innerHTML = has('mbps') ? `${s.mbps.toFixed(2)}<small>Mb/s</small>` : '&ndash;';
-  $('dEth').innerHTML = has('eth_sent') ? (s.eth_dropped
-    ? `<span class="bad">${nf.format(s.eth_dropped)} packets dropped</span>`
-    : `${compact(s.eth_sent)} datagrams, none dropped`) : '&nbsp;';
-  flow('sEth', grew('eth_sent'), (s.eth_dropped || 0) > (p.eth_dropped || 0));
-
-  if (has('core0_pct')) $('core0').textContent = `${s.core0_pct.toFixed(0)}% busy: checks, deframes and sends`;
-  if (has('core1_pct')) $('core1').textContent = `${s.core1_pct.toFixed(0)}% busy: captures and demodulates`;
-
-  state.history.push([Date.now() / 1000, mer, s.mbps]);
+  state.rx = s; seen.rx = performance.now();
+  state.history.push([Date.now() / 1000, s.mer_med_db ?? s.mer_db, s.mbps]);
   if (state.history.length > 3000) state.history.shift();
-  state.prev = s;
 }
-
-function sparkline(id, idx, digits, unit) {
-  const c = $(id), [w, h, d] = fit(c), g = c.getContext('2d');
-  g.clearRect(0, 0, w, h);
-  const pts = state.history.filter(p => p[idx] !== undefined && p[idx] !== null);
-  if (pts.length < 2) return;
-  const t1 = pts[pts.length - 1][0], t0 = Math.max(pts[0][0], t1 - 600);
-  const vals = pts.filter(p => p[0] >= t0).map(p => p[idx]);
-  let lo = Math.min(...vals), hi = Math.max(...vals);
-  const pad = Math.max((hi - lo) * 0.15, Math.abs(hi) * 0.01, 0.05);
-  lo -= pad; hi += pad;
-  const X = t => (t - t0) / Math.max(1, t1 - t0) * (w - 6 * d), Y = v => h - 3 * d - (v - lo) / (hi - lo) * (h - 6 * d);
-  g.strokeStyle = token('--ink-2'); g.lineWidth = 1.5 * d; g.lineJoin = 'round';
-  g.beginPath();
-  pts.filter(p => p[0] >= t0).forEach((p, i) => { i ? g.lineTo(X(p[0]), Y(p[idx])) : g.moveTo(X(p[0]), Y(p[idx])); });
-  g.stroke();
-  const last = pts[pts.length - 1];
-  g.fillStyle = token('--ink');
-  g.beginPath(); g.arc(X(last[0]), Y(last[idx]), 2.6 * d, 0, 2 * Math.PI); g.fill();
-  c.title = `${(t1 - t0 < 60 ? `last ${Math.round(t1 - t0)} s` : `last ${Math.round((t1 - t0) / 60)} min`)}: ${lo.toFixed(digits)} to ${hi.toFixed(digits)} ${unit}`;
-}
-
-// ---- Events ---------------------------------------------------------------------------------
 const events = new EventSource('/events');
 events.addEventListener('hello', e => {
   const h = JSON.parse(e.data);
   state.rate = h.rate;
   state.history = h.history.map(p => [p[0], p[1], p[2]]);
-  if (h.stats && h.stats.state) onStats(h.stats);
+  for (const [k, v] of Object.entries(h.latest || {})) state[k] = v;
 });
-events.addEventListener('stats', e => onStats(JSON.parse(e.data)));
+events.addEventListener('rx', e => onRx(JSON.parse(e.data)));
+for (const name of ['tx', 'cm5', 'viewer']) events.addEventListener(name, e => { state[name] = JSON.parse(e.data); seen[name] = performance.now(); });
 events.addEventListener('spectrum', e => { const m = JSON.parse(e.data); addSpectrum(m.db, m.rate); });
-events.addEventListener('symbols', e => {
-  const m = JSON.parse(e.data), raw = atob(m.iq), iq = new Int8Array(raw.length);
-  for (let i = 0; i < raw.length; i++) iq[i] = raw.charCodeAt(i) << 24 >> 24;
-  addSymbols(iq, m.bits);
-});
+events.addEventListener('samples', e => { const m = JSON.parse(e.data); addSamples(decode(m.iq), m.rate); });
+events.addEventListener('symbols', e => { const m = JSON.parse(e.data); addSymbols(decode(m.iq), m.bits); });
 
-function frame() {
-  drawConstellation(); drawSpectrum(); drawWaterfall(); drawAxis();
-  sparkline('merSpark', 1, 1, 'dB'); sparkline('rateSpark', 2, 2, 'Mb/s');
-  const s = state.stats, stale = !s || performance.now() - state.lastStats > 2000;
-  if (events.readyState === EventSource.CLOSED) setStatus('none', 'Lost the monitor server');
-  else if (stale) setStatus('none', 'No data from the receiver');
-  else if (s.state === 'track') setStatus('track', `Locked for ${duration((Date.now() - state.lockedAt) / 1000)}`);
-  else setStatus('acquire', 'Searching for the signal');
-  if (stale) for (const id of ['sRadio', 'sSync', 'sDemap', 'sCheck', 'sTs', 'sEth']) $(id).dataset.flow = 'off';
+let last = 0;
+function frame(t) {
+  drawConstellation(); drawSpectrum(); drawWaterfall(); drawWaveform(); drawAxis();
+  if (t - last > 250) { render(); area('rateSpark', 2, 'Mb/s', 2); area('merSpark', 1, 'dB', 1); last = t; }
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);

@@ -53,15 +53,16 @@ def main():
         m.datagram(monitor.pack(monitor.SAMPLE, 7, 0, monitor.SAMPLES.pack(7, c, 4, 16_000_000) + iq[c * 1024:(c + 1) * 1024]))
     assert events(q) == []
     m.datagram(monitor.pack(monitor.SAMPLE, 7, 0, monitor.SAMPLES.pack(7, 1, 4, 16_000_000) + iq[1024:2048]))
-    (kind, spec), = events(q)
+    (kind, spec), (kind2, wave) = events(q)
     assert kind == 'spectrum' and spec['rate'] == 16_000_000 and int(np.argmax(spec['db'])) == monitor.BINS // 2 - 128
+    assert kind2 == 'samples' and base64.b64decode(wave['iq']) == iq[:2 * monitor.WAVE]   # the waveform's first 32 us
 
     # A snapshot that lost a chunk is forgotten once newer snapshots arrive.
     m.datagram(monitor.pack(monitor.SAMPLE, 8, 0, monitor.SAMPLES.pack(8, 0, 4, 16_000_000) + iq[:1024]))
     for snap in range(9, 15):
         for c in range(4):
             m.datagram(monitor.pack(monitor.SAMPLE, snap, 0, monitor.SAMPLES.pack(snap, c, 4, 16_000_000) + iq[c * 1024:(c + 1) * 1024]))
-    assert 8 not in m.chunks and len(events(q)) == 6
+    assert 8 not in m.chunks and len(events(q)) == 12
 
     # Symbols pass through unchanged.
     sym = np.arange(-64, 64, dtype=np.int8).tobytes()
@@ -73,8 +74,25 @@ def main():
     base = dict(state='track', freq_mhz=2420.0, frames=1000, failed=0, mer_med_db=29.8)
     m.datagram(monitor.pack(monitor.STATS, 1, 0, json.dumps(base | dict(packets=10_000)).encode()), now=100.0)
     m.datagram(monitor.pack(monitor.STATS, 2, 0, json.dumps(base | dict(packets=10_000 + 1197)).encode()), now=100.2)
-    stats = [e for k, e in events(q) if k == 'stats']
+    stats = [e for k, e in events(q) if k == 'rx']
     assert 'mbps' not in stats[0] and abs(stats[1]['mbps'] - 1197 * 188 * 8 / 0.2 / 1e6) < 1e-9
+
+    # The transmitter's status records arrive as type 4; its input rate comes from the byte count.
+    m.datagram(monitor.pack(monitor.TX, 1, 0, json.dumps(dict(cmd='status', input_bytes=0)).encode()), now=200.0)
+    m.datagram(monitor.pack(monitor.TX, 2, 0, json.dumps(dict(cmd='status', input_bytes=1_125_000)).encode()), now=201.0)
+    tx = [e for k, e in events(q) if k == 'tx']
+    assert len(tx) == 2 and 'input_mbps' not in tx[0] and abs(tx[1]['input_mbps'] - 9.0) < 1e-9
+
+    # pv-capture's status file and pv view's health report become rates per second.
+    cm5 = dict(lifecycle='running', outputs=dict(transport=dict(wire_bytes=0, spi=dict(messages=0))))
+    m.on_cm5(cm5, 300.0)
+    cm5['outputs']['transport'].update(wire_bytes=1_138_750, spi=dict(messages=855))
+    m.on_cm5(cm5, 301.0)
+    m.on_viewer(dict(metrics=dict(access_units=dict(A=0, B=0), corrupt_packets=0, transport_discontinuities=dict(A=0, B=1))), 300.0)
+    m.on_viewer(dict(metrics=dict(access_units=dict(A=30, B=29), corrupt_packets=0, transport_discontinuities=dict(A=0, B=1))), 301.0)
+    got = dict((k, e) for k, e in events(q))
+    assert abs(got['cm5']['mbps'] - 9.11) < 1e-9 and got['cm5']['messages'] == 855
+    assert got['viewer']['fps'] == dict(A=30.0, B=29.0) and got['viewer']['gaps'] == 1
 
     # Malformed datagrams are counted and ignored.
     bad = m.bad
@@ -98,7 +116,7 @@ def main():
     for step in range(4):
         for datagram in d.datagrams(step):
             m2.datagram(datagram)
-    assert m2.bad == 0 and m2.stats['modcod'] == 14 and m2.datagrams == 4 * 5 + 2
+    assert m2.bad == 0 and m2.stats['modcod'] == 14 and m2.datagrams == 4 * 5 + 2 + 1   # one transmitter status
     print("monitor checks passed")
 
 
