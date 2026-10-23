@@ -362,6 +362,43 @@ def rx_figures(out, *, iq_dir=None, check=False):
         save_figure(fig, out/f"rx-{row['id'].split('-')[-1]}.png")
 
 
+
+def rx_budget(out):
+    """How busy each receiver core was in the live runs of results/2026-10-23-rx-5m-margin."""
+    from plotstyle import ORANGE, YELLOW
+    runs = {}
+    for line in (ROOT/'results/2026-10-23-rx-5m-margin/runs.jsonl').read_text().splitlines():
+        row = json.loads(line)
+        if row.get('role') != 'rx':
+            continue
+        board = row['board'][-1]
+        assert board['status'] == 'ESP_OK' and row['check']['passed']
+        cycles = board['samples'] * 15                  # 240 MHz / 16 MS/s, the run's length
+        key = (board['modcod'], board['symbol_rate'])
+        runs.setdefault(key, []).append([100*board[k]/cycles for k in
+                                         ('push_cycles', 'release_cycles', 'fec_cycles')]
+                                        + [row['check']['payload_mbps']])
+    names = {(7, 1000000): 'QPSK 3/4, 1 Msym/s', (7, 5000000): 'QPSK 3/4, 5 Msym/s',
+             (16, 5000000): '8PSK 8/9, 5 Msym/s'}
+    keys = [k for k in names if k in runs]
+    mean = {k: np.mean(runs[k], axis=0) for k in keys}
+    fig, ax = plt.subplots(figsize=(WIDTH, 3.0))
+    height = 0.34
+    for y, key in enumerate(keys):
+        demod, release, check, mbps = mean[key]
+        ax.barh(y - height/2 - 0.02, demod, height, color=BLUE, label='Core 1: capture to symbols' if y == 0 else None)
+        ax.barh(y + height/2 + 0.02, release, height, color=ORANGE, label='Core 0: symbols to bits' if y == 0 else None)
+        ax.barh(y + height/2 + 0.02, check, height, left=release, color=YELLOW,
+                label='Core 0: re-encode check' if y == 0 else None)
+        ax.text(demod + 1, y - height/2 - 0.02, f'{demod:.0f}%', va='center', fontsize=8)
+        ax.text(release + check + 1, y + height/2 + 0.02, f'{release + check:.0f}%', va='center', fontsize=8)
+    ax.set(yticks=range(len(keys)), xlim=(0, 100), ylim=(len(keys) - 0.45, -0.75),
+           xlabel='Share of the core during a 45 s run (%)', title='Receiver load per core, measured on the board')
+    ax.set_yticklabels([f"{names[k]}\n{mean[k][3]:.2f} Mb/s" for k in keys])
+    ax.grid(axis='y', visible=False)
+    ax.legend(loc='upper right', ncol=1)
+    save_figure(fig, out/'rx-load.png')
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--out', type=Path, default=ROOT/'docs/img')
@@ -372,6 +409,8 @@ def main():
     args = parser.parse_args()
     rf_figures(args.out, iq_dir=args.rf_iq_dir, check=args.check)
     rx_figures(args.out, iq_dir=args.rx_iq_dir, check=args.check)
+    if not args.check:
+        rx_budget(args.out)
     if args.rf_only:
         return
     table = load_points()
