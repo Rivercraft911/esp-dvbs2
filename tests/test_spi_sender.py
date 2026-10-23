@@ -247,12 +247,14 @@ int main(void) {
     assert(!pv_mode && input_type==PV_GCS);
     spi_input_command("spiinput","ts");
     assert(!pv_mode && input_type==PV_TS);
+    // The selected wire keeps its CRC table (one heap block) until spiinput off.
+    assert(crc_table && allocations == 1);
     spi_input_command("spisend","100 on gcs 21"); // no raw clock above 20 MHz
-    assert(!pv_mode && !allocations);
+    assert(!pv_mode && allocations == 1);
     spi_input_command("spisend","100 quad 40 22 1"); // the fault argument is retired
-    assert(!pv_mode && !allocations);
+    assert(!pv_mode && allocations == 1);
     spi_input_command("spirx","100 quad loop 22"); // so is the on-chip loopback
-    assert(!pv_mode && !allocations);
+    assert(!pv_mode && allocations == 1);
     spi_input_command("spipins","xiao");
     assert(pins.sclk==7 && pins.cs==1 && pins.d0==2 && pins.ready==8);
     spi_input_command("spipins","devkit");
@@ -265,8 +267,10 @@ int main(void) {
     assert(usb_mode && input_type==PV_TS);
     spi_input_command("spiinput","on gcs");
     assert(!usb_mode && input_type==PV_GCS);
+    assert(spi_input_start()==ESP_OK && native_takes==1); // slots only: the table is provisioned
+    spi_input_stop(); run_reset();
     spi_input_command("spiinput","off");
-    assert(!pv_mode && !replay && !input_type && held==-1);
+    assert(!pv_mode && !replay && !input_type && held==-1 && !crc_table && !allocations);
     puts("SPI sender: real scheduler, timer sleeps, 22 Mb/s pacing, fresh READY, CRC and cleanup: ok");
 }
 '''

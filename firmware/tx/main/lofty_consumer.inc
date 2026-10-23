@@ -11,18 +11,32 @@ static LOFTY_TEXT void lofty_splice(uint32_t raw, unsigned skip)
 
 // Complete frames always qualify. Streaming starts beyond the bulk-map page,
 // with the fastest possible page consumption, bank wakes and nine reserve pages.
-static inline __attribute__((always_inline)) void lofty_boundary(uint32_t ready)
+// False when a dump's next whole frame cannot come (lofty_shape then fails).
+static inline __attribute__((always_inline)) bool lofty_boundary(uint32_t ready)
 {
     bool odd = (lofty_mux.startup+lofty_mux.steady)&1;
     // A dump is not real time: its fill waits for the whole next frame, so the bytes
     // never depend on how far the producer got. The queue holds more than a frame,
     // and every page of the previous one is free, so the producer cannot be blocked
-    // except asleep from an earlier full queue: wake it.
-    if (lofty_mux.whole_frames && !odd)
+    // except asleep from an earlier full queue: wake it. Input may never complete a
+    // frame (no sender, a source that stops), so give up when the encoder stops or
+    // fails, or after LOFTY_WHOLE_WAIT_MS without a published page.
+    if (lofty_mux.whole_frames && !odd) {
+        uint32_t seen = __atomic_load_n(&dvb.produced,__ATOMIC_ACQUIRE);
+        TickType_t since = xTaskGetTickCount();
         while ((int32_t)(ready-lofty_mux.frames) <= 0) {
+            if (enc.stop || *(volatile bool *)&enc.failed) return false;
             moon_wake();
+            const uint32_t produced = __atomic_load_n(&dvb.produced,__ATOMIC_ACQUIRE);
+            const TickType_t now = xTaskGetTickCount();
+            if (produced != seen) seen = produced, since = now;
+            else if (now-since > pdMS_TO_TICKS(LOFTY_WHOLE_WAIT_MS)) {
+                lofty_mux.whole_frame_timeout = true;
+                return false;
+            }
             ready = __atomic_load_n(&lofty_mux.published,__ATOMIC_ACQUIRE);
         }
+    }
     unsigned queued = __atomic_load_n(&dvb.produced,__ATOMIC_ACQUIRE)-dvb.consumed;
     bool complete = (int32_t)(ready-lofty_mux.frames) > 0;
     // The producer owns phase until it has actually resumed. waiting alone
@@ -56,6 +70,7 @@ static inline __attribute__((always_inline)) void lofty_boundary(uint32_t ready)
         lofty_splice(p->words[LOFTY_PAGE_META+2],meta>>16);
         lofty_mux.splice = false;
     }
+    return true;
 }
 
 // Dummy rendering and source changes share the IRAM vector renderer.
@@ -93,7 +108,8 @@ static LOFTY_TEXT esp_err_t lofty_shape(uint32_t *dst, uint64_t first, size_t co
     const uint32_t before = esp_cpu_get_cycle_count();
     uint32_t low = UINT32_MAX;
     while (count) {
-        if (!lofty_mux.length) lofty_boundary(__atomic_load_n(&lofty_mux.published,__ATOMIC_ACQUIRE));
+        if (!lofty_mux.length && !lofty_boundary(__atomic_load_n(&lofty_mux.published,__ATOMIC_ACQUIRE)))
+            return ESP_FAIL;
         unsigned left = lofty_mux.length-lofty_mux.at;
         unsigned take = count < left ? count : left;
         if (lofty_mux.filler) take = lofty_short(dst,take);

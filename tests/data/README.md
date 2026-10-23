@@ -21,7 +21,10 @@ integer roundings are checked against `tests/reference/psk8_26m667.py`.
 A dump is not real time, so its bytes must not depend on how far the encoder got. Its fill
 waits at every frame boundary until the whole next frame is published, and never inserts a
 timing dummy (`lofty_mux.whole_frames`, set for `dvbdump` only; keyed runs and paces keep
-real-time admission). The pinned CRCs are therefore the data-only ones, computed from the
+real-time admission). The wait ends when the encoder stops or fails, or after 2 s without a
+new page (no sender, or input that stops mid-frame). The dump then reports `ESP_FAIL`,
+`whole_frame_timeout` and `padded_bytes`: it still sends the announced bytes, zero-padded, so
+the host reads its final record. The pinned CRCs are therefore the data-only ones, computed from the
 host model: 2,061,900,610 (13), 1,873,478,180 (15) and 233,370,528 (17), 16 complete data
 frames each. `psk8_26m667_frames.json` repeats them as `data_only_crc32` with an empty
 `dummy_before`.

@@ -112,6 +112,7 @@ def check(out, receiver=None):
     structures = json.loads((ROOT/'tests/data/psk8_26m667_frames.json').read_text())
     assert crcs == {key: value['data_only_crc32'] for key,value in structures.items()}
     check_dump_layouts(out,exe,structures)
+    check_whole_frame_failures(out,exe)
     for peak in (16,128,508):
         margins = lofty.mask_margins(lofty.taps(peak),3,.35)
         assert min(margins[k] for k in ('upper','lower','far')) > 0,margins
@@ -119,6 +120,26 @@ def check(out, receiver=None):
     quantized = lofty.quantized_mask()
     assert min(quantized.values()) > 0,quantized
     print('exact rounded-table mask at peak 128',quantized)
+
+
+def check_whole_frame_failures(out, exe):
+    """A dump waits for whole frames, but never forever: no sender, a source that stops in the
+    middle of a frame and input the encoder rejects all end the dump with ESP_FAIL. The dump
+    still sends its announced binary_bytes, zero-padded, so board.py reads the final record."""
+    env = dict(os.environ, WHOLE_FRAME='1')
+    run = subprocess.run([str(exe),'17','3',str(out/'whole.iq'),'N0CALL','80000000','16','1'],
+                         env=env,capture_output=True,text=True,timeout=60)
+    (out/'whole.log').write_text(run.stdout+run.stderr)
+    assert run.returncode == 0,(run.stdout,run.stderr)
+    rows = [json.loads(l[1:]) for l in run.stdout.splitlines() if l.startswith('@{')]
+    tests = [r for r in rows if r.get('test') == 'whole_frame_failure']
+    assert [r['scenario'] for r in tests] == ['no input','input stops mid-frame','encoder fails'],tests
+    dumps = [r for r in rows if r.get('cmd') == 'dvbdump' and 'status' in r]
+    assert len(dumps) == 3 and all(r['status'] != 'ESP_OK' for r in dumps),dumps
+    assert [r.get('whole_frame_timeout') for r in dumps] == [True,True,False],dumps
+    assert all(r.get('padded_bytes',0) > 0 for r in dumps),dumps
+    print('whole-frame dumps end on missing, stopped or rejected input:',
+          ', '.join(f"{r['scenario']} {r['ms']} ms" for r in tests),flush=True)
 
 
 def check_dump_layouts(out, exe, structures):

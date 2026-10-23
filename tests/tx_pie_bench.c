@@ -231,8 +231,7 @@ static int setup(const dvbs2_mode *m, int pilots, unsigned v)
             if (dvbs2_fast_cache_bch_pair(s.f, s.pair)) return -1;
         }
     }
-    if (v == V_BCH) {
-        if (m->t == 8) return 1;
+    if (v == V_BCH) { // byte table for t = 10/12, pair tables for t = 8 (8PSK at 4 sps)
         if (dvbs2_fast_cache_bch(s.f, s.bch)) return -1;
     }
     if (v == V_PACK && dvbs2_fast_cache_pack(s.f)) return 1;
