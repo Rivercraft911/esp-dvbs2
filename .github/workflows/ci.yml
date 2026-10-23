@@ -53,6 +53,7 @@ jobs:
         run: |
           python tests/test_w5500.py
           python tests/test_udp_ts.py
+          python tests/test_mon_pack.py
 
       - name: USB payload input (no hardware)
         run: |
