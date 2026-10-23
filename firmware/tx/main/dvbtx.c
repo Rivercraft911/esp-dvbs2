@@ -141,6 +141,7 @@ typedef struct {
     uint32_t queue_ready;
     bool queue_auto;
     bool whole_frames;             // dumps: wait for each whole frame, never a timing dummy
+    bool whole_frame_timeout;      // a dump's next frame never came (lofty_boundary)
     uint32_t first_dummy_frame;
     unsigned resident_limit;
     uint32_t render_warm_cycles;
@@ -158,6 +159,7 @@ _Static_assert(LOFTY_MUX_AT+sizeof(lofty_mux_t) == sizeof shaper_store, "table, 
 #define LOFTY_PAGE_CYCLES (23*LOFTY_BLOCKS) // single-issue lower bound, renderer trace
 #define LOFTY_MAX_PAGES 54
 #define LOFTY_RESERVE_PAGES 9 // 4606 symbols, including the two-symbol prefix
+#define LOFTY_WHOLE_WAIT_MS 2000 // a dump gives up on its next frame after this long without a page
 _Static_assert(LOFTY_BLOCKS == MACHINE_PAGE_BLOCKS,
                "both queues span the same number of samples per page");
 _Static_assert(MACHINE_PAGE_BLOCKS%16 == 0 && sizeof(machine_page)%16 == 0,
@@ -1306,6 +1308,7 @@ static void stop_encoder(void)
     if (dvb.moon) printf(",\"queue_wait_cycles\":%" PRIu64 ",\"queue_wait_max_cycles\":%u,\"queue_wait_live_max_cycles\":%u,\"prepare_max_ticks\":%u,\"queue_page_gap_max_cycles\":%u,\"queue_page_samples\":%u,\"queue_wake_pages\":%u",
                          dvb.queue_wait_cycles,(unsigned)dvb.queue_wait_max,(unsigned)dvb.queue_wait_live_max,(unsigned)dvb.prepare_ticks,(unsigned)dvb.page_gap_max,MACHINE_PAGE_SAMPLES,dvb.wake_pages);
     if (dvb.moon) printf(",\"queue_wake_policy\":\"bank\"");
+    if (dvb.lofty && lofty_mux.whole_frames) printf(",\"whole_frame_timeout\":%s",lofty_mux.whole_frame_timeout ? "true" : "false");
     if (dvb.lofty) printf(",\"dummy_startup\":%u,\"dummy_steady\":%u,\"dummy_alignment\":%u,\"admission_pages\":%u,\"admission_wait_pages\":%u,\"dummy_startup_frames\":%u,\"queue_stream_page_max_cycles\":%u,\"queue_stream_bound_misses\":%u,\"streaming_admissions\":%u,\"admission_update_max_cycles\":%u",
                           (unsigned)lofty_mux.startup,(unsigned)lofty_mux.steady,(unsigned)((lofty_mux.startup+lofty_mux.steady)/2),
                           (unsigned)(lofty_mux.admission_pages&255),(unsigned)(lofty_mux.admission_pages>>8),
@@ -1497,6 +1500,7 @@ typedef struct {
     unsigned decim;
     size_t used;
     uint32_t crc;
+    uint64_t sent;
     uint8_t buf[4096];
 } dump_t;
 
@@ -1504,6 +1508,7 @@ static void flush(dump_t *d)
 {
     d->crc = esp_rom_crc32_le(d->crc, d->buf, d->used);
     usb_serial_jtag_write_bytes(d->buf, d->used, portMAX_DELAY);
+    d->sent += d->used;
     d->used = 0;
 }
 
@@ -1548,13 +1553,20 @@ void dvbtx_dump(unsigned modcod, unsigned frames, unsigned level, unsigned decim
         printf(",\"status\":\"ESP_ERR_NO_MEM\",\"error\":\"allocation failed\"}\n");
         return;
     }
-    d->decim = decim, d->used = 0, d->crc = 0;
+    d->decim = decim, d->used = 0, d->crc = 0, d->sent = 0;
     printf("@{\"cmd\":\"dvbdump\",\"binary_bytes\":%" PRIu64 ",\"format\":\"int16 I/Q LE\","
            "\"sample_rate\":%" PRIu32 "}\n", bytes, dac_rate / decim);
     fflush(stdout);
     radio_s3_dry_stats_t s;
     const esp_err_t err = radio_s3_dry_run_rate(encoder_fill(), NULL, samples, dac_rate, sink, d, &s);
     if (d->used) {
+        flush(d);
+    }
+    // A failed run still sends the announced binary_bytes, as zeros, so the host stays framed.
+    const uint64_t padded = bytes-d->sent;
+    memset(d->buf, 0, sizeof d->buf);
+    while (d->sent < bytes) {
+        d->used = bytes-d->sent < sizeof d->buf ? (size_t)(bytes-d->sent) : sizeof d->buf;
         flush(d);
     }
     const uint32_t crc = d->crc;
@@ -1565,6 +1577,7 @@ void dvbtx_dump(unsigned modcod, unsigned frames, unsigned level, unsigned decim
            "\"overlap_mismatches\":%" PRIu32,
            frames, decim, samples, crc, s.fills, s.max_fill_cycles, s.overlap_words,
            s.overlap_mismatches);
+    if (padded) printf(",\"padded_bytes\":%" PRIu64, padded);
     stop_encoder();
     printf(",\"status\":\"%s\"}\n", esp_err_to_name(err));
 }

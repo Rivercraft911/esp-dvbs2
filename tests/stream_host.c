@@ -149,6 +149,9 @@ static void *input_sim;
 static FILE *native_wire;
 static unsigned native_input, input_seq, input_reads, input_zero_reads;
 static volatile bool input_empty;
+static size_t input_limit = SIZE_MAX, input_given; // bytes before the source stops
+static size_t input_corrupt = SIZE_MAX;             // zero the input from here: BB rejects the TS
+static bool fill_may_fail;                          // whole-frame tests: return fill errors
 static bool native_replay;
 static uint8_t *native_buffers[INGRESS_SLOTS];
 extern void sim_set_buffer(void *, unsigned, uint8_t *);
@@ -192,7 +195,7 @@ esp_err_t spi_input_start(void) {
     return ESP_OK;
 }
 size_t spi_input_read(uint8_t *dst, size_t n) {
-    if (input_empty || (++input_reads % 7) == 0) {
+    if (input_empty || input_given >= input_limit || (++input_reads % 7) == 0) {
         ++input_zero_reads;
         return 0; // starvation between partial reads
     }
@@ -210,12 +213,17 @@ size_t spi_input_read(uint8_t *dst, size_t n) {
         assert(sim_transfer(input_sim, msg, sizeof msg) == sizeof msg);
     }
     if (n > 997) n = 997; // cut TS packets and SPI messages across calls and frames
-    return ingress_read(r, dst, n);
+    if (n > input_limit-input_given) n = input_limit-input_given;
+    const size_t got = ingress_read(r, dst, n);
+    for (size_t i = 0; i < got; ++i)
+        if (input_given+i >= input_corrupt) dst[i] = 0;
+    input_given += got;
+    return got;
 }
 void spi_input_stop(void) {
     if (input_sim) {
         // Partial reads must drain immediately. Only an empty read may sleep.
-        assert(enc.input_waits == input_zero_reads);
+        assert(fill_may_fail || enc.input_waits == input_zero_reads);
         sim_free(input_sim); input_sim = NULL;
     }
 }
@@ -243,8 +251,8 @@ static bool vcm_ready(size_t end)
     return available >= end;
 }
 
-static void bank_fill(radio_s3_fill_fn fn, void *ctx, unsigned b, uint64_t first,
-                       radio_s3_dry_stats_t *stats)
+static esp_err_t bank_fill(radio_s3_fill_fn fn, void *ctx, unsigned b, uint64_t first,
+                           radio_s3_dry_stats_t *stats)
 {
     const size_t offset = (first+bank_shift) % RADIO_S3_BANK_WORDS;
     const size_t parts[] = {RADIO_S3_BANK_WORDS - offset, offset};
@@ -266,7 +274,9 @@ static void bank_fill(radio_s3_fill_fn fn, void *ctx, unsigned b, uint64_t first
         }
         if (dvb.moon && getenv("EARLY_WAKE")) xTaskNotifyGive(enc.task);
         const unsigned sent = enc.task->notifications_sent;
-        assert(fn(banks[b] + (at+bank_shift) % RADIO_S3_BANK_WORDS, at, count, ctx) == ESP_OK);
+        const esp_err_t filled = fn(banks[b] + (at+bank_shift) % RADIO_S3_BANK_WORDS, at, count, ctx);
+        if (fill_may_fail && filled != ESP_OK) return filled;
+        assert(filled == ESP_OK);
         if (enc.packed && !dvb.moon) {
             if (offset && !p) assert(enc.task->notifications_sent == sent);
             else assert(!dvb.wake_pending);
@@ -326,6 +336,7 @@ static void bank_fill(radio_s3_fill_fn fn, void *ctx, unsigned b, uint64_t first
         assert(dvb.sample_end == first + RADIO_S3_BANK_WORDS);
     }
     stats->fills++;
+    return ESP_OK;
 }
 
 // The bank sequence of radio_s3.c's dry_worker at the rate's geometry (radio_s3.h).
@@ -338,8 +349,9 @@ esp_err_t radio_s3_dry_run_rate(radio_s3_fill_fn fn, void *ctx, uint64_t samples
     // regular overlap from its first data bank; psk8_handoff.c tests the ID.
     const uint64_t lead = dvb.cached_words-(RADIO_S3_BANK_WORDS-step);
     *stats = (radio_s3_dry_stats_t){0};
-    bank_fill(fn, ctx, 0, 0, stats);
-    bank_fill(fn, ctx, 1, step - lead, stats);
+    esp_err_t error = bank_fill(fn, ctx, 0, 0, stats);
+    if (!error) error = bank_fill(fn, ctx, 1, step - lead, stats);
+    if (error) return error;
     for (uint64_t k = 0; k * step < samples; ++k) {
         const uint64_t first = k * step;
         const size_t count = samples - first < step ? (size_t)(samples - first) : (size_t)step;
@@ -349,8 +361,8 @@ esp_err_t radio_s3_dry_run_rate(radio_s3_fill_fn fn, void *ctx, uint64_t samples
                 unshifted[i] = banks[k & 1][(i+bank_shift)%RADIO_S3_BANK_WORDS];
             assert(sink_fn(unshifted, first, count, sink_ctx) == ESP_OK);
         } else assert(sink_fn(banks[k & 1], first, count, sink_ctx) == ESP_OK);
-        if (first + step < samples)
-            bank_fill(fn, ctx, k & 1, (k + 2) * step - lead, stats);
+        if (first + step < samples && (error = bank_fill(fn, ctx, k & 1, (k + 2) * step - lead, stats)))
+            return error;
     }
     assert(dvb.ring.underruns == 0);
     return ESP_OK;
@@ -412,6 +424,43 @@ static void id_handoff_check(uint32_t rate)
 }
 
 
+// Whole-frame dump admission (lofty_consumer.inc): with no sender, a source that stops in the
+// middle of a frame, or input the encoder rejects, a dump ends with ESP_FAIL instead of waiting
+// forever. The harness must not pace publication here (UNPACED_LOFTY).
+static void whole_frame_failures(unsigned mc, unsigned sps, uint32_t rate, size_t frame_bytes,
+                                 size_t symbols)
+{
+    setenv("UNPACED_LOFTY", "1", 1);
+    fill_may_fail = true;
+    for (unsigned scenario = 0; scenario < 3; ++scenario) {
+        input_empty = scenario == 0;
+        input_given = 0;
+        input_limit = scenario == 1 ? 2*frame_bytes+frame_bytes/2 : SIZE_MAX;
+        input_corrupt = scenario == 2 ? 3*frame_bytes+frame_bytes/2 : SIZE_MAX;
+        capture = tmpfile(); assert(capture);
+        const TickType_t started = xTaskGetTickCount();
+        dvbtx_dump(mc, 16, 128, 1, 0, sps, rate);
+        const TickType_t waited = xTaskGetTickCount()-started;
+        // The host still receives the announced binary_bytes, zero-padded (board.py framing).
+        assert((uint64_t)ftell(capture) == (16*(uint64_t)symbols*dvb.table.n+dvb.den-1)/dvb.den*4);
+        fclose(capture);
+        assert(run_returned());
+        assert(lofty_mux.whole_frames);
+        // Every scenario ends; only the timeout waits out the bound, and not much longer.
+        assert(scenario == 2 ? !lofty_mux.whole_frame_timeout && waited < LOFTY_WHOLE_WAIT_MS :
+               lofty_mux.whole_frame_timeout && waited >= LOFTY_WHOLE_WAIT_MS);
+        assert(waited < LOFTY_WHOLE_WAIT_MS+2000);
+        printf("@{\"test\":\"whole_frame_failure\",\"scenario\":\"%s\",\"ms\":%u,"
+               "\"published\":%u,\"timeout\":%s}\n",
+               (const char *[]){"no input","input stops mid-frame","encoder fails"}[scenario],
+               (unsigned)waited, (unsigned)lofty_mux.published, lofty_mux.whole_frame_timeout ? "true" : "false");
+        static const unsigned published[] = {0, 2, 3};
+        assert(lofty_mux.published == published[scenario]);
+    }
+    input_empty = fill_may_fail = false;
+    input_limit = input_corrupt = SIZE_MAX;
+}
+
 int main(int argc, char **argv)
 {
     assert(!posix_memalign((void **)&banks, 65536, 2*sizeof *banks));
@@ -436,6 +485,11 @@ int main(int argc, char **argv)
     if (native_input > 2) { native_replay = true; native_input -= 2; }
     const dvbs2_mode *mode = short_frames ? dvbs2_find_mode_short(mc) : dvbs2_find_mode(mc);
     const size_t length = dvbs2_frame_symbols(mode, 1), bytes = (mode->kbch - 80) / 8;
+    if (getenv("WHOLE_FRAME")) {
+        assert(native_input && moon && mc >= 12);
+        whole_frame_failures(mc, sps, rate, bytes, length);
+        return 0;
+    }
     phase_count = (frames + 2) * length;
     phases = malloc(phase_count);
     dvbs2_workspace ws;
