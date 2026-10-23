@@ -61,6 +61,7 @@ _Static_assert(offsetof(demod_out_t, weak) == 3 * sizeof(uint8_t *), "demod_out_
 #define SEARCH 64u                /* acquisition candidates per block: two phases of 32 */
 #define GROUP5 (5 * SEARCH)       /* 5 Msym/s: half sums made at once, 512 samples */
 #define HDR 90u                   /* PLHEADER symbols */
+#define DUMMY 3330u               /* dummy PLFRAME: PLHEADER and 36 slots of carrier (5.5.1) */
 #define PIL 36u                   /* pilot block symbols */
 #define SPAN 1440u                /* data symbols between pilot blocks (16 slots) */
 #define MAX_DATA (RX_DEMOD_NORMAL ? 32400u : 8100u)  /* data symbols per frame */
@@ -135,6 +136,7 @@ struct rx_demod {
     rx_config_t cfg;
     uint32_t frame, data, pilots; /* symbols per frame, data symbols, pilot blocks */
     uint8_t hq[HDR];              /* PLHEADER symbol k = exp(j pi/4) j^hq[k] */
+    uint8_t hq0[HDR];             /* ... of a dummy PLFRAME's (MODCOD 0, TYPE 0) */
     uint8_t pls;                  /* expected MODCOD << 2 | TYPE */
     uint8_t fast, psk8;           /* 5 Msym/s; 8PSK */
     uint32_t pat[3];              /* expected differential signs, term 88 - j in bit j */
@@ -167,6 +169,8 @@ struct rx_demod {
     int32_t dc_sum[2];            /* raw outputs since the last block */
     uint32_t fk, since, d0;       /* frame index of the next symbol; symbols since the last
                                    * block; data index of the first data symbol after it */
+    uint32_t length, blocks;      /* the current frame's symbols and pilot blocks */
+    int dummy;                    /* the current frame is a dummy PLFRAME */
     uint32_t dw, run_dw;          /* data symbols written; at the current run's start */
     uint64_t now, hdr_t, frame_t; /* times: current symbol, latest header symbol 0, frame */
     int64_t sig, err;             /* frame MER sums */
@@ -571,9 +575,10 @@ static unsigned pls_decode(const rx_demod_t *d, const int32_t *z)
 }
 
 /* Measure a known block of n raw outputs (first symbol count sc0, symbol k =
- * exp(j pi/4) j^q[k]) against the carrier prediction. Returns 0 if it is not there. */
+ * exp(j pi/4) j^q[k]) against the carrier prediction: a PLHEADER whose PLS code must decode to
+ * pls, or pilots (pls < 0). Returns 0 if it is not there. */
 static int block(rx_demod_t *d, const int16_t *yi, const int16_t *yq, uint32_t sc0, unsigned n,
-                 const uint8_t *q, int header, block_t *b)
+                 const uint8_t *q, int pls, block_t *b)
 {
     int32_t *z = d->ref;
     int32_t lr = (d->leak[0] + 8) >> 4, li = (d->leak[1] + 8) >> 4;
@@ -600,10 +605,10 @@ static int block(rx_demod_t *d, const int16_t *yi, const int16_t *yq, uint32_t s
     /* A real block puts most of its power in the coherent sum: |C|^2 >= n e / 2 (header) or
      * n e / 4 (pilots). */
     int64_t c2 = (int64_t)cr * cr + (int64_t)ci * ci;
-    if (!e || (header ? 2 : 4) * c2 < (int64_t)n * e) {
+    if (!e || (pls >= 0 ? 2 : 4) * c2 < (int64_t)n * e) {
         return 0;
     }
-    if (header && pls_decode(d, z) != d->pls) {
+    if (pls >= 0 && pls_decode(d, z) != (unsigned)pls) {
         return 0;
     }
     int64_t mag;
@@ -916,12 +921,16 @@ static int lose(rx_demod_t *d)
     return 1;
 }
 
-/* A PLHEADER starts a frame: number it by frame periods since the first lock. */
-static void start_frame(rx_demod_t *d, const block_t *b, uint64_t t)
+/* A PLHEADER starts a frame. Tracking sees every header, so its frame is the next; after a
+ * relock it is numbered by data frame periods since the last one (dummy frames in the gap
+ * then count as lost frames too). */
+static void start_frame(rx_demod_t *d, const block_t *b, uint64_t t, int tracked)
 {
     if (!d->locked_once) {
         d->locked_once = 1;
         d->seq = 0;
+    } else if (tracked) {
+        ++d->seq;
     } else {
         uint64_t period = (uint64_t)d->frame * d->step;
         uint32_t jump = (uint32_t)((t - d->seq_t + period / 2) / period);
@@ -935,6 +944,9 @@ static void start_frame(rx_demod_t *d, const block_t *b, uint64_t t)
     d->d0 = 0;
     d->sig = b->sig;
     d->err = b->err;
+    d->length = d->frame;
+    d->blocks = d->pilots;
+    d->dummy = 0;
 }
 
 /* Frequency: a quarter of the measured residual. Timing: half the error now (tau Q16 symbols
@@ -1005,7 +1017,11 @@ static int64_t power_slope(rx_demod_t *d, unsigned nd, uint32_t sc0)
     return sum / (d->psk8 ? 1964160 : 244800);
 }
 
-/* A known block just ended. Returns 1 if the lock was lost. */
+/* A known block just ended. Returns 1 if the lock was lost. A header that is not the expected
+ * one may be a dummy PLFRAME's (5.5.1: MODCOD 0, then 36 slots of unmodulated carrier, no
+ * pilots), which a transmitter sends when its input runs dry: the header is a known block like
+ * any other, the 3,240 symbols after it pass through the matched filter (the timing and the DC
+ * sums run on) but are not kept, and the next header ends it. */
 static int on_block(rx_demod_t *d, int header)
 {
     unsigned n = header ? HDR : PIL, nd = d->since - n;
@@ -1020,13 +1036,17 @@ static int on_block(rx_demod_t *d, int header)
         q = pq;
     }
     block_t b;
-    if (!block(d, d->blk, d->blk + HDR, sc0, n, q, header, &b)) {
-        if (header && d->in_frame && d->d0 + nd == d->data) {
-            /* The transmitter stopped after a whole frame: finish it on the frequency loop. */
-            queue_run(d, nd, n, d->omega, d->amp, 1);
-            d->in_frame = 0;
+    int dummy = 0;
+    if (!block(d, d->blk, d->blk + HDR, sc0, n, q, header ? d->pls : -1, &b)) {
+        dummy = header && block(d, d->blk, d->blk + HDR, sc0, n, d->hq0, 0, &b);
+        if (!dummy) {
+            if (header && d->in_frame && d->d0 + nd == d->data) {
+                /* The transmitter stopped after a whole frame: finish it on the frequency loop. */
+                queue_run(d, nd, n, d->omega, d->amp, 1);
+                d->in_frame = 0;
+            }
+            return lose(d);
         }
-        return lose(d);
     }
     uint32_t centre2 = 2 * sc0 + n - 1;
     int64_t theta = b.theta;
@@ -1041,12 +1061,18 @@ static int on_block(rx_demod_t *d, int header)
         d->omega = inc;
         d->fresh = 0;
     }
-    if (nd) {
+    if (nd && !d->dummy) {
         queue_run(d, nd, n, inc, b.amp, header);
         d->d0 += nd;
     }
-    if (header) {
-        start_frame(d, &b, d->hdr_t);
+    if (header && dummy) {
+        d->in_frame = 0;                         /* no frame in progress until the next header */
+        d->length = DUMMY;
+        d->blocks = 0;
+        d->dummy = 1;
+        ++d->st.dummies;
+    } else if (header) {
+        start_frame(d, &b, d->hdr_t, 1);
     } else {
         d->sig += b.sig;
         d->err += b.err;
@@ -1073,9 +1099,9 @@ static unsigned layout(const rx_demod_t *d, unsigned *nd, unsigned *boff)
         return HDR - fk;
     }
     unsigned p = fk - HDR, j = p / (SPAN + PIL), r = p - j * (SPAN + PIL);
-    if (j >= d->pilots) {
-        *nd = d->frame - fk;                         /* the last run, then the next header */
-        return d->frame - fk + HDR;
+    if (j >= d->blocks) {
+        *nd = d->length - fk;                        /* the last run, then the next header */
+        return d->length - fk + HDR;
     }
     *nd = r < SPAN ? SPAN - r : 0;
     *boff = r < SPAN ? 0 : r - SPAN;
@@ -1119,16 +1145,16 @@ static int track(rx_demod_t *d)
         }
         d->dc_sum[0] += sum[0];
         d->dc_sum[1] += sum[1];
-        if (m) {
+        if (m && !d->dummy) {                          /* a dummy's carrier is not kept */
             store(d, m);
         }
         memcpy(d->blk + boff, d->oi + 8 + m, 2 * (n - m));          /* known symbols */
         memcpy(d->blk + HDR + boff, d->oq + 8 + m, 2 * (n - m));
         d->t = t1 + (uint64_t)n * step;
-        d->dw += m;
-        if (d->fk + n >= d->frame) {                   /* the next frame's header starts */
-            d->hdr_t = t1 + (uint64_t)(d->frame - d->fk) * step;
-            d->fk = d->fk + n - d->frame;
+        d->dw += d->dummy ? 0 : m;
+        if (d->fk + n >= d->length) {                  /* the next frame's header starts */
+            d->hdr_t = t1 + (uint64_t)(d->length - d->fk) * step;
+            d->fk = d->fk + n - d->length;
         } else {
             d->fk += n;
         }
@@ -1172,8 +1198,51 @@ static void minus_dc(const rx_demod_t *d, int16_t *yi, int16_t *yq, unsigned n)
     }
 }
 
+/* Carrier and phase from a header's raw outputs (DC taken off) with symbols q:
+ * w_k = y_k j^-q_k = A exp(j(pi/4 + phase + omega k)). Coarse rotation from the lag-1 product,
+ * then a line through the phases of six 15-symbol sums. Sets omega, phase and the clock. */
+static void header_carrier(rx_demod_t *d, const int16_t *yi, const int16_t *yq, const uint8_t *q)
+{
+    int32_t *w = d->ref;
+    int32_t sr = 0, si = 0;
+    for (unsigned k = 0; k < HDR; ++k) {
+        w[2 * k] = yi[k] - ((d->dc[0] + 8) >> 4);
+        w[2 * k + 1] = yq[k] - ((d->dc[1] + 8) >> 4);
+        quad(&w[2 * k], &w[2 * k + 1], q[k]);
+        if (k) {                                                  /* w >> 5: sums < 2^28 */
+            int32_t ar = w[2 * k] >> 5, ai = w[2 * k + 1] >> 5, br = w[2 * k - 2] >> 5, bi = w[2 * k - 1] >> 5;
+            sr += ar * br + ai * bi;
+            si += ai * br - ar * bi;
+        }
+    }
+    int32_t coarse = (int32_t)cordic(sr, si, NULL);
+    int64_t ph[6], sum_ph = 0, sum_xy = 0;
+    uint32_t p = (uint32_t)((int64_t)coarse * -(int64_t)(HDR - 1) / 2);   /* rotation at k = 0 */
+    for (unsigned b = 0; b < 6; ++b) {
+        int32_t br = 0, bi = 0;
+        for (unsigned k = 15 * b; k < 15 * b + 15; ++k) {
+            int32_t re, im;
+            rotate(w[2 * k], w[2 * k + 1], p, &re, &im);
+            br += re;
+            bi += im;
+            p += (uint32_t)coarse;
+        }
+        uint32_t a = cordic(br, bi, NULL);
+        ph[b] = b ? ph[b - 1] + (int32_t)(a - (uint32_t)ph[b - 1]) : (int32_t)a;
+        sum_ph += ph[b];
+        sum_xy += (int64_t)(30 * (int)b - 75) * ph[b];          /* centres 15b + 7 - 44.5, doubled */
+    }
+    d->omega = coarse + (int32_t)(sum_xy / 7875);   /* slope 2 sum X phi / sum X^2, sum X^2 = 15750 */
+    d->phase = (uint32_t)(sum_ph / 6) - EIGHTH;
+    d->anchor2 = HDR - 1;
+    d->step_i = 0;
+    d->step = base_step(d);
+}
+
 /* Fine timing, carrier and phase from the header found near d->t0, then the header checks.
- * Returns 1 when tracking starts. */
+ * Returns 1 when tracking starts. A dummy PLFRAME's header there (a transmitter whose input runs
+ * dry sends many) is no place to lock, but it says where the next header is: refine again there,
+ * until a frame's header comes. */
 static int refine(rx_demod_t *d)
 {
     uint64_t t0 = d->t0;
@@ -1208,49 +1277,27 @@ static int refine(rx_demod_t *d)
     }
     t0 += (uint64_t)off;
     mf(d, t0, d->sps, HDR);              /* raw: block() takes the DC off */
-    /* Carrier: w_k = y_k j^-q_k = A exp(j(pi/4 + phase + omega k)). Coarse rotation from the
-     * lag-1 product, then a line through the phases of six 15-symbol sums. */
-    int32_t *w = d->ref;
-    int32_t sr = 0, si = 0;
-    for (unsigned k = 0; k < HDR; ++k) {
-        w[2 * k] = yi[k] - ((d->dc[0] + 8) >> 4);
-        w[2 * k + 1] = yq[k] - ((d->dc[1] + 8) >> 4);
-        quad(&w[2 * k], &w[2 * k + 1], d->hq[k]);
-        if (k) {                                                  /* w >> 5: sums < 2^28 */
-            int32_t ar = w[2 * k] >> 5, ai = w[2 * k + 1] >> 5, br = w[2 * k - 2] >> 5, bi = w[2 * k - 1] >> 5;
-            sr += ar * br + ai * bi;
-            si += ai * br - ar * bi;
-        }
-    }
-    int32_t coarse = (int32_t)cordic(sr, si, NULL);
-    int64_t ph[6], sum_ph = 0, sum_xy = 0;
-    uint32_t p = (uint32_t)((int64_t)coarse * -(int64_t)(HDR - 1) / 2);   /* rotation at k = 0 */
-    for (unsigned b = 0; b < 6; ++b) {
-        int32_t br = 0, bi = 0;
-        for (unsigned k = 15 * b; k < 15 * b + 15; ++k) {
-            int32_t re, im;
-            rotate(w[2 * k], w[2 * k + 1], p, &re, &im);
-            br += re;
-            bi += im;
-            p += (uint32_t)coarse;
-        }
-        uint32_t a = cordic(br, bi, NULL);
-        ph[b] = b ? ph[b - 1] + (int32_t)(a - (uint32_t)ph[b - 1]) : (int32_t)a;
-        sum_ph += ph[b];
-        sum_xy += (int64_t)(30 * (int)b - 75) * ph[b];          /* centres 15b + 7 - 44.5, doubled */
-    }
-    d->omega = coarse + (int32_t)(sum_xy / 7875);   /* slope 2 sum X phi / sum X^2, sum X^2 = 15750 */
-    d->phase = (uint32_t)(sum_ph / 6) - EIGHTH;
-    d->anchor2 = HDR - 1;
-    d->step_i = 0;
-    d->step = base_step(d);
-    int64_t miss = (int64_t)cfo_hz(d) - d->cfg.cfo_hint_hz;
     block_t b;
+    int found = -1;                      /* 0: the expected header, 1: a dummy's */
     memcpy(d->blk, yi, 2 * HDR);
     memcpy(d->blk + HDR, yq, 2 * HDR);
-    if (miss > (int64_t)d->cfg.cfo_span_hz || -miss > (int64_t)d->cfg.cfo_span_hz ||
-        !block(d, d->blk, d->blk + HDR, 0, HDR, d->hq, 1, &b)) {
+    for (int pass = 0; pass < 2 && found < 0; ++pass) {
+        const uint8_t *q = pass ? d->hq0 : d->hq;
+        header_carrier(d, yi, yq, q);
+        int64_t miss = (int64_t)cfo_hz(d) - d->cfg.cfo_hint_hz;
+        if (miss <= (int64_t)d->cfg.cfo_span_hz && -miss <= (int64_t)d->cfg.cfo_span_hz &&
+            block(d, d->blk, d->blk + HDR, 0, HDR, q, pass ? 0 : d->pls, &b)) {
+            found = pass;
+        }
+    }
+    if (found < 0) {
         ++d->st.rejects;
+        return 0;
+    }
+    if (found) {
+        ++d->st.dummies;
+        d->t0 = t0 + (uint64_t)DUMMY * d->step;
+        d->state = REFINE;
         return 0;
     }
     d->leak[0] = b.leak[0];                         /* the transmitter's carrier leak */
@@ -1268,7 +1315,7 @@ static int refine(rx_demod_t *d)
     if (d->locked_once) {
         ++d->st.relocks;
     }
-    start_frame(d, &b, t0);
+    start_frame(d, &b, t0, 0);
     d->t = t0 + (uint64_t)HDR * d->step;
     d->now = d->t;
     update_loops(d, &b, HDR - 1, d->omega);
@@ -1567,10 +1614,12 @@ int rx_demod_init(rx_demod_t *d, const rx_config_t *config, void *ring)
     d->pilots = (slots - 1) / 16;
     d->frame = HDR + d->data + PIL * d->pilots;
     d->pls = (uint8_t)(config->modcod << 2 | (config->normal ? 0 : 2) | 1);
-    uint64_t code = pls_code(d->pls);
+    uint64_t code = pls_code(d->pls), code0 = pls_code(0);
     for (unsigned k = 0; k < HDR; ++k) {
         unsigned y = k < 26 ? 0x18d2e82u >> (25 - k) & 1 : (unsigned)(code >> (63 - (k - 26)) & 1);
+        unsigned y0 = k < 26 ? y : (unsigned)(code0 >> (63 - (k - 26)) & 1);
         d->hq[k] = (uint8_t)((2 * y + (k & 1)) & 3);
+        d->hq0[k] = (uint8_t)((2 * y0 + (k & 1)) & 3);
     }
     for (unsigned k = 0; k + 1 < HDR; ++k) {
         if (((d->hq[k + 1] - d->hq[k]) & 3) == 3) {

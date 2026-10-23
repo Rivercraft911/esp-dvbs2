@@ -40,7 +40,7 @@ def records(payloads):
 
 def fixture(folder, mc=7):
     original = folder / 'image.png'
-    original.write_bytes((ROOT / 'docs/img/fill-history.png').read_bytes())
+    original.write_bytes((ROOT / 'tests/data/file-payload.png').read_bytes())
     expected = c.manifest(original, mc, (16, 4))
     with original.open('rb') as source, c.sender.container(source, original.name, expected['frame_bytes'], (16, 4)) as stream:
         raw = stream.read()
@@ -138,7 +138,7 @@ def test_recovery():
 
 
 def test_guards():
-    source = ROOT / 'docs/img/fill-history.png'
+    source = ROOT / 'tests/data/file-payload.png'
     result = subprocess.run([sys.executable, '-S', str(SCRIPT), str(source), '--plan'], capture_output=True)
     assert result.returncode == 0, result.stderr
     plan = json.loads(result.stdout)

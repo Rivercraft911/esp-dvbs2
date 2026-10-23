@@ -31,9 +31,9 @@ void replay_upload(size_t bytes)
            (unsigned long)esp_rom_crc32_le(0, (const uint8_t *)capture, bytes));
 }
 
-esp_err_t replay_run(unsigned modcod, unsigned rate, unsigned skip, receive_stats_t *s,
-                     capture_stats_t *cs)
+esp_err_t replay_run(unsigned modcod, unsigned rate, unsigned skip, const receive_options_t *options,
+                     receive_stats_t *s, capture_stats_t *cs)
 {
     if (!pairs) return ESP_ERR_INVALID_STATE;
-    return receive_replay(capture, pairs, modcod, rate, skip, s, cs);
+    return receive_replay(capture, pairs, modcod, rate, skip, options, s, cs);
 }

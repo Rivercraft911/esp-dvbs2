@@ -34,6 +34,9 @@ static int log_filter(const char *format, va_list args)
     return quiet ? 0 : vprintf(format, args);
 }
 
+/* rx's and replay's results: one run at a time, and large (the push log), so one static copy. */
+static receive_stats_t run;
+
 static void print_capture(const capture_stats_t *s)
 {
     printf(",\"samples\":%llu,\"dropped\":%llu,\"drops\":%lu,\"units\":%lu,\"max_late\":%lu,\"max_service\":%lu,"
@@ -168,6 +171,44 @@ static unsigned symbol_rate(const char *token)
     return !*token || !strcmp(token, "1m") ? 1000000 : !strcmp(token, "5m") ? 5000000 : 0;
 }
 
+/* The words after a run's numbers: [1m|5m] [ts [pattern] [nonull]], and for a replay a skip
+ * count. Returns false on anything else. */
+static bool run_options(char *rest, unsigned *rate, unsigned *skip, receive_options_t *o)
+{
+    char *save, *t;
+    for (t = strtok_r(rest, " ", &save); t; t = strtok_r(NULL, " ", &save)) {
+        if (symbol_rate(t)) *rate = symbol_rate(t);
+        else if (!strcmp(t, "ts")) o->ts = true;
+        else if (!strcmp(t, "pattern")) o->pattern = true;
+        else if (!strcmp(t, "nonull")) o->drop_null = true;
+        else if (skip && *t >= '0' && *t <= '9') *skip = (unsigned)atoi(t);
+        else return false;
+    }
+    return o->ts || !(o->pattern || o->drop_null);
+}
+
+/* TS mode's counters, inside a summary left open. */
+static void print_ts(const receive_stats_t *r)
+{
+    const rx_ts_stats_t *t = &r->ts;
+    printf(",\"ts\":{\"frames\":%lu,\"packets\":%lu,\"crc_errors\":%lu,\"unchecked\":%lu,"
+           "\"null_packets\":%lu,\"cc_errors\":%lu,\"resyncs\":%lu,\"syncd_errors\":%lu,\"not_ts\":%lu,"
+           "\"late\":%lu,\"dropped_bytes\":%lu,\"untracked\":%lu,\"cycles\":%llu,\"max_cycles\":%lu,"
+           "\"pids\":[",
+           (unsigned long)t->frames, (unsigned long)t->packets, (unsigned long)t->crc_errors,
+           (unsigned long)t->unchecked, (unsigned long)t->null_packets, (unsigned long)t->cc_errors,
+           (unsigned long)t->resyncs, (unsigned long)t->syncd_errors, (unsigned long)t->not_ts,
+           (unsigned long)t->late, (unsigned long)t->dropped_bytes, (unsigned long)t->untracked,
+           (unsigned long long)r->ts_cycles, (unsigned long)r->max_ts_cycles);
+    for (unsigned k = 0; k < r->ts_pids; ++k)
+        printf("%s{\"pid\":%u,\"packets\":%lu,\"cc_errors\":%lu}", k ? "," : "", r->pids[k].pid,
+               (unsigned long)r->pids[k].packets, (unsigned long)r->pids[k].cc_errors);
+    const receive_pattern_t *p = &r->pattern;
+    printf("],\"pattern\":{\"checked\":%lu,\"bad\":%lu,\"jumps\":%lu,\"wraps\":%lu,\"cycles\":%llu}}",
+           (unsigned long)p->checked, (unsigned long)p->bad, (unsigned long)p->jumps,
+           (unsigned long)p->wraps, (unsigned long long)p->cycles);
+}
+
 /* A receive or replay summary, left open for more fields. */
 static void print_receive(const char *cmd, esp_err_t e, unsigned modcod, unsigned rate,
                           const receive_stats_t *r)
@@ -179,7 +220,7 @@ static void print_receive(const char *cmd, esp_err_t e, unsigned modcod, unsigne
            "\"stack_free\":[%lu,%lu,%lu],\"free_internal\":%lu,\"largest_internal\":%lu,"
            "\"demod\":{\"words\":%llu,\"frames\":%lu,\"lost\":%lu,\"dropped\":%lu,\"relocks\":%lu,"
            "\"rejects\":%lu,\"locked\":%u,\"cfo_hz\":%ld,\"clock_ppb\":%ld,\"acquire_cycles\":%lu,"
-           "\"dc\":[%d,%d]}",
+           "\"dc\":[%d,%d],\"dummies\":%lu}",
            cmd, esp_err_to_name(e), modcod, rate, (unsigned long)r->frames, (unsigned long)r->good,
            (unsigned long)r->failed, (unsigned long)r->decoded, (unsigned long)r->dropped,
            (unsigned long)r->max_iterations, (unsigned long)r->pushes,
@@ -193,7 +234,7 @@ static void print_receive(const char *cmd, esp_err_t e, unsigned modcod, unsigne
            (unsigned long)r->demod.lost, (unsigned long)r->demod.dropped,
            (unsigned long)r->demod.relocks, (unsigned long)r->demod.rejects, r->demod.locked,
            (long)r->demod.cfo_hz, (long)r->demod.clock_ppb, (unsigned long)r->demod.acquire_cycles,
-           r->demod.dc_i, r->demod.dc_q);
+           r->demod.dc_i, r->demod.dc_q, (unsigned long)r->demod.dummies);
 }
 
 void app_main(void)
@@ -228,34 +269,36 @@ void app_main(void)
             rxprobe(&c);
         } else if (fields >= 5 && !strcmp(cmd, "rx")) {
             unsigned modcod = 0, rate = 1000000;
-            char token[8] = "";
-            if (sscanf(line, "rx %*u %*u %*u %u %7s", &modcod, token) == 2) rate = symbol_rate(token);
+            int used = 0;
+            receive_options_t o = {0};
+            bool ok = sscanf(line, "rx %*u %*u %*u %u %n", &modcod, &used) == 1 && used &&
+                      run_options(line + used, &rate, NULL, &o);
             capture_config_t c = {.mhz = mhz, .gain = gain, .seconds = seconds};
-            static receive_stats_t r;
             capture_stats_t s = {0};
             quiet = true;
-            esp_err_t e = rate ? receive_run(&c, modcod, rate, &r, &s) : ESP_ERR_INVALID_ARG;
+            esp_err_t e = ok ? receive_run(&c, modcod, rate, &o, &run, &s) : ESP_ERR_INVALID_ARG;
             quiet = false;
-            print_receive("rx", e, modcod, rate, &r);
+            print_receive("rx", e, modcod, rate, &run);
+            if (o.ts) print_ts(&run);
             print_capture(&s);
             printf("}\n");
         } else if (fields == 2 && !strcmp(cmd, "upload")) {
             replay_upload(mhz);
         } else if (fields >= 2 && !strcmp(cmd, "replay")) {
             unsigned modcod = mhz, skip = 0, rate = 1000000;
-            char *save, *token = strtok_r(line, " ", &save);
-            strtok_r(NULL, " ", &save);
-            while ((token = strtok_r(NULL, " ", &save)))    /* [skip] [5m] */
-                strchr(token, 'm') ? (void)(rate = symbol_rate(token)) : (void)(skip = (unsigned)atoi(token));
-            static receive_stats_t r;
+            int used = 0;
+            receive_options_t o = {0};
+            bool ok = sscanf(line, "replay %*u %n", &used) == 0 && used &&
+                      run_options(line + used, &rate, &skip, &o);
             capture_stats_t s = {0};
             quiet = true;
-            esp_err_t e = rate ? replay_run(modcod, rate, skip, &r, &s) : ESP_ERR_INVALID_ARG;
+            esp_err_t e = ok ? replay_run(modcod, rate, skip, &o, &run, &s) : ESP_ERR_INVALID_ARG;
             quiet = false;
-            print_receive("replay", e, modcod, rate, &r);
+            print_receive("replay", e, modcod, rate, &run);
+            if (o.ts) print_ts(&run);
             print_capture(&s);
             printf(",\"push_words\":%u}\n@{\"cmd\":\"replay\",\"push_log\":[", CAPTURE_UNIT);
-            for (unsigned k = 0; k < r.pushes && k < RECEIVE_LOG; ++k) printf("%s%lu", k ? "," : "", (unsigned long)r.log[k]);
+            for (unsigned k = 0; k < run.pushes && k < RECEIVE_LOG; ++k) printf("%s%lu", k ? "," : "", (unsigned long)run.log[k]);
             printf("]}\n");
         } else if (fields == 4 && !strcmp(cmd, "dump")) {
             dump(mhz, gain, seconds);
@@ -270,7 +313,7 @@ void app_main(void)
             print_capture(&s);
             printf("}\n");
         } else {
-            printf("@{\"error\":\"use info, rxprobe MHz gain seconds, rx MHz gain seconds MODCOD [5m], dump MHz gain pairs, upload bytes, replay MODCOD [skip] [5m], membench MHz gain\"}\n");
+            printf("@{\"error\":\"use info, rxprobe MHz gain seconds, rx MHz gain seconds MODCOD [5m] [ts [pattern] [nonull]], dump MHz gain pairs, upload bytes, replay MODCOD [skip] [5m] [ts [pattern] [nonull]], membench MHz gain\"}\n");
         }
         printf("@{\"done\":true}\n");
     }

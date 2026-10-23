@@ -145,7 +145,7 @@ With both devices/antennas inside the **closed box**, compatible firmware alread
 flashed, and an assigned callsign stored, run from the repository root:
 
 ```sh
-python3 examples/over-the-air/file_check.py docs/img/fill-history.png notes/file-ota \
+python3 examples/over-the-air/file_check.py tests/data/file-payload.png notes/file-ota \
   --port /dev/cu.usbmodem1101 --uri ip:192.168.1.10 --closed-box --key
 ```
 

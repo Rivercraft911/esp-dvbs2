@@ -232,7 +232,7 @@ them into frames of hard bits, checks or decodes each frame and sends a record o
 core 1: dump banks, 16 MS/s -> int8 I/Q -> matched filter at each symbol time
         -> header and pilot blocks: timing, carrier, DC, leak -> raw data symbols -> symbol ring
 core 0: release: DC, derotation, leak, PL descrambling, demapping -> hard and weak bits
-        check: re-encode -> BCH and BBHEADER -> USB record
+        check: re-encode -> BCH and BBHEADER -> USB record (-> TS deframer -> egress)
         decode (frames that fail the check): layered min-sum LDPC, state in PSRAM
 ```
 
@@ -286,7 +286,9 @@ after it is measured, so the carrier phase is known at both ends. On core 0, thr
   between the blocks, takes off the leak, descrambles and demaps. For 8PSK it writes each
   symbol's three bits to three bit planes, which undoes the column interleaver. If it falls
   behind, core 1 drops a frame rather than wait.
-- The check task re-encodes each frame's hard bits.
+- The check task re-encodes each frame's hard bits. When it holds all three frame slots, the
+  release task waits up to 2 ms for one before it drops a frame: after a lock the first frames
+  come in a burst while the first check runs with cold caches.
 - The decode task (lowest priority) runs the LDPC decoder on frames that fail the check, one
   at a time.
 
@@ -308,7 +310,27 @@ iterations and failing checks (`firmware/rx/main/receive.h`). At 1 Msym/s the pa
 At 5 Msym/s, 12.64 Mb/s is more than the 12 Mb/s signalling rate of the S3's full-speed USB
 port, so the payload's CRC-32 follows instead, and `host/rx.py` compares it with the model
 frame the sequence implies. A failed frame carries its 8-byte header sample index, 2,025 bytes
-of hard bits and 2,025 of weak bits. The console takes `rx MHz gain seconds MODCOD [5m]`.
+of hard bits and 2,025 of weak bits. The console takes
+`rx MHz gain seconds MODCOD [5m] [ts [pattern] [nonull]]`.
+
+**Dummy frames.** A transmitter whose input runs dry sends dummy PLFRAMEs: a header with MODCOD
+0, then 3,240 symbols of unmodulated carrier and no pilots (EN 302 307-1 5.5.1). While locked,
+the receiver takes a dummy's header as one more known block, runs the matched filter through its
+carrier (the DC estimate goes on, the symbols are not kept) and expects the next header 3,330
+symbols later. Acquisition locks only on a frame's header: when the header it lands on is a
+dummy's, it hops 3,330 symbols to the next header and tries again.
+
+**Transport streams.** In TS mode (`ts`) the check task also turns each good frame back into
+188-byte MPEG transport stream packets (`dvbs2rx` `rx_ts.c`, EN 302 307-1 5.1.4 to 5.1.6). The
+transmitter replaced each packet's sync byte with the CRC-8 of the packet before it and cut the
+stream into data fields regardless of packet boundaries, so the deframer carries a packet across
+frames, checks each packet when the next one's first byte arrives, marks a mismatch with the
+transport_error_indicator and restarts at SYNCD after a lost frame. It checks continuity
+counters for up to 16 PIDs. Packets go to a TS egress (`firmware/rx/main/ts_egress.h`) for an
+Ethernet sender; `pattern` checks every packet against the transmitter's test input instead.
+Frames the LDPC decoder repairs arrive too late for the stream and count as lost.
+[TS link results](../results/2026-10-23-ts-link/README.md): 1.74 million packets exact at up to
+12.64 Mb/s, and 95,810 dummy frames ridden through.
 
 | Measured, e379dfb, 2420 MHz | QPSK 3/4, 1 Msym/s | QPSK 3/4, 5 Msym/s | 8PSK 8/9, 5 Msym/s |
 |---|---:|---:|---:|
