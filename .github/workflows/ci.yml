@@ -49,8 +49,10 @@ jobs:
           python tests/test_spi_pv.py
           python tests/test_spi_sender.py
 
-      - name: W5500 Ethernet (fake chip)
-        run: python tests/test_w5500.py
+      - name: W5500 Ethernet (fake chip, laptop end)
+        run: |
+          python tests/test_w5500.py
+          python tests/test_udp_ts.py
 
       - name: USB payload input (no hardware)
         run: |
