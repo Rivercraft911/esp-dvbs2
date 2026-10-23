@@ -59,6 +59,7 @@ _Static_assert(offsetof(demod_out_t, weak) == 3 * sizeof(uint8_t *), "demod_out_
 #define HOLD (RX_DEMOD_RING_BYTES / 4)  /* data symbols in the ring shared with the release */
 #define RUNS 8u                   /* data runs queued for the release */
 #define SEARCH 64u                /* acquisition candidates per block: two phases of 32 */
+#define GROUP5 (5 * SEARCH)       /* 5 Msym/s: half sums made at once, 512 samples */
 #define HDR 90u                   /* PLHEADER symbols */
 #define PIL 36u                   /* pilot block symbols */
 #define SPAN 1440u                /* data symbols between pilot blocks (16 slots) */
@@ -125,7 +126,7 @@ struct rx_demod {
             int32_t ref[2 * HDR]; /* that block derotated */
         };
         struct {                  /* the search's scratch, while no block is tracked */
-            int16_t sh[2][SEARCH + 8] __attribute__((aligned(16)));  /* half sums */
+            int16_t sh[2][5 * SEARCH + 8] __attribute__((aligned(16)));  /* half sums */
             int16_t sx[4 * SEARCH] __attribute__((aligned(16)));    /* demod_signs' */
         };
     };
@@ -146,6 +147,7 @@ struct rx_demod {
 
     /* acquisition: candidate c integrates samples [8c - 16, 8c), at 5 Msym/s [p(c - 2), p(c)) */
     uint64_t c, t0, first, pick;  /* next candidate; detection: first hit, chosen candidate */
+    unsigned slice;               /* 5 Msym/s: the next SEARCH of GROUP5 half sums made at once */
     int16_t sa[16] __attribute__((aligned(16)));  /* demod_signs' a, carried between blocks */
     int16_t half[2];              /* the last block's last half sums */
     int32_t acq_dc[2], dc_acc[2];
@@ -365,7 +367,8 @@ static void acquire_from(rx_demod_t *d, uint64_t sample)
 {
     d->state = ACQUIRE;
     if (d->fast) {
-        d->c = 5 * sample / 8 + 4;               /* its window starts at or after sample */
+        d->c = 5 * ((sample + 7) / 8) + 6;       /* c = 1 mod 5: p(c - 1) is a multiple of 8 */
+        d->slice = 0;
     } else {
         d->c = (sample / 8 + 3) | 1;             /* odd: its window starts 16-aligned */
     }
@@ -1287,21 +1290,25 @@ void demod_halves_c(const int8_t *xi, const int8_t *xq, unsigned n, int16_t *hi,
     }
 }
 
-/* 5 Msym/s: SEARCH half sums from candidate c, every sample of [p(c - 1), p(c + SEARCH - 1)). */
-static void halves5(const rx_demod_t *d, uint64_t c, int16_t *hi, int16_t *hq)
+/* Byte k of little-endian word w, signed. */
+#define SB(w, k) ((int32_t)((w) << (24 - 8 * (k))) >> 24)
+typedef uint32_t __attribute__((may_alias, aligned(4))) word_t;
+
+/* 5 Msym/s: the half sums of `groups` x 5 candidates from one with c = 1 mod 5, whose half
+ * starts at x (8-byte aligned): five per 8 samples, 2, 1, 2, 1, 2 samples. */
+static void halves5(const int8_t *xi, const int8_t *xq, unsigned groups, int16_t *hi, int16_t *hq)
 {
-    static const uint8_t len[5] = {2, 2, 1, 2, 1};
-    unsigned s = (unsigned)cand(c - 1), r = (unsigned)(c % 5);
-    for (unsigned k = 0; k < SEARCH; ++k, r = r == 4 ? 0 : r + 1) {
-        unsigned a = s & (RING - 1);
-        int32_t si = d->ri[a], sq = d->rq[a];
-        if (len[r] == 2) {
-            si += d->ri[a + 1];                  /* the mirrored head covers a + 1 = RING */
-            sq += d->rq[a + 1];
+    for (unsigned a = 0; a < 2; ++a) {
+        const int8_t *x = a ? xq : xi;
+        int16_t *h = a ? hq : hi;
+        for (unsigned g = 0; g < groups; ++g, x += 8, h += 5) {
+            uint32_t u = ((const word_t *)x)[0], v = ((const word_t *)x)[1];
+            h[0] = (int16_t)(SB(u, 0) + SB(u, 1));
+            h[1] = (int16_t)SB(u, 2);
+            h[2] = (int16_t)(SB(u, 3) + SB(v, 0));
+            h[3] = (int16_t)SB(v, 1);
+            h[4] = (int16_t)(SB(v, 2) + SB(v, 3));
         }
-        hi[k] = (int16_t)si;
-        hq[k] = (int16_t)sq;
-        s += len[r];
     }
 }
 
@@ -1403,11 +1410,21 @@ static int search(rx_demod_t *d)
 {
     const uint32_t n = SEARCH;
     int16_t *hi = d->sh[0], *hq = d->sh[1];
-    hi[0] = d->half[0];
-    hq[0] = d->half[1];
     if (d->fast) {
-        halves5(d, d->c, hi + 1, hq + 1);
+        if (!d->slice) {                         /* GROUP5 half sums, wrapping the ring */
+            unsigned at = (unsigned)(8 * (d->c - 1) / 5) & (RING - 1), part = (RING - at) / 8;
+            part = part < GROUP5 / 5 ? part : GROUP5 / 5;
+            hi[0] = d->half[0];
+            hq[0] = d->half[1];
+            halves5(d->ri + at, d->rq + at, part, hi + 1, hq + 1);
+            halves5(d->ri, d->rq, GROUP5 / 5 - part, hi + 1 + 5 * part, hq + 1 + 5 * part);
+        }
+        hi += SEARCH * d->slice;
+        hq += SEARCH * d->slice;
+        d->slice = d->slice == 4 ? 0 : d->slice + 1;
     } else {
+        hi[0] = d->half[0];
+        hq[0] = d->half[1];
         unsigned at = (unsigned)(8 * d->c - 8) & (RING - 1), part = (RING - at) / 8;  /* c odd */
         part = part < n ? part : n;
         demod_halves(d->ri + at, d->rq + at, part, hi + 1, hq + 1, evens);
@@ -1461,15 +1478,16 @@ static int search(rx_demod_t *d)
 
 /* 5 Msym/s: the search covers SEARCHED samples of every WINDOW, from an offset that a hash of
  * the window number picks, so its cost per capture unit is bounded and some window meets the
- * header whatever the frame length. Returns the first sample the search may use from c on. */
-static uint64_t searched(uint64_t c)
+ * header whatever the frame length. Returns the first sample the GROUP5 candidates from
+ * sample s may use: s itself when they fit in a searched span. */
+static uint64_t searched(uint64_t s)
 {
-    uint64_t s = cand(c - 1), w = s / WINDOW;
+    uint64_t w = s / WINDOW;
     uint64_t from = w * WINDOW + ((uint32_t)w * 2654435761u >> 18) % (WINDOW - SEARCHED);
     if (s < from) {
         return from;
     }
-    if (cand(c + SEARCH - 1) > from + SEARCHED) {
+    if (s + 8 * GROUP5 / 5 > from + SEARCHED) {
         return (w + 1) * WINDOW + (((uint32_t)w + 1) * 2654435761u >> 18) % (WINDOW - SEARCHED);
     }
     return s;
@@ -1491,8 +1509,14 @@ static int acquire(rx_demod_t *d)
             }
             continue;
         }
-        uint64_t start_s = d->fast ? cand(d->c - 1) : 8 * d->c - 8;
-        uint64_t end_s = d->fast ? cand(d->c + SEARCH - 1) : 8 * (d->c + SEARCH - 1);
+        /* At 5 Msym/s the half sums come GROUP5 at a time, c then at a multiple of 8 samples;
+         * the later slices only read them. */
+        if (d->fast && d->slice) {
+            search(d);
+            continue;
+        }
+        uint64_t start_s = d->fast ? 8 * (d->c - 1) / 5 : 8 * d->c - 8;
+        uint64_t end_s = d->fast ? start_s + 8 * GROUP5 / 5 : 8 * (d->c + SEARCH - 1);
         if (end_s > d->written) {
             break;                                   /* the block's last window is not here */
         }
@@ -1502,8 +1526,8 @@ static int acquire(rx_demod_t *d)
                                                       * ring's overwritten past */
             continue;
         }
-        if (d->fast && searched(d->c) != start_s) {
-            acquire_from(d, searched(d->c));         /* outside this window's searched span */
+        if (d->fast && searched(start_s) != start_s) {
+            acquire_from(d, searched(start_s));      /* outside this window's searched span */
             continue;
         }
         search(d);
