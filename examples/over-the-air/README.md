@@ -121,7 +121,7 @@ python3 examples/over-the-air/check.py notes/ota-uhd-first \
 
 VCM uses this same verifier: `--pattern 4,7,11 --hold 4` or
 `--pattern 4,11,13,17 --hold 1` at `--rate 5m`. Mixed modulation selects axes
-automatically; mixed `10m` is refused before device access.
+automatically; VCM at `10m` is refused before device access.
 [Measured results and exact rerun commands](../../docs/vcm.md).
 
 ## Laptop-driven live VCM
@@ -198,15 +198,6 @@ limit: allow 5.04 GB peak disk at 10 MS/s (raw plus converted IQ), plus optional
 sample burst saves 128 MB. `capture.json`, `iio.log` / `uhd.log`, `board.jsonl`,
 `settings.json`, `plan.json`, `revision.json`, `leandvb.log` and `payload.bin`
 retain settings, readbacks and evidence. Failures exit nonzero and preserve files.
-
-## PHY-solo A/B
-
-Use fresh directories and alternate the same mode with / without
-`--phy-solo`, then reverse order, keeping containment, path, gain and callsign
-fixed. Require exact payload recovery in every arm and compare FEC, MER, carrier
-offset and spectrum. Solo records must show Wi-Fi absent, PHY users 2 and both
-cores' IRQ routes zero before setup, then PHY users 0 after cleanup. A 10m result
-does not validate the full-bandwidth 26m667 emission or its fused renderer.
 
 Saved VCM BBFRAMEs/logs can be audited without IQ or devices. The original
 reports stay unchanged; an interior gap remains a failure, with exact segments

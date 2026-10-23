@@ -92,7 +92,7 @@ def fixture(out):
     for name, value in (('settings.json', live.settings(a)), ('sender.json', sender),
                         ('capture.json', dict(complete=True, overflows=None)),
                         ('cleanup.json', [dict(command=c, passed=True) for c in
-                         ('spiinput off', 'vcm off', 'vcm axes off')])):
+                         ('spiinput off', 'vcm off')])):
         (out/name).write_text(json.dumps(value))
     (out/'sent.bin').write_bytes(data)
     (out/'frames.bbf').write_bytes(b''.join(f['header']+f['payload'] for f in frames))
@@ -148,7 +148,7 @@ def test_verifier():
 def test_guards_and_hardware():
     script = str(ota.ROOT/'examples/over-the-air/live.py')
     planned = subprocess.check_output([sys.executable, '-S', script, '--plan', '--uri', 'ip:fake'])
-    assert json.loads(planned)['board_setup'] == ['vcm axes off', 'vcm on', 'spiinput usb gcs']
+    assert json.loads(planned)['board_setup'] == ['vcm on', 'spiinput usb gcs']
     for extra in ([], ['--key'], ['--uri', 'ip:fake'], ['--plan', '--rate', '10m'],
                   ['--plan', '--burst', '16000000'], ['--plan', '--schedule', '0:4,3:13']):
         proc = subprocess.run([sys.executable, '-S', script, *extra], capture_output=True)
@@ -162,7 +162,6 @@ def test_guards_and_hardware():
                 sent.append(text)
                 row = dict(cmd=text.split()[0])
                 if text == 'info': row.update(callsign='N0CALL')
-                elif text == 'vcm axes off': row.update(axes=False)
                 elif text == 'vcm on': row.update(enabled=fault != 'setup', pattern=[], mixed=False)
                 elif text == 'vcm off': row.update(enabled=False)
                 elif text == 'spiinput usb gcs': row.update(input='gcs', wire='usb')
@@ -192,7 +191,7 @@ def test_guards_and_hardware():
                 assert sent[-1].startswith('dvb ')
                 assert not any(c['passed'] for c in json.loads((out/'cleanup.json').read_text()))
             else:
-                assert sent[-3:] == ['spiinput off', 'vcm off', 'vcm axes off']
+                assert sent[-2:] == ['spiinput off', 'vcm off']
             assert (out/'sender.json').exists() and (out/'sent.bin').exists()
 
 

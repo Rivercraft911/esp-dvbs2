@@ -31,12 +31,12 @@ Use ESP-IDF v6.1; [install it with Espressif's ESP32-S3 guide](https://docs.espr
 Apply the XIAO overlay to a fresh, separate configuration and build directory:
 
 ```sh
-(. ~/.espressif/tools/activate_idf_v6.1.sh && cd firmware && \
-  idf.py -B ../notes/build-xiao -D SDKCONFIG="$PWD/../notes/sdkconfig.xiao" \
+(. ~/.espressif/tools/activate_idf_v6.1.sh && cd firmware/tx && \
+  idf.py -B ../../notes/build-xiao -D SDKCONFIG="$PWD/../../notes/sdkconfig.xiao" \
   -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.xiao' build)
 ```
 
-Use new output paths for the first overlay build; this preserves an existing `firmware/sdkconfig`.
+Use new output paths for the first overlay build; this preserves an existing `firmware/tx/sdkconfig`.
 The activation path shown is the tested macOS EIM path; use your own activation/export script
 if installed elsewhere. The defaults already select `esp32s3`.
 
@@ -51,7 +51,7 @@ bootloader. `--reset` uses the bridge's EN reset, or esptool's watchdog reset wh
 is present, then opens native USB without a reset transition.
 
 ```sh
-(. ~/.espressif/tools/activate_idf_v6.1.sh && cd firmware && idf.py build flash)
+(. ~/.espressif/tools/activate_idf_v6.1.sh && cd firmware/tx && idf.py build flash)
 python3 host/board.py info --reset
 ```
 
@@ -67,8 +67,7 @@ omit `flash`.
 select `rflo five-sixths`, which asks the PLL for six-fifths of the requested RF frequency
 and enables the radio's five-sixths divider. Either command accepts an optional signed
 offset in kHz, from −999 to 999; omitting it resets the offset to zero. The resulting
-RF request must stay within 2000..2450 MHz. Use `rfprofile off` with the divider or a
-nonzero offset: the stored calibration profile only supports direct tuning without an offset.
+RF request must stay within 2000..2450 MHz.
 Run records report `requested_rf_khz` and `requested_pll_khz`; measure the actual signal
 with a receiver. Tuning selections last until changed or the board restarts.
 
@@ -77,23 +76,24 @@ with a receiver. Tuning selections last until changed or the board restarts.
 | `info` | Firmware revision, clocks, memory and stored callsign |
 | `callsign [CALL\|clear]` | Read, set or clear the station ID |
 | `dvbdump MODCOD [rate] frames [peak] [decimation] [stall_ms] [--short]` | Samples over USB, radio off |
-| `dvbpace MODCOD [rate] seconds [peak] [stall_ms] [--short]` | Live encoder and bank deadlines, no playback |
-| `spiinput on\|quad\|off [ts\|gcs]` | Select [SPI payload input](spi-input.md) for the next run |
+| `dvbpace MODCOD [rate] seconds [peak] [stall_ms] [--short] [--fixture]` | Live encoder and bank deadlines, no playback |
+| `fecbench MODCOD [--short]` | BCH and LDPC cycles on one frame, radio off |
+| `spiinput on\|quad\|off\|usb [ts\|gcs] [replay]` | Select [SPI or USB payload input](spi-input.md) for the next run |
 | `vcm off\|on\|mixed\|N MODCOD...` | Opt-in [GCS rate switching](vcm.md); repeat each mode for N frames |
 | `spipins devkit\|xiao` | Select the SPI pin preset |
-| `spirx ms on\|quad [ts\|gcs] [loop [Mb/s [fault]]]` | Radio-off SPI receive diagnostic |
-| `spisend ms on\|quad [ts\|gcs] [MHz [Mb/s [fault]]]` | SPI test sender on a second S3; no RF |
-| `wifimem MODCOD [rate]` | Radio-off Wi-Fi startup and heap check |
+| `spirx ms on\|quad [ts\|gcs]` | Radio-off SPI receive diagnostic |
+| `spisend ms on\|quad [ts\|gcs] [MHz [Mb/s]]` | SPI test sender on a second S3; no RF |
 | `iddump [CALL] [40\|80]` | Morse ID samples at 10 kS/s, radio off |
+| `rflo direct\|five-sixths [kHz]` | Tuning path and offset for the next keyed run |
 | `tx MHz signal seconds [gain] [40\|80]` | Transmit a test tone |
-| `dvb MHz MODCOD [rate] seconds [gain] [peak] [--short]` | Transmit DVB-S2 |
+| `dvb MHz MODCOD [rate] seconds [gain] [peak] [--short] [--fixture]` | Transmit DVB-S2 |
 
 MODCOD selects modulation and code rate: QPSK 4..11, 8PSK 12..17. The
 [rate table](how-it-works.md#rates) gives the exact choices. QPSK defaults to 1 Msym/s.
 `--short` selects 16,200-bit short frames: QPSK MODCOD 4..10 at the default 1 Msym/s or `5m`, and 8PSK MODCOD 12..16 (3/5 .. 8/9, no short 9/10) at `5m` (not VCM, `10m` or faster; SPI input untested). Each frame carries (Kbch - 80) / 8 payload bytes: 1,454 at MODCOD 7 and 1,454 at 8PSK MODCOD 14. A pilot-on short frame has 8,370 QPSK or 5,598 8PSK symbols.
 Both modulations accept `5m`, `10m`, `20m` and `26m667`; `33m333` is QPSK only.
 Dumps are little-endian int16 I/Q with full scale 512. Golden CRCs use peak 128 and N0CALL.
-SPI argument ranges, custom pins and fault/replay options: [diagnostics](spi-input.md#diagnostics).
+SPI argument ranges, custom pins and the replay option: [diagnostics](spi-input.md#diagnostics).
 
 All three IQ helpers (`host/decode.py`, `host/morse.py`, `examples/live-video/receive.py`)
 accept these `--format` aliases. Each pair is I followed by Q, little endian.
@@ -111,9 +111,7 @@ python3 host/board.py "dvbpace 11 26m667 10" --timeout 120
 ```
 
 Completion records include `main_stack_bytes` and `main_stack_min_free`: the
-main task's configured stack size and minimum unused bytes since boot. The
-`wifimem` result also reports the minimum before setup, after encoder startup
-and after the Wi-Fi probe. A reboot clears the VCM pattern; confirm `vcm:true`
+main task's configured stack size and minimum unused bytes since boot. A reboot clears the VCM pattern; confirm `vcm:true`
 in the result before treating a dump or pace as a VCM check.
 
 ## Station identification
@@ -130,8 +128,8 @@ python3 host/board.py "callsign KJ5SCH"
 ```
 
 Successful keyed runs include 20 WPM Morse at the start and end; the implementation also
-schedules ID every nine minutes. Console transmissions are limited to 60 s, including both
-IDs. Too-short requests fail before startup. A fatal fault stops immediately, so a closing
+schedules ID every nine minutes. `dvb` runs are limited to 540 s and `tx` to 60 s,
+including both IDs. Too-short requests fail before startup. A fatal fault stops immediately, so a closing
 ID cannot be guaranteed. The receiver must reacquire after Morse.
 
 The US identification rule requires identification at the end of a communication and at
@@ -169,7 +167,7 @@ After setting your assigned callsign, the keyed syntax is:
 
 ```
 tx MHz signal seconds [gain] [40|80]
-dvb MHz MODCOD [5m|10m|20m|26m667|33m333] seconds [gain] [peak] [--fixture] [--phy-solo] [--fused]
+dvb MHz MODCOD [5m|10m|20m|26m667|33m333] seconds [gain] [peak] [--fixture]
 ```
 
 `tx` signals are `tone`, `tone1`..`tone511`, `two`, `neg`, `low`, `ionly`, `qonly`,
@@ -187,29 +185,16 @@ for signals above 20 MHz occupied bandwidth; B200 captures now decode 36/40 MHz 
 The [RF records](../results/2026-10-20-wide-filter/README.md) identify prepared payloads and receiver limits.
 
 At QPSK 33m333 or 8PSK 26m667, `--fixture` repeats the prepared synthetic frame
-used by `dvbpace`, with the same payload copy. Payload ingress must be off.
+used by `dvbpace --fixture`, with the same payload copy. Payload ingress must be off.
 The record includes `prepared_fixture:true`. This separates encoder/copy time
 from generating the default contiguous xorshift stream.
 
-`dvb` and `dvbpace` accept two independent experimental options. Without them,
-the existing renderer, Wi-Fi lifetime, queue sizing and payload stream stay selected.
-`--phy-solo` starts and calibrates Wi-Fi, holds the PHY independently, then stops and
-deinitializes Wi-Fi before playback. It releases that hold on every exit. Solo paces
-are limited to 60 seconds. Into the S3 receiver at 1 Msym/s, PHY-solo keying gave 0 failed
+The transmitter never starts Wi-Fi. At boot it powers the radio, enables the PHY through its
+Bluetooth modem bit, which runs the full calibration once, and keeps it enabled. No Wi-Fi
+interrupt or task runs during playback. `--phy-solo`, which used to stop Wi-Fi before playback,
+is still accepted and changes nothing. Into the S3 receiver at 1 Msym/s, PHY-solo keying gave 0 failed
 frames in 103,453, against 2 in 51,791 with Wi-Fi up: Wi-Fi's activity caused rare short
 disturbances of the transmitted signal ([records](../results/2026-10-23-tx-phy-solo/README.md)).
-
-At 8PSK `26m667`, `--fused` automatically tries six table reads instead of eight.
-It preserves independent rounding and DAC words. The extra 12 KiB of tables displaces
-24 static queue pages; one or two internal heap regions restore the full **54 pages**.
-Admission happens after Wi-Fi setup or solo teardown, retaining the 20,000 B floor
-plus 2,048 B guard. Insufficient or fragmented RAM falls back to the original static
-queue, with `fused_tails:false`; no pages are dropped. `fused_requested`, `fused_tails`,
-`queue_sizing` and `queue_layout` record the decision. The common 64 KiB store and
-5 Msym/s self-check's 22,351 B heap floor are retained. The fused kernel has a separate
-instruction-cache lock region; playback locks only the selected region. Default playback
-retains main's 1,632-byte lock footprint, with no fused dispatch in its page loops.
-R&D timing is motivation; this port still needs coordinator timing and RF checks.
 
 The automatic transmit-filter selector is retained. Register readbacks do not establish
 filter flatness, radiated power or emission-mask compliance. Historical keyed records in

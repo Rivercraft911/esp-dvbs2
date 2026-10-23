@@ -375,10 +375,10 @@ def stream(link, source, *, cmd, kind, seconds, dump=False, sink=None, mbps=0,
                         schedule_index += 1
                     if selected:
                         mc = int(selected)
-                        if rate not in ('1m', '5m', '10m') or (rate == '1m' and mc >= 12):
-                            raise ValueError('VCM supports 1m QPSK and 5m/10m')
+                        if rate not in ('1m', '5m') or (rate == '1m' and mc >= 12):
+                            raise ValueError('VCM supports 1m QPSK and 5m')
                         if mixed and rate != '5m':
-                            raise ValueError('mixed VCM needs 5m; 10m exceeds encoder budget')
+                            raise ValueError('mixed VCM needs 5m')
                         if not mixed and (mc < 12) != (modcod < 12):
                             raise ValueError('MODCOD changes must stay within the starting modulation; use --mixed at 5m')
                         wire = message(bytes((mc,)), stats['next_seq'], 3)
@@ -613,7 +613,7 @@ def main(argv=None):
     s.add_argument('--port'); s.add_argument('--modcod', type=int, default=4)
     s.add_argument('--rate', choices=('1m', '5m', '10m', '20m', '26m667', '33m333'), default='1m')
     controls = s.add_mutually_exclusive_group()
-    controls.add_argument('--control', type=Path, help='live MODCOD text file; enables GCS VCM at 1m/5m/10m')
+    controls.add_argument('--control', type=Path, help='live MODCOD text file; enables GCS VCM at 1m/5m')
     controls.add_argument('--schedule', type=control_schedule, help='seconds after opening ID:MODCOD, e.g. 0:4,3:7,6:11,9:4')
     s.add_argument('--mixed', action='store_true', help='allow QPSK/8PSK controls at 5m; requires --control or --schedule')
     s.add_argument('--seconds', type=int, default=10); s.add_argument('--frames', type=int, default=24)
@@ -652,12 +652,12 @@ def main(argv=None):
             raise ValueError('--fec requires --kind file')
         live = a.control or a.schedule
         if a.mixed and (not live or a.rate != '5m'):
-            raise ValueError('--mixed needs --control/--schedule and --rate 5m (10m exceeds encoder budget)')
+            raise ValueError('--mixed needs --control/--schedule and --rate 5m')
         if live and a.fec:
             raise ValueError('--control/--schedule with --fec is not supported')
         if live:
-            if kind == 'ts' or a.rate not in ('1m', '5m', '10m'):
-                raise ValueError('--control needs file/GCS at 1m, 5m or 10m; TS VCM needs Annex D')
+            if kind == 'ts' or a.rate not in ('1m', '5m'):
+                raise ValueError('--control needs file/GCS at 1m or 5m; TS VCM needs Annex D')
             selected = [int(a.control.read_text().strip())] if a.control else [mc for _, mc in a.schedule]
             if a.schedule and (selected[0] != a.modcod or a.schedule[-1][0] >= a.seconds-2):
                 raise ValueError('schedule must start at --modcod and finish before the send window ends')

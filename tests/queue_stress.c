@@ -124,7 +124,7 @@ int main(int argc, char **argv)
     }
     assert(!dvb.queue_empty && wraps >= 75 && sequence_wraps == 1 && early_notifications == 1);
     stop_encoder(); printf("}\n");
-    assert(live_allocations == 0);
+    assert(run_returned());
     printf("@{\"test\":\"queue_stress\",\"modcod\":%u,\"pages\":%u,\"wraps\":%u,"
            "\"early_notifications\":%u,\"data_hash\":%u}\n",
            mc,pages,wraps,early_notifications,(unsigned)data_hash);

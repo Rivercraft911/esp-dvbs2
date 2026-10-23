@@ -58,8 +58,12 @@ def test_decode():
 
 def test_dummy_decode():
     structures = json.loads((ROOT/"tests/data/psk8_26m667_frames.json").read_text())
-    for mc, full, dummies in ((13,16,0),(15,14,8),(17,12,22)):
-        before = structures[f"{mc}/3/80/16"]["dummy_before"]
+    # Board dumps wait for whole frames: the pinned layouts have no dummies. The forced
+    # layouts keep the dummy schedule that earlier, timing-dependent dumps produced.
+    for mc, field, full, dummies in ((13,"dummy_before",16,0),(15,"dummy_before",16,0),
+                                     (17,"dummy_before",16,0),(15,"forced_dummy_before",14,8),
+                                     (17,"forced_dummy_before",12,22)):
+        before = structures[f"{mc}/3/80/16"][field]
         layout = decode.stream_layout(mc,16,before)
         assert layout["expected_payload_frames"] == full
         assert layout["expected_dummy_frames"] == dummies
@@ -77,7 +81,7 @@ def test_dummy_decode():
     status = "FRAMELOCK 1\n" + "LDPCCORR = 0\nBCHCORR = 0\n" * 11
     report = decode.summarize(status,frames,got)
     assert report["payload_frames"] == 11 and report["bb_frames"] == 13
-    before = structures["17/3/80/16"]["dummy_before"]
+    before = structures["17/3/80/16"]["forced_dummy_before"]
     with tempfile.TemporaryDirectory() as tmp:
         capture = Path(tmp)/"dump.cfile"
         capture.write_bytes(bytes(8))
@@ -115,7 +119,8 @@ def row(mc, token):
                 late_fills=0, late_switches=0, fatal_late=0, min_fill_slack_cycles=1,
                 frames_played=1, encoder_pie=15, frames_encoded=20, prefill_frames=3,
                 encoder_stack_min_free=512, profile=dict(shaped_words=80, reused_words=20, fill_words=100),
-                paced_wifi_up=True, wifi_free_up=22351, wifi_min_free=22351,
+                run_memory=dict(low=[30128, 37440, 38672], high=[0, 25920, 32768],
+                                psram=[1440, 291600, 393216]),
                 queue_empty=0, queue_low_pages=1, positions=0, max_fill_call_cycles=0)
 
 
@@ -139,34 +144,43 @@ def test_pace_and_crc():
 
 
 def test_8psk_gates():
-    records = ROOT/"docs/measurements"
-    pace = [json.loads(line) for line in
-            (records/"2026-10-18-8psk-26m667-pace.jsonl").read_text().splitlines()]
-    assert {r["modcod"] for r in pace} == {13, 15, 17}
+    # Current records: the 05510f7 keyed runs behind the ceilings, and the board self-check of
+    # the same firmware that these gates passed (results/2026-10-23-tx-self-check).
+    keyed_runs = [json.loads(line) for line in
+                  (ROOT/"results/2026-10-23-tx-table-8psk/runs.jsonl").read_text().splitlines()]
+    keyed = {}
+    for run in keyed_runs:
+        if run["set"] == "run" and not run["row"].endswith("-ts"):
+            rec = next(x for x in run["board"] if x.get("cmd") == "dvb" and "status" in x)
+            if rec["modcod"] >= 12:
+                keyed[rec["modcod"]] = rec
+    pace = [r for r in (json.loads(line) for line in
+            (ROOT/"results/2026-10-23-tx-self-check/runs.jsonl").read_text().splitlines())
+            if r.get("cmd") == "dvbpace" and "status" in r and r["modcod"] >= 12 and r["sps_num"] == 3]
+    assert {r["modcod"] for r in pace} == {13, 15, 17} == set(keyed)
     for r in pace:
         mc = r["modcod"]
-        keyed = next(json.loads(line) for line in
-            (records/"2026-10-18-8psk-26m667-keyed.jsonl").read_text().splitlines()
-            if json.loads(line)["modcod"] == mc)
-        assert check.PSK8_KEYED[mc] == tuple(keyed[k] for k in
+        assert check.PSK8_KEYED[mc] == tuple(keyed[mc][k] for k in
             ("max_fill_cycles", "encode_cycles_mean", "encode_cycles_live_max"))
-        check.check_pace([r], mc, "26m667", 20)
+        check.check_pace([r], mc, "26m667", 10)
         fill, mean, live = check.PSK8_KEYED[mc]
         for key, value in (("max_fill_cycles", fill + check.FILL_OVERHEAD + 1),
                            ("encode_cycles_mean", mean + check.ENCODER_OVERHEAD + 1),
                            ("encode_cycles_live_max", live + check.ENCODER_OVERHEAD + 1),
-                           ("dummy_steady", 20 * check.PSK8_DUMMIES_PER_SECOND[mc] + 1),
+                           ("dummy_steady", 10 * check.PSK8_DUMMIES_PER_SECOND[mc] + 1),
                            ("dummy_startup", 5), ("queue_stream_bound_misses", 2),
-                           ("frames_played", 10), ("queue_pages", 50),
-                           ("wifi_min_free", 19999), ("queue_empty", 1),
+                           ("frames_played", 10), ("queue_pages", 50), ("queue_empty", 1),
+                           ("run_memory", dict(r["run_memory"], low=[40000, 40000, 38672])),
+                           ("run_memory", dict(r["run_memory"], psram=[0, 0, 262144])),
                            ("queue_sizing", dict(automatic=True, ready=False))):
-            rejects(check.check_pace, [dict(r, **{key: value})], mc, "26m667", 20)
-        # Ten-second self-check runs scale dummy and data limits, not timing ceilings.
-        short = dict(r, seconds=10, dummy_steady=r["dummy_steady"]//2,
-                     frames_played=r["frames_played"]//2)
-        check.check_pace([short], mc, "26m667", 10)
-        rejects(check.check_pace, [dict(short, dummy_steady=10*check.PSK8_DUMMIES_PER_SECOND[mc]+1)],
-                mc, "26m667", 10)
+            rejects(check.check_pace, [dict(r, **{key: value})], mc, "26m667", 10)
+    # Every pace of that self-check passes the public gates.
+    for r in (json.loads(line) for line in
+              (ROOT/"results/2026-10-23-tx-self-check/runs.jsonl").read_text().splitlines()):
+        if r.get("cmd") == "dvbpace" and "status" in r and not r.get("vcm"):
+            parts = r["command"].split()
+            token = parts[2] if len(parts) == 4 else ""
+            check.check_pace([r], r["modcod"], token, int(parts[-1]))
     assert "17/3/80/16" in check.DUMPS
     assert all((mc, "26m667", 10) in check.PACES for mc in (13, 15, 17))
 
@@ -180,19 +194,17 @@ def test_keep_going():
     def run(port, command, **kwargs):
         sent.append(command)
         if command == "info":
-            assert kwargs["reset"]
+            if not kwargs["reset"]:
+                return [dict(heap_after_boot=dict(allocs=0, frees=0, failed=0))]
             return [dict(firmware=revision, callsign="N0CALL")]
         if command.startswith("dvbdump"):
             raise RuntimeError("simulated USB dump failure")
         if command.startswith("vcm"):
             return [dict(cmd="vcm", axes=False, enabled=False, pattern=[4, 11, 13, 17], hold_frames=1)]
         parts = command.split()
-        mc, token = int(parts[1]), parts[2] if len(parts) == 4 or parts[0] == "wifimem" else ""
+        mc, token = int(parts[1]), parts[2] if len(parts) == 4 else ""
         r = row(mc, token)
-        if parts[0] == "wifimem":
-            r["frames_played"] = 0
-        else:
-            r["seconds"] = int(parts[-1])
+        r["seconds"] = int(parts[-1])
         return [r]
     fake = types.SimpleNamespace(run=run, resolve_port=lambda p: p,
                                  reserve_port=lambda *args, **kw: contextlib.nullcontext())
@@ -202,9 +214,10 @@ def test_keep_going():
             patch.object(sys, "argv", ["check.py", str(Path(tmp)/"out")]), contextlib.redirect_stdout(io.StringIO()):
         assert check.main() == 1
         summary = (Path(tmp)/"out/summary.tsv").read_text()
-        assert "PASS\tWi-Fi startup heap" in summary and "FAIL\tdump" in summary
-    assert len(sent) == 1+len(check.DUMPS)+len(check.PACES)+1+5
-    assert all(s.split()[0] in ("info", "vcm", "dvbdump", "dvbpace", "wifimem") for s in sent)
+        assert "PASS\tdvbpace 11 33m333 10" in summary and "FAIL\tdump" in summary
+    assert len(sent) == 1+len(check.DUMPS)+len(check.PACES)+3+1
+    assert "PASS\tno heap after boot" in summary
+    assert all(s.split()[0] in ("info", "vcm", "dvbdump", "dvbpace") for s in sent)
 
 
 def test_tones():

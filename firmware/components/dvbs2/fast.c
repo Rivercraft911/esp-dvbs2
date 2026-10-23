@@ -18,12 +18,16 @@
 #include "private.h"
 #include "fast_tables.h"
 
+#include <stdbool.h>
 #include <string.h>
 
 #ifdef DVBS2_IRAM
 #define HOT __attribute__((section(".iram1"), noinline))
+/* Transmitter-only 8PSK paths: their own section, so other apps can drop them. */
+#define LOFTY_HOT __attribute__((section(".iram1.lofty_read"), noinline))
 #else
 #define HOT
+#define LOFTY_HOT
 #endif
 
 #define ROW 48                  /* bytes per parity row: 360 bits + 24 spare */
@@ -49,6 +53,7 @@ struct dvbs2_fast {
     const dvbs2_mode *mode;
     unsigned pilots, pie, ldxq_bias;
     unsigned bch_bytes, groups, q, data_symbols, pilot_blocks;
+    void (*pack)(const uint8_t *, uint32_t *, uint32_t); // unrolled LDPC pack, or NULL
     uint8_t scratch[] __attribute__((aligned(16)));
 };
 #ifdef __XTENSA__
@@ -127,6 +132,7 @@ void dvbs2_pie_bswap(const uint32_t *src, uint8_t *block, unsigned vectors, unsi
                      uint8_t *tail);
 uint32_t dvbs2_pie_ldxq(const uint32_t *table);
 uint32_t dvbs2_pie_crc8(const uint8_t *p, unsigned quads, const uint8_t *tables, uint32_t crc);
+uint32_t dvbs2_pie_crc8_packet(const uint8_t *p, const uint8_t *cols); /* ts_pie.S */
 void dvbs2_pie_nibbles(const uint8_t *src, uint8_t *dst, unsigned vectors);
 #define PIE_MASK (DVBS2_PIE_BB | DVBS2_PIE_BCH | DVBS2_PIE_LDPC | DVBS2_PIE_MAP)
 #else
@@ -195,6 +201,7 @@ int dvbs2_fast_prepare(dvbs2_fast *f, const dvbs2_mode *mode, int pilots, unsign
     f->pie = pie & (PIE_MASK | DVBS2_BCH_NIBBLE | DVBS2_MAP_SPARSE | DVBS2_MAP_QUADS | DVBS2_RO_20 | DVBS2_VCM);
     f->ldxq_bias = 0;
     f->pair_bch = NULL;
+    f->pack = NULL;
 #ifdef DVBS2_PIE
     if (f->pie & DVBS2_PIE_MAP) {
         /* The TRM gives EE.LDXQ.32 the address as + 4 index; Espressif's QEMU
@@ -230,10 +237,10 @@ int dvbs2_fast_prepare(dvbs2_fast *f, const dvbs2_mode *mode, int pilots, unsign
 
 int dvbs2_fast_cache_bch(dvbs2_fast *f, uint8_t *table)
 {
-    if (!f || !f->mode || f->mode->t == 8 || ((uintptr_t)table & 15)) {
+    if (!f || !f->mode || ((uintptr_t)table & 15)) {
         return -1;
     }
-    const uint8_t *source = f->mode->short_frame ? fast_bch_byte_12s :
+    const uint8_t *source = f->mode->short_frame ? fast_bch_byte_12s : f->mode->t == 8 ? fast_bch_pair_8 :
                             f->mode->t == 12 ? fast_bch_byte_12 : fast_bch_byte_10;
     if (table) memcpy(table, source, DVBS2_BCH_CACHE_BYTES);
     f->byte_bch = table ? table : source;
@@ -241,28 +248,78 @@ int dvbs2_fast_cache_bch(dvbs2_fast *f, uint8_t *table)
     return 0;
 }
 
-/* T1[v] = x^8*T0[v] mod g. Only its low 128 bits need another
- * table. Its high <=64 bits fit T0's unused high-vector padding.
- * The caller has already made byte_bch resident and owns both allocations. */
-int dvbs2_fast_cache_bch_pair(dvbs2_fast *f, uint8_t *low)
+/* t = 10/12 pairs. T0[v] = v*x^r mod g and T1[v] = x^8*T0[v] mod g, each kept one byte up
+ * in a 32-byte register image: byte 0 and the bytes past the remainder are zero, low
+ * halves at 16v, high halves at 4096+16v. The remainder word then holds both indices
+ * with four junk low address bits, which VLD ignores. T1 fills the caller's table;
+ * the resident T0 is rewritten in place. Both live until prepare/cache_bch. */
+int dvbs2_fast_cache_bch_pair(dvbs2_fast *f, uint8_t *pair)
 {
-    if (!f || !f->mode || !low || ((uintptr_t)low&15) || f->bch_bytes <= 16 ||
+    if (!f || !f->mode || !pair || ((uintptr_t)pair&15) || f->bch_bytes <= 16 ||
         f->bch_bytes > 24 || f->mode->kbch%16 || (f->pie&DVBS2_BCH_NIBBLE) ||
         f->byte_bch == fast_bch_byte_12 || f->byte_bch == fast_bch_byte_10 ||
         f->byte_bch == fast_bch_byte_12s) return -1;
     uint8_t *t = (uint8_t *)f->byte_bch;
+    const unsigned n = f->bch_bytes;
+#define T0(v,j) ((j) < 16 ? t[16*(v)+(j)] : t[4096+16*(v)+(j)-16])
     for (unsigned v = 0; v < 256; ++v) {
-        unsigned head = t[16*v];
-        for (unsigned j = 0; j < 24; ++j) {
-            unsigned next = j+1;
-            uint8_t x = next < 16 ? t[16*v+next] : next < 24 ? t[4096+16*v+next-16] : 0;
-            x ^= j < 16 ? t[16*head+j] : t[4096+16*head+j-16];
-            if (j < 16) low[16*v+j] = x;
-            else t[4096+16*v+8+j-16] = x;
+        const unsigned head = t[16*v];
+        for (unsigned j = 0; j < 32; ++j) {
+            const unsigned k = j-1; /* remainder byte at register byte j */
+            uint8_t x = 0;
+            if (j >= 1 && k < n) x = (k+1 < n ? T0(v,k+1) : 0) ^ T0(head,k);
+            pair[j < 16 ? 16*v+j : 4096+16*v+j-16] = x;
         }
     }
-    f->pair_bch = low;
+    for (unsigned v = 0; v < 256; ++v) {
+        uint8_t r[24];
+        for (unsigned k = 0; k < n; ++k) r[k] = T0(v,k);
+        for (unsigned j = 0; j < 32; ++j)
+            t[j < 16 ? 16*v+j : 4096+16*v+j-16] = j >= 1 && j-1 < n ? r[j-1] : 0;
+    }
+#undef T0
+    f->pair_bch = pair;
     return 0;
+}
+
+/* Normal frames at 2/3, 5/6 and 9/10 pack their parity with an unrolled kernel: q even,
+ * so every 16 columns repeat the same shifts, and a fixed start fill (nbch mod 32). Only a
+ * caller that wants it links the kernels in. */
+int dvbs2_fast_cache_pack(dvbs2_fast *f)
+{
+    if (!f || !f->mode || f->mode->short_frame) return -1;
+#ifdef DVBS2_PIE
+    void dvbs2_pie_pack18(const uint8_t *, uint32_t *, uint32_t);
+    void dvbs2_pie_pack30(const uint8_t *, uint32_t *, uint32_t);
+    void dvbs2_pie_pack60(const uint8_t *, uint32_t *, uint32_t);
+    const unsigned have = 8*(f->mode->nbch/8%4);
+    f->pack = f->q == 18 && have == 16 ? dvbs2_pie_pack18 : f->q == 30 && have == 16 ? dvbs2_pie_pack30 :
+              f->q == 60 && have == 0 ? dvbs2_pie_pack60 : NULL;
+    return f->pack ? 0 : -1;
+#else
+    return -1;
+#endif
+}
+
+const char *dvbs2_fast_bch_variant(const dvbs2_fast *f, const void **table, const void **pair)
+{
+    *table = f->bch;
+    *pair = NULL;
+    const int nibble = !!(f->pie & DVBS2_BCH_NIBBLE);
+#ifdef DVBS2_PIE
+    if (f->pie & DVBS2_PIE_BCH) {
+        if (nibble || f->bch_bytes < 16) return "nibble";
+        *table = f->byte_bch;
+        if (f->bch_bytes == 16) return "pair";
+        *pair = f->pair_bch;
+        return f->pair_bch ? "split-pair" : "byte";
+    }
+#endif
+    (void)nibble;
+    if (!f->pair_bch) return "nibble";
+    *table = f->byte_bch;
+    *pair = f->pair_bch;
+    return "split-pair";
 }
 
 /* QPSK quad streams have no mapping lookup table. Cache their complete hot
@@ -426,6 +483,40 @@ HOT int dvbs2_fast_bb_gcs(const dvbs2_fast *f, dvbs2_workspace *ws,
     return 0;
 }
 
+#if defined(DVBS2_PIE) || defined(DVBS2_TS_COLUMN_MODEL)
+/* DVBS2_TS_COLUMN_MODEL: host tests supply a C dvbs2_pie_crc8_packet with the kernel's reads. */
+#ifndef DVBS2_PIE
+uint32_t dvbs2_pie_crc8_packet(const uint8_t *p, const uint8_t *cols);
+#endif
+/* ts_pie.S reads the 14 aligned blocks from align_down(p, 16). Use it only where all of them
+ * lie inside the caller's buffer; packets at its edges take the byte tables. */
+#define TS_KERNEL_SPAN 224u
+static inline bool ts_span_inside(const uint8_t *p, const uint8_t *buf, size_t n)
+{
+    const uintptr_t first = (uintptr_t)p & ~(uintptr_t)15;
+    return first >= (uintptr_t)buf && first + TS_KERNEL_SPAN <= (uintptr_t)(buf + n);
+}
+
+/* Column bytes for dvbs2_pie_crc8_packet: chunk c, bit k (top bit first), position 16c + j holds
+ * the CRC-8 of a 187-byte packet whose only set bit is bit k of byte 16c + j. Built once from
+ * the byte table: that bit gives t0[1 << k] at its own byte, then each later zero byte maps
+ * the CRC through t0 again. Positions 187..191 of the last chunk belong to the next packet and
+ * keep zero columns. */
+static uint8_t ts_cols[12 * 8 * 16 + 16] __attribute__((aligned(16)));
+static bool ts_cols_ready;
+
+static void ts_cols_build(const uint8_t *t0)
+{
+    uint8_t v[8];
+    for (unsigned k = 0; k < 8; ++k) v[k] = t0[1u << k];
+    for (int i = 186; i >= 0; --i) {
+        for (unsigned k = 0; k < 8; ++k) ts_cols[(i / 16) * 128 + (7 - k) * 16 + i % 16] = v[k];
+        for (unsigned k = 0; k < 8; ++k) v[k] = t0[v[k]];
+    }
+    ts_cols_ready = true;
+}
+#endif
+
 int dvbs2_fast_bb_ts(const dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_state *state,
                          const uint8_t *input, size_t input_bytes)
 {
@@ -440,11 +531,22 @@ int dvbs2_fast_bb_ts(const dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_state *s
         }
     }
     const unsigned syncd = ((188 - state->packet_pos) % 188) * 8;
-    /* LDPC parity scratch is idle until BB and BCH finish. Keep the four CRC-8
-     * tables here during TS adaptation, away from the flash mapper/PRBS lines.
-     * The borrowed payload occupies the start of scratch, before f->p. */
-    memcpy(f->p, fast_crc8, sizeof fast_crc8);
-    const uint8_t *crc8 = f->p;
+    /* Without PIE, the LDPC parity scratch (idle until BB and BCH finish) holds the four
+     * CRC-8 tables during TS adaptation, away from the flash mapper/PRBS lines. The
+     * borrowed payload occupies the start of scratch, before f->p. With PIE, whole packets
+     * use the resident columns and only the two partial packets of a frame read the tables. */
+#if defined(DVBS2_PIE)
+    const bool cols = (f->pie & DVBS2_PIE_BB) != 0;
+#elif defined(DVBS2_TS_COLUMN_MODEL)
+    const bool cols = true;
+#else
+    const bool cols = false;
+#endif
+#if defined(DVBS2_PIE) || defined(DVBS2_TS_COLUMN_MODEL)
+    if (cols && !ts_cols_ready) ts_cols_build(fast_crc8);
+#endif
+    if (!cols) memcpy(f->p, fast_crc8, sizeof fast_crc8);
+    const uint8_t *crc8 = cols ? fast_crc8 : f->p;
     bb_header(ws->bits, crc8, 0xf0, (unsigned)(input_bytes * 8), 1504, 0x47, syncd);
     bb_fill(f, ws->bits, input, input_bytes);
     /* CRC-8 of each packet's 187 bytes after sync; the sync byte position
@@ -467,8 +569,14 @@ int dvbs2_fast_bb_ts(const dvbs2_fast *f, dvbs2_workspace *ws, dvbs2_ts_state *s
         /* Four bytes per step: CRC-8 is linear, so
          * crc' = T3[crc ^ b0] ^ T2[b1] ^ T1[b2] ^ T0[b3], Tk = byte table^(k+1). */
         const uint8_t *t0 = crc8, *t1 = crc8 + 256, *t2 = crc8 + 512, *t3 = crc8 + 768;
+#if defined(DVBS2_PIE) || defined(DVBS2_TS_COLUMN_MODEL)
+        if (cols && state->packet_pos == 1 && run == 187 && ts_span_inside(p, input, input_bytes)) {
+            crc = (uint8_t)dvbs2_pie_crc8_packet(p, ts_cols); /* a whole packet by columns */
+            p = end;
+        }
+#endif
 #ifdef DVBS2_PIE
-        if (f->pie & DVBS2_PIE_BB) {
+        if ((f->pie & DVBS2_PIE_BB) && p != end) {
             const unsigned quads = (unsigned)(end - p) / 4;
             crc = (uint8_t)dvbs2_pie_crc8(p, quads, t0, crc);
             p += 4 * quads;
@@ -529,8 +637,15 @@ HOT void dvbs2_fast_bch(dvbs2_fast *f, dvbs2_workspace *ws)
             words = (bytes + 3) / 4;
         } else if (f->bch_bytes > 16 && !(f->pie & DVBS2_BCH_NIBBLE)) {
             if (f->pair_bch) {
-                void dvbs2_pie_bch_pair32(const uint8_t *, unsigned, const uint8_t *, const uint8_t *, uint8_t *);
-                dvbs2_pie_bch_pair32(ws->bits,bytes/2,f->byte_bch,f->pair_bch,(uint8_t *)w);
+                /* 16-byte groups; the last group's lookahead is a zero-padded copy of
+                 * the final partial vector, which the kernel then overwrites with
+                 * the 32-byte register image. */
+                void dvbs2_pie_bch_shift(const uint8_t *, unsigned, const uint8_t *, const uint8_t *,
+                                         uint8_t *, unsigned);
+                const unsigned groups = bytes/16, tail = bytes%16;
+                memcpy(w,ws->bits+16*groups,tail);
+                dvbs2_pie_bch_shift(ws->bits,groups,f->byte_bch,f->pair_bch,(uint8_t *)w,tail/2);
+                memmove(w,(uint8_t *)w+1,f->bch_bytes);
             } else dvbs2_pie_bch_byte(ws->bits, bytes, f->byte_bch, (uint8_t *)w);
             words = (bytes + 3) / 4; /* byte kernel already consumed the tail */
         } else {
@@ -541,14 +656,16 @@ HOT void dvbs2_fast_bch(dvbs2_fast *f, dvbs2_workspace *ws)
 #endif
     {
         if (f->pair_bch) {
-            uint8_t *r = (uint8_t *)w;
+            uint8_t r[32] = {0};
             for (unsigned i = 0; i < bytes; i += 2) {
-                unsigned a = r[0]^ws->bits[i], b = r[1]^ws->bits[i+1];
-                for (unsigned j = 0; j < 24; ++j)
-                    r[j] = (j+2 < 24 ? r[j+2] : 0) ^
-                        (j < 16 ? f->pair_bch[16*a+j] : f->byte_bch[4096+16*a+8+j-16]) ^
-                        f->byte_bch[j < 16 ? 16*b+j : 4096+16*b+j-16];
+                r[1] ^= ws->bits[i]; r[2] ^= ws->bits[i+1];
+                const uint8_t *a = f->pair_bch+16*r[1], *b = f->byte_bch+16*r[2];
+                for (unsigned j = 0; j < 32; ++j) {
+                    const unsigned at = j < 16 ? j : 4096+j-16;
+                    r[j] = (j+2 < 32 ? r[j+2] : 0) ^ a[at] ^ b[at];
+                }
             }
+            memcpy(w,r+1,f->bch_bytes);
             words = (bytes+3)/4;
         } else bch_c(f, ws->bits, words, w);
     }
@@ -758,7 +875,8 @@ HOT void dvbs2_fast_ldpc(dvbs2_fast *f, dvbs2_workspace *ws)
         uint32_t pending;
         const unsigned have = pack_start(ws->bits, start, &pending);
         uint32_t *packed = (uint32_t *)f->scratch;
-        dvbs2_pie_pack(f->p, f->cols, f->q, packed, pending, have);
+        if (f->pack) f->pack(f->p, packed, pending);
+        else dvbs2_pie_pack(f->p, f->cols, f->q, packed, pending, have);
         uint8_t *dst = ws->bits + base;
         const uintptr_t at = (uintptr_t)dst;
         uint8_t *block = (uint8_t *)((at - 1) & ~(uintptr_t)15);
@@ -887,12 +1005,6 @@ static __attribute__((noinline)) void map_c(const dvbs2_fast *f, const uint8_t *
 
 HOT void dvbs2_fast_pl(const dvbs2_fast *f, uint8_t *output)
 {
-#if defined(DVBS2_IRAM) && defined(__XTENSA__)
-    /* The 8PSK column offsets are computed now, not literals, which shrank this file's IRAM literal
-     * pool by 8 bytes. stream_assert.ld pins the default vector renderer's address to main's: two
-     * unused literals restore it. */
-    __asm__ volatile("" :: "r"(0x5a5a1234u), "r"(0xa5a54321u));
-#endif
     memcpy(output, f->header, 90);
     for (unsigned b = 0; b < f->pilot_blocks; ++b) {
         memcpy(output + 90 + 1440 * (b + 1) + 36 * b, fast_pilots + 36 * b, 36);
@@ -924,15 +1036,21 @@ static HOT void map_pie(dvbs2_fast *f, const uint8_t *bits, uint8_t *output)
         uint8_t *dst = output + 90 + k + 36 * r;
         const uintptr_t at = (uintptr_t)dst;
         uint8_t *block = (uint8_t *)((at - 1) & ~(uintptr_t)15);
-        const unsigned vectors = length / 16;
+        /* run8 stores whole pairs of vectors. */
+        const unsigned vectors = f->mode->bits_per_symbol == 3 ? length / 32 * 2 : length / 16;
         (f->mode->bits_per_symbol == 3 ? dvbs2_pie_run8 : dvbs2_pie_run)(
             index + k / 4, table, block, vectors, (unsigned)(-at & 15), f->tail);
         /* The kernel leaves the final aligned block in f->tail: the run's
          * last (at & 15) bytes, or a whole vector when dst is aligned. */
         memcpy(block + 16 * vectors, f->tail, (at & 15) ? (at & 15) : 16);
-        /* Short QPSK runs end 4 or 8 symbols past a whole vector. */
+        /* Short QPSK runs end 4 or 8 symbols past a whole vector, short 8PSK runs
+         * (5400 or 1080 symbols) 8 or 24 past a pair. An 8PSK table entry holds two
+         * phases: index bits 3:2 of each nibble, then bits 1:0 (map_c_run). */
         for (unsigned j = 16 * vectors; j < length; j += 4) {
-            const uint32_t v = ((const uint32_t *)f->map)[index[(k + j) / 4]];
+            const unsigned idx = index[(k + j) / 4];
+            const uint32_t *map = (const uint32_t *)f->map;
+            const uint32_t v = f->mode->bits_per_symbol == 3 ?
+                map[(idx >> 2) & 0x333] | map[idx & 0x333] << 16 : map[idx];
             dst[j] = (uint8_t)v;
             dst[j + 1] = (uint8_t)(v >> 8);
             dst[j + 2] = (uint8_t)(v >> 16);
@@ -1280,7 +1398,7 @@ __attribute__((noinline)) int dvbs2_fast_lofty_start(dvbs2_fast *f, const dvbs2_
     return 0;
 }
 
-const uint16_t *dvbs2_fast_lofty_read(dvbs2_fast *f, dvbs2_sign_state *s, unsigned *blocks)
+LOFTY_HOT const uint16_t *dvbs2_fast_lofty_read(dvbs2_fast *f, dvbs2_sign_state *s, unsigned *blocks)
 {
     const unsigned end = 90+f->data_symbols+36*f->pilot_blocks;
     unsigned at = (s->at+f->lofty_prefix)/4, words = (end+f->lofty_prefix)/4;
@@ -1296,82 +1414,6 @@ const uint16_t *dvbs2_fast_lofty_read(dvbs2_fast *f, dvbs2_sign_state *s, unsign
         s->at = at == words ? end : 4*at-f->lofty_prefix;
     }
     return src;
-}
-
-HOT unsigned dvbs2_fast_sign_read(const dvbs2_fast *f, dvbs2_sign_state *s, uint32_t *dst,
-                                  unsigned blocks, const uint32_t *lut)
-{
-    unsigned done = 0;
-    const unsigned end = 90+f->data_symbols+36*f->pilot_blocks;
-    while (done < blocks && s->at < end) {
-        const uint8_t *src;
-        unsigned at, n, packed = 1;
-        if (s->at < 90) {
-            packed = !!(f->pie & DVBS2_MAP_QUADS);
-            src = packed ? f->packed_header : f->header;
-            at = s->at;
-            n = 90-at;
-        } else {
-            const unsigned k = s->at-90;
-            const unsigned run = f->pilots ? k/1476 : 0;
-            const unsigned pos = k-1476*run;
-            if (pos >= 1440 && run < f->pilot_blocks) {
-                packed = !!(f->pie & DVBS2_MAP_QUADS);
-                src = packed ? f->packed_pilots : fast_pilots;
-                at = 36*run+pos-1440;
-                n = 1476-pos;
-            } else {
-                src = f->scratch;
-                at = k-36*run;
-                const unsigned left = f->data_symbols-at;
-                n = f->pilots && left > 1440-pos ? 1440-pos : left;
-            }
-        }
-        const unsigned room = (blocks-done)*5-s->pending;
-        if (n > room) n = room;
-        // Stay inside one header/data/pilot span. Do not divide the frame
-        // position and spill the rolling state again for every edge symbol.
-        uint32_t history = s->history;
-        unsigned pending = s->pending, used = 0;
-        while (used < n) {
-#ifdef DVBS2_PIE
-            // Both C and PIE starts produce the same quad bytes. The scalar
-            // sign kernel needs no PIE mapping flag; keep main's hot loop.
-            if (packed && !pending && !(at&3) && n-used >= 20) {
-                const unsigned runs = (n-used)/20;
-                uint32_t dvbs2_pie_signs(uint32_t *, const uint8_t *, unsigned,
-                                        const uint32_t *, uint32_t);
-                history = dvbs2_pie_signs(dst+done,src+at/4,runs,lut,history);
-                at += 20*runs;
-                used += 20*runs;
-                done += 4*runs;
-                continue;
-            }
-#endif
-            // Five symbols always fit in two bytes, at every pair offset.
-            // This handles page/PL edges without five scalar history updates.
-            if (packed && !pending && n-used >= 5) {
-                const unsigned w = (unsigned)src[at/4] << 8 | src[at/4+1];
-                const unsigned index = (w >> (6-2*(at&3))) & 1023;
-                history = ((history << 5) & 0x7ff07ff0) | lut[index];
-                dst[done++] = history;
-                at += 5, used += 5;
-                continue;
-            }
-            const unsigned c = packed ? (src[at/4] >> (6-2*(at&3))) & 3 : src[at] >> 1;
-            history = ((history << 1) & 0x7ff07ff0) |
-                      ((c ^ (c >> 1)) & 1) << 4 | (c >> 1) << 20;
-            ++at, ++used;
-            if (++pending == 5) {
-                dst[done++] = history;
-                pending = 0;
-            }
-        }
-        s->history = history;
-        s->pending = pending;
-        s->at += used;
-    }
-    return done;
 }
 
 /* Axis pages leave the five-symbol window expansion on the renderer core.
@@ -1444,7 +1486,16 @@ HOT unsigned dvbs2_fast_axis_read(const dvbs2_fast *f, dvbs2_sign_state *s, uint
 #ifdef DVBS2_PIE
                     if (f->pie & DVBS2_PIE_MAP) {
                         void dvbs2_qpsk_shift(uint32_t *, const uint32_t *, unsigned, unsigned);
-                        dvbs2_qpsk_shift(dst+done,p,words,off);
+                        void dvbs2_qpsk_shift4(uint32_t *, const uint32_t *, unsigned, unsigned);
+                        // Scalar words up to a 16-byte destination, then four per vector.
+                        uint32_t *d = dst+done;
+                        unsigned head = (unsigned)(-(uintptr_t)d/4)&3, left = words;
+                        if (head > left) head = left;
+                        if (head) dvbs2_qpsk_shift(d,p,head,off);
+                        const unsigned groups = (left-head)/4;
+                        if (groups) dvbs2_qpsk_shift4(d+head,p+head,groups,off);
+                        const unsigned tail = left-head-4*groups;
+                        if (tail) dvbs2_qpsk_shift(d+head+4*groups,p+head+4*groups,tail,off);
                     } else
 #endif
                     {
@@ -1523,9 +1574,13 @@ HOT int dvbs2_fast_map_packed(dvbs2_fast *f, const dvbs2_workspace *ws, uint8_t 
                                   index + k / 4, table, block, vectors,
                                   (unsigned)(-at & 15), f->tail);
             memcpy(block + 16 * vectors, f->tail, (at & 15) ? (at & 15) : 16);
-            // QPSK's last run has 720 symbols: 22 vectors and 16 symbols (8 bytes).
+            // QPSK's last run has 720 symbols: 22 vectors and 16 symbols (8 bytes); short 8PSK
+            // runs end 24 symbols past a vector. Index bit 11 toggles 8PSK output bit 1, as in
+            // dvbs2_pie_run8_packed.
             for (unsigned j = 32 * vectors; j < length; j += 4) {
-                const uint32_t v = map[index[(k + j) / 4]];
+                const unsigned idx = index[(k + j) / 4];
+                const uint32_t v = f->mode->bits_per_symbol == 3 ? map[idx & 0x7ff] ^ ((idx >> 10) & 2) :
+                                                                  map[idx];
                 dst[j / 2] = (uint8_t)v;
                 dst[j / 2 + 1] = (uint8_t)(v >> 8);
             }

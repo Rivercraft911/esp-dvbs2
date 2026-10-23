@@ -4,16 +4,16 @@ CLAUDE.md
 notes/
 
 # ESP-IDF build output and local config
-firmware/build/
-firmware/sdkconfig
-firmware/sdkconfig.old
+firmware/tx/build/
+firmware/tx/sdkconfig
+firmware/tx/sdkconfig.old
 firmware/rx/build/
 firmware/rx/sdkconfig
 firmware/rx/sdkconfig.old
 tests/*_bench/build/
 tests/*_bench/sdkconfig
 tests/*_bench/sdkconfig.old
-firmware/managed_components/
+firmware/tx/managed_components/
 
 # Latest standalone USB sender diagnostic report
 usb-send-report.json

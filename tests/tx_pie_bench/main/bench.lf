@@ -1,0 +1,29 @@
+# The reused host checks keep about 280 KB of static buffers; PSRAM holds them so internal RAM
+# stays free for the buffers the kernels use in the transmitter.
+[scheme:bench_psram]
+entries:
+    bss -> extern_ram
+    common -> extern_ram
+
+[mapping:bench_psram]
+archive: libmain.a
+entries:
+    psk8_kernels (bench_psram)
+    shaper_axes (bench_psram)
+
+# VCM code stays on the SRAM instruction bus, as firmware/tx/main/vcm_iram.ld places it.
+[sections:bench_vcm_text]
+entries:
+    .vcm.literal
+    .vcm
+    .vcm.axis.literal
+    .vcm.axis
+
+[scheme:bench_vcm]
+entries:
+    bench_vcm_text -> iram0_text
+
+[mapping:bench_vcm]
+archive: libmain.a
+entries:
+    * (bench_vcm)

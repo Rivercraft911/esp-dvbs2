@@ -40,11 +40,9 @@ def settings(a):
                 or not 1 <= a.hold <= 65535):
             raise ValueError("need 1..16 MODCODs in 4..17 and --hold 1..65535")
         mixed = any(mc < 12 for mc in a.pattern) and any(mc >= 12 for mc in a.pattern)
-        if mixed and a.rate == "10m":
-            raise ValueError("mixed VCM 10m exceeds encoder budget; use 5m (automatic axes)")
-        if (a.rate not in ("1m", "5m", "10m") or (mixed and a.rate != "5m")
+        if (a.rate not in ("1m", "5m") or (mixed and a.rate != "5m")
                 or (a.rate == "1m" and any(mc >= 12 for mc in a.pattern))):
-            raise ValueError("VCM needs 1m QPSK or 5m/10m same modulation; mixed needs 5m")
+            raise ValueError("VCM needs 1m QPSK or 5m; mixed needs 5m")
         a.modcod = a.pattern[0]
     rs = RATES[a.rate]
     fs = 2 * rs
@@ -111,7 +109,7 @@ def settings(a):
 
 def tx_command(a):
     rate = "" if a.rate == "1m" else a.rate + " "
-    return f"dvb {a.mhz} {a.modcod} {rate}{a.seconds} {a.gain} {a.peak}" + (" --phy-solo" if a.phy_solo else "")
+    return f"dvb {a.mhz} {a.modcod} {rate}{a.seconds} {a.gain} {a.peak}"
 
 
 def capture_command(a, settings_path):
@@ -166,8 +164,8 @@ def plan(a, s):
         ]
     if a.pattern:
         result.update(pattern=list(a.pattern), hold_frames=a.hold,
-                      board_setup=["vcm axes off", vcm_command(a)],
-                      board_cleanup=["vcm off", "vcm axes off"])
+                      board_setup=[vcm_command(a)],
+                      board_cleanup=["vcm off"])
     if a.dry_run is not None:
         result.update(source=str(a.dry_run), dump_sample_rate=a.dump_rate, callsign=a.callsign,
                       steps=["Read saved USB int16 I/Q; scale by 512; append 4096 decoder lookahead samples.",
@@ -205,14 +203,6 @@ def board_result(rows, a, call):
                 (axes and r.get("fill_kernel") != "pie-axes5") or
                 any(r.get(k) != 0 for k in ("fatal_late", "late_fills", "late_switches"))):
             raise ValueError("board VCM renderer/deadline mismatch; see board.jsonl")
-    if a.phy_solo:
-        state, after = r.get("session", {}), r.get("after", {})
-        if (not r.get("phy_solo") or state.get("wifi_initialized") is not False or
-                state.get("wifi_mode_result") != 0x3001 or state.get("phy_users") != 2 or
-                state.get("wifi_irq_routes") != [0, 0] or state.get("irq_sampled_cores") != 3 or
-                after.get("wifi_initialized") is not False or after.get("phy_users") != 0 or
-                not 0 < r.get("wifi_deinit_at_us", 0) < state.get("at_us", 0)):
-            raise ValueError("PHY-solo handoff/cleanup mismatch; see board.jsonl")
     if r.get("fatal_late", 0) or r.get("frames_played", 0) < 1:
         raise ValueError("board failed to play healthy DVB frames")
     if not isinstance(r.get("frames_encoded"), int) or r["frames_encoded"] < r["frames_played"]:
@@ -280,8 +270,6 @@ def hardware(a, s, out):
         (out / "settings.json").write_text(json.dumps(s, indent=2) + "\n")
         try:
             if a.pattern:
-                if command("vcm axes off")[-1].get("axes") is not False:
-                    raise RuntimeError("board did not disable manual axis override")
                 configured = command(vcm_command(a))[-1]
                 if (configured.get("pattern") != list(a.pattern) or configured.get("hold_frames") != a.hold
                         or configured.get("enabled") is not True):
@@ -322,7 +310,7 @@ def hardware(a, s, out):
             stop(process)  # Same bounded terminate/kill cleanup as live-video/receive.py.
             if a.pattern:
                 cleanup = []
-                for text, field in (("vcm off", "enabled"), ("vcm axes off", "axes")):
+                for text, field in (("vcm off", "enabled"),):
                     try:
                         if command(text)[-1].get(field) is not False:
                             raise RuntimeError("missing cleanup acknowledgement")
@@ -431,7 +419,6 @@ def recheck(a):
     a.modcod = a.pattern[0]
     a.rate = next(name for name, rate in RATES.items() if abs(rate-settings["symbol_rate"]) < 1)
     a.mhz, a.seconds, a.gain, a.peak = (board[k] for k in ("freq_mhz", "seconds", "gain", "peak_level"))
-    a.phy_solo = board.get("phy_solo", False)
     call = board["callsign"]
     frames = decode.parse_bbframes((source / "frames.bbf").read_bytes())
     r = decode.summarize((source / "leandvb.log").read_text(), frames, b"".join(f["payload"] for f in frames))
@@ -446,7 +433,7 @@ def recheck(a):
         report["board_error"] = str(exc)
     report["checks"].update(board_valid=board_ok,
         capture_complete=capture.get("complete") is True and not capture.get("overflows"),
-        cleanup_valid=([r.get("command") for r in cleanup] == ["vcm off", "vcm axes off"] and
+        cleanup_valid=([r.get("command") for r in cleanup] == ["vcm off"] and
                        all(r.get("passed") is True for r in cleanup)))
     report.update(passed=all(report["checks"].values()),
                   failed_checks=[k for k, passed in report["checks"].items() if not passed],
@@ -492,7 +479,6 @@ def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("out", type=Path, nargs="?", help="new evidence directory (default notes/ota-TIMESTAMP)")
     p.add_argument("--plan", action="store_true")
-    p.add_argument("--phy-solo", action="store_true", help="experimental Wi-Fi teardown during playback")
     p.add_argument("--key", action="store_true", help="explicitly authorize contained hardware run")
     p.add_argument("--recheck", type=Path, help="offline audit of saved VCM BBFRAMEs/logs; no IQ or devices")
     p.add_argument("--dry-run", type=Path, metavar="USB_DUMP", help="offline int16 IQ, never opens devices")

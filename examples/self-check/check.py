@@ -21,17 +21,20 @@ PACES = ((4, "", 5), (11, "5m", 5), (11, "10m", 5),
          (17, "5m", 5), (13, "10m", 5), (15, "20m", 5),
          (13, "26m667", 10), (15, "26m667", 10), (17, "26m667", 10))
 
-# eee5153 keyed records: longest bank fill, encoder mean and live maximum.
-# Wi-Fi-up pace records add <=3894 fill cycles and <=7023 encoder mean cycles.
-# Fixed allowances stay below a bank deadline / frame duration; no 15% claim.
-PSK8_KEYED = {13: (39419, 172076, 239463),
-              15: (38803, 176477, 251019),
-              17: (38963, 158719, 213647)}
+# 05510f7 keyed records with the real xorshift32 payload (results/2026-10-23-tx-table-8psk):
+# longest bank fill, encoder mean and live maximum. Profiled 10 s paces of the same firmware
+# came within 100 cycles of those means. Fixed allowances stay below a bank deadline / frame
+# duration; no 15% claim.
+PSK8_KEYED = {13: (37647, 159352, 206847),
+              15: (37857, 166803, 209898),
+              17: (37545, 156956, 199914)}
 FILL_OVERHEAD = 4500
 ENCODER_OVERHEAD = 10000
-# Steady dummies/s observed over 20 s: 173.6, 213.1, 5.0. Bound both their
-# count and the resulting data throughput; losing arbitrary airtime must fail.
-PSK8_DUMMIES_PER_SECOND = {13: 180, 15: 220, 17: 6}
+# Those runs sent no steady dummies. Bound both their count and the resulting data
+# throughput; losing arbitrary airtime must fail.
+PSK8_DUMMIES_PER_SECOND = {13: 6, 15: 6, 17: 6}
+# Run memory (firmware/tx/main/run_memory.c): low, high and PSRAM arenas in bytes.
+RUN_MEMORY = {"low": 38672, "high": 32768, "psram": 393216}
 
 
 def mode(token):
@@ -105,8 +108,11 @@ def check_pace(rows, mc, token, seconds):
     assert r["encoder_stack_min_free"] >= 512, r
     profile = r["profile"]
     assert profile["shaped_words"] + profile["reused_words"] == profile["fill_words"], r
+    # Run memory: every take fit its arena (the run would have failed otherwise) and the
+    # arenas are the documented ones. Heap use after boot is checked once, at the end.
+    memory = r["run_memory"]
+    assert all(memory[k][2] == RUN_MEMORY[k] and 0 <= memory[k][0] <= memory[k][2] for k in RUN_MEMORY), r
     if den == 5 or (mc >= 12 and num == 3):
-        assert r["paced_wifi_up"] and r["wifi_free_up"] >= 20000 and r["wifi_min_free"] >= 20000, r
         assert r["queue_empty"] == 0 and r["queue_low_pages"] > 0, r
     if mc >= 12 and num == 3:
         fill, mean, live = PSK8_KEYED[mc]
@@ -139,7 +145,7 @@ def main():
     if subprocess.run(["git", "diff", "--quiet", "HEAD"], cwd=ROOT).returncode:
         revision += "-dirty"
     print(f"Pass criteria: flashed firmware {revision}, stored N0CALL, SPI input off after reset.")
-    print("No flash, NVS writes or TX. Only info, vcm, dvbdump, dvbpace and wifimem are sent.")
+    print("No flash, NVS writes or TX. Only info, vcm, dvbdump and dvbpace are sent.")
     print("Every stream: ESP_OK, correct mode/pulse, healthy timed encoder, no underruns or injected stalls.")
     print("Dumps: exact byte count, zero overlap errors, firmware/USB/file/golden CRC32 all equal.")
     for key in DUMPS:
@@ -154,11 +160,11 @@ def main():
     print("  N is complete data frames in the pinned layout, excluding dummy airtime/partial frames.")
     print("  QPSK >=N-2; 8PSK <=1 leading and <=3 trailing acquisition/EOF data frames lost.")
     print("Paces: zero late fills/switches/fatal lateness, positive slack, PIE mask 15, stack >=512 B,")
-    print("  live encoder and conserved fill words. 33m333: queue never empty, Wi-Fi free/min >=20000 B.")
+    print("  live encoder and conserved fill words, run memory within its arenas. 33m333: queue never empty.")
     for mc, token, seconds in PACES:
         command = f"dvbpace {mc} {token} {seconds}".replace("  ", " ")
         print(f"  {command}" + ("  # 1 Msym/s" if not token else ""))
-    print("8PSK 26m667: 54 ready pages; no empty queue; Wi-Fi free/min >=20000 B;")
+    print("8PSK 26m667: 54 ready pages; no empty queue;")
     print("  <=4 startup dummies, <=1 cold bound miss; bounded steady dummies and data throughput.")
     for mc, (fill, mean, live) in PSK8_KEYED.items():
         dummy_limit = 10 * PSK8_DUMMIES_PER_SECOND[mc]
@@ -167,14 +173,14 @@ def main():
               f"{mean+ENCODER_OVERHEAD}/{live+ENCODER_OVERHEAD} cycles; "
               f"steady dummies <= {PSK8_DUMMIES_PER_SECOND[mc]}/s; "
               f">={minimum} data frames in 10 s.")
-    print("8PSK ceilings: eee5153 keyed +4500 fill / +10000 encoder cycles for profiling;")
+    print("8PSK ceilings: 05510f7 keyed (real payload) +4500 fill / +10000 encoder cycles for profiling;")
     print("  pace dummies are measured overhead, not evidence of full-rate keyed throughput.")
     print("Other modes enforce functional deadlines. These are not 15% reserve gates.")
     print("40 MHz met 15% reserve on both cores in one 30 s keyed run (e96795b); see docs/measurements.md.")
-    print("wifimem 17 5m: Wi-Fi startup succeeds; free/up and command minimum both >=22351 B.")
     print("VCM: vcm 1 4 11 13 17; dvbdump 4 5m 32 128 1; vcm off. Automatic axes;")
-    print("  dvbpace 4 5m 5: Wi-Fi up, heap >=20000 B, original functional deadline/stack gates.")
+    print("  dvbpace 4 5m 5: run memory within its arenas, original functional deadline/stack gates.")
     print("  CRC/geometry agree, >=30 exact contiguous BBFRAMEs, every MODCOD, clean FEC; no golden changes.")
+    print("Heap: no heap call after boot by the end (info heap_after_boot).")
     print("Keep going after failures; save IQ, logs, revision and summary; any failure exits 1.", flush=True)
     if a.plan:
         return 0
@@ -205,13 +211,18 @@ def main():
         print(f"{verdict}: {label}" + (f" {detail}" if detail else ""), flush=True)
 
     def command(text, save=None, reset=False):
-        assert text.split()[0] in ("info", "vcm", "dvbdump", "dvbpace", "wifimem"), text
+        assert text.split()[0] in ("info", "vcm", "dvbdump", "dvbpace"), text
         rows = board.run(a.port, text, timeout=120, reset=reset, save=save)
         with (out/"runs.jsonl").open("a") as f:
             for row in rows:
                 f.write(json.dumps(dict(command=text, **row))+"\n")
         assert rows and not any("error" in r for r in rows), rows
         return rows
+
+    def no_heap():
+        rows = command("info")
+        heap = rows[-1]["heap_after_boot"]
+        assert heap["allocs"] == heap["frees"] == heap["failed"] == 0, heap
 
     def info():
         rows = command("info", reset=True)
@@ -226,7 +237,6 @@ def main():
     def vcm_dump():
         path = out / "vcm.iq"
         try:
-            assert command("vcm axes off")[-1].get("axes") is False
             configured = command("vcm 1 4 11 13 17")[-1]
             assert configured.get("pattern") == [4, 11, 13, 17] and configured.get("hold_frames") == 1
             rows = command("dvbdump 4 5m 32 128 1", save=path)
@@ -241,13 +251,9 @@ def main():
             pace = command("dvbpace 4 5m 5")
             check_pace(pace, 4, "5m", 5)
             r = stream(pace, 4, "5m")
-            assert r.get("vcm_axes") is True and r["paced_wifi_up"], r
-            assert r["wifi_free_up"] >= 20000 and r["wifi_min_free"] >= 20000, r
+            assert r.get("vcm_axes") is True, r
         finally:
-            try:
-                assert command("vcm off")[-1].get("enabled") is False
-            finally:
-                assert command("vcm axes off")[-1].get("axes") is False
+            assert command("vcm off")[-1].get("enabled") is False
 
     def vcm_decode():
         result = subprocess.run([sys.executable, str(ROOT/"host/decode.py"), str(out/"vcm.iq"),
@@ -259,11 +265,6 @@ def main():
         assert result.returncode == 0, result.stdout + result.stderr
         r = json.loads(result.stdout)
         assert r["passed"] and r["pattern_complete"] and r["payload_frames"] >= 30, r
-
-    def memory():
-        r = stream(command("wifimem 17 5m"), 17, "5m")
-        assert r["wifi_free_up"] >= 22351 and r["wifi_min_free"] >= 22351, r
-        assert r["frames_played"] == r["positions"] == r["max_fill_call_cycles"] == 0, r
 
     def decode(key):
         mc, token, frames, decim = dump_args(key)
@@ -299,9 +300,9 @@ def main():
             text = f"dvbpace {mc} {token} {seconds}".replace("  ", " ")
             step(text, lambda mc=mc, token=token, seconds=seconds, text=text:
                  check_pace(command(text), mc, token, seconds))
-        step("Wi-Fi startup heap", memory)
         step("VCM dump", vcm_dump)
         step("VCM decode", vcm_decode)
+        step("no heap after boot", no_heap)
     failed = sum(row[0] == "FAIL" for row in outcomes)
     print(f"{len(outcomes)-failed}/{len(outcomes)} passed. Records: {out}")
     return int(failed != 0)

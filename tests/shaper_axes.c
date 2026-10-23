@@ -1,4 +1,4 @@
-// The same checks run as a host executable and as the actual PIE code in S3 QEMU.
+// The same checks run as a host executable and on the board's PIE code (tests/tx_pie_bench).
 #include "shaper.h"
 #include "shaper_taps.h"
 #include <assert.h>

@@ -3,14 +3,13 @@
 Pass means the firmware revision matches the checkout, all seven fixed-mode dumps match their
 original CRCs, the VCM dump matches its host model, all decode as contiguous exact
 payloads in LeanDVB, every paced run keeps
-its bank deadlines, and Wi-Fi startup retains its measured heap floor. A failure makes
+its bank deadlines within its run memory, and nothing calls the heap after boot. A failure makes
 the final exit status nonzero. The script prints the complete criteria before any command,
 keeps going after a failed dump/decode/pace, and writes each verdict to `summary.tsv`.
 
-Nothing transmits. The only commands sent are `info`, `vcm`, `dvbdump`, `dvbpace` and `wifimem`.
+Nothing transmits. The only commands sent are `info`, `vcm`, `dvbdump` and `dvbpace`.
 The script resets once, takes exclusive board ownership, never flashes, and never changes
-the stored callsign. The 33m333 pace and heap check start Wi-Fi in NULL/promiscuous receive
-mode; no samples play through the DAC. No SDR is needed.
+the stored callsign. No samples play through the DAC. No SDR is needed.
 
 ## Prepare
 
@@ -73,15 +72,15 @@ the board helper also detects one unambiguous native USB port when that default 
 
 The expected duration is about five minutes, depending on USB and receiver speed.
 There are seven 16-frame fixed-mode dumps, one 32-frame VCM dump,
-thirteen paces (nine 5 s and four 10 s) and one heap check.
+thirteen paces (nine 5 s and four 10 s).
 Each pace adds the stored callsign's start/end IDs to its payload time. N0CALL adds
 10.44 s per pace, so pacing alone accounts for about 221 s. Dump transport and decoding
 make up the rest. A failing or stalled device can take longer because each command times out.
 
 The VCM dump cycles 4/11/13/17 every frame at 5 Msym/s using automatic axes.
 It requires matching transport CRCs and sample geometry, at least 30 contiguous
-exact host-model BBFRAMEs covering every mode, and zero FEC corrections. A 5 s VCM pace also enforces deadlines with Wi-Fi up
-and at least 20 KB internal heap free. VCM is turned off again even if the dump fails. [Scope and OTA reruns](../../docs/vcm.md).
+exact host-model BBFRAMEs covering every mode, and zero FEC corrections. A 5 s VCM pace also enforces deadlines
+and its run memory. VCM is turned off again even if the dump fails. [Scope and OTA reruns](../../docs/vcm.md).
 
 The selected modes cover 1 Msym/s QPSK, 5 Msym/s 8PSK, 20 Msym/s QPSK/8PSK,
 26.67 Msym/s QPSK/8PSK and 33.33 Msym/s QPSK. The new 8PSK dump uses MODCOD 17;
@@ -91,11 +90,11 @@ and 8PSK at 10 Msym/s. CI checks every supported modulation/rate combination on 
 N is the number of complete data frames in the pinned dump layout, excluding
 standard dummy PLFRAMEs and any final partial frame. LeanDVB must return at least
 N-2 contiguous QPSK frames. 8PSK permits at most one leading acquisition frame
-and three trailing data frames lost at EOF. The 17/3/80/16 dump spans 16 nominal
-frame lengths but contains 12 complete data frames, 22 dummies and part of the
-next data frame. Its 11 decoded payload frames meet the existing EOF allowance.
-`decode.py --dummy-before` supplies this known schedule; it counts nonempty
-decoded BBFRAMEs separately from nominal duration and expected complete data frames.
+and three trailing data frames lost at EOF. A dump waits for every whole frame, so the
+8PSK 26m667 dumps hold 16 complete data frames and no dummies
+([tests/data](../../tests/data/README.md)). `decode.py --dummy-before` still accepts a
+known dummy schedule; it counts nonempty decoded BBFRAMEs separately from nominal
+duration and expected complete data frames.
 There is no tolerance for payload errors, LDPC flips or BCH corrections. The decoder adds
 4,096 zero samples only to receiver input for pipeline lookahead, outside the dump CRC.
 CRC fixtures use peak 128, pilots on and callsign N0CALL. The [frame layouts and
@@ -103,24 +102,25 @@ goldens](../../tests/data/README.md) are checked against the independent host mo
 
 All paces require ESP_OK, zero underruns/late fills/late switches/fatal lateness, positive
 slack, a live encoder with all four PIE stages, at least 512 B encoder stack headroom,
-and `shaped_words + reused_words == fill_words`. The 36 MHz 8PSK and 40 MHz QPSK queues must not starve and
-must retain at least 20,000 B internal RAM with Wi-Fi up. The separate 8PSK 9/10 `5m`
-heap check retains the original 22,351 B Wi-Fi-up and command-minimum floors.
+and `shaped_words + reused_words == fill_words`, with every run-memory arena at its documented
+size and within it. The 36 MHz 8PSK and 40 MHz QPSK queues must not starve. A final `info`
+must report no heap call after boot.
 
-8PSK `26m667` additionally checks the keyed eee5153 figures with explicit profiling
-allowances of 4,500 fill cycles and 10,000 encoder cycles:
+8PSK `26m667` additionally checks the keyed 05510f7 figures, taken with the real xorshift32
+payload ([keyed table, 8PSK](../../results/2026-10-23-tx-table-8psk/README.md)), with explicit
+profiling allowances of 4,500 fill cycles and 10,000 encoder cycles:
 
 | MODCOD | Max fill, cycles | Encoder mean / live max, cycles | Max steady dummies/s |
 |---|---:|---:|---:|
-| 13 | 43,919 | 182,076 / 249,463 | 180 |
-| 15 | 43,303 | 186,477 / 261,019 | 220 |
-| 17 | 43,463 | 168,719 / 223,647 | 6 |
+| 13 | 42,147 | 169,352 / 216,847 | 6 |
+| 15 | 42,357 | 176,803 / 219,898 | 6 |
+| 17 | 42,045 | 166,956 / 209,914 | 6 |
 
-The measured 20 s paces added up to 3,894 fill and 7,023 mean encoder cycles,
-with 173.6 / 213.1 / 5.0 steady dummies per second. These limits bound that cost;
-they do not assert zero dummies or full-rate payload in a profiled pace. At most
+Those keyed runs sent no steady dummies, and profiled 10 s paces of the same firmware came
+within 100 cycles of their encoder means. These limits bound the profiling cost; they do not
+assert zero dummies or full-rate payload in a profiled pace. At most
 four startup dummies and one cold production-bound miss are allowed. All 54 pages
-must pass automatic heap admission. For payload duration T and steady-dummy cap C,
+must be admitted automatically. For payload duration T and steady-dummy cap C,
 at least `floor((T*80e6/3 - (C+4)*3330)/22194)-1` data frames must play. The extra
 frame accounts for the ending partial frame. This rejects excessive lost airtime
 independently of the dummy counters. [Keyed and pace evidence](../../docs/measurements.md#8psk-at-36-mhz).
