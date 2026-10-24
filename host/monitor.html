@@ -3,152 +3,168 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Live link</title>
+<title>Ground link</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Martian+Mono:wdth,wght@75..112.5,100..800&display=swap" rel="stylesheet">
 <style>
 :root {
-  --bg: #0b0f14;
-  --panel: #121820;
-  --hair: #1d2530;
-  --grid: rgba(150, 175, 200, 0.08);
-  --ink: #e8eef5;
-  --ink-2: #9aabbd;
-  --ink-3: #5c6b7c;
-  --blue: #7cc8ff;
-  --amber: #ffb86b;
-  --good: #4fd6a2;
-  --warn: #ffc457;
-  --bad: #ff5f6f;
+  --void: #05080d;
+  --deck: #08101a;
+  --hair: rgba(138, 212, 255, 0.13);
+  --grid: rgba(138, 212, 255, 0.07);
+  --cyan: #8ad4ff;
+  --cyan-2: #4f9fd1;
+  --white: #eaf6ff;
+  --ink-2: #8ba3b8;
+  --ink-3: #4b6174;
+  --amber: #ffb35c;
+  --alert: #ff7a45;
   --u: clamp(1px, 0.0625vw, 1.45px);
-  --gap: calc(10 * var(--u));
+  --gap: calc(12 * var(--u));
   color-scheme: dark;
 }
 * { box-sizing: border-box; margin: 0; }
 html, body { height: 100%; }
 body {
-  background: var(--bg); color: var(--ink);
-  font: 400 calc(14 * var(--u))/1.3 "Archivo", "Avenir Next", "Helvetica Neue", sans-serif;
-  font-variant-numeric: tabular-nums;
+  background: var(--void); color: var(--white);
+  font: 400 calc(12.5 * var(--u))/1.35 "Martian Mono", "SF Mono", Menlo, monospace;
+  font-variation-settings: "wdth" 87;
   display: grid; grid-template-rows: auto auto minmax(0, 1fr);
-  gap: var(--gap); padding: calc(14 * var(--u)) calc(18 * var(--u));
+  gap: calc(14 * var(--u)); padding: calc(16 * var(--u)) calc(22 * var(--u));
   min-height: 100vh;
 }
+.micro { font-size: calc(10.5 * var(--u)); letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-3); font-weight: 500; }
 
-/* Header: the name, the carrier, and the ground-station clock */
-.head { display: flex; align-items: center; gap: calc(22 * var(--u)); padding: 0 calc(2 * var(--u)); }
-.mark { font-size: calc(17 * var(--u)); font-weight: 700; font-variation-settings: "wdth" 125; letter-spacing: 0.01em; }
-.tune { display: flex; align-items: baseline; gap: calc(16 * var(--u)); color: var(--ink-2); margin-right: auto; }
-.tune span + span { padding-left: calc(16 * var(--u)); border-left: 1px solid var(--hair); }
-.tune b { color: var(--ink); font-weight: 450; }
-.clock { display: flex; align-items: baseline; gap: calc(10 * var(--u)); }
-.clock .tag { font-size: calc(12.5 * var(--u)); font-weight: 650; letter-spacing: 0.08em; color: var(--ink-3); }
-.clock .time { font-size: calc(24 * var(--u)); font-weight: 380; font-variation-settings: "wdth" 80; letter-spacing: 0.02em; }
-.clock[data-s="good"] .tag { color: var(--good); }
-.clock[data-s="warn"] .tag { color: var(--warn); }
-.clock[data-s="idle"] .time { color: var(--ink-3); }
+/* Header */
+.head { display: flex; align-items: baseline; gap: calc(28 * var(--u)); }
+.mark { font-size: calc(15 * var(--u)); font-weight: 760; font-variation-settings: "wdth" 112; letter-spacing: 0.06em; }
+.tune { display: flex; align-items: baseline; gap: calc(22 * var(--u)); margin-right: auto; color: var(--ink-2); }
+.tune b { color: var(--white); font-weight: 420; font-size: calc(15 * var(--u)); }
+.clock { display: flex; align-items: baseline; gap: calc(12 * var(--u)); }
+.clock .tag { font-size: calc(11.5 * var(--u)); letter-spacing: 0.18em; font-weight: 700; color: var(--ink-3); }
+.clock .time { font-size: calc(26 * var(--u)); font-weight: 300; font-variation-settings: "wdth" 80; letter-spacing: 0.04em; color: var(--ink-3); }
+.clock[data-s="aos"] .tag { color: var(--cyan); }
+.clock[data-s="aos"] .time { color: var(--white); text-shadow: 0 0 18px rgba(138, 212, 255, 0.35); }
+.clock[data-s="los"] .tag, .clock[data-s="los"] .time { color: var(--alert); }
 
-/* Panels: a tone shift, no outlines */
-.panel { background: var(--panel); border-radius: 6px; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
-.ph { display: flex; align-items: center; gap: 8px; padding: calc(9 * var(--u)) calc(12 * var(--u)) calc(4 * var(--u)); }
-.ph h2 { font-size: calc(13 * var(--u)); font-weight: 600; color: var(--ink-2); }
-.ph .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ink-3); margin-left: auto; }
-.ph .dot[data-s="good"] { background: var(--good); }
-.ph .dot[data-s="bad"] { background: var(--bad); }
-.pb { position: relative; flex: 1; min-height: 0; }
-.pb canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
-.legend { display: inline-flex; gap: 12px; margin-left: auto; color: var(--ink-3); font-size: calc(12.5 * var(--u)); }
-.legend i { display: inline-block; width: 12px; height: 2px; vertical-align: middle; margin-right: 6px; }
-
-/* Readouts across the top */
-.kpis { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); padding: calc(10 * var(--u)) 0 calc(8 * var(--u)); }
-.kpi { padding: 0 calc(14 * var(--u)); display: grid; grid-template-rows: auto auto calc(22 * var(--u)); gap: 2px; min-width: 0; }
-.kpi + .kpi { border-left: 1px solid var(--hair); }
-.kpi span { color: var(--ink-3); font-size: calc(12.5 * var(--u)); white-space: nowrap; }
-.kpi b { font-size: calc(30 * var(--u)); font-weight: 380; font-variation-settings: "wdth" 80; line-height: 1.05; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.kpi b small { font-size: 0.45em; color: var(--ink-2); margin-left: 4px; font-variation-settings: "wdth" 100; font-weight: 400; }
-.kpi b.good { color: var(--good); }
-.kpi b.bad { color: var(--bad); }
-.kpi canvas { width: 100%; height: 100%; display: block; }
+/* The chain: five stations on one wire, the radio hop drawn as a carrier */
+.chain { display: grid; grid-template-columns: auto 1fr auto 1.6fr auto 1fr auto 1fr auto; align-items: center; padding: calc(6 * var(--u)) 0 calc(10 * var(--u)); border-bottom: 1px solid var(--hair); }
+.st { display: grid; gap: 3px; }
+.st .micro { transition: color 300ms; }
+.st b { font-size: calc(15 * var(--u)); font-weight: 400; white-space: nowrap; color: var(--ink-2); transition: color 300ms; }
+.st[data-on="1"] .micro { color: var(--cyan); }
+.st[data-on="1"] b { color: var(--white); }
+.st[data-on="bad"] .micro, .st[data-on="bad"] b { color: var(--alert); }
+.wire { height: 14px; margin: 0 calc(16 * var(--u)); position: relative; }
+.wire svg { width: 100%; height: 100%; overflow: visible; display: block; }
+.wire line, .wire path { stroke: var(--ink-3); stroke-width: 1; fill: none; vector-effect: non-scaling-stroke; }
+.wire[data-on="1"] line, .wire[data-on="1"] path { stroke: var(--cyan-2); }
+.wire .hz { position: absolute; left: 50%; top: -15px; transform: translateX(-50%); white-space: nowrap; }
 
 /* Main */
-.main { display: grid; grid-template-columns: minmax(0, 1fr) clamp(320px, 23vw, 520px); gap: var(--gap); min-height: 0; }
+.main { display: grid; grid-template-columns: minmax(0, 1fr) clamp(330px, 24vw, 520px); gap: calc(18 * var(--u)); min-height: 0; }
 .radio { display: grid; grid-template-rows: minmax(0, 24fr) minmax(0, 42fr) minmax(0, 34fr); gap: var(--gap); min-height: 0; }
 .lower { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--gap); min-height: 0; }
 .lower .square { aspect-ratio: 1; height: 100%; }
-.axis { position: relative; height: calc(20 * var(--u)); flex: none; color: var(--ink-3); font-size: calc(12 * var(--u)); }
-.axis span { position: absolute; top: 2px; transform: translateX(-50%); white-space: nowrap; }
+.well { position: relative; background: var(--deck); border-radius: 2px; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+.wh { display: flex; align-items: center; gap: 14px; padding: calc(7 * var(--u)) calc(10 * var(--u)) calc(2 * var(--u)); flex: none; }
+.wh .legend { margin-left: auto; display: flex; gap: 14px; }
+.legend i { display: inline-block; width: 12px; height: 2px; vertical-align: middle; margin-right: 6px; }
+.pb { position: relative; flex: 1; min-height: 0; }
+.pb canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.axis { position: relative; height: calc(20 * var(--u)); flex: none; color: var(--ink-3); font-size: calc(10.5 * var(--u)); }
+.axis span { position: absolute; top: 4px; transform: translateX(-50%); white-space: nowrap; }
 .readout {
-  position: absolute; pointer-events: none; padding: 5px 8px; border-radius: 4px; z-index: 2; display: none;
-  background: rgba(11, 15, 20, 0.94); border: 1px solid var(--hair); font-size: calc(12.5 * var(--u)); white-space: nowrap;
+  position: absolute; pointer-events: none; padding: 5px 8px; z-index: 3; display: none; white-space: nowrap;
+  background: rgba(5, 8, 13, 0.94); border-left: 2px solid var(--cyan); font-size: calc(11.5 * var(--u));
 }
-.empty { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; color: var(--ink-3); padding: 16px; font-size: calc(13 * var(--u)); }
+.empty { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; color: var(--ink-3); padding: 16px; font-size: calc(11 * var(--u)); letter-spacing: 0.08em; }
 .empty[hidden] { display: none; }
 
-.rail { display: flex; flex-direction: column; gap: var(--gap); min-height: 0; overflow: auto; }
-.rail > * { flex: none; }
-.rows { padding: 0 calc(12 * var(--u)) calc(8 * var(--u)); display: grid; }
-.row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; min-height: calc(25 * var(--u)); font-size: calc(13.5 * var(--u)); line-height: 1.2; }
-.row + .row { border-top: 1px solid var(--hair); }
+/* Telemetry: one column, grouped by station, in path order */
+.tm { display: flex; flex-direction: column; min-height: 0; overflow: auto; }
+.grp { padding: calc(2 * var(--u)) 0 calc(6 * var(--u)); }
+.grp + .grp { border-top: 1px solid var(--hair); padding-top: calc(8 * var(--u)); }
+.grp > .micro { display: flex; justify-content: space-between; margin-bottom: calc(4 * var(--u)); }
+.grp > .micro i { font-style: normal; }
+.grp[data-on="1"] > .micro { color: var(--cyan); }
+.grp[data-on="bad"] > .micro { color: var(--alert); }
+.row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; min-height: calc(19 * var(--u)); }
 .row span { color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.row b { font-weight: 480; text-align: right; }
-.row b.bad { color: var(--bad); }
-.row b.zero { color: var(--ink-3); font-weight: 400; }
-.meter { display: grid; grid-template-columns: auto calc(84 * var(--u)); gap: 10px; align-items: center; }
-.meter em { display: block; height: 4px; border-radius: 2px; background: rgba(124, 200, 255, 0.12); overflow: hidden; }
-.meter em i { display: block; height: 100%; width: 0; background: var(--blue); border-radius: 2px; transition: width 400ms; }
-.meter em i.hot { background: var(--warn); }
+.row b { font-weight: 420; text-align: right; white-space: nowrap; }
+.row b.zero { color: var(--ink-3); }
+.row b.bad { color: var(--alert); }
+.big { display: grid; grid-template-columns: 1fr 1fr; gap: calc(10 * var(--u)); margin-bottom: calc(6 * var(--u)); }
+.big div { display: grid; gap: 2px; }
+.big b { font-size: calc(24 * var(--u)); font-weight: 300; font-variation-settings: "wdth" 78; line-height: 1.05; text-shadow: 0 0 16px rgba(138, 212, 255, 0.22); }
+.big b small { font-size: 0.42em; color: var(--ink-2); margin-left: 4px; text-shadow: none; }
+.big b.bad { color: var(--alert); }
+.big canvas { width: 100%; height: calc(18 * var(--u)); display: block; }
+.seg { display: inline-flex; gap: 2px; margin-left: 10px; vertical-align: middle; }
+.seg i { width: calc(4 * var(--u)); height: calc(9 * var(--u)); background: rgba(138, 212, 255, 0.12); }
+.seg i.on { background: var(--cyan); }
+.seg i.hot { background: var(--alert); }
 
 @media (max-width: 1150px) {
   body { min-height: auto; }
-  .kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); row-gap: 14px; }
-  .kpi:nth-child(4) { border-left: 0; }
+  .chain { grid-template-columns: 1fr 1fr; row-gap: 12px; }
+  .wire { display: none; }
   .main { grid-template-columns: 1fr; }
   .radio { grid-template-rows: 240px 360px auto; }
   .lower { grid-template-columns: 1fr; }
   .lower .square { height: auto; width: 100%; max-width: 420px; }
   .lower .wave { height: 220px; }
 }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 </head>
 <body>
 <header class="head">
-  <div class="mark">esp-dvbs2</div>
-  <div class="tune"><span><b id="freq">&ndash;</b></span><span id="mode">&ndash;</span></div>
+  <div class="mark">ESP-DVBS2</div>
+  <div class="tune"><b id="freq">&ndash;</b><span id="mode">&ndash;</span></div>
   <div class="clock" id="clock" data-s="idle" role="status" title="AOS: time since the receiver acquired the signal. LOS: time since it lost it.">
     <span class="tag" id="clockTag">AOS</span><span class="time" id="clockTime">--:--:--</span>
   </div>
 </header>
 
-<section class="panel kpis" aria-label="The link at a glance">
-  <div class="kpi"><span>Video out</span><b id="kRate">&ndash;</b><canvas id="sRate"></canvas></div>
-  <div class="kpi"><span>MER</span><b id="kMer">&ndash;</b><canvas id="sMer"></canvas></div>
-  <div class="kpi" title="Pilot MER minus the DVB-S2 decoding threshold Es/N0 for this MODCOD (EN 302 307-1 Table 13, normal frames)"><span>Link margin</span><b id="kMargin">&ndash;</b><canvas id="sMargin"></canvas></div>
-  <div class="kpi"><span>Frames exact</span><b id="kFrames">&ndash;</b><canvas id="sFrames"></canvas></div>
-  <div class="kpi"><span>Delivered</span><b id="kBytes">&ndash;</b><canvas id="sBytes"></canvas></div>
-  <div class="kpi" title="Every error counter from the CM5's SPI to pv view, summed"><span>Errors, end to end</span><b id="kErrors">&ndash;</b><canvas id="sErrors"></canvas></div>
+<section class="chain" aria-label="The link, end to end">
+  <div class="st" id="cCam"><span class="micro">Cameras</span><b id="vCam">&ndash;</b></div>
+  <div class="wire" id="wSpi"><svg viewBox="0 0 100 14" preserveAspectRatio="none"><line x1="0" y1="7" x2="100" y2="7"/></svg></div>
+  <div class="st" id="cTx"><span class="micro">Transmitter</span><b id="vTx">&ndash;</b></div>
+  <div class="wire" id="wRf"><span class="micro hz" id="vHz">&ndash;</span><svg viewBox="0 0 100 14" preserveAspectRatio="none"><path id="carrier"/></svg></div>
+  <div class="st" id="cRx"><span class="micro">Receiver</span><b id="vRx">&ndash;</b></div>
+  <div class="wire" id="wEth"><svg viewBox="0 0 100 14" preserveAspectRatio="none"><line x1="0" y1="7" x2="100" y2="7"/></svg></div>
+  <div class="st" id="cEth"><span class="micro">Ethernet</span><b id="vEth">&ndash;</b></div>
+  <div class="wire" id="wView"><svg viewBox="0 0 100 14" preserveAspectRatio="none"><line x1="0" y1="7" x2="100" y2="7"/></svg></div>
+  <div class="st" id="cView"><span class="micro">Viewer</span><b id="vView">&ndash;</b></div>
 </section>
 
 <main class="main">
   <section class="radio" aria-label="What the receiver hears">
-    <div class="panel"><div class="ph"><h2>Spectrum</h2></div>
-      <div class="pb" id="specWell"><canvas id="spectrum"></canvas><div class="readout" id="specRead"></div><div class="empty" id="emptySpec">Waiting for the receiver</div></div></div>
-    <div class="panel"><div class="ph"><h2>Waterfall</h2></div>
+    <div class="well"><div class="wh"><span class="micro">Spectrum</span></div>
+      <div class="pb" id="specWell"><canvas id="spectrum"></canvas><div class="readout" id="specRead"></div><div class="empty" id="emptySpec">AWAITING RECEIVER</div></div></div>
+    <div class="well"><div class="wh"><span class="micro">Waterfall</span></div>
       <div class="pb" id="fallWell"><canvas id="waterfall"></canvas><div class="readout" id="fallRead"></div></div><div class="axis" id="freqAxis"></div></div>
     <div class="lower">
-      <div class="panel square"><div class="ph"><h2>Constellation</h2></div>
-        <div class="pb"><canvas id="constellation"></canvas><div class="empty" id="emptyConst">Waiting for symbols</div></div></div>
-      <div class="panel wave"><div class="ph"><h2>I/Q</h2><span class="legend"><span><i style="background:var(--blue)"></i>I</span><span><i style="background:var(--amber)"></i>Q</span></span></div>
-        <div class="pb"><canvas id="waveform"></canvas><div class="empty" id="emptyWave">Waiting for samples</div></div></div>
+      <div class="well square"><div class="wh"><span class="micro">Constellation</span></div>
+        <div class="pb"><canvas id="constellation"></canvas><div class="empty" id="emptyConst">AWAITING SYMBOLS</div></div></div>
+      <div class="well wave"><div class="wh"><span class="micro">I/Q</span><span class="micro legend"><span><i style="background:var(--cyan)"></i>I</span><span><i style="background:var(--amber)"></i>Q</span></span></div>
+        <div class="pb"><canvas id="waveform"></canvas><div class="empty" id="emptyWave">AWAITING SAMPLES</div></div></div>
     </div>
   </section>
 
-  <aside class="rail" aria-label="Devices">
-    <div class="panel"><div class="ph"><h2>Cameras, CM5</h2><i class="dot" id="dCam"></i></div><div class="rows" id="camRows"></div></div>
-    <div class="panel"><div class="ph"><h2>Transmitter, ESP32-S3</h2><i class="dot" id="dTx"></i></div><div class="rows" id="txRows"></div></div>
-    <div class="panel"><div class="ph"><h2>Receiver, ESP32-S3</h2><i class="dot" id="dRx"></i></div><div class="rows" id="rxRows"></div></div>
-    <div class="panel"><div class="ph"><h2>Ethernet and viewer</h2><i class="dot" id="dView"></i></div><div class="rows" id="viewRows"></div></div>
+  <aside class="tm" aria-label="Telemetry">
+    <div class="grp" id="gLink"><div class="micro"><i>Link</i><i id="gLinkState"></i></div>
+      <div class="big">
+        <div><span class="micro">Video out</span><b id="kRate">&ndash;</b><canvas id="sRate"></canvas></div>
+        <div><span class="micro">MER</span><b id="kMer">&ndash;</b><canvas id="sMer"></canvas></div>
+      </div>
+      <div class="rows" id="linkRows"></div></div>
+    <div class="grp" id="gCam"><div class="micro"><i>Cameras</i><i>CM5</i></div><div class="rows" id="camRows"></div></div>
+    <div class="grp" id="gTx"><div class="micro"><i>Transmitter</i><i>ESP32-S3</i></div><div class="rows" id="txRows"></div></div>
+    <div class="grp" id="gRx"><div class="micro"><i>Receiver</i><i>ESP32-S3</i></div><div class="rows" id="rxRows"></div></div>
+    <div class="grp" id="gEth"><div class="micro"><i>Ethernet, viewer</i><i>W5500</i></div><div class="rows" id="viewRows"></div></div>
   </aside>
 </main>
 
@@ -159,11 +175,13 @@ const nf = new Intl.NumberFormat('en-US');
 const css = getComputedStyle(document.documentElement);
 const token = name => css.getPropertyValue(name).trim();
 const ui = () => Math.min(1.45, Math.max(1, innerWidth / 1600));
-const gutter = () => 54 * ui();                       // CSS px left of the spectrum and waterfall plots
+const gutter = () => 50 * ui();                       // CSS px left of the spectrum and waterfall plots
 const DASH = '–';
+const MONO = 'Martian Mono, Menlo, monospace';
+const font = (d, px = 10.5) => `${px * d * ui()}px ${MONO}`;
 
-// One light-blue ramp for both densities: power over time and frequency, symbols over I and Q.
-const RAMP = ['#121820', '#0f2134', '#0f365a', '#145385', '#2377ba', '#4aa2e2', '#8fd0ff', '#e2f5ff'];
+// One cyan ramp for both densities: power over time and frequency, symbols over I and Q.
+const RAMP = ['#08101a', '#081a2b', '#0a2d4a', '#0f4a74', '#1a6fa3', '#3d9bd0', '#8ad4ff', '#eaf8ff'];
 const LUT = (() => {
   const rgb = RAMP.map(h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16)));
   const lut = new Uint8ClampedArray(256 * 4);
@@ -180,6 +198,9 @@ const THRESHOLD = { 4: 1.00, 5: 2.23, 6: 3.10, 7: 4.03, 8: 4.68, 9: 5.18, 10: 6.
   12: 5.50, 13: 6.62, 14: 7.91, 15: 9.35, 16: 10.69, 17: 11.03 };
 const MODCODS = { 4: 'QPSK 1/2', 5: 'QPSK 3/5', 6: 'QPSK 2/3', 7: 'QPSK 3/4', 8: 'QPSK 4/5', 9: 'QPSK 5/6', 10: 'QPSK 8/9',
   11: 'QPSK 9/10', 12: '8PSK 3/5', 13: '8PSK 2/3', 14: '8PSK 3/4', 15: '8PSK 5/6', 16: '8PSK 8/9', 17: '8PSK 9/10' };
+// Bit labels by phase, k pi/4 for k = 0..7 (EN 302 307-1 Figures 9 and 10; host/dvbs2.py).
+const LABELS8 = ['001', '000', '100', '110', '010', '011', '111', '101'];
+const LABELS4 = { 1: '00', 3: '10', 5: '11', 7: '01' };
 
 function fit(canvas) {
   const r = canvas.getBoundingClientRect(), d = devicePixelRatio || 1;
@@ -189,17 +210,17 @@ function fit(canvas) {
 }
 function niceTicks(lo, hi, step) {
   const out = [];
-  for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) out.push(v);
+  for (let v = Math.ceil(lo / step - 1e-9) * step; v <= hi + 1e-9; v += step) out.push(+v.toFixed(6));
   return out;
 }
-const font = (d, px = 12) => `${px * d * ui()}px Archivo, sans-serif`;
+const glow = (g, on, d) => { g.shadowColor = on ? 'rgba(138,212,255,0.55)' : 'transparent'; g.shadowBlur = on ? 6 * d : 0; };
 
 const seen = {};
 const fresh = (name, ms = 2500) => seen[name] && performance.now() - seen[name] < ms;
 const state = { rx: null, tx: null, cm5: null, viewer: null, rate: 16e6, aos: null, los: null, history: [] };
 
-// ---- Constellation ---------------------------------------------------------------------------
-const N = 512, SPAN = 84;
+// ---- Constellation in a phase reticle ---------------------------------------------------------
+const N = 512, SPAN = 96;
 const density = new Float32Array(N * N);
 let densityPeak = 1, bitsPerSymbol = 3;
 const constImg = new ImageData(N, N), constOff = new OffscreenCanvas(N, N);
@@ -227,23 +248,41 @@ function addSymbols(iq, bits) {
 
 function drawConstellation() {
   const c = $('constellation'), [w, h, d] = fit(c), g = c.getContext('2d');
-  g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
   g.clearRect(0, 0, w, h);
-  const side = Math.min(w, h), ox = (w - side) / 2, oy = (h - side) / 2;
+  const side = Math.min(w, h), ox = (w - side) / 2, oy = (h - side) / 2, cx = ox + side / 2, cy = oy + side / 2;
+  g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
+  g.globalCompositeOperation = 'lighter';
   g.drawImage(constOff, ox, oy, side, side);
-  const cx = ox + side / 2, cy = oy + side / 2, r = 64 / SPAN * side / 2;
-  g.lineWidth = d; g.strokeStyle = token('--grid');
-  g.beginPath(); g.moveTo(ox, cy); g.lineTo(ox + side, cy); g.moveTo(cx, oy); g.lineTo(cx, oy + side); g.stroke();
+  g.globalCompositeOperation = 'source-over';
+  const r = 64 / SPAN * side / 2, R = 0.93 * side / 2;
+  g.lineWidth = d;
+  // Reticle: the nominal ring, a 5-degree scale outside it, crosshairs.
+  g.strokeStyle = token('--grid');
+  g.beginPath(); g.moveTo(cx - R, cy); g.lineTo(cx + R, cy); g.moveTo(cx, cy - R); g.lineTo(cx, cy + R); g.stroke();
+  g.strokeStyle = 'rgba(138,212,255,0.16)';
   g.beginPath(); g.arc(cx, cy, r, 0, 2 * Math.PI); g.stroke();
-  const points = bitsPerSymbol === 3 ? 8 : 4, offset = bitsPerSymbol === 3 ? 0 : Math.PI / 4;
-  g.strokeStyle = 'rgba(226,245,255,0.18)';
-  for (let k = 0; k < points; k++) {
-    const a = offset + k * 2 * Math.PI / points;
-    g.beginPath(); g.arc(cx + r * Math.cos(a), cy - r * Math.sin(a), 0.14 * r, 0, 2 * Math.PI); g.stroke();
+  g.beginPath(); g.arc(cx, cy, R, 0, 2 * Math.PI); g.stroke();
+  for (let deg = 0; deg < 360; deg += 5) {
+    const a = deg * Math.PI / 180, len = deg % 45 === 0 ? 9 * d : deg % 15 === 0 ? 5 * d : 3 * d;
+    g.strokeStyle = deg % 45 === 0 ? 'rgba(138,212,255,0.5)' : 'rgba(138,212,255,0.22)';
+    g.beginPath(); g.moveTo(cx + R * Math.cos(a), cy - R * Math.sin(a)); g.lineTo(cx + (R - len) * Math.cos(a), cy - (R - len) * Math.sin(a)); g.stroke();
   }
+  g.font = font(d, 9.5); g.textAlign = 'center'; g.textBaseline = 'middle';
+  // Each nominal point and its bits, just outside the ring.
+  const ks = bitsPerSymbol === 3 ? [0, 1, 2, 3, 4, 5, 6, 7] : [1, 3, 5, 7];
+  g.fillStyle = token('--ink-2');
+  for (const k of ks) {
+    const a = k * Math.PI / 4, x = cx + r * Math.cos(a), y = cy - r * Math.sin(a), s = 4 * d;
+    g.strokeStyle = 'rgba(234,246,255,0.35)';
+    g.beginPath(); g.moveTo(x - s, y); g.lineTo(x - s / 2, y); g.moveTo(x + s / 2, y); g.lineTo(x + s, y);
+    g.moveTo(x, y - s); g.lineTo(x, y - s / 2); g.moveTo(x, y + s / 2); g.lineTo(x, y + s); g.stroke();
+    const lr = r + 0.17 * r + 8 * d;
+    g.fillText(bitsPerSymbol === 3 ? LABELS8[k] : LABELS4[k], cx + lr * Math.cos(a), cy - lr * Math.sin(a));
+  }
+  g.textAlign = 'left'; g.textBaseline = 'alphabetic';
 }
 
-// ---- I/Q: the first 32 us of each snapshot, with a short persistence -------------------------
+// ---- I/Q scope: the first 32 us of each snapshot, with persistence ---------------------------
 const traces = [];
 function addSamples(iq, rate) {
   traces.unshift({ iq, rate });
@@ -253,32 +292,32 @@ function addSamples(iq, rate) {
 function drawWaveform() {
   const c = $('waveform'), [w, h, d] = fit(c), g = c.getContext('2d');
   g.clearRect(0, 0, w, h);
-  const gx = 42 * d * ui(), pad = 10 * d, base = h - 18 * d * ui(), n = 512;
-  const y = v => (base + pad) / 2 - v / 128 * ((base - pad) / 2);
-  g.lineWidth = d; g.font = font(d); g.textAlign = 'right';
-  for (const v of [-96, 0, 96]) {
-    g.strokeStyle = token('--grid'); g.beginPath(); g.moveTo(gx, y(v)); g.lineTo(w, y(v)); g.stroke();
-    g.fillStyle = token('--ink-3'); g.fillText(v ? `${v > 0 ? '+' : '−'}0.75` : '0', gx - 8 * d, y(v) + 4 * d);
-  }
-  g.textAlign = 'left';
+  const top = 6 * d, base = h - 20 * d * ui(), n = 512, gx = 8 * d;
+  const y = v => (top + base) / 2 - v / 128 * ((base - top) / 2);
+  // Scope graticule: 10 by 8 divisions, finer ticks on the centre lines.
+  g.lineWidth = d; g.strokeStyle = token('--grid');
+  for (let i = 0; i <= 10; i++) { const x = gx + i / 10 * (w - 2 * gx); g.beginPath(); g.moveTo(x, top); g.lineTo(x, base); g.stroke(); }
+  for (let j = 0; j <= 8; j++) { const yy = top + j / 8 * (base - top); g.beginPath(); g.moveTo(gx, yy); g.lineTo(w - gx, yy); g.stroke(); }
+  g.strokeStyle = 'rgba(138,212,255,0.18)';
+  for (let i = 0; i <= 50; i++) { const x = gx + i / 50 * (w - 2 * gx), m = (top + base) / 2; g.beginPath(); g.moveTo(x, m - 2 * d); g.lineTo(x, m + 2 * d); g.stroke(); }
   if (!traces.length) return;
-  const rate = traces[0].rate, X = k => gx + k / (n - 1) * (w - gx);
+  const rate = traces[0].rate, X = k => gx + k / (n - 1) * (w - 2 * gx);
   for (let t = traces.length - 1; t >= 0; t--) {
     const iq = traces[t].iq;
-    for (const [off, color] of [[1, token('--amber')], [0, token('--blue')]]) {
-      g.strokeStyle = color; g.globalAlpha = t === 0 ? 1 : 0.2 * (1 - t / traces.length);
-      g.lineWidth = (t ? 1 : 1.4) * d; g.lineJoin = 'round';
+    for (const [off, color] of [[1, token('--amber')], [0, token('--cyan')]]) {
+      g.strokeStyle = color; g.globalAlpha = t === 0 ? 1 : 0.18 * (1 - t / traces.length);
+      g.lineWidth = (t ? 1 : 1.3) * d; g.lineJoin = 'round';
+      glow(g, t === 0 && off === 0, d);
       g.beginPath();
       for (let k = 0; k < n; k++) { const v = iq[2 * k + off]; k ? g.lineTo(X(k), y(v)) : g.moveTo(X(k), y(v)); }
       g.stroke();
     }
   }
-  g.globalAlpha = 1; g.fillStyle = token('--ink-3');
+  glow(g, false, d); g.globalAlpha = 1;
+  g.font = font(d); g.fillStyle = token('--ink-3');
   const us = n / rate * 1e6;
-  for (const t of niceTicks(0, us, 8)) {
-    const label = `${t} µs`, x = X(t / us * (n - 1)), tw = g.measureText(label).width;
-    g.fillText(label, Math.min(Math.max(gx, x - tw / 2), w - tw - 4 * d), h - 4 * d);
-  }
+  g.fillText(`${(us / 10).toFixed(1)} µs/div`, gx + 2 * d, h - 5 * d);
+  g.textAlign = 'right'; g.fillText('0.2 FS/div', w - gx, h - 5 * d); g.textAlign = 'left';
 }
 
 // ---- Spectrum and waterfall ------------------------------------------------------------------
@@ -299,7 +338,7 @@ function addSpectrum(db, rate) {
   floorDb = rows ? floorDb * 0.95 + f0 * 0.05 : f0;
   topDb = rows ? topDb * 0.95 + t0 * 0.05 : t0;
   for (let i = 0; i < BINS; i++) {
-    const t = 0.85 * Math.max(0, Math.min(1, (db[i] - floorDb) / (topDb - floorDb)));
+    const t = 0.88 * Math.max(0, Math.min(1, (db[i] - floorDb) / (topDb - floorDb)));
     rowImg.data.set(LUT.subarray((t * 255 | 0) * 4, (t * 255 | 0) * 4 + 4), i * 4);
   }
   fallCtx.drawImage(fallOff, 0, 1);
@@ -308,55 +347,78 @@ function addSpectrum(db, rate) {
   $('emptySpec').hidden = true;
 }
 
+function ruler(g, gx, w, y0, dir, d) {                // frequency ticks: 2 MHz major, 0.5 MHz minor
+  const half = state.rate / 2e6, X = off => gx + (off + half) / (2 * half) * (w - gx);
+  g.lineWidth = d;
+  for (const off of niceTicks(-half, half, 0.5)) {
+    const major = Math.abs(off % 2) < 1e-6, len = (major ? 7 : 3) * d;
+    g.strokeStyle = major ? 'rgba(138,212,255,0.45)' : 'rgba(138,212,255,0.2)';
+    g.beginPath(); g.moveTo(X(off), y0); g.lineTo(X(off), y0 + dir * len); g.stroke();
+  }
+}
+
 function drawSpectrum() {
   const c = $('spectrum'), [w, h, d] = fit(c), g = c.getContext('2d');
   g.clearRect(0, 0, w, h);
   const lo = Math.floor((floorDb - 6) / 10) * 10, hi = Math.ceil((topDb + 6) / 10) * 10;
-  const top = 22 * d * ui(), gx = gutter() * d, X = f => gx + f * (w - gx);
-  const y = v => h - 4 * d - (v - lo) / (hi - lo) * (h - top - 4 * d);
+  const top = 20 * d * ui(), gx = gutter() * d, X = f => gx + f * (w - gx);
+  const y = v => h - 9 * d - (v - lo) / (hi - lo) * (h - top - 9 * d);
   g.font = font(d); g.lineWidth = d;
   const step = (h - top) / d / ((hi - lo) / 10) < 22 * ui() ? 20 : 10;
-  for (const v of niceTicks(lo, hi, step)) { g.strokeStyle = token('--grid'); g.beginPath(); g.moveTo(gx, y(v)); g.lineTo(w, y(v)); g.stroke(); }
+  for (const v of niceTicks(lo, hi, step)) {
+    g.strokeStyle = token('--grid'); g.beginPath(); g.moveTo(gx, y(v)); g.lineTo(w, y(v)); g.stroke();
+    g.strokeStyle = 'rgba(138,212,255,0.4)'; g.beginPath(); g.moveTo(gx - 6 * d, y(v)); g.lineTo(gx, y(v)); g.stroke();
+  }
   g.fillStyle = token('--ink-3'); g.textAlign = 'right';
-  for (const v of niceTicks(lo, hi, step)) if (y(v) > top - 2 && y(v) < h - 2 * d) g.fillText(`${v}`, gx - 10 * d, y(v) + 4 * d);
-  g.fillText('dB', gx - 10 * d, 14 * d * ui());
+  for (const v of niceTicks(lo, hi, step)) if (y(v) > top - 2 && y(v) < h - 6 * d) g.fillText(`${v}`, gx - 10 * d, y(v) + 4 * d);
+  g.fillText('dBFS', gx - 10 * d, 11 * d * ui());
   g.textAlign = 'left';
+  ruler(g, gx, w, h, -1, d);
   if (!avg) return;
   const s = state.rx;
   if (s && s.rate) {                                  // the DVB-S2 channel: 1.35 times the symbol rate
-    const rs = s.rate === '5m' ? 5e6 : 1e6, half = rs * 1.35 / 2 / state.rate * (w - gx), mid = X(0.5), by = 8 * d * ui();
-    g.strokeStyle = 'rgba(226,245,255,0.28)';
+    const rs = s.rate === '5m' ? 5e6 : 1e6, half = rs * 1.35 / 2 / state.rate * (w - gx), mid = X(0.5), by = 12 * d * ui();
+    g.strokeStyle = 'rgba(138,212,255,0.4)';
     g.beginPath(); g.moveTo(mid - half, by + 5 * d); g.lineTo(mid - half, by); g.lineTo(mid + half, by); g.lineTo(mid + half, by + 5 * d); g.stroke();
-    g.fillStyle = token('--ink-3');
-    g.fillText(`${(rs * 1.35 / 1e6).toFixed(2)} MHz`, mid + half + 8 * d, by + 7 * d);
+    g.fillStyle = token('--ink-2'); g.textAlign = 'center';
+    g.fillText(`${(rs * 1.35 / 1e6).toFixed(2)} MHz`, mid, by - 4 * d); g.textAlign = 'left';
   }
   const path = arr => { g.beginPath(); arr.forEach((v, i) => { const x = X((i + 0.5) / BINS); i ? g.lineTo(x, y(v)) : g.moveTo(x, y(v)); }); };
   const cur = avg.map(v => 10 * Math.log10(v));
   path(cur); g.lineTo(w, h); g.lineTo(gx, h); g.closePath();
   const grad = g.createLinearGradient(0, top, 0, h);
-  grad.addColorStop(0, 'rgba(124,200,255,0.2)'); grad.addColorStop(1, 'rgba(124,200,255,0.0)');
+  grad.addColorStop(0, 'rgba(138,212,255,0.22)'); grad.addColorStop(1, 'rgba(138,212,255,0)');
   g.fillStyle = grad; g.fill();
-  g.strokeStyle = 'rgba(154,171,189,0.3)'; g.lineWidth = d; path(peak); g.stroke();
-  g.strokeStyle = token('--blue'); g.lineWidth = 1.5 * d; g.lineJoin = 'round'; path(cur); g.stroke();
+  g.strokeStyle = 'rgba(139,163,184,0.28)'; g.lineWidth = d; path(peak); g.stroke();
+  glow(g, true, d);
+  g.strokeStyle = token('--cyan'); g.lineWidth = 1.4 * d; g.lineJoin = 'round'; path(cur); g.stroke();
+  glow(g, false, d);
 }
 
 function drawWaterfall() {
   const c = $('waterfall'), [w, h, d] = fit(c), g = c.getContext('2d');
   g.clearRect(0, 0, w, h);
   const gx = gutter() * d;
-  if (!rows) return;
-  // Always fill the panel: a young waterfall stretches its rows until there is one per pixel.
-  const visible = Math.max(1, Math.min(rows, ROWS, Math.round(h / d)));
-  g.imageSmoothingEnabled = true;
-  g.drawImage(fallOff, 0, 0, BINS, visible, gx, 0, w - gx, h);
-  const secs = visible / 10, step = secs > 40 ? 20 : secs > 16 ? 10 : secs > 6 ? 4 : 1;
-  g.font = font(d); g.fillStyle = token('--ink-3'); g.textAlign = 'right';
-  for (const t of niceTicks(0, secs, step)) {
-    const yy = t / secs * h;
-    if (t && yy < h - 8 * d) g.fillText(`${t} s`, gx - 10 * d, yy + 4 * d);
+  if (rows) {
+    // Always fill the panel: a young waterfall stretches its rows until there is one per pixel.
+    const visible = Math.max(1, Math.min(rows, ROWS, Math.round(h / d)));
+    g.imageSmoothingEnabled = true;
+    g.drawImage(fallOff, 0, 0, BINS, visible, gx, 0, w - gx, h);
+    // The write head: where each new row enters.
+    glow(g, true, d); g.strokeStyle = 'rgba(138,212,255,0.85)'; g.lineWidth = d;
+    g.beginPath(); g.moveTo(gx, 0.5 * d); g.lineTo(w, 0.5 * d); g.stroke(); glow(g, false, d);
+    const secs = visible / 10, step = secs > 40 ? 10 : secs > 16 ? 5 : secs > 6 ? 2 : 1;
+    g.font = font(d); g.fillStyle = token('--ink-3'); g.textAlign = 'right'; g.lineWidth = d;
+    for (const t of niceTicks(0, secs, step)) {
+      const yy = t / secs * h, major = t % (step * 2) === 0;
+      g.strokeStyle = major ? 'rgba(138,212,255,0.4)' : 'rgba(138,212,255,0.18)';
+      g.beginPath(); g.moveTo(gx - (major ? 6 : 3) * d, yy); g.lineTo(gx, yy); g.stroke();
+      if (t && major && yy < h - 8 * d) g.fillText(`−${t}s`, gx - 10 * d, yy + 4 * d);
+    }
+    g.fillText('T0', gx - 10 * d, 12 * d * ui());
+    g.textAlign = 'left';
   }
-  g.fillText('now', gx - 10 * d, 13 * d * ui());
-  g.textAlign = 'left';
+  ruler(g, gx, w, h, -1, d);
 }
 
 function drawAxis() {
@@ -394,10 +456,10 @@ const freqAt = fx => {
   const center = state.rx && state.rx.freq_mhz, off = (fx - 0.5) * state.rate / 1e6;
   return center ? `${(center + off).toFixed(3)} MHz` : `${off >= 0 ? '+' : ''}${off.toFixed(3)} MHz`;
 };
-hover('specWell', 'specRead', fx => avg && `${freqAt(fx)}, ${(10 * Math.log10(avg[Math.min(BINS - 1, fx * BINS | 0)])).toFixed(1)} dBFS`);
-hover('fallWell', 'fallRead', (fx, fy) => rows && `${freqAt(fx)}, ${(fy * Math.min(rows, ROWS, $('waterfall').clientHeight) / 10).toFixed(1)} s ago`);
+hover('specWell', 'specRead', fx => avg && `${freqAt(fx)}  ${(10 * Math.log10(avg[Math.min(BINS - 1, fx * BINS | 0)])).toFixed(1)} dBFS`);
+hover('fallWell', 'fallRead', (fx, fy) => rows && `${freqAt(fx)}  T−${(fy * Math.min(rows, ROWS, $('waterfall').clientHeight) / 10).toFixed(1)} s`);
 
-// ---- Readouts ---------------------------------------------------------------------------------
+// ---- Telemetry -------------------------------------------------------------------------------
 function spark(id, idx) {
   const c = $(id), [w, h, d] = fit(c), g = c.getContext('2d');
   g.clearRect(0, 0, w, h);
@@ -408,29 +470,21 @@ function spark(id, idx) {
   const pad = Math.max((hi - lo) * 0.15, Math.abs(hi) * 0.01, 1e-6); lo -= pad; hi += pad;
   const X = t => (t - t0) / Math.max(1, t1 - t0) * (w - 4 * d), Y = v => h - 3 * d - (v - lo) / (hi - lo) * (h - 6 * d);
   g.beginPath(); use.forEach((p, i) => i ? g.lineTo(X(p[0]), Y(p[idx])) : g.moveTo(X(p[0]), Y(p[idx])));
-  g.strokeStyle = 'rgba(124,200,255,0.75)'; g.lineWidth = 1.2 * d; g.lineJoin = 'round'; g.stroke();
+  g.strokeStyle = 'rgba(138,212,255,0.7)'; g.lineWidth = 1.1 * d; g.lineJoin = 'round'; g.stroke();
   const last = use[use.length - 1];
-  g.fillStyle = token('--blue'); g.beginPath(); g.arc(X(last[0]), Y(last[idx]), 2.2 * d, 0, 2 * Math.PI); g.fill();
+  glow(g, true, d); g.fillStyle = token('--cyan'); g.beginPath(); g.arc(X(last[0]), Y(last[idx]), 2 * d, 0, 2 * Math.PI); g.fill(); glow(g, false, d);
 }
-const bytes = n => n >= 1e9 ? [(n / 1e9).toFixed(2), 'GB'] : n >= 1e6 ? [(n / 1e6).toFixed(1), 'MB'] : [(n / 1e3).toFixed(0), 'kB'];
-const val = (v, unit) => `${v}<small>${unit}</small>`;
-
-function errorsEndToEnd(rx, tx, cm5, view) {
-  const parts = [rx && [rx.failed, rx.crc8, rx.cc, rx.eth_dropped], tx && [tx.input_rejected, tx.input_lost, tx.input_overruns, tx.late_fills],
-    cm5 && [cm5.ready_timeouts, cm5.dropped], view && [view.corrupt, view.gaps]].filter(Boolean).flat();
-  return parts.length ? parts.reduce((a, b) => a + (b || 0), 0) : undefined;
-}
-
-// ---- Rows ------------------------------------------------------------------------------------
 const fmt = v => v === undefined || v === null ? DASH : typeof v === 'number' ? nf.format(v) : v;
-const zeroish = (v, errors) => ({ text: fmt(v), cls: v === undefined || v === null ? '' : v ? (errors ? 'bad' : '') : 'zero' });
-function meter(pct) {
-  if (typeof pct !== 'number') return { text: DASH };
-  return { html: `<span class="meter">${pct.toFixed(0)}%<em><i class="${pct > 85 ? 'hot' : ''}" style="width:${Math.min(100, pct)}%"></i></em></span>` };
-}
+const zeroish = v => ({ text: fmt(v), cls: v === undefined || v === null ? '' : v ? 'bad' : 'zero' });
 const pair = (a, b) => (a === undefined && b === undefined) ? { text: DASH }
   : { text: `${fmt(a)} / ${fmt(b)}`, cls: (a || 0) + (b || 0) ? 'bad' : 'zero' };
 const mbps = v => typeof v === 'number' ? `${v.toFixed(2)} Mb/s` : DASH;
+function segments(pct) {
+  if (typeof pct !== 'number') return { text: DASH };
+  const on = Math.round(Math.min(100, pct) / 5);
+  const cells = Array.from({ length: 20 }, (_, i) => `<i class="${i < on ? (pct > 85 ? 'hot' : 'on') : ''}"></i>`).join('');
+  return { html: `${pct.toFixed(0)}%<span class="seg">${cells}</span>` };
+}
 function fill(id, list) {
   const el = $(id);
   if (el.children.length !== list.length) el.innerHTML = list.map(() => '<div class="row"><span></span><b></b></div>').join('');
@@ -442,84 +496,114 @@ function fill(id, list) {
     b.className = value.cls || '';
   });
 }
+const bytes = n => n >= 1e9 ? `${(n / 1e9).toFixed(2)} GB` : n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${(n / 1e3).toFixed(0)} kB`;
+const val = (v, unit) => `${v}<small>${unit}</small>`;
 const modeName = s => s ? `${MODCODS[s.modcod] || 'MODCOD ' + s.modcod}${s.short ? ' short' : ''}` : DASH;
 const hms = ms => { const s = Math.max(0, Math.floor(ms / 1000)); return [Math.floor(s / 3600), Math.floor(s / 60) % 60, s % 60].map(v => String(v).padStart(2, '0')).join(':'); };
-const dot = (id, on, bad) => { $(id).dataset.s = bad ? 'bad' : on ? 'good' : 'idle'; };
+const on = (el, live, bad) => { el.dataset.on = bad ? 'bad' : live ? '1' : '0'; };
+
+function carrier() {                                  // a sine wave for the radio hop, 12 cycles
+  const pts = [];
+  for (let i = 0; i <= 240; i++) pts.push(`${(i / 240 * 100).toFixed(2)},${(7 - 4.5 * Math.sin(i / 240 * 12 * 2 * Math.PI)).toFixed(2)}`);
+  $('carrier').setAttribute('d', 'M' + pts.join(' L'));
+}
+carrier();
 
 function render() {
   const rx = fresh('rx') ? state.rx : null, tx = fresh('tx', 3500) ? state.tx : null;
   const cm5 = fresh('cm5', 3500) ? state.cm5 : null, view = fresh('viewer', 3500) ? state.viewer : null;
-  const s = state.rx || state.tx;
+  const s = state.rx || state.tx, locked = rx && rx.state === 'track';
 
-  // Header
   if (state.rx && state.rx.freq_mhz) $('freq').textContent = `${state.rx.freq_mhz.toFixed(3)} MHz`;
   else if (state.tx && state.tx.freq_mhz) $('freq').textContent = `${Number(state.tx.freq_mhz).toFixed(3)} MHz`;
-  if (s) $('mode').textContent = `${modeName(s)}, ${state.rx ? (state.rx.rate === '5m' ? 5 : 1) : (s.symbol_rate || 0) / 1e6} Msym/s`;
-  const clock = $('clock'), locked = rx && rx.state === 'track';
+  if (s) $('mode').textContent = `${modeName(s)}  ${state.rx ? (state.rx.rate === '5m' ? 5 : 1) : (s.symbol_rate || 0) / 1e6} Msym/s`;
+  const clock = $('clock');
   if (locked) {
     if (!state.aos) state.aos = Date.now();
     state.los = null;
-    clock.dataset.s = 'good'; $('clockTag').textContent = 'AOS'; $('clockTime').textContent = hms(Date.now() - state.aos);
+    clock.dataset.s = 'aos'; $('clockTag').textContent = 'AOS'; $('clockTime').textContent = hms(Date.now() - state.aos);
   } else if (state.aos || state.los) {
     if (!state.los) state.los = Date.now();
     state.aos = null;
-    clock.dataset.s = 'warn'; $('clockTag').textContent = 'LOS'; $('clockTime').textContent = hms(Date.now() - state.los);
+    clock.dataset.s = 'los'; $('clockTag').textContent = 'LOS'; $('clockTime').textContent = hms(Date.now() - state.los);
   } else { clock.dataset.s = 'idle'; $('clockTag').textContent = 'AOS'; $('clockTime').textContent = '--:--:--'; }
 
-  // Readouts
+  // The chain
   const mer = rx ? (rx.mer_med_db ?? rx.mer_db) : undefined, th = rx ? THRESHOLD[rx.modcod] : undefined;
+  const busy = pct => typeof pct === 'number' ? 100 - pct : undefined;
+  const viewFps = view && view.fps ? Object.values(view.fps).filter(v => typeof v === 'number') : [];
+  const inErrors = tx && tx.input_bytes !== undefined ? (tx.input_rejected || 0) + (tx.input_lost || 0) + (tx.input_overruns || 0) : undefined;
+  on($('cCam'), cm5 && cm5.lifecycle !== 'stopped', cm5 && cm5.failed);
+  $('vCam').textContent = cm5 && typeof cm5.mbps === 'number' ? `${cm5.mbps.toFixed(2)} Mb/s` : DASH;
+  on($('wSpi'), tx && tx.input_mbps > 0, false);
+  on($('cTx'), !!tx, tx && (inErrors || tx.late_fills));
+  $('vTx').textContent = tx ? `${modeName(tx)}` : DASH;
+  $('vHz').textContent = s && (s.freq_mhz) ? `${Number(s.freq_mhz).toFixed(0)} MHz` : '';
+  on($('wRf'), locked, false);
+  on($('cRx'), locked, rx && (rx.failed || rx.crc8 || rx.cc));
+  $('vRx').textContent = rx ? (locked && typeof mer === 'number' ? `${mer.toFixed(1)} dB` : 'SEARCH') : DASH;
+  on($('wEth'), rx && rx.mbps > 0, false);
+  on($('cEth'), rx && rx.eth_sent > 0, rx && rx.eth_dropped);
+  $('vEth').textContent = rx && typeof rx.mbps === 'number' ? `${rx.mbps.toFixed(2)} Mb/s` : DASH;
+  on($('wView'), viewFps.some(v => v > 0), false);
+  on($('cView'), viewFps.some(v => v > 0), view && (view.corrupt || view.gaps));
+  $('vView').textContent = viewFps.length ? `${viewFps.map(v => v.toFixed(0)).join(' + ')} fps` : DASH;
+
+  // Telemetry
+  const errs = (() => {
+    const parts = [rx && [rx.failed, rx.crc8, rx.cc, rx.eth_dropped], tx && [tx.input_rejected, tx.input_lost, tx.input_overruns, tx.late_fills],
+      cm5 && [cm5.ready_timeouts, cm5.dropped], view && [view.corrupt, view.gaps]].filter(Boolean).flat();
+    return parts.length ? parts.reduce((a, b) => a + (b || 0), 0) : undefined;
+  })();
+  on($('gLink'), locked, errs);
+  $('gLinkState').textContent = locked ? (errs ? 'anomaly' : 'nominal') : rx ? 'acquiring' : 'no data';
   $('kRate').innerHTML = rx && typeof rx.mbps === 'number' ? val(rx.mbps.toFixed(2), 'Mb/s') : DASH;
   $('kMer').innerHTML = typeof mer === 'number' ? val(mer.toFixed(1), 'dB') : DASH;
-  $('kMargin').innerHTML = typeof mer === 'number' && th !== undefined ? val(`${mer - th >= 0 ? '+' : '−'}${Math.abs(mer - th).toFixed(1)}`, 'dB') : DASH;
-  $('kFrames').textContent = rx && typeof rx.frames === 'number' ? nf.format(rx.frames) : DASH;
-  if (rx && typeof rx.packets === 'number') { const [v, u] = bytes(rx.packets * 188); $('kBytes').innerHTML = val(v, u); } else $('kBytes').textContent = DASH;
-  const errs = errorsEndToEnd(rx, tx, cm5, view), ke = $('kErrors');
-  ke.textContent = errs === undefined ? DASH : nf.format(errs);
-  ke.className = errs === undefined ? '' : errs ? 'bad' : 'good';
-
-  // Devices
-  dot('dCam', cm5 && cm5.lifecycle !== 'stopped', cm5 && cm5.failed);
+  fill('linkRows', [
+    ['Margin over QEF', typeof mer === 'number' && th !== undefined ? `${mer - th >= 0 ? '+' : '−'}${Math.abs(mer - th).toFixed(1)} dB` : DASH],
+    ['Frames exact', rx && rx.frames],
+    ['Delivered', rx && typeof rx.packets === 'number' ? bytes(rx.packets * 188) : DASH],
+    ['Errors, end to end', errs === undefined ? undefined : zeroish(errs)],
+  ]);
+  on($('gCam'), cm5 && cm5.lifecycle !== 'stopped', cm5 && cm5.failed);
   fill('camRows', [
-    ['Transport stream out', mbps(cm5 && cm5.mbps)],
+    ['TS out', mbps(cm5 && cm5.mbps)],
     ['SPI messages', cm5 && cm5.messages],
-    ['READY timeouts', cm5 ? zeroish(cm5.ready_timeouts, true) : undefined],
+    ['READY timeouts', cm5 ? zeroish(cm5.ready_timeouts) : undefined],
     ['Queue age', cm5 && typeof cm5.queue_age_ms === 'number' ? `${cm5.queue_age_ms.toFixed(0)} ms` : DASH],
   ]);
-  const busy = pct => typeof pct === 'number' ? 100 - pct : undefined;
-  const inErrors = tx && tx.input_bytes !== undefined ? (tx.input_rejected || 0) + (tx.input_lost || 0) + (tx.input_overruns || 0) : undefined;
-  dot('dTx', !!tx, tx && (inErrors || tx.late_fills || tx.late_switches));
+  on($('gTx'), !!tx, tx && (inErrors || tx.late_fills || tx.late_switches));
   fill('txRows', [
     ['Input', mbps(tx && tx.input_mbps)],
     ['Frames encoded', tx && tx.frames_encoded],
     ['Filler frames', tx && tx.dummies],
-    ['Input errors', tx ? zeroish(inErrors, true) : undefined],
-    ['Late fills / bank switches', tx ? pair(tx.late_fills, tx.late_switches) : undefined],
-    ['Encoder, core 0', meter(busy(tx && tx.encoder_spare_pct))],
-    ['Bank fill, core 1', meter(busy(tx && tx.fill_spare_pct))],
+    ['Input errors', tx ? zeroish(inErrors) : undefined],
+    ['Late fills / switches', tx ? pair(tx.late_fills, tx.late_switches) : undefined],
+    ['Core 0, encoder', segments(busy(tx && tx.encoder_spare_pct))],
+    ['Core 1, bank fill', segments(busy(tx && tx.fill_spare_pct))],
   ]);
-  dot('dRx', locked, rx && (rx.failed || rx.crc8 || rx.cc));
+  on($('gRx'), locked, rx && (rx.failed || rx.crc8 || rx.cc));
   fill('rxRows', [
     ['Gain', rx && typeof rx.gain === 'number' ? `${rx.gain} dB` : DASH],
-    ['Failed / LDPC repaired', rx ? pair(rx.failed, rx.ldpc) : undefined],
+    ['Failed / LDPC', rx ? pair(rx.failed, rx.ldpc) : undefined],
     ['TS packets', rx && rx.packets],
-    ['CRC-8 / continuity errors', rx ? pair(rx.crc8, rx.cc) : undefined],
-    ['Carrier offset', rx && typeof rx.cfo_hz === 'number' ? `${(rx.cfo_hz / 1000).toFixed(1)} kHz` : DASH],
-    ['Clock offset', rx && typeof rx.clock_ppm === 'number' ? `${rx.clock_ppm.toFixed(1)} ppm` : DASH],
-    ['Core 0', meter(rx && rx.core0_pct)],
+    ['CRC-8 / continuity', rx ? pair(rx.crc8, rx.cc) : undefined],
+    ['Carrier offset', rx && typeof rx.cfo_hz === 'number' ? `${(rx.cfo_hz / 1000).toFixed(2)} kHz` : DASH],
+    ['Clock offset', rx && typeof rx.clock_ppm === 'number' ? `${rx.clock_ppm.toFixed(2)} ppm` : DASH],
+    ['Core 0, check', segments(rx && rx.core0_pct)],
   ]);
-  const viewFps = view && view.fps ? Object.values(view.fps).filter(v => typeof v === 'number') : [];
-  dot('dView', rx && rx.eth_sent > 0 && viewFps.some(v => v > 0), (rx && rx.eth_dropped) || (view && (view.corrupt || view.gaps)));
+  on($('gEth'), rx && rx.eth_sent > 0, (rx && rx.eth_dropped) || (view && (view.corrupt || view.gaps)));
   fill('viewRows', [
     ['Link', rx && rx.eth_mbps_link ? `${rx.eth_mbps_link} Mb/s` : DASH],
-    ['Datagrams sent / packets dropped', rx && rx.eth_sent !== undefined
+    ['Datagrams / dropped', rx && rx.eth_sent !== undefined
       ? { text: `${fmt(rx.eth_sent)} / ${fmt(rx.eth_dropped ?? 0)}`, cls: rx.eth_dropped ? 'bad' : '' } : undefined],
     ['Decoded, A / B', viewFps.length ? `${viewFps.map(v => v.toFixed(0)).join(' / ')} fps` : DASH],
-    ['Corrupt packets / gaps', view ? pair(view.corrupt, view.gaps) : undefined],
+    ['Corrupt / gaps', view ? pair(view.corrupt, view.gaps) : undefined],
   ]);
 
-  if (rx) state.history.push([Date.now() / 1000, rx.mbps, mer, typeof mer === 'number' && th !== undefined ? mer - th : undefined, rx.frames, rx.packets, errs]);
+  if (rx) state.history.push([Date.now() / 1000, rx.mbps, mer]);
   if (state.history.length > 2400) state.history.shift();
-  ['sRate', 'sMer', 'sMargin', 'sFrames', 'sBytes', 'sErrors'].forEach((id, k) => spark(id, k + 1));
+  spark('sRate', 1); spark('sMer', 2);
 }
 
 // ---- Events ----------------------------------------------------------------------------------
