@@ -19,6 +19,41 @@ USB intake, 2.59 to 2.65 Mb/s into a keyed transmitter
 ([TS link](../../results/2026-10-23-ts-link/README.md)), preserves a finite file but cannot
 carry the live 9 Mb/s mux.
 
+## ESP32-S3 to ESP32-S3
+
+![The bench: the transmitting S3 beside the 360 camera, coax and a 30 dB attenuator to the
+receiving S3 and its W5500, the link dashboard on both monitors and the received video on the
+laptop](bench.jpg)
+
+A second S3 can take the B200's place. On 2026-10-23 the CM5 sent the two-camera mux over SPI
+to the transmitting XIAO, which sent 8PSK 3/4 short frames at 5 Msym/s (10.39 Mb/s) at
+2420 MHz through coax and 30 dB of attenuation. The receiving XIAO sent the TS to the laptop
+through a W5500 Ethernet module at 10 Mb/s. In a 540 s run all 402,607 frames decoded, the
+egress dropped nothing, and 0.09% of datagrams were lost between the W5500 and the laptop
+([records](../../results/2026-10-23-eth-full-quality/README.md)). The module drops its link at
+100 Mb/s on the XIAO's 3V3 supply, so the link is forced to 10 Mb/s
+([bring-up](../../results/2026-10-23-eth-bringup/README.md)).
+
+Receiver, after each reset (it keeps these in RAM), then the run:
+
+```text
+eth phy 10f
+eth ip 192.168.1.3/24
+eth dest 192.168.1.100:1234
+rx 2420 32 575 14 5m ts nonull eth
+```
+
+Transmitter, with the source started after the opening station ID:
+
+```text
+spipins xiao
+spiinput on ts
+dvb 2420 14 5m 540 0 128 --short
+```
+
+The laptop (192.168.1.100) played both cameras with PigeonVision's `pv view` on UDP 1234;
+`host/udp_ts.py --port 1234 --save received.ts` records it without a player.
+
 ## Prepare
 
 Host Python needs numpy/scipy. Build the separate receiver with the
