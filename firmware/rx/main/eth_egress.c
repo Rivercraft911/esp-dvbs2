@@ -204,8 +204,8 @@ static void mon_stats_now(mon_stats_t *st)
     st->heap_after_boot = h.allocs;
 }
 
-/* The monitor's turn, after the TS: schedules, then at most one datagram on socket 2, and only
- * when no TS datagram waits. What is not sent within its period is dropped and counted. */
+/* The monitor's turn, after the TS: schedules, then at most one datagram on the TS socket next
+ * in turn, and only when no TS datagram waits. What is not sent within its period is dropped and counted. */
 static int mon_step(w5500 *w)
 {
     if (!ms.on) return 0;

@@ -24,6 +24,33 @@ attenuation: 41.94 ms, 40 exact frames from a prepared payload
 ([capture details](results/2026-10-21-rf-figures/README.md)). The same mode has since been keyed
 with a payload that never repeats ([keyed table](results/2026-10-23-tx-table/README.md)).
 
+## Live video, one S3 to another
+
+<!-- The clip: on GitHub, edit this file and drag esp-dvbs2-live-link.mp4 onto the next line. -->
+
+
+Remember the goal this all started with? Here it is, with no PC anywhere in the radio path. A
+CM5 encodes two fisheye cameras into an 8 Mb/s MPEG transport stream and clocks it over SPI
+into one S3, which sends it as 8PSK 3/4 at 5 Msym/s on 2420 MHz. Coax and 30 dB of attenuation
+carry it to a second S3, which demodulates and decodes it on the chip and pushes the packets out of
+a W5500 Ethernet module to a laptop, where PigeonVision stitches the two cameras into one 360°
+view. A dashboard, `host/monitor.py`, watches every stage at once, from the cameras to the viewer.
+
+For the live demo it ran 16 back-to-back 540 s runs, 2.4 hours on air: 5,725,408 frames decoded
+with none failed, median pilot MER about 25.5 dB, no relocks, 6.1 million datagrams out of the
+W5500 with none dropped, and both cameras at 30.0 frames/s
+([live demo](results/2026-10-23-live-demo/README.md)). Not quite perfect... the receiver dropped
+11 frames when its release task fell behind, about one every 13 minutes, and some datagrams go
+missing between the W5500 and the laptop. Each loss breaks the picture until the next keyframe.
+
+![The bench, labeled: the transmitting S3 by the cameras, the coax and attenuator, the receiving S3 and its W5500](examples/live-video/bench.jpg)
+
+The bench: the dashboard on both monitors, the stitched view on the laptop. The W5500 runs at
+10 Mb/s, which carries up to 9.46 Mb/s of transport stream; at 100 Mb/s it kept losing its link on
+the XIAO's 3.3 V supply ([bring-up](results/2026-10-23-eth-bringup/README.md),
+[full quality](results/2026-10-23-eth-full-quality/README.md)).
+[How to run it](examples/live-video/README.md#esp32-s3-to-esp32-s3).
+
 ## Receiving on an S3
 
 The second S3 captures 16 MS/s through its own radio, matched-filters it, finds and follows the
@@ -191,8 +218,8 @@ and the synthetic test payloads carry it too. External payload bytes are sent un
 |---|---|
 | `firmware/tx` | The transmitter app: console, stream control, encoder and fill loops |
 | `firmware/rx` | The receiver app: capture, the receive tasks, replay |
-| `firmware/components` | Shared parts: `dvbs2` encoder, `dvbs2rx` demodulator and FEC, `shaper`, `radio_s3`, `platform`, `ingress`, `station_id` |
-| `host/` | Board protocol, Python reference encoder, receiver checks, figures |
+| `firmware/components` | Shared parts: `dvbs2` encoder, `dvbs2rx` demodulator and FEC, `shaper`, `radio_s3`, `platform`, `ingress`, `station_id`, `w5500` Ethernet |
+| `host/` | Board protocol, Python reference encoder, receiver checks, the live dashboard (`monitor.py`), the UDP relay (`udp_ts.py`), figures |
 | `examples/` | [Self-check](examples/self-check/README.md), [USB send](examples/usb-send/README.md), [SPI sender](examples/pi-sender/README.md), [live video](examples/live-video/README.md), [over the air](examples/over-the-air/README.md) |
 | `tests/` | Standard vectors, C/Python agreement, pinned output CRCs ([running them](docs/how-it-works.md#checking-changes)) |
 | `results/` | The run records since 2026-10-19, one folder per run with its README and raw records; earlier evidence is indexed in [measurements](docs/measurements.md#earlier-work) |

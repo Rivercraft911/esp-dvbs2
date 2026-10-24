@@ -253,19 +253,25 @@ python3 host/decode.py fast.iq --rate 80000000 --symbol-rate 20000000 \
 |---|---|---|
 | `info` | | App name, firmware commit, MAC address, PSRAM, PHY status (`radio`), whether every mode's run memory fits (`arena_fits`), free memory, arena peaks, heap calls since boot |
 | `rxprobe MHZ GAIN SECONDS` | MHZ 2000 to 2450; GAIN 0 to the radio's `gain_max`, which reads 82 on the boards in the records; SECONDS 1 to 600 | Level, DC, clipped samples and the radio's gain field, from every 64th sample |
-| `rx MHZ GAIN SECONDS MODCOD [1m\|5m] [ts [pattern] [nonull]]` | As `rxprobe`; MODCOD 4 to 10 or 12 to 16, short frames with pilots; 1 Msym/s by default | Receives live. Streams one binary record per frame, then a JSON summary |
+| `rx MHZ GAIN SECONDS MODCOD [1m\|5m] [ts [pattern] [nonull] [eth]]` | As `rxprobe`; MODCOD 4 to 10 or 12 to 16, short frames with pilots; 1 Msym/s by default | Receives live. Streams one binary record per frame, then a JSON summary; with `eth`, also sends the TS packets out of the W5500 |
 | `dump MHZ GAIN PAIRS` | PAIRS 1 to 3,670,016, which is 229 ms at 16 MS/s | The first PAIRS samples as int8: all I, then all Q, each the 10-bit value divided by 4 and rounded down |
 | `upload BYTES` | Even, up to 7,340,032 | Reads a capture of int8 I, Q pairs at 16 MS/s (`.sc8`) into PSRAM and answers with its CRC-32 |
-| `replay MODCOD [SKIP] [1m\|5m] [ts [pattern] [nonull]]` | SKIP leaves out every SKIP-th 768 µs unit | Runs the uploaded capture through the same receiver with the radio off, paced as the radio would deliver it |
+| `replay MODCOD [SKIP] [1m\|5m] [ts [pattern] [nonull] [eth]]` | SKIP leaves out every SKIP-th 768 µs unit | Runs the uploaded capture through the same receiver with the radio off, paced as the radio would deliver it |
 | `membench MHZ GAIN` | | Cycles to read 4,096 words from a free capture bank while the radio writes another, against plain internal RAM, then with the radio stopped |
+| `eth [SETTING]` | `ip A.B.C.D/N [gw A.B.C.D]`, `dest A.B.C.D\|broadcast[:PORT]`, `port PORT`, `mhz 10..40`, `mon on\|off\|PORT`, `pins SCLK MOSI MISO CS`, `defaults` | Alone: the W5500's status and settings. With a setting: changes it until reset (the receiver keeps them in RAM). `mhz` is the SPI clock, `mon` the monitor stream's port |
+| `eth phy MODE`, `eth watch SECONDS` | MODE `auto`, `100f`, `100h`, `10f`, `10h` or `reset`; SECONDS 1 to 600 | Forces the Ethernet link mode before every start; logs every link change for SECONDS |
+| `eth send MS [MB/S]`, `eth recv MS` | MS 1 to 600,000; MB/S up to 100 | Numbered test datagrams out, or counts datagrams in, with the radio off |
+| `mon SAMPLES SYMBOLS STATS` | 0 to 10 per second each, 0 is off; 10, 10 and 5 at boot | Rates of the monitor stream's sample snapshots, symbol taps and statistics during an `eth` run |
 
 Below 2200 MHz the receiver switches to the five-sixths LO by itself. At 5 Msym/s a good frame's
 record carries the payload's CRC-32 instead of the payload. A failed frame's record carries its
 hard and weak bits. `ts` also deframes every good frame into 188-byte TS packets on the chip and
 checks each packet's CRC-8 and continuity counter. `pattern` compares every packet with the
 transmitter's test input (the `spiinput ... ts replay` loop, or a sender's counting pattern),
-and `nonull` counts null packets (PID 0x1FFF) without passing them on. There is no packet output
-yet: the packets are checked and counted. The receiver accepts 8PSK at 1 Msym/s, but the
+and `nonull` counts null packets (PID 0x1FFF) without passing them on. `eth` sends the packets
+out of a W5500 Ethernet module as UDP datagrams of seven packets to the `eth dest` address, and
+the monitor stream to the same host on the `mon` port; without it the packets are only checked
+and counted ([Ethernet out](receiver.md#ethernet-out)). The receiver accepts 8PSK at 1 Msym/s, but the
 transmitter sends short 8PSK only at `5m`, so that pairing is untested.
 
 `rx` and `replay` stream binary records that `host/board.py` cannot read, and `upload` needs the

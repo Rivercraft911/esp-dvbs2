@@ -34,7 +34,9 @@ egress dropped nothing, and 0.09% of datagrams were lost between the W5500 and t
 100 Mb/s on the XIAO's 3V3 supply, so the link is forced to 10 Mb/s
 ([bring-up](../../results/2026-10-23-eth-bringup/README.md)).
 
-Receiver, after each reset (it keeps these in RAM), then the run:
+Wire the W5500 module to the receiver: SCLK to GPIO9, MOSI to GPIO43, MISO to GPIO44, CS to
+GPIO3, and 3V3 and GND (`eth pins` changes the GPIOs). Then on the receiver, after each reset
+(it keeps these settings in RAM), and the run:
 
 ```text
 eth phy 10f
@@ -53,6 +55,12 @@ dvb 2420 14 5m 540 0 128 --short
 
 The laptop (192.168.1.100) played both cameras with PigeonVision's `pv view` on UDP 1234;
 `host/udp_ts.py --port 1234 --save received.ts` records it without a player.
+
+For the dashboard, run `python3 host/monitor.py` and open http://127.0.0.1:8770/. The receiver's
+monitor stream arrives on UDP 1235 by default, and running the transmitter's `dvb` through
+`python3 host/board.py "dvb ..." --port TX_PORT --monitor 127.0.0.1:1235` adds its status lines.
+`--demo` fills the page with synthetic data, no hardware needed. The
+[live demo](../../results/2026-10-23-live-demo/README.md) ran this way for 2.4 hours.
 
 ## Prepare
 

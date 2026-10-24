@@ -548,18 +548,57 @@ of input it rode through 95,810 dummy frames without losing lock
 transmitter sends then decoded 223,153 frames, every one exact
 ([sweep](../results/2026-10-23-rx-sweep/README.md)).
 
+## Live video, S3 to S3
+
+The receiver could check a camera stream packet by packet, but it had nowhere to send one. A
+WIZnet W5500 fixes that: an SPI chip that runs UDP and IP itself, so the S3 only writes datagrams
+into its buffer. I wrote the driver from the datasheet and tested it against a register-level fake
+chip (`tests/w5500_fake.c`) before the modules arrived.
+
+Then they arrived, and for a while the hardest part of the whole project was a link light. The
+chip answered on SPI every time, but the Ethernet link flapped: in auto or forced to 100 Mb/s it
+was up only 26 to 31% of the time, and a first module, cable and adapter never held a link at all.
+Forced to 10 Mb/s full duplex it stayed up. The likely culprit is the supply, the XIAO's 3.3 V
+with no regulator on the module. The first live video over Ethernet came the same day: cameras at
+2.5 Mb/s each, 268,401 of 268,401 frames good over 540 s, all 1,972,729 TS packets out of the
+W5500, and all but 22 datagrams at the laptop
+([bring-up](../results/2026-10-23-eth-bringup/README.md)).
+
+The full 9 Mb/s mux was harder, because 10 Mb/s Ethernet carries at most 9.52 Mb/s of these
+datagrams. The egress fell behind, 8.61 Mb/s with 1.7% of packets dropped in one run. Three
+changes got it to the wire's ceiling: a 4,096-packet queue in place of 256 for the mux's bursts;
+GDMA burst mode and waiting for the data before starting each SPI transfer, which ended the
+underflows where a write shifted out of an empty FIFO; and two sockets in turn, so the chip holds
+the next datagram while one is on the wire. The egress reached 9.46 Mb/s, and a 540 s camera run
+sent 432,975 datagrams with none dropped
+([full quality](../results/2026-10-23-eth-full-quality/README.md)).
+
+Then a window on all of it. The receiver sends a monitor stream beside the video, and
+`host/monitor.py` draws the whole chain at once: the cameras, the transmitter's status, the
+spectrum and constellation the receiving S3 sees, its cores, the W5500 and the viewer. The first
+version cost the video. Copying sample snapshots on core 1 lost 322 demodulator runs a minute,
+and a third W5500 socket made the chip lose and reorder TS datagrams. With every copy on core 0
+and the monitor taking turns on the TS sockets, a 520 s camera run lost nothing
+([monitor](../results/2026-10-23-eth-monitor/README.md)).
+
+For the live demo it all ran back to back for 2.4 hours: 16 runs of 540 s, 5,725,408 frames
+decoded with none failed, 6.1 million datagrams out of the W5500 with none dropped, and both
+cameras at 30 frames/s. Not perfectly: the receiver dropped 11 frames when its release fell
+behind, and some datagrams went missing between the W5500 and the laptop
+([live demo](../results/2026-10-23-live-demo/README.md)).
+
 ## Now
 
 One S3 has keyed 19 selected configurations with a payload that never repeats, from 0.97 Mb/s to
 69.8 Mb/s in 36 MHz and 58.2 Mb/s in 40 MHz, every frame recovered from sampled B200 bursts
 exact. It carried a CM5's live
 camera mux at 9 Mb/s. A second S3 receives every short-frame mode the first one sends, up to
-12.64 Mb/s, and decodes every frame itself. The limits are plain: conducted paths, one pair of
-boards, the receiver at 2420 MHz and one gain setting, and no real input has yet fed the top
-transmit rates live; quad SPI was tested to 46.6 Mb/s.
+12.64 Mb/s, decodes every frame itself, and passes live camera video on over Ethernet. The limits
+are plain: conducted paths, one pair of boards, the receiver at 2420 MHz and one gain setting,
+Ethernet at 10 Mb/s on this bench, and no real input has yet fed the top transmit rates live;
+quad SPI was tested to 46.6 Mb/s.
 
-Next: live video from one S3 to the other, over Ethernet at both ends. The current
-[implementation](how-it-works.md) and [evidence](measurements.md) are the starting point. The
-early development records remain in the
+The current [implementation](how-it-works.md) and [evidence](measurements.md) are the starting
+point for whatever comes next. The early development records remain in the
 [archive tag](https://github.com/Rivercraft911/esp-dvbs2/tree/archive/dev-2026-10-17); the later
 ones are in [`results/`](../results/) and [`docs/measurements/`](measurements/).

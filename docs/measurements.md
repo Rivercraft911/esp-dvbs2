@@ -40,6 +40,13 @@ Words the records use:
 
 | Record | Headline |
 |---|---|
+| [2026-10-23-ota-modcods-rest](../results/2026-10-23-ota-modcods-rest/README.md) | The other eight normal-frame MODCODs at 5 Msym/s (QPSK 8/9 and 9/10, 8PSK 3/5 to 9/10), 30 s each with a fresh payload, captured whole: 32,997 frames, 0 wrong, 0 gaps. With the first part, every MODCOD from 4 to 17 has a fully decoded keyed run. |
+| [2026-10-23-ota-modcods](../results/2026-10-23-ota-modcods/README.md) | The first six normal-frame MODCODs at 5 Msym/s (QPSK 1/2 to 5/6), 30 s each, captured whole: 18,021 frames, every one exact and contiguous. |
+| [2026-10-23-ota-vcm](../results/2026-10-23-ota-vcm/README.md) | Every VCM mode the transmitter supports, keyed: 13,580 frames in five runs, 0 wrong, 0 gaps, every MODCOD of every pattern back. |
+| [2026-10-23-ota-spi-input](../results/2026-10-23-ota-spi-input/README.md) | Live SPI input from a CM5 in five keyed runs, decoded from whole-run captures: H.264 TS at 9.68 Mb/s, TS at 14.52 Mb/s, the single-line peak of 16.36 Mb/s, a 16.2 MB file with `--fec 16:4`, and live VCM controls. Every recovered packet, frame and shard exact and in order; the S3's SPI counters matched the sender's. |
+| [2026-10-23-ota-station-id](../results/2026-10-23-ota-station-id/README.md) | All ten Morse IDs of the SPI-input runs decoded from the air, the first IDs decoded from RF rather than from dumps. |
+| [2026-10-23-ota-path-check](../results/2026-10-23-ota-path-check/README.md) | A path check that failed: after the bench was rebuilt, the signal reached the B200 only by leakage, 75.2 dB down, and keying stopped after one run. |
+| [2026-10-23-ota-self-check](../results/2026-10-23-ota-self-check/README.md) | The board self-check passed 30 of 30 on 517c641, the firmware of every `ota-` record. |
 | [2026-10-23-tx-table-8psk-rekey](../results/2026-10-23-tx-table-8psk-rekey/README.md) | Six 8PSK rows re-keyed after the internal pair tables: 4,787 recovered frames, every one exact, no dummies. 8PSK 9/10 at 20 Msym/s now keeps 53.7% encoder spare (was 3.9%); 26.67 Msym/s keeps 20.2%, 16.5% and 21.4%. |
 | [2026-10-23-tx-table-8psk](../results/2026-10-23-tx-table-8psk/README.md) | 8PSK at 26.67 Msym/s keyed with a fresh payload at 15% or more spare on both cores: 2,840 recovered frames, every one exact. With TS replayed, 9/10 delivers the full 69.8 Mb/s (was 64.8). |
 | [2026-10-23-tx-table](../results/2026-10-23-tx-table/README.md) | 19 selected transmitter configurations keyed 30 s with a fresh payload and decoded by LeanDVB from four short B200 captures each: 10,219 recovered frames, 0 wrong, 0.97 to 69.8 Mb/s. QPSK 9/10 at 40 MHz keeps 14.2% fill spare, under 15%. Also: the B200's RX2 port, used by earlier same-day records, receives the signal only by leakage, about 19 dB weaker than TX/RX. |
@@ -53,6 +60,22 @@ Words the records use:
 | [2026-10-20-s-band-repeat](../results/2026-10-20-s-band-repeat/README.md) | 2200 and 2290 MHz, 8PSK 2/3 at 5 Msym/s for 30 s each: 6,755 consecutive exact packets each, 9.673 Mb/s. |
 | [2026-10-20-s-band](../results/2026-10-20-s-band/README.md) | Changing payloads decoded exact at seven carriers from 2025 to 2420 MHz; two sustained attempts failed, causes unresolved. |
 | [2026-10-19-live-rf](../results/2026-10-19-live-rf/README.md) | A CM5's 9 Mb/s two-camera TS mux over 16 MHz SPI, 8PSK 2/3 at 5 Msym/s: no TS continuity gaps in 111 s through 40 dB. A completed 140 s run took 106,227 SPI messages with no protocol errors. |
+
+## Live video and Ethernet: S3 to S3
+
+The camera runs: a CM5's `pv-capture` mux over single-line SPI at 16 MHz into the transmitting
+S3, 8PSK 3/4 short frames at 5 Msym/s and 2420 MHz through coax and 30 dB of attenuation, and the
+receiving S3's W5500 at a forced 10 Mb/s to the laptop. The USB runs feed the transmitter from the
+laptop instead.
+
+| Record | Headline |
+|---|---|
+| [2026-10-23-live-demo](../results/2026-10-23-live-demo/README.md) | The live demo: 16 back-to-back 540 s runs, 2.4 hours, 8 Mb/s camera mux. 5,725,408 frames decoded, 0 failed, median pilot MER 25.4 to 25.6 dB, no relocks; 6,127,597 datagrams, none dropped; cameras at 30.0 frames/s. 11 frames dropped when the release fell behind; the laptop relay saw 0.26% of packets with continuity errors over its 2 hours. |
+| [2026-10-23-eth-monitor](../results/2026-10-23-eth-monitor/README.md) | The monitor stream for `host/monitor.py`: with every copy on core 0 and the monitor in the TS sockets' turn, a 520 s camera run dropped no frames or demodulator runs and had no continuity errors at the receiver. Copies on core 1 had cost 322 demodulator runs a minute; a third socket lost and reordered TS datagrams. |
+| [2026-10-23-eth-full-quality](../results/2026-10-23-eth-full-quality/README.md) | The full 9 Mb/s mux out of the W5500: 432,975 datagrams in 540 s, none dropped, 402,607 frames good. The egress reaches 9.46 Mb/s, the wire's ceiling, with two sockets in turn; 0.09% of datagrams were lost between the W5500 and the laptop. |
+| [2026-10-23-eth-bringup](../results/2026-10-23-eth-bringup/README.md) | W5500 bring-up and the first live video over Ethernet: 268,401 of 268,401 frames good and all 1,972,729 packets sent at a 6 Mb/s mux. The link holds only at a forced 10 Mb/s on the XIAO's 3.3 V. The direct GP-SPI2 backend costs 76 µs of CPU per datagram against 281 µs for spi_master. |
+| [2026-10-23-s3-live-ts](../results/2026-10-23-s3-live-ts/README.md) | An ffmpeg H.264 TS from the laptop over USB, through the S3 link: 540 s at 2.4 Mb/s, 819,042 packets from 105,901 frames, all exact, no CRC-8 or continuity errors. |
+| [2026-10-23-s3-file](../results/2026-10-23-s3-file/README.md) | An 8.0 MB file over USB, through the S3 link and back out over USB with its SHA-256 equal, but only with a 96:32 erasure code: the receiver lost 16 or 17 frames in a row at its USB record write while the laptop paused. Every frame that arrived was exact. |
 
 ## Receive: S3 to S3
 

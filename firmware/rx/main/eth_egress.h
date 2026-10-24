@@ -38,8 +38,8 @@ typedef struct {
     int esp_err;                    /* the ESP-IDF error behind a "spi" status */
     uint32_t underflows;            /* payload writes the SPI DMA underran, written again */
     uint32_t recoveries;            /* ... ten times in a row: GP-SPI2 and the GDMA reset */
-    /* The monitor stream (mon_pack.h) on socket 2: datagrams sent and dropped (not sent within
-     * their period, TS first), sample snapshots, and the wall time per datagram (its sends
+    /* The monitor stream (mon_pack.h), in the TS sockets' turn: datagrams sent and dropped (not
+     * sent within their period, TS first), sample snapshots, and the wall time per datagram (its sends
      * sleep while the payload's DMA runs). */
     bool mon;
     uint32_t mon_sent, mon_dropped, mon_max_cycles;

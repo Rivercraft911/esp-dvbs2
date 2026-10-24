@@ -183,6 +183,36 @@ counters summed to 74.5% of the frame period, with all 47,742 frames and 449,231
 ([TS cost](../results/2026-10-23-rx-ts-cost/README.md),
 [TS CRC-8](../results/2026-10-23-rx-ts-crc/README.md)).
 
+## Ethernet out
+
+With `eth` (`rx ... ts eth`) the packets leave through a WIZnet W5500 on SPI2
+(`components/w5500`, written from the W5500 datasheet, and `firmware/rx/main/eth_egress.c`). The
+W5500 runs UDP and IP in hardware, so the receiver uses no software network stack and the egress
+needs no heap. The checker copies each packet into a 4,096-packet queue in PSRAM and never waits: a
+packet that finds the queue full is dropped and counted. A sender task on core 0, above the
+checker and below the release, sends datagrams of seven packets (1,316 bytes) on two sockets in
+turn, so the chip holds the next datagram while one is on the wire. It drives GP-SPI2 and a GDMA
+channel directly at 26.67 MHz (`w5500_spi_direct.c`) rather than through ESP-IDF's spi_master:
+76 µs of CPU per datagram against 281 µs, paced at 5 Mb/s
+([bring-up](../results/2026-10-23-eth-bringup/README.md)).
+
+The module sits on the XIAO's 3.3 V supply and kept losing its link at 100 Mb/s, so the
+receiver forces 10 Mb/s full duplex (`eth phy 10f`). That carries up to 9.46 Mb/s of TS, enough
+for the full 9 Mb/s camera mux: 432,975 datagrams in a 540 s run with none dropped
+([full quality](../results/2026-10-23-eth-full-quality/README.md)).
+
+The monitor stream goes to `host/monitor.py`, the laptop's dashboard: the receiver's statistics
+five times a second, and sample snapshots and corrected symbols ten times a second (`mon_pack.h`,
+rates set by `mon`). It takes a turn on the same two sockets whenever no TS datagram waits; a
+third socket made the chip lose and reorder TS datagrams. The sender makes those copies itself on core 0; done on
+core 1 they cost the demodulator frames. With the monitor on, an 8 Mb/s camera run had no frames
+or demodulator runs dropped ([monitor](../results/2026-10-23-eth-monitor/README.md)). The
+transmitter's status lines reach the same dashboard through `host/board.py --monitor`.
+
+The longest test is the live demo: 16 runs of 540 s, 5,725,408 frames decoded with none failed,
+6,127,597 datagrams with none dropped. In five of the runs the release fell behind and lost
+frames, 11 in the 2.4 hours ([live demo](../results/2026-10-23-live-demo/README.md)).
+
 ## Memory
 
 Nothing the receiver runs touches the heap after boot. Each run takes its memory from regions
