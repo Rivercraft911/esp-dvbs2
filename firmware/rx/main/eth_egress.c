@@ -37,7 +37,9 @@ static uint8_t pair[2 * W5500_TS_DATAGRAM] __attribute__((aligned(4)));
 #define MON_SAMPLE_US 100000    /* a sample snapshot and a symbol tap ten times a second */
 #define MON_STATS_US 200000     /* stats five times a second */
 #define MON_MER 50              /* the last frame's MER every 20 ms: the last second */
-static EXT_RAM_BSS_ATTR int8_t mon_si[MON_SNAPSHOT], mon_sq[MON_SNAPSHOT];
+/* Internal RAM: core 1 copies into these after a unit, and a PSRAM write through the cache there
+ * cost the receiver frames (core 1 has a few percent of slack at 5 Msym/s). */
+static int8_t mon_si[MON_SNAPSHOT], mon_sq[MON_SNAPSHOT];
 static EXT_RAM_BSS_ATTR int8_t mon_sym[2 * MON_SYMBOLS_MAX];
 static uint8_t mon_buf[MON_HEADER + MON_STATS_MAX] __attribute__((aligned(4)));
 static rx_monitor_t monitor = {.si = mon_si, .sq = mon_sq};
