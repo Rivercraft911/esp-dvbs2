@@ -54,6 +54,7 @@ class Check:
         self.first = self.last = None
         self.max_gap = 0.0
         self.gaps: list[float] = []
+        self.long: list[list[float]] = []   # [seconds into the run, gap ms] for gaps over 20 ms
         self.seq = self.first_seq = None
         self.lost = self.reordered = 0
 
@@ -61,6 +62,8 @@ class Check:
         if self.last is not None:
             self.max_gap = max(self.max_gap, t - self.last)
             self.gaps.append(t - self.last)
+            if t - self.last > 0.020 and len(self.long) < 200:
+                self.long.append([round(t - self.first, 3), round((t - self.last) * 1e3, 1)])
         self.first = t if self.first is None else self.first
         self.last = t
         self.datagrams += 1
@@ -113,7 +116,8 @@ class Check:
             g = sorted(self.gaps)
             pick = lambda q: round(g[min(len(g) - 1, int(q * len(g)))] * 1e3, 2)
             out |= dict(gap_ms=dict(median=pick(0.5), p99=pick(0.99), p999=pick(0.999)),
-                        gaps_over_20ms=sum(x > 0.020 for x in g), gaps_over_100ms=sum(x > 0.100 for x in g))
+                        gaps_over_20ms=sum(x > 0.020 for x in g), gaps_over_100ms=sum(x > 0.100 for x in g),
+                        long_gaps=self.long)
         if self.expected is not None:
             out |= dict(pattern_bad=self.pattern_bad, bad_at=self.bad_at)
         if self.diag:
