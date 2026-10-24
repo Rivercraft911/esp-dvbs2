@@ -64,8 +64,13 @@ def main():
     tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     for seq in range(20):
         tx.sendto(diag(seq), rx.getsockname())
-    s = udp_ts.receive(rx, 5.0, 0.2, udp_ts.Check(diag=True)).summary()
+    out = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    out.bind(("127.0.0.1", 0))
+    s = udp_ts.receive(rx, 5.0, 0.2, udp_ts.Check(diag=True), forward=out.getsockname()).summary()
     assert s["datagrams"] == 20 and s["lost"] == s["cc_errors"] == s["sync_errors"] == 0, s
+    assert s["gap_ms"]["p999"] >= s["gap_ms"]["median"] >= 0 and s["gaps_over_100ms"] == 0, s
+    out.settimeout(1)
+    assert [out.recv(2048) for _ in range(20)] == [diag(k) for k in range(20)], "relayed in order"
     print("udp_ts checks passed")
 
 
