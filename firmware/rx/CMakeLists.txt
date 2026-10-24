@@ -1,7 +1,8 @@
 cmake_minimum_required(VERSION 3.22)
 set(EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/../components/dvbs2rx"
                          "${CMAKE_CURRENT_LIST_DIR}/../components/dvbs2"
-                         "${CMAKE_CURRENT_LIST_DIR}/../components/platform")
+                         "${CMAKE_CURRENT_LIST_DIR}/../components/platform"
+                         "${CMAKE_CURRENT_LIST_DIR}/../components/w5500")
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 # Build only the components main asks for.
 idf_build_set_property(MINIMAL_BUILD ON)

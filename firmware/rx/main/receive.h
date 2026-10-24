@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include "capture.h"
 #include "dvbs2rx.h"
+#include "monitor.h"
 #include "ts_egress.h"
 
 /* One binary record per frame on USB. A good frame's record (length = payload bytes) is
@@ -28,6 +29,7 @@ typedef struct __attribute__((packed)) {
 typedef struct {
     bool ts, pattern, drop_null;
     const ts_egress_t *egress;      /* NULL: packets are only counted */
+    rx_monitor_t *mon;              /* the monitor stream's hooks (monitor.h), or NULL */
 } receive_options_t;
 
 typedef struct {

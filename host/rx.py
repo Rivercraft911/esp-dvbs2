@@ -5,6 +5,7 @@
     python3 host/rx.py 16 --rate 5m --seconds 30 --port PORT --callsign N0CALL
     python3 host/rx.py 7 --replay capture.sc8 --port PORT --callsign N0CALL
     python3 host/rx.py 16 --rate 5m --ts replay --seconds 30 --port PORT
+    python3 host/rx.py 14 --rate 5m --ts live --eth --seconds 60 --port PORT
 
 --replay uploads a recorded 16 MS/s int8 capture and runs it through the same receiver with
 the radio off, paced as the radio would deliver it, timing every push.
@@ -27,6 +28,11 @@ where the replay loops (it repeats 56 packets, not a multiple of 16).
 a TS file with --ts live, or the GCS byte stream otherwise (send.py's file container, say). The
 model is then that input cut into data fields. --save FILE writes the data fields of the exact
 frames, in sequence order, as received at 1 Msym/s: `send.py unpack FILE [--fec]` takes them.
+
+--eth (with --ts): the receiver also sends every packet it hands on out of its W5500 as UDP
+datagrams of seven (`rx ... ts eth`, firmware/rx/main/eth_egress.h), to the destination its `eth`
+settings name. The egress must then have queued and sent every packet: none dropped, every
+datagram's SEND finished. What reaches the laptop is checked there.
 """
 from __future__ import annotations
 
@@ -431,6 +437,17 @@ def ts_verdict(records, replay: bool, frames: dict, pattern: bool = True) -> dic
                 unchecked=t["unchecked"], null_packets=t["null_packets"], passed=clean)
 
 
+def eth_verdict(records) -> dict:
+    """The W5500 egress counters (`rx ... ts eth`) against the TS counters of the same run."""
+    summary = next((r for r in records if isinstance(r.get("eth"), dict)), None)
+    if summary is None:
+        return dict(passed=False, error="no eth counters")
+    e, packets = summary["eth"], summary.get("ts", {}).get("packets")
+    clean = (e["status"] == "ok" and e["dropped"] == e["arp_dropped"] == 0
+             and e["packets"] == packets and e["sent"] == e["datagrams"] > 0)
+    return e | dict(ts_packets=packets, passed=clean)
+
+
 def main() -> int:
     import board
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -447,6 +464,8 @@ def main() -> int:
                    help="TS test input: the transmitter's `ts replay` loop, or a live sender's count")
     p.add_argument("--no-pattern", action="store_true",
                    help="with --ts: deframe only, without the receiver's check of every packet")
+    p.add_argument("--eth", action="store_true",
+                   help="with --ts: also send the packets out of the receiver's W5500 (`ts eth`)")
     p.add_argument("--tx-frames", type=int, help="model frames to search (default: the run and 60 s)")
     p.add_argument("--out", type=pathlib.Path, help="append the summary to this JSON-lines file")
     p.add_argument("--input", type=pathlib.Path,
@@ -455,10 +474,13 @@ def main() -> int:
     a = p.parse_args()
     if a.input and a.ts == "replay":
         p.error("--input is the live input: use it with --ts live, or without --ts for GCS")
+    if a.eth and not a.ts:
+        p.error("--eth sends the TS: use it with --ts")
     if a.save and a.rate != "1m":
         p.error("--save needs payloads: at 5 Msym/s the records carry CRC-32s")
     port = board.resolve_port(a.port)
     token = (" 5m" if a.rate == "5m" else "") + ((" ts" if a.no_pattern else " ts pattern") if a.ts else "")
+    token += " eth" if a.eth else ""
     if a.replay:
         data = a.replay.read_bytes()
         command = f"replay {a.modcod}" + (f" {a.skip}" if a.skip else "") + token
@@ -485,6 +507,9 @@ def main() -> int:
     if a.ts:
         result["ts"] = ts_verdict(after, a.ts == "replay", result, not a.no_pattern)
         result["passed"] = result["passed"] and result["ts"]["passed"]
+    if a.eth:
+        result["eth"] = eth_verdict(after)
+        result["passed"] = result["passed"] and result["eth"]["passed"]
     summary = dict(firmware=firmware, command=command, replay=str(a.replay) if a.replay else None,
                    input=str(a.input) if a.input else None,
                    board=before + after, check=result,

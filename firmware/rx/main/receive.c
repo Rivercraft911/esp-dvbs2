@@ -135,6 +135,13 @@ static void record(receiver_t *r, const rx_frame_t *f, int length, const uint8_t
     receive_stats_t *s = r->stats;
     receive_record_t rec = {RECEIVE_MAGIC, f->sequence, f->cfo_hz, f->mer_cdb, (int16_t)length,
                             fec->iterations, fec->failed_checks};
+    rx_monitor_t *m = r->options.mon;
+    if (m) {
+        m->mer_cdb = f->mer_cdb;
+        m->cfo_hz = f->cfo_hz;
+        m->clock_ppb = f->clock_ppb;
+        m->frames++;
+    }
     const uint32_t crc = length > 0 && r->crc ? crc32(r->crc_table, payload, length) : 0;
     xSemaphoreTake(r->usb, portMAX_DELAY);
     ++s->frames;
@@ -314,10 +321,14 @@ static esp_err_t start(void *ctx)
         rx_fec_init(r->decode, modcod, r->work))
         return ESP_ERR_INVALID_ARG;
     if (r->ts) rx_ts_init(r->ts, r->options.drop_null, emit, r);
+    if (r->options.mon) {
+        r->options.mon->ts = r->ts;
+        r->options.mon->demod = r->demod;
+    }
     /* Static stacks: never in slow RTC FAST memory. */
     static StackType_t stacks[3][STACK / sizeof(StackType_t)];
     static StaticTask_t tasks[3];
-    r->release = xTaskCreateStaticPinnedToCore(releaser, "release", STACK, r, 12, stacks[0], &tasks[0], 0);
+    r->release = xTaskCreateStaticPinnedToCore(releaser, "release", STACK, r, 14, stacks[0], &tasks[0], 0);
     r->checker = xTaskCreateStaticPinnedToCore(checker, "check", STACK, r, 11, stacks[1], &tasks[1], 0);
     r->decoder = xTaskCreateStaticPinnedToCore(decoder, "decode", STACK, r, 5, stacks[2], &tasks[2], 0);
     if (!r->release || !r->checker || !r->decoder) return ESP_ERR_NO_MEM;
@@ -344,6 +355,10 @@ static void finish(receiver_t *r)
 {
     receive_stats_t *s = r->stats;
     const bool running = r->release && r->checker && r->decoder;
+    if (r->options.mon) {           /* the sender stops tapping before the demodulator goes */
+        r->options.mon->demod = NULL;
+        r->options.mon->ts = NULL;
+    }
     if (running) {
         r->stop = true;
         xTaskNotifyGive(r->release);

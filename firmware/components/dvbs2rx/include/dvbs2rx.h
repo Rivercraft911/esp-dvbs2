@@ -88,6 +88,23 @@ size_t rx_demod_push(rx_demod_t *d, const uint32_t *words, uint64_t first, size_
  * ones. Returns 0 when the queue is empty. */
 int rx_demod_release(rx_demod_t *d, rx_frame_t *frame);
 void rx_demod_stats(const rx_demod_t *d, rx_demod_stats_t *stats);
+/* Monitor tap, from any task: the next max data symbols the release turns (carrier and timing
+ * corrected, the demapper's input; PL scrambling still on, which keeps them on the constellation
+ * up to quarter turns) are copied raw to i and q, which costs the release a memcpy; nothing
+ * else changes. rx_demod_tapped returns max once they are full, with the soft-bit gain of their
+ * run, else 0; arm again after that. rx_demod_tap_scale, in any task, makes them int8 I, Q pairs
+ * at a constellation radius of 64, 8PSK turned back by pi/8. */
+void rx_demod_tap(rx_demod_t *d, int16_t *i, int16_t *q, unsigned max);
+unsigned rx_demod_tapped(const rx_demod_t *d, int16_t *gain);
+void rx_demod_tap_scale(const int16_t *i, const int16_t *q, unsigned n, int16_t gain, int psk8,
+                        int8_t *iq);
+/* From any task while core 1 pushes: the newest n dump samples (n <= RX_SNAPSHOT_MAX), int8
+ * floor(s10 / 4) as I and Q planes, from the demodulator's own sample ring (no unpacking). A
+ * push of up to 3,072 words, as the receiver makes them, overwrites only older samples while it
+ * runs, and a copy during which a push completed is refused. The dump index of the first, or -1
+ * (fewer than n pushed yet, or refused: try again later). */
+#define RX_SNAPSHOT_MAX 1024u
+int64_t rx_demod_snapshot(const rx_demod_t *d, int8_t *i, int8_t *q, size_t n);
 
 /* FEC: re-encode check first (clean frames end here), then layered min-sum.
  * rx_fec_size bytes in internal RAM hold everything the clean path touches; the
