@@ -41,7 +41,7 @@ static uint8_t pair[2 * W5500_TS_DATAGRAM] __attribute__((aligned(4)));
 #define MON_SAMPLE_CHUNKS (MON_SAMPLES_N / MON_CHUNK)
 #define MON_TAP 320                                 /* symbols per tap */
 /* Rates per second (`mon`), 0 for off: sample snapshots, symbol taps, stats records. */
-static unsigned mon_hz[3] = {5, 5, 5};
+static unsigned mon_hz[3] = {10, 10, 5};
 #define MON_MER 50              /* the last frame's MER every 20 ms: the last second */
 static int8_t mon_si[MON_SAMPLES_N], mon_sq[MON_SAMPLES_N];
 static int16_t tap_i[MON_TAP], tap_q[MON_TAP];    /* the release copies into these */
