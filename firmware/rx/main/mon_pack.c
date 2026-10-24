@@ -42,11 +42,12 @@ size_t mon_stats(uint8_t *out, uint16_t seq, uint32_t t_us, const mon_stats_t *s
 #define ADD(...) (n += (size_t)snprintf(j + n, n < cap ? cap - n : 0, __VA_ARGS__))
     ADD("{\"run\":%lu,\"state\":\"%s\",\"freq_mhz\":%u,\"rate\":\"%s\",\"modcod\":%u,"
         "\"short\":true,\"gain\":%u,\"frames\":%lu,\"failed\":%lu,\"lost\":%lu,\"relocks\":%lu,"
-        "\"dummies\":%lu,\"ldpc\":%lu",
+        "\"dummies\":%lu,\"ldpc\":%lu,\"runs_dropped\":%lu,\"frames_dropped\":%lu",
         (unsigned long)s->run, s->track ? "track" : "acquire", s->freq_mhz,
         s->symbol_rate == 5000000 ? "5m" : "1m", s->modcod, s->gain, (unsigned long)s->frames,
         (unsigned long)s->failed, (unsigned long)s->lost, (unsigned long)s->relocks,
-        (unsigned long)s->dummies, (unsigned long)s->ldpc);
+        (unsigned long)s->dummies, (unsigned long)s->ldpc, (unsigned long)s->runs_dropped,
+        (unsigned long)s->frames_dropped);
     if (s->have_mer) {
         char a[16], b[16];
         cdb(a, sizeof a, s->mer_cdb);

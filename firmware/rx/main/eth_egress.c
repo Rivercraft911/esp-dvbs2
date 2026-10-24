@@ -55,6 +55,7 @@ static struct {
     int16_t mer[MON_MER];
     unsigned mer_n, mer_at;
     uint32_t mer_frames;
+    int64_t mon_done;           /* when the monitor datagram in flight should be out */
 } ms;
 
 static struct {
@@ -134,6 +135,7 @@ static void mon_stats_now(mon_stats_t *st)
         rx_demod_stats(d, &ds);
         st->track = ds.locked;
         st->lost = ds.lost;
+        st->runs_dropped = ds.dropped;
         st->relocks = ds.relocks;
         st->dummies = ds.dummies;
     }
@@ -141,6 +143,7 @@ static void mon_stats_now(mon_stats_t *st)
         st->frames = rs->good;
         st->failed = rs->failed;
         st->ldpc = rs->decoded;
+        st->frames_dropped = rs->dropped;
     }
     if (ms.mer_n) {
         int16_t v[MON_MER];
@@ -208,6 +211,7 @@ static int mon_step(w5500 *w)
     }
     if (w5500_ts_waiting(&e.q) >= W5500_TS_GROUP || e.t.held) return 0;   /* TS first */
     if (busy_socket(w, MON_SOCK)) {
+        if (now < ms.mon_done) return 0;    /* still going: no SPI frames to find that out */
         const int p = w5500_udp_poll(w, MON_SOCK);
         if (p) return p < 0 ? p : 0;
     }
@@ -229,14 +233,18 @@ static int mon_step(w5500 *w)
         ms.tap_armed = false;
     }
     if (!n) return 0;
-    int r = w5500_udp_send(w, MON_SOCK, mon_buf, n);
-    if (r == W5500_OK) r = w5500_udp_poll(w, MON_SOCK);   /* its SEND now; mon_buf is free */
+    const int r = w5500_udp_send(w, MON_SOCK, mon_buf, n);
+    const int p = r == W5500_OK ? w5500_udp_poll(w, MON_SOCK) : 0;   /* SEND now; mon_buf free */
     const uint32_t c = esp_cpu_get_cycle_count() - t0;
     s->mon_cycles += c;
     if (c > s->mon_max_cycles) s->mon_max_cycles = c;
-    if (r < 0) return r;
-    if (r == W5500_FULL) s->mon_dropped++;
-    else s->mon_sent++;
+    if (r < 0 || p < 0) return r < 0 ? r : p;
+    if (r == W5500_FULL) {
+        s->mon_dropped++;
+    } else {
+        s->mon_sent++;
+        ms.mon_done = now + 2 * ((int64_t)n + 66) * 8 / e.link_mbps;   /* behind a TS datagram */
+    }
     return 0;
 }
 
@@ -287,8 +295,11 @@ static int pump(void)
         const int mr = mon_step(w);
         if (mr < 0) return mr;
         if (r == W5500_OK) {            /* nothing left to give: let the chip finish */
+            const int64_t at = esp_timer_get_time();
             for (unsigned s = 0; s < 2; ++s) {
-                if (!busy_socket(w, s)) continue;
+                /* Only once its datagram should be out: each poll is SPI frames, and this runs
+                 * on every wake. */
+                if (!busy_socket(w, s) || (at < m.done[s] && !ending)) continue;
                 const int p = w5500_udp_poll(w, s);
                 if (p < 0) return p;
             }
@@ -324,7 +335,7 @@ static int pump(void)
             if (!end) end = now | 1;
             if (now - end > DRAIN) return W5500_FULL;
         }
-        const bool busy = waiting || staged > 0 || e.t.held || ending || ms.on;
+        const bool busy = waiting || staged > 0 || e.t.held || ending;
         ulTaskNotifyTake(pdTRUE, busy ? 1 : portMAX_DELAY);
     }
 }

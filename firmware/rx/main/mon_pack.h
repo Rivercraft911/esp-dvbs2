@@ -32,6 +32,8 @@ typedef struct {
     uint32_t symbol_rate;           /* 1,000,000 or 5,000,000 */
     uint8_t modcod, gain;
     uint32_t frames, failed, lost, relocks, dummies, ldpc;
+    uint32_t runs_dropped;          /* data runs the demodulator dropped: its release fell behind */
+    uint32_t frames_dropped;        /* frames the receiver dropped: no free slot for the checker */
     bool have_mer;                  /* a frame has been received */
     int16_t mer_cdb, mer_med_cdb;   /* 0.01 dB: last frame, median of the last second */
     int32_t cfo_hz, clock_ppb;

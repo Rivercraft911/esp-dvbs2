@@ -23,7 +23,8 @@ size_t demo_stats(uint8_t *out, int full)
 {
     mon_stats_t s = {.run = 3, .track = full, .freq_mhz = 2420, .symbol_rate = 5000000,
                      .modcod = 14, .gain = 32, .frames = 241163, .failed = 1, .lost = 2,
-                     .relocks = 0, .dummies = 65303, .ldpc = 4, .have_mer = full,
+                     .relocks = 0, .dummies = 65303, .ldpc = 4, .runs_dropped = 30,
+                     .frames_dropped = 1, .have_mer = full,
                      .mer_cdb = 2504, .mer_med_cdb = -5, .cfo_hz = -3479, .clock_ppb = -3091,
                      .ts = full, .packets = 1816705, .crc8 = 0, .cc = 46, .tei = 0,
                      .eth = full, .eth_sent = 259529, .eth_dropped = 510, .eth_q_peak = 256,
@@ -68,13 +69,15 @@ def main():
         check(len(body) <= 1400, f"stats {len(body)} bytes")
         s = json.loads(body.decode())
         want = ["run", "state", "freq_mhz", "rate", "modcod", "short", "gain", "frames", "failed",
-                "lost", "relocks", "dummies", "ldpc", "mer_db", "mer_med_db", "cfo_hz", "clock_ppm",
+                "lost", "relocks", "dummies", "ldpc", "runs_dropped", "frames_dropped", "mer_db",
+                "mer_med_db", "cfo_hz", "clock_ppm",
                 "packets", "crc8", "cc", "tei", "eth_sent", "eth_dropped", "eth_q_peak",
                 "mon_dropped", "core0_pct", "capture_drops", "heap_after_boot"]
         check(list(s) == want, f"keys {list(s)}")
         check(s["state"] == "track" and s["rate"] == "5m" and s["mer_db"] == 25.04 and
               s["mer_med_db"] == -0.05 and s["clock_ppm"] == -3.091 and s["cfo_hz"] == -3479 and
-              s["core0_pct"] == 66.4 and s["eth_q_peak"] == 256, f"values {s}")
+              s["core0_pct"] == 66.4 and s["eth_q_peak"] == 256 and s["runs_dropped"] == 30 and
+              s["frames_dropped"] == 1, f"values {s}")
         n = lib.demo_stats(out, 0)
         s = json.loads(out.raw[12:n].decode())
         check(s["state"] == "acquire" and not {"mer_db", "packets", "eth_sent", "core0_pct",
