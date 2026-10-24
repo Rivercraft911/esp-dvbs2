@@ -224,8 +224,12 @@ int w5500_eth_start(w5500_eth_role role)
     memcpy(c.ip, s.ip, 4);
     memcpy(c.mask, s.mask, 4);
     memcpy(c.gateway, s.gateway, 4);
-    if (role == W5500_ETH_SEND) c.tx_kb[0] = c.tx_kb[1] = 8;   /* two sockets in turn */
-    else c.rx_kb[0] = 16;
+    if (role == W5500_ETH_SEND) {   /* TS on two sockets in turn (one datagram each), monitor */
+        c.tx_kb[0] = c.tx_kb[1] = 4;
+        c.tx_kb[2] = 8;
+    } else {
+        c.rx_kb[0] = 16;
+    }
     int e = w5500_init(w, &bus, &c);
     if (!e && phy_mode) {
         /* The PHY's reset drops the link for about 1.5 s (10 Mb/s forced, `eth watch`): wait up to
@@ -239,9 +243,11 @@ int w5500_eth_start(w5500_eth_role role)
     }
     if (!e) e = w5500_udp_open(w, 0, s.port);
     if (!e && role == W5500_ETH_SEND) e = w5500_udp_open(w, 1, (uint16_t)(s.port + 1));
+    if (!e && role == W5500_ETH_SEND && s.mon_port) e = w5500_udp_open(w, 2, (uint16_t)(s.port + 2));
     if (!e && role == W5500_ETH_SEND) {
         w5500_udp_dest(w, 0, s.dest, s.dest_port);
         w5500_udp_dest(w, 1, s.dest, s.dest_port);
+        if (s.mon_port) w5500_udp_dest(w, 2, s.dest, s.mon_port);
     }
     if (e) w5500_eth_stop();
     return e;

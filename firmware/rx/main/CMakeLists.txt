@@ -1,6 +1,6 @@
 # The transmitter's test pattern (components/ingress) is compiled in for `rx ... ts pattern`;
 # the rest of that component is the transmitter's SPI input.
-idf_component_register(SRCS "main.c" "arena.c" "capture.c" "eth_egress.c" "receive.c" "replay.c"
+idf_component_register(SRCS "main.c" "arena.c" "capture.c" "eth_egress.c" "mon_pack.c" "receive.c" "replay.c"
                             "../../components/ingress/ingress_pattern.c"
                        INCLUDE_DIRS "." "../../components/ingress/include"
                        PRIV_REQUIRES esp_driver_usb_serial_jtag vfs esp_phy esp_psram

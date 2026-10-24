@@ -83,6 +83,24 @@ size_t mon_samples(uint8_t *out, uint16_t seq, uint32_t t_us, uint16_t snapshot,
     return MON_SAMPLES_BYTES;
 }
 
+size_t mon_samples_planes(uint8_t *out, uint16_t seq, uint32_t t_us, uint16_t snapshot,
+                          unsigned chunk, const int8_t *i, const int8_t *q)
+{
+    uint8_t *p = out + mon_header(out, MON_SAMPLES, seq, t_us);
+    put16(p, snapshot);
+    p[2] = (uint8_t)chunk;
+    p[3] = MON_CHUNKS;
+    put32(p + 4, 16000000u);
+    int8_t *iq = (int8_t *)(p + 8);
+    i += chunk * MON_CHUNK;
+    q += chunk * MON_CHUNK;
+    for (unsigned k = 0; k < MON_CHUNK; ++k) {
+        iq[2 * k] = i[k];
+        iq[2 * k + 1] = q[k];
+    }
+    return MON_SAMPLES_BYTES;
+}
+
 size_t mon_symbols(uint8_t *out, uint16_t seq, uint32_t t_us, unsigned count, unsigned bits,
                    const int8_t *iq)
 {

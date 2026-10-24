@@ -419,7 +419,7 @@ def test_phy(native):
 def test_open(native):
     chip = Chip(native, open_ptr=0xFFF0, cmd_us=50)
     check(chip.init(tx0=8, rx0=8) == OK, "init")
-    check(chip.open(2, 1) == ERR_ARG, "only sockets 0 and 1")
+    check(chip.open(3, 1) == ERR_ARG, "only sockets 0 to 2")
     check(chip.open(0, 5004) == OK, "open with slow command acceptance")
     check(chip.peek(reg(0), SN_MR) == 0x02 and chip.peek16(0, SN_PORT) == 5004 and
           chip.peek(reg(0), SN_SR) == 0x22, "UDP mode, port, SOCK_UDP")
@@ -1181,7 +1181,7 @@ def test_settings(native):
 def main():
     with Native() as native:
         size = native.lib.fake_driver_size()
-        check(size <= 300, f"driver state {size} bytes")
+        check(size <= 400, f"driver state {size} bytes")
         test_fake(native)
         test_gpspi(native)
         test_frame_format(native)

@@ -708,7 +708,7 @@ int fake_driver_init(fake *f, const uint8_t net[18], const uint8_t kb[4])
 {
     const w5500_bus bus = {.frame = frame, .delay_us = delay, .busy = f->posting ? busy : NULL,
                            .ctx = f};
-    w5500_config c;
+    w5500_config c = {0};
     memcpy(c.gateway, net, 4);
     memcpy(c.mask, net + 4, 4);
     memcpy(c.mac, net + 8, 6);

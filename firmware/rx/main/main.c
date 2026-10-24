@@ -211,10 +211,10 @@ static bool run_options(char *rest, unsigned *rate, unsigned *skip, receive_opti
 /* A run with `eth`: the W5500 egress from before the run to after it (eth_egress.h). */
 static eth_egress_stats_t eth;
 
-static esp_err_t eth_begin(bool on, receive_options_t *o)
+static esp_err_t eth_begin(bool on, receive_options_t *o, const eth_run_t *run)
 {
     if (!on) return ESP_OK;
-    o->egress = eth_egress_begin(&eth);
+    o->egress = eth_egress_begin(&eth, run, &o->mon);
     return o->egress ? ESP_OK : ESP_ERR_INVALID_STATE;
 }
 
@@ -319,7 +319,8 @@ void app_main(void)
             capture_stats_t s = {0};
             memset(&run, 0, sizeof run);
             on = on && ok;
-            esp_err_t e = ok ? eth_begin(on, &o) : ESP_ERR_INVALID_ARG;
+            const eth_run_t er = {mhz, gain, modcod, rate, &run, &s};
+            esp_err_t e = ok ? eth_begin(on, &o, &er) : ESP_ERR_INVALID_ARG;
             quiet = true;
             if (e == ESP_OK) e = receive_run(&c, modcod, rate, &o, &run, &s);
             quiet = false;
@@ -342,7 +343,8 @@ void app_main(void)
             capture_stats_t s = {0};
             memset(&run, 0, sizeof run);
             on = on && ok;
-            esp_err_t e = ok ? eth_begin(on, &o) : ESP_ERR_INVALID_ARG;
+            const eth_run_t er = {2420, 0, modcod, rate, &run, &s};
+            esp_err_t e = ok ? eth_begin(on, &o, &er) : ESP_ERR_INVALID_ARG;
             quiet = true;
             if (e == ESP_OK) e = replay_run(modcod, rate, skip, &o, &run, &s);
             quiet = false;

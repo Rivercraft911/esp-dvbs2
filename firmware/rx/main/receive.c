@@ -25,6 +25,7 @@
 #include "capture.h"
 #include "dvbs2rx.h"
 #include "ingress_pattern.h"
+#include "mon_pack.h"
 
 #define SLOTS 3U
 #define PIECE 3072U             /* words per push: the release starts within ~1,000 symbols */
@@ -80,6 +81,16 @@ static esp_err_t IRAM_ATTR consume(const uint32_t *words, size_t count, uint64_t
     }
     if (s->pushes < RECEIVE_LOG) s->log[s->pushes] = cycles;
     ++s->pushes;
+    rx_monitor_t *m = r->options.mon;
+    if (m && m->want_samples) {     /* after the unit, off the push path */
+        const uint32_t t0 = esp_cpu_get_cycle_count();
+        m->have_samples = rx_demod_snapshot(r->demod, m->si, m->sq, MON_SNAPSHOT) >= 0;
+        m->want_samples = false;
+        const uint32_t c = esp_cpu_get_cycle_count() - t0;
+        m->copies++;
+        m->copy_cycles += c;
+        if (c > m->copy_max) m->copy_max = c;
+    }
     return ESP_OK;
 }
 
@@ -135,6 +146,13 @@ static void record(receiver_t *r, const rx_frame_t *f, int length, const uint8_t
     receive_stats_t *s = r->stats;
     receive_record_t rec = {RECEIVE_MAGIC, f->sequence, f->cfo_hz, f->mer_cdb, (int16_t)length,
                             fec->iterations, fec->failed_checks};
+    rx_monitor_t *m = r->options.mon;
+    if (m) {
+        m->mer_cdb = f->mer_cdb;
+        m->cfo_hz = f->cfo_hz;
+        m->clock_ppb = f->clock_ppb;
+        m->frames++;
+    }
     const uint32_t crc = length > 0 && r->crc ? crc32(r->crc_table, payload, length) : 0;
     xSemaphoreTake(r->usb, portMAX_DELAY);
     ++s->frames;
@@ -314,6 +332,10 @@ static esp_err_t start(void *ctx)
         rx_fec_init(r->decode, modcod, r->work))
         return ESP_ERR_INVALID_ARG;
     if (r->ts) rx_ts_init(r->ts, r->options.drop_null, emit, r);
+    if (r->options.mon) {
+        r->options.mon->ts = r->ts;
+        r->options.mon->demod = r->demod;
+    }
     /* Static stacks: never in slow RTC FAST memory. */
     static StackType_t stacks[3][STACK / sizeof(StackType_t)];
     static StaticTask_t tasks[3];
@@ -344,6 +366,10 @@ static void finish(receiver_t *r)
 {
     receive_stats_t *s = r->stats;
     const bool running = r->release && r->checker && r->decoder;
+    if (r->options.mon) {           /* the sender stops tapping before the demodulator goes */
+        r->options.mon->demod = NULL;
+        r->options.mon->ts = NULL;
+    }
     if (running) {
         r->stop = true;
         xTaskNotifyGive(r->release);

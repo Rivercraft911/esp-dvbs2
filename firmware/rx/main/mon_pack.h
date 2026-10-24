@@ -48,6 +48,9 @@ size_t mon_header(uint8_t *out, unsigned type, uint16_t seq, uint32_t t_us);
 size_t mon_stats(uint8_t *out, uint16_t seq, uint32_t t_us, const mon_stats_t *s);
 size_t mon_samples(uint8_t *out, uint16_t seq, uint32_t t_us, uint16_t snapshot, unsigned chunk,
                    const int8_t *iq);
+/* The same from I and Q planes of the whole snapshot (MON_SNAPSHOT each), interleaved here. */
+size_t mon_samples_planes(uint8_t *out, uint16_t seq, uint32_t t_us, uint16_t snapshot,
+                          unsigned chunk, const int8_t *i, const int8_t *q);
 size_t mon_symbols(uint8_t *out, uint16_t seq, uint32_t t_us, unsigned count, unsigned bits,
                    const int8_t *iq);
 /* Dump words (I in bits 19:10, Q in 9:0, signed 10-bit) to int8 I, Q: floor(s10 / 4). */

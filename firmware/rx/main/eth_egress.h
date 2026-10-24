@@ -1,6 +1,9 @@
 #pragma once
 
 #include <stdint.h>
+#include "capture.h"
+#include "monitor.h"
+#include "receive.h"
 #include "ts_egress.h"
 #include "w5500.h"
 
@@ -35,6 +38,11 @@ typedef struct {
     int esp_err;                    /* the ESP-IDF error behind a "spi" status */
     uint32_t underflows;            /* payload writes the SPI DMA underran, written again */
     uint32_t recoveries;            /* ... ten times in a row: GP-SPI2 and the GDMA reset */
+    /* The monitor stream (mon_pack.h) on socket 2: datagrams sent and dropped (not sent within
+     * their period, TS first), core 1's sample copies and the sender's cost per datagram. */
+    bool mon;
+    uint32_t mon_sent, mon_dropped, mon_copies, mon_copy_max, mon_max_cycles;
+    uint64_t mon_copy_cycles, mon_cycles;
     int64_t backlog_us;             /* time with two datagrams' worth or more waiting */
     uint32_t backlog_datagrams;     /* sent meanwhile: their rate is the sender's drain rate */
     /* When the run ended badly: the chip's socket registers and the driver's view of them. */
@@ -46,9 +54,18 @@ typedef struct {
 
 /* At boot, before arena_booted: the SPI port and the sender task. */
 void eth_egress_init(void);
-/* Before a run: start the chip and open the socket. The egress for receive_options_t, or NULL
- * if the chip did not start (stats->status says why). */
-const ts_egress_t *eth_egress_begin(eth_egress_stats_t *stats);
+/* What the monitor stream reports about the run, for eth_egress_begin. */
+typedef struct {
+    unsigned mhz, gain, modcod, rate;
+    const receive_stats_t *rx;      /* live counters, as the receiver keeps them */
+    const capture_stats_t *capture;
+} eth_run_t;
+
+/* Before a run: start the chip and open the sockets. The egress for receive_options_t, or NULL
+ * if the chip did not start (stats->status says why). With the monitor on (eth mon), *mon is
+ * its hooks for receive_options_t, else NULL. */
+const ts_egress_t *eth_egress_begin(eth_egress_stats_t *stats, const eth_run_t *run,
+                                    rx_monitor_t **mon);
 /* After the run, once the checker has stopped: send what is left, close the socket, count. */
 void eth_egress_end(eth_egress_stats_t *stats);
 /* The summary's "eth" member, after a comma. */

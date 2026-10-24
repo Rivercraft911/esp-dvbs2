@@ -86,6 +86,14 @@ def main():
         check(n == 1044 and HEADER.unpack_from(out.raw)[2:4] == (2, 7), "samples header")
         check(SAMPLES.unpack_from(out.raw, 12) == (0xBEEF, 3, 4, 16_000_000) and
               out.raw[20:n] == iq, "samples body")
+        lib.mon_samples_planes.restype = ct.c_size_t
+        lib.mon_samples_planes.argtypes = [ct.c_void_p, ct.c_uint16, ct.c_uint32, ct.c_uint16,
+                                           ct.c_uint, ct.c_char_p, ct.c_char_p]
+        si, sq = (bytes(rng.getrandbits(8) for _ in range(2048)) for _ in range(2))
+        n = lib.mon_samples_planes(out, 9, 99, 5, 2, si, sq)
+        want = bytes(b for k in range(1024, 1536) for b in (si[k], sq[k]))
+        check(n == 1044 and SAMPLES.unpack_from(out.raw, 12) == (5, 2, 4, 16_000_000) and
+              out.raw[20:n] == want, "samples from planes: chunk 2 interleaved")
         sym = bytes(rng.getrandbits(8) for _ in range(2 * 700))
         n = lib.mon_symbols(out, 8, 99, 700, 3, sym)
         check(n == 12 + 4 + 1280 and SYMBOLS.unpack_from(out.raw, 12) == (640, 3, 0) and
