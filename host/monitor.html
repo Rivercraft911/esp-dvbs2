@@ -9,21 +9,20 @@
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&display=swap" rel="stylesheet">
 <style>
 :root {
-  --bg: #0e1218;
-  --panel: #141a22;
-  --line: #222b36;
-  --grid: rgba(150, 175, 200, 0.09);
-  --ink: #e6edf5;
-  --ink-2: #9fb0c2;
-  --ink-3: #5f6f81;
+  --bg: #0b0f14;
+  --panel: #121820;
+  --hair: #1d2530;
+  --grid: rgba(150, 175, 200, 0.08);
+  --ink: #e8eef5;
+  --ink-2: #9aabbd;
+  --ink-3: #5c6b7c;
   --blue: #7cc8ff;
   --amber: #ffb86b;
   --good: #4fd6a2;
   --warn: #ffc457;
   --bad: #ff5f6f;
   --u: clamp(1px, 0.0625vw, 1.45px);
-  --gap: calc(12 * var(--u));
-  --r: 8px;
+  --gap: calc(10 * var(--u));
   color-scheme: dark;
 }
 * { box-sizing: border-box; margin: 0; }
@@ -37,88 +36,74 @@ body {
   min-height: 100vh;
 }
 
-/* Header */
-.head { display: flex; align-items: center; gap: calc(28 * var(--u)); }
-.title { font-size: calc(19 * var(--u)); font-weight: 640; font-variation-settings: "wdth" 118; margin-right: auto; }
-.tune { display: flex; align-items: baseline; gap: calc(12 * var(--u)); color: var(--ink-2); }
-.tune b { color: var(--ink); font-size: calc(22 * var(--u)); font-weight: 420; font-variation-settings: "wdth" 84; }
-.state {
-  display: inline-flex; align-items: center; gap: 8px; padding: 5px 12px; border-radius: 999px;
-  border: 1px solid var(--line); font-weight: 560; min-width: 13em; justify-content: center;
-}
-.state i { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
-.state[data-s="good"] { color: var(--good); border-color: rgba(79, 214, 162, 0.35); }
-.state[data-s="warn"] { color: var(--warn); border-color: rgba(255, 196, 87, 0.35); }
-.state[data-s="idle"] { color: var(--ink-3); }
+/* Header: the name, the carrier, and the ground-station clock */
+.head { display: flex; align-items: center; gap: calc(22 * var(--u)); padding: 0 calc(2 * var(--u)); }
+.mark { font-size: calc(17 * var(--u)); font-weight: 700; font-variation-settings: "wdth" 125; letter-spacing: 0.01em; }
+.tune { display: flex; align-items: baseline; gap: calc(16 * var(--u)); color: var(--ink-2); margin-right: auto; }
+.tune span + span { padding-left: calc(16 * var(--u)); border-left: 1px solid var(--hair); }
+.tune b { color: var(--ink); font-weight: 450; }
+.clock { display: flex; align-items: baseline; gap: calc(10 * var(--u)); }
+.clock .tag { font-size: calc(12.5 * var(--u)); font-weight: 650; letter-spacing: 0.08em; color: var(--ink-3); }
+.clock .time { font-size: calc(24 * var(--u)); font-weight: 380; font-variation-settings: "wdth" 80; letter-spacing: 0.02em; }
+.clock[data-s="good"] .tag { color: var(--good); }
+.clock[data-s="warn"] .tag { color: var(--warn); }
+.clock[data-s="idle"] .time { color: var(--ink-3); }
 
-/* Panels */
-.panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); min-height: 0; min-width: 0; display: flex; flex-direction: column; }
-.ph { display: flex; align-items: baseline; gap: 10px; padding: calc(8 * var(--u)) calc(12 * var(--u)) calc(5 * var(--u)); }
-.ph h2 { font-size: calc(13.5 * var(--u)); font-weight: 600; }
-.ph > span { color: var(--ink-3); font-size: calc(12.5 * var(--u)); margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Panels: a tone shift, no outlines */
+.panel { background: var(--panel); border-radius: 6px; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+.ph { display: flex; align-items: center; gap: 8px; padding: calc(9 * var(--u)) calc(12 * var(--u)) calc(4 * var(--u)); }
+.ph h2 { font-size: calc(13 * var(--u)); font-weight: 600; color: var(--ink-2); }
+.ph .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ink-3); margin-left: auto; }
+.ph .dot[data-s="good"] { background: var(--good); }
+.ph .dot[data-s="bad"] { background: var(--bad); }
 .pb { position: relative; flex: 1; min-height: 0; }
 .pb canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
-.legend { display: inline-flex; gap: 12px; margin-left: auto; color: var(--ink-2); font-size: calc(12.5 * var(--u)); }
-.legend i { display: inline-block; width: 14px; height: 2px; vertical-align: middle; margin-right: 6px; }
+.legend { display: inline-flex; gap: 12px; margin-left: auto; color: var(--ink-3); font-size: calc(12.5 * var(--u)); }
+.legend i { display: inline-block; width: 12px; height: 2px; vertical-align: middle; margin-right: 6px; }
 
-/* The chain: four machines, three links */
-.chain { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr auto 1fr; align-items: stretch; padding: calc(8 * var(--u)) calc(14 * var(--u)); }
-.node { display: grid; gap: 2px; padding: 2px 4px; min-width: 0; }
-.node .who { display: flex; align-items: center; gap: 8px; color: var(--ink-2); font-size: calc(12.5 * var(--u)); }
-.node .who i { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); flex: none; }
-.node[data-s="good"] .who i { background: var(--good); box-shadow: 0 0 0 3px rgba(79, 214, 162, 0.15); }
-.node[data-s="warn"] .who i { background: var(--warn); }
-.node[data-s="bad"] .who i { background: var(--bad); }
-.node .what { font-size: calc(18 * var(--u)); font-weight: 520; font-variation-settings: "wdth" 92; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.node .how { color: var(--ink-2); font-size: calc(13 * var(--u)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.link { display: grid; grid-template-rows: 1fr auto 1fr; align-items: center; width: clamp(130px, 11vw, 230px); padding: 0 calc(10 * var(--u)); text-align: center; }
-.link .medium { color: var(--ink-2); font-size: calc(12.5 * var(--u)); align-self: end; padding-bottom: 5px; white-space: nowrap; }
-.link .rate { color: var(--ink); font-size: calc(13.5 * var(--u)); align-self: start; padding-top: 5px; white-space: nowrap; }
-.link svg { width: 100%; height: 10px; overflow: visible; }
-.link line { stroke: var(--line); stroke-width: 2; }
-.link .flow { stroke: var(--blue); stroke-width: 2; stroke-dasharray: 3 9; opacity: 0; }
-.link[data-on="1"] .flow { opacity: 1; }
-@media (prefers-reduced-motion: no-preference) {
-  .link[data-on="1"] .flow { animation: flow 0.9s linear infinite; }
-  @keyframes flow { to { stroke-dashoffset: -12; } }
-}
+/* Readouts across the top */
+.kpis { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); padding: calc(10 * var(--u)) 0 calc(8 * var(--u)); }
+.kpi { padding: 0 calc(14 * var(--u)); display: grid; grid-template-rows: auto auto calc(22 * var(--u)); gap: 2px; min-width: 0; }
+.kpi + .kpi { border-left: 1px solid var(--hair); }
+.kpi span { color: var(--ink-3); font-size: calc(12.5 * var(--u)); white-space: nowrap; }
+.kpi b { font-size: calc(30 * var(--u)); font-weight: 380; font-variation-settings: "wdth" 80; line-height: 1.05; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.kpi b small { font-size: 0.45em; color: var(--ink-2); margin-left: 4px; font-variation-settings: "wdth" 100; font-weight: 400; }
+.kpi b.good { color: var(--good); }
+.kpi b.bad { color: var(--bad); }
+.kpi canvas { width: 100%; height: 100%; display: block; }
 
-/* Main: radio views on the left, the devices on the right */
-.main { display: grid; grid-template-columns: minmax(0, 1fr) clamp(340px, 25vw, 560px); gap: var(--gap); min-height: 0; }
-.radio { display: grid; grid-template-rows: minmax(0, 23fr) minmax(0, 43fr) minmax(0, 34fr); gap: var(--gap); min-height: 0; }
+/* Main */
+.main { display: grid; grid-template-columns: minmax(0, 1fr) clamp(320px, 23vw, 520px); gap: var(--gap); min-height: 0; }
+.radio { display: grid; grid-template-rows: minmax(0, 24fr) minmax(0, 42fr) minmax(0, 34fr); gap: var(--gap); min-height: 0; }
 .lower { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--gap); min-height: 0; }
 .lower .square { aspect-ratio: 1; height: 100%; }
 .axis { position: relative; height: calc(20 * var(--u)); flex: none; color: var(--ink-3); font-size: calc(12 * var(--u)); }
 .axis span { position: absolute; top: 2px; transform: translateX(-50%); white-space: nowrap; }
 .readout {
   position: absolute; pointer-events: none; padding: 5px 8px; border-radius: 4px; z-index: 2; display: none;
-  background: rgba(14, 18, 24, 0.94); border: 1px solid var(--line); font-size: calc(12.5 * var(--u)); white-space: nowrap;
+  background: rgba(11, 15, 20, 0.94); border: 1px solid var(--hair); font-size: calc(12.5 * var(--u)); white-space: nowrap;
 }
 .empty { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; color: var(--ink-3); padding: 16px; font-size: calc(13 * var(--u)); }
 .empty[hidden] { display: none; }
 
 .rail { display: flex; flex-direction: column; gap: var(--gap); min-height: 0; overflow: auto; }
 .rail > * { flex: none; }
-.tiles { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gap); }
-.tile .pb { height: calc(62 * var(--u)); flex: none; }
-.tile .big { position: absolute; left: calc(12 * var(--u)); top: 0; font-size: calc(34 * var(--u)); font-weight: 430; font-variation-settings: "wdth" 80; line-height: 1; z-index: 1; }
-.tile .big small { font-size: 0.45em; color: var(--ink-2); margin-left: 4px; font-variation-settings: "wdth" 100; }
-.rows { padding: 0 calc(12 * var(--u)) calc(6 * var(--u)); display: grid; }
-.row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; min-height: calc(20.5 * var(--u)); font-size: calc(13.5 * var(--u)); line-height: 1.2; border-top: 1px solid rgba(34, 43, 54, 0.7); }
-.row:first-child { border-top: 0; }
+.rows { padding: 0 calc(12 * var(--u)) calc(8 * var(--u)); display: grid; }
+.row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; min-height: calc(25 * var(--u)); font-size: calc(13.5 * var(--u)); line-height: 1.2; }
+.row + .row { border-top: 1px solid var(--hair); }
 .row span { color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.row b { font-weight: 500; text-align: right; }
+.row b { font-weight: 480; text-align: right; }
 .row b.bad { color: var(--bad); }
-.row b.zero { color: var(--ink-2); font-weight: 400; }
-.meter { display: grid; grid-template-columns: auto calc(90 * var(--u)); gap: 10px; align-items: center; }
-.meter em { display: block; height: 6px; border-radius: 3px; background: rgba(124, 200, 255, 0.12); overflow: hidden; }
-.meter em i { display: block; height: 100%; width: 0; background: var(--blue); border-radius: 3px; transition: width 400ms; }
+.row b.zero { color: var(--ink-3); font-weight: 400; }
+.meter { display: grid; grid-template-columns: auto calc(84 * var(--u)); gap: 10px; align-items: center; }
+.meter em { display: block; height: 4px; border-radius: 2px; background: rgba(124, 200, 255, 0.12); overflow: hidden; }
+.meter em i { display: block; height: 100%; width: 0; background: var(--blue); border-radius: 2px; transition: width 400ms; }
 .meter em i.hot { background: var(--warn); }
 
 @media (max-width: 1150px) {
   body { min-height: auto; }
-  .chain { grid-template-columns: 1fr 1fr; row-gap: 12px; }
-  .link { display: none; }
+  .kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); row-gap: 14px; }
+  .kpi:nth-child(4) { border-left: 0; }
   .main { grid-template-columns: 1fr; }
   .radio { grid-template-rows: 240px 360px auto; }
   .lower { grid-template-columns: 1fr; }
@@ -129,44 +114,41 @@ body {
 </head>
 <body>
 <header class="head">
-  <h1 class="title">Camera to screen through two ESP32-S3s</h1>
-  <div class="tune"><b id="freq">&ndash;</b><span id="mode">waiting for the receiver</span></div>
-  <div class="state" id="state" data-s="idle" role="status"><i></i><span id="stateText">No data yet</span></div>
+  <div class="mark">esp-dvbs2</div>
+  <div class="tune"><span><b id="freq">&ndash;</b></span><span id="mode">&ndash;</span></div>
+  <div class="clock" id="clock" data-s="idle" role="status" title="AOS: time since the receiver acquired the signal. LOS: time since it lost it.">
+    <span class="tag" id="clockTag">AOS</span><span class="time" id="clockTime">--:--:--</span>
+  </div>
 </header>
 
-<section class="panel chain" aria-label="The link, end to end">
-  <div class="node" id="nCam"><div class="who"><i></i>Cameras and encoder, CM5</div><div class="what" id="nCamWhat">Two IMX900 fisheyes</div><div class="how" id="nCamHow">&nbsp;</div></div>
-  <div class="link" id="lSpi"><div class="medium">SPI, PV messages</div><svg viewBox="0 0 100 10" preserveAspectRatio="none"><line x1="0" y1="5" x2="100" y2="5"/><line class="flow" x1="0" y1="5" x2="100" y2="5"/></svg><div class="rate" id="lSpiRate">&ndash;</div></div>
-  <div class="node" id="nTx"><div class="who"><i></i>Transmitter, ESP32-S3</div><div class="what" id="nTxWhat">&ndash;</div><div class="how" id="nTxHow">&nbsp;</div></div>
-  <div class="link" id="lRf"><div class="medium" id="lRfMedium">Radio, coax</div><svg viewBox="0 0 100 10" preserveAspectRatio="none"><line x1="0" y1="5" x2="100" y2="5"/><line class="flow" x1="0" y1="5" x2="100" y2="5"/></svg><div class="rate" id="lRfRate">&ndash;</div></div>
-  <div class="node" id="nRx"><div class="who"><i></i>Receiver, ESP32-S3</div><div class="what" id="nRxWhat">&ndash;</div><div class="how" id="nRxHow">&nbsp;</div></div>
-  <div class="link" id="lEth"><div class="medium" id="lEthMedium">Ethernet, UDP</div><svg viewBox="0 0 100 10" preserveAspectRatio="none"><line x1="0" y1="5" x2="100" y2="5"/><line class="flow" x1="0" y1="5" x2="100" y2="5"/></svg><div class="rate" id="lEthRate">&ndash;</div></div>
-  <div class="node" id="nView"><div class="who"><i></i>Viewer, MacBook</div><div class="what" id="nViewWhat">PigeonVision</div><div class="how" id="nViewHow">&nbsp;</div></div>
+<section class="panel kpis" aria-label="The link at a glance">
+  <div class="kpi"><span>Video out</span><b id="kRate">&ndash;</b><canvas id="sRate"></canvas></div>
+  <div class="kpi"><span>MER</span><b id="kMer">&ndash;</b><canvas id="sMer"></canvas></div>
+  <div class="kpi" title="Pilot MER minus the DVB-S2 decoding threshold Es/N0 for this MODCOD (EN 302 307-1 Table 13, normal frames)"><span>Link margin</span><b id="kMargin">&ndash;</b><canvas id="sMargin"></canvas></div>
+  <div class="kpi"><span>Frames exact</span><b id="kFrames">&ndash;</b><canvas id="sFrames"></canvas></div>
+  <div class="kpi"><span>Delivered</span><b id="kBytes">&ndash;</b><canvas id="sBytes"></canvas></div>
+  <div class="kpi" title="Every error counter from the CM5's SPI to pv view, summed"><span>Errors, end to end</span><b id="kErrors">&ndash;</b><canvas id="sErrors"></canvas></div>
 </section>
 
 <main class="main">
   <section class="radio" aria-label="What the receiver hears">
-    <div class="panel"><div class="ph"><h2>Spectrum</h2><span>16 MHz around the carrier, as the receiving S3 hears it</span></div>
-      <div class="pb" id="specWell"><canvas id="spectrum"></canvas><div class="readout" id="specRead"></div><div class="empty" id="emptySpec">Waiting for the receiver's samples on UDP port 1235</div></div></div>
-    <div class="panel"><div class="ph"><h2>Waterfall</h2><span>newest at the top</span></div>
+    <div class="panel"><div class="ph"><h2>Spectrum</h2></div>
+      <div class="pb" id="specWell"><canvas id="spectrum"></canvas><div class="readout" id="specRead"></div><div class="empty" id="emptySpec">Waiting for the receiver</div></div></div>
+    <div class="panel"><div class="ph"><h2>Waterfall</h2></div>
       <div class="pb" id="fallWell"><canvas id="waterfall"></canvas><div class="readout" id="fallRead"></div></div><div class="axis" id="freqAxis"></div></div>
     <div class="lower">
-      <div class="panel square"><div class="ph"><h2>Constellation</h2><span id="constMeta">&nbsp;</span></div>
+      <div class="panel square"><div class="ph"><h2>Constellation</h2></div>
         <div class="pb"><canvas id="constellation"></canvas><div class="empty" id="emptyConst">Waiting for symbols</div></div></div>
-      <div class="panel wave"><div class="ph"><h2>I/Q waveform</h2><span class="legend"><span><i style="background:var(--blue)"></i>I</span><span><i style="background:var(--amber)"></i>Q</span></span></div>
+      <div class="panel wave"><div class="ph"><h2>I/Q</h2><span class="legend"><span><i style="background:var(--blue)"></i>I</span><span><i style="background:var(--amber)"></i>Q</span></span></div>
         <div class="pb"><canvas id="waveform"></canvas><div class="empty" id="emptyWave">Waiting for samples</div></div></div>
     </div>
   </section>
 
   <aside class="rail" aria-label="Devices">
-    <div class="tiles">
-      <div class="panel tile"><div class="ph"><h2>Video out</h2><span>last 10 min</span></div><div class="pb"><div class="big" id="tRate">&ndash;</div><canvas id="rateSpark"></canvas></div></div>
-      <div class="panel tile"><div class="ph"><h2>Signal quality</h2><span>MER</span></div><div class="pb"><div class="big" id="tMer">&ndash;</div><canvas id="merSpark"></canvas></div></div>
-    </div>
-    <div class="panel"><div class="ph"><h2>Transmitter</h2><span id="txMeta">ESP32-S3, no status yet</span></div><div class="rows" id="txRows"></div></div>
-    <div class="panel"><div class="ph"><h2>Receiver</h2><span id="rxMeta">ESP32-S3, no reports yet</span></div><div class="rows" id="rxRows"></div></div>
-    <div class="panel"><div class="ph"><h2>Ethernet and viewer</h2><span>W5500 to pv view</span></div><div class="rows" id="viewRows"></div></div>
-    <div class="panel"><div class="ph"><h2>Cameras and encoder</h2><span>CM5, pv-capture</span></div><div class="rows" id="camRows"></div></div>
+    <div class="panel"><div class="ph"><h2>Cameras, CM5</h2><i class="dot" id="dCam"></i></div><div class="rows" id="camRows"></div></div>
+    <div class="panel"><div class="ph"><h2>Transmitter, ESP32-S3</h2><i class="dot" id="dTx"></i></div><div class="rows" id="txRows"></div></div>
+    <div class="panel"><div class="ph"><h2>Receiver, ESP32-S3</h2><i class="dot" id="dRx"></i></div><div class="rows" id="rxRows"></div></div>
+    <div class="panel"><div class="ph"><h2>Ethernet and viewer</h2><i class="dot" id="dView"></i></div><div class="rows" id="viewRows"></div></div>
   </aside>
 </main>
 
@@ -177,10 +159,11 @@ const nf = new Intl.NumberFormat('en-US');
 const css = getComputedStyle(document.documentElement);
 const token = name => css.getPropertyValue(name).trim();
 const ui = () => Math.min(1.45, Math.max(1, innerWidth / 1600));
-const gutter = () => 58 * ui();                       // CSS px left of the spectrum and waterfall plots
+const gutter = () => 54 * ui();                       // CSS px left of the spectrum and waterfall plots
+const DASH = '–';
 
 // One light-blue ramp for both densities: power over time and frequency, symbols over I and Q.
-const RAMP = ['#141a22', '#0f2236', '#0f375c', '#145487', '#2378bb', '#4aa3e3', '#8fd0ff', '#e2f5ff'];
+const RAMP = ['#121820', '#0f2134', '#0f365a', '#145385', '#2377ba', '#4aa2e2', '#8fd0ff', '#e2f5ff'];
 const LUT = (() => {
   const rgb = RAMP.map(h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16)));
   const lut = new Uint8ClampedArray(256 * 4);
@@ -191,6 +174,12 @@ const LUT = (() => {
   }
   return lut;
 })();
+
+// DVB-S2 quasi-error-free Es/N0 in dB, EN 302 307-1 Table 13 (normal frames, AWGN), by MODCOD.
+const THRESHOLD = { 4: 1.00, 5: 2.23, 6: 3.10, 7: 4.03, 8: 4.68, 9: 5.18, 10: 6.20, 11: 6.42,
+  12: 5.50, 13: 6.62, 14: 7.91, 15: 9.35, 16: 10.69, 17: 11.03 };
+const MODCODS = { 4: 'QPSK 1/2', 5: 'QPSK 3/5', 6: 'QPSK 2/3', 7: 'QPSK 3/4', 8: 'QPSK 4/5', 9: 'QPSK 5/6', 10: 'QPSK 8/9',
+  11: 'QPSK 9/10', 12: '8PSK 3/5', 13: '8PSK 2/3', 14: '8PSK 3/4', 15: '8PSK 5/6', 16: '8PSK 8/9', 17: '8PSK 9/10' };
 
 function fit(canvas) {
   const r = canvas.getBoundingClientRect(), d = devicePixelRatio || 1;
@@ -205,26 +194,24 @@ function niceTicks(lo, hi, step) {
 }
 const font = (d, px = 12) => `${px * d * ui()}px Archivo, sans-serif`;
 
-const seen = {};                                      // when each source last reported
+const seen = {};
 const fresh = (name, ms = 2500) => seen[name] && performance.now() - seen[name] < ms;
-const state = { rx: null, tx: null, cm5: null, viewer: null, rate: 16e6, lockedAt: null, history: [] };
+const state = { rx: null, tx: null, cm5: null, viewer: null, rate: 16e6, aos: null, los: null, history: [] };
 
-// ---- Constellation: two seconds of the demodulator's output ----------------------------------
+// ---- Constellation ---------------------------------------------------------------------------
 const N = 512, SPAN = 84;
 const density = new Float32Array(N * N);
-let densityPeak = 1, bitsPerSymbol = 3, shown = 0;
+let densityPeak = 1, bitsPerSymbol = 3;
 const constImg = new ImageData(N, N), constOff = new OffscreenCanvas(N, N);
 
 function addSymbols(iq, bits) {
   bitsPerSymbol = bits;
   for (let i = 0; i < density.length; i++) density[i] *= 0.9;
-  shown *= 0.9;
   for (let k = 0; k + 1 < iq.length; k += 2) {
     const i = iq[k] + Math.random() - 0.5, q = iq[k + 1] + Math.random() - 0.5;   // undo the int8 lattice
     const x = Math.round((i + SPAN) / (2 * SPAN) * (N - 1)), y = Math.round((SPAN - q) / (2 * SPAN) * (N - 1));
     if (x >= 1 && x < N - 1 && y >= 1 && y < N - 1)
       for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) density[(y + dy) * N + x + dx] += (dx ? 0.5 : 1) * (dy ? 0.5 : 1);
-    shown++;
   }
   let peak = 0;
   for (let i = 0; i < density.length; i++) if (density[i] > peak) peak = density[i];
@@ -235,7 +222,6 @@ function addSymbols(iq, bits) {
     constImg.data.set(LUT.subarray(v * 4, v * 4 + 4), i * 4);
   }
   constOff.getContext('2d').putImageData(constImg, 0, 0);
-  $('constMeta').textContent = `last ${nf.format(Math.round(shown / 100) * 100)} symbols`;
   $('emptyConst').hidden = true;
 }
 
@@ -248,17 +234,16 @@ function drawConstellation() {
   const cx = ox + side / 2, cy = oy + side / 2, r = 64 / SPAN * side / 2;
   g.lineWidth = d; g.strokeStyle = token('--grid');
   g.beginPath(); g.moveTo(ox, cy); g.lineTo(ox + side, cy); g.moveTo(cx, oy); g.lineTo(cx, oy + side); g.stroke();
-  g.setLineDash([2 * d, 5 * d]); g.strokeStyle = 'rgba(150,175,200,0.18)';
-  g.beginPath(); g.arc(cx, cy, r, 0, 2 * Math.PI); g.stroke(); g.setLineDash([]);
+  g.beginPath(); g.arc(cx, cy, r, 0, 2 * Math.PI); g.stroke();
   const points = bitsPerSymbol === 3 ? 8 : 4, offset = bitsPerSymbol === 3 ? 0 : Math.PI / 4;
-  g.strokeStyle = 'rgba(226,245,255,0.22)';
+  g.strokeStyle = 'rgba(226,245,255,0.18)';
   for (let k = 0; k < points; k++) {
     const a = offset + k * 2 * Math.PI / points;
     g.beginPath(); g.arc(cx + r * Math.cos(a), cy - r * Math.sin(a), 0.14 * r, 0, 2 * Math.PI); g.stroke();
   }
 }
 
-// ---- I/Q waveform: the first 32 us of each snapshot, with a short persistence ---------------
+// ---- I/Q: the first 32 us of each snapshot, with a short persistence -------------------------
 const traces = [];
 function addSamples(iq, rate) {
   traces.unshift({ iq, rate });
@@ -268,12 +253,12 @@ function addSamples(iq, rate) {
 function drawWaveform() {
   const c = $('waveform'), [w, h, d] = fit(c), g = c.getContext('2d');
   g.clearRect(0, 0, w, h);
-  const gx = 46 * d * ui(), pad = 10 * d, base = h - 18 * d * ui(), n = 512;
+  const gx = 42 * d * ui(), pad = 10 * d, base = h - 18 * d * ui(), n = 512;
   const y = v => (base + pad) / 2 - v / 128 * ((base - pad) / 2);
   g.lineWidth = d; g.font = font(d); g.textAlign = 'right';
-  for (const v of [-96, -48, 0, 48, 96]) {
+  for (const v of [-96, 0, 96]) {
     g.strokeStyle = token('--grid'); g.beginPath(); g.moveTo(gx, y(v)); g.lineTo(w, y(v)); g.stroke();
-    g.fillStyle = token('--ink-3'); g.fillText(v ? `${v > 0 ? '+' : ''}${(v / 128).toFixed(2)}` : '0', gx - 8 * d, y(v) + 4 * d);
+    g.fillStyle = token('--ink-3'); g.fillText(v ? `${v > 0 ? '+' : '−'}0.75` : '0', gx - 8 * d, y(v) + 4 * d);
   }
   g.textAlign = 'left';
   if (!traces.length) return;
@@ -291,8 +276,8 @@ function drawWaveform() {
   g.globalAlpha = 1; g.fillStyle = token('--ink-3');
   const us = n / rate * 1e6;
   for (const t of niceTicks(0, us, 8)) {
-    const label = `${t} µs`, x = X(t / us * (n - 1));
-    g.fillText(label, Math.min(x - (t ? g.measureText(label).width / 2 : 0), w - g.measureText(label).width - 4 * d), h - 4 * d);
+    const label = `${t} µs`, x = X(t / us * (n - 1)), tw = g.measureText(label).width;
+    g.fillText(label, Math.min(Math.max(gx, x - tw / 2), w - tw - 4 * d), h - 4 * d);
   }
 }
 
@@ -327,30 +312,31 @@ function drawSpectrum() {
   const c = $('spectrum'), [w, h, d] = fit(c), g = c.getContext('2d');
   g.clearRect(0, 0, w, h);
   const lo = Math.floor((floorDb - 6) / 10) * 10, hi = Math.ceil((topDb + 6) / 10) * 10;
-  const top = 24 * d * ui(), gx = gutter() * d, X = f => gx + f * (w - gx);
+  const top = 22 * d * ui(), gx = gutter() * d, X = f => gx + f * (w - gx);
   const y = v => h - 4 * d - (v - lo) / (hi - lo) * (h - top - 4 * d);
   g.font = font(d); g.lineWidth = d;
-  const step = (h - top) / d / ((hi - lo) / 10) < 22 * ui() ? 20 : 10;    // keep labels apart
+  const step = (h - top) / d / ((hi - lo) / 10) < 22 * ui() ? 20 : 10;
   for (const v of niceTicks(lo, hi, step)) { g.strokeStyle = token('--grid'); g.beginPath(); g.moveTo(gx, y(v)); g.lineTo(w, y(v)); g.stroke(); }
   g.fillStyle = token('--ink-3'); g.textAlign = 'right';
-  for (const v of niceTicks(lo, hi, step)) if (y(v) > top - 2 && y(v) < h - 2 * d) g.fillText(`${v} dB`, gx - 10 * d, y(v) + 4 * d);
+  for (const v of niceTicks(lo, hi, step)) if (y(v) > top - 2 && y(v) < h - 2 * d) g.fillText(`${v}`, gx - 10 * d, y(v) + 4 * d);
+  g.fillText('dB', gx - 10 * d, 14 * d * ui());
   g.textAlign = 'left';
   if (!avg) return;
   const s = state.rx;
   if (s && s.rate) {                                  // the DVB-S2 channel: 1.35 times the symbol rate
     const rs = s.rate === '5m' ? 5e6 : 1e6, half = rs * 1.35 / 2 / state.rate * (w - gx), mid = X(0.5), by = 8 * d * ui();
-    g.strokeStyle = 'rgba(226,245,255,0.35)';
-    g.beginPath(); g.moveTo(mid - half, by + 6 * d); g.lineTo(mid - half, by); g.lineTo(mid + half, by); g.lineTo(mid + half, by + 6 * d); g.stroke();
-    g.fillStyle = token('--ink-2');
-    g.fillText(`${(rs * 1.35 / 1e6).toFixed(2)} MHz channel`, mid + half + 8 * d, by + 8 * d);
+    g.strokeStyle = 'rgba(226,245,255,0.28)';
+    g.beginPath(); g.moveTo(mid - half, by + 5 * d); g.lineTo(mid - half, by); g.lineTo(mid + half, by); g.lineTo(mid + half, by + 5 * d); g.stroke();
+    g.fillStyle = token('--ink-3');
+    g.fillText(`${(rs * 1.35 / 1e6).toFixed(2)} MHz`, mid + half + 8 * d, by + 7 * d);
   }
   const path = arr => { g.beginPath(); arr.forEach((v, i) => { const x = X((i + 0.5) / BINS); i ? g.lineTo(x, y(v)) : g.moveTo(x, y(v)); }); };
   const cur = avg.map(v => 10 * Math.log10(v));
   path(cur); g.lineTo(w, h); g.lineTo(gx, h); g.closePath();
   const grad = g.createLinearGradient(0, top, 0, h);
-  grad.addColorStop(0, 'rgba(124,200,255,0.22)'); grad.addColorStop(1, 'rgba(124,200,255,0.02)');
+  grad.addColorStop(0, 'rgba(124,200,255,0.2)'); grad.addColorStop(1, 'rgba(124,200,255,0.0)');
   g.fillStyle = grad; g.fill();
-  g.strokeStyle = 'rgba(159,176,194,0.35)'; g.lineWidth = d; path(peak); g.stroke();
+  g.strokeStyle = 'rgba(154,171,189,0.3)'; g.lineWidth = d; path(peak); g.stroke();
   g.strokeStyle = token('--blue'); g.lineWidth = 1.5 * d; g.lineJoin = 'round'; path(cur); g.stroke();
 }
 
@@ -364,11 +350,9 @@ function drawWaterfall() {
   g.imageSmoothingEnabled = true;
   g.drawImage(fallOff, 0, 0, BINS, visible, gx, 0, w - gx, h);
   const secs = visible / 10, step = secs > 40 ? 20 : secs > 16 ? 10 : secs > 6 ? 4 : 1;
-  g.font = font(d); g.fillStyle = token('--ink-3'); g.textAlign = 'right'; g.lineWidth = d;
+  g.font = font(d); g.fillStyle = token('--ink-3'); g.textAlign = 'right';
   for (const t of niceTicks(0, secs, step)) {
     const yy = t / secs * h;
-    g.strokeStyle = 'rgba(226,245,255,0.2)';
-    g.beginPath(); g.moveTo(gx - 6 * d, yy); g.lineTo(gx, yy); g.stroke();
     if (t && yy < h - 8 * d) g.fillText(`${t} s`, gx - 10 * d, yy + 4 * d);
   }
   g.fillText('now', gx - 10 * d, 13 * d * ui());
@@ -413,27 +397,31 @@ const freqAt = fx => {
 hover('specWell', 'specRead', fx => avg && `${freqAt(fx)}, ${(10 * Math.log10(avg[Math.min(BINS - 1, fx * BINS | 0)])).toFixed(1)} dBFS`);
 hover('fallWell', 'fallRead', (fx, fy) => rows && `${freqAt(fx)}, ${(fy * Math.min(rows, ROWS, $('waterfall').clientHeight) / 10).toFixed(1)} s ago`);
 
-// ---- Tiles: the two numbers that say the link works, with ten minutes of history --------------
-function area(id, idx, unit, digits) {
+// ---- Readouts ---------------------------------------------------------------------------------
+function spark(id, idx) {
   const c = $(id), [w, h, d] = fit(c), g = c.getContext('2d');
   g.clearRect(0, 0, w, h);
   const pts = state.history.filter(p => typeof p[idx] === 'number');
   if (pts.length < 2) return;
   const t1 = pts[pts.length - 1][0], t0 = Math.max(pts[0][0], t1 - 600), use = pts.filter(p => p[0] >= t0);
   let lo = Math.min(...use.map(p => p[idx])), hi = Math.max(...use.map(p => p[idx]));
-  const pad = Math.max((hi - lo) * 0.3, Math.abs(hi) * 0.02, 0.1); lo -= pad; hi += pad;
-  const top = 44 * d * ui(), X = t => (t - t0) / Math.max(1, t1 - t0) * w, Y = v => h - (v - lo) / (hi - lo) * (h - top);
-  const line = () => { g.beginPath(); use.forEach((p, i) => i ? g.lineTo(X(p[0]), Y(p[idx])) : g.moveTo(X(p[0]), Y(p[idx]))); };
-  line(); g.lineTo(w, h); g.lineTo(0, h); g.closePath();
-  const grad = g.createLinearGradient(0, top, 0, h);
-  grad.addColorStop(0, 'rgba(124,200,255,0.28)'); grad.addColorStop(1, 'rgba(124,200,255,0.02)');
-  g.fillStyle = grad; g.fill();
-  line(); g.strokeStyle = token('--blue'); g.lineWidth = 1.5 * d; g.lineJoin = 'round'; g.stroke();
-  c.title = `${lo.toFixed(digits)} to ${hi.toFixed(digits)} ${unit} over the last ${Math.max(1, Math.round((t1 - t0) / 60))} min`;
+  const pad = Math.max((hi - lo) * 0.15, Math.abs(hi) * 0.01, 1e-6); lo -= pad; hi += pad;
+  const X = t => (t - t0) / Math.max(1, t1 - t0) * (w - 4 * d), Y = v => h - 3 * d - (v - lo) / (hi - lo) * (h - 6 * d);
+  g.beginPath(); use.forEach((p, i) => i ? g.lineTo(X(p[0]), Y(p[idx])) : g.moveTo(X(p[0]), Y(p[idx])));
+  g.strokeStyle = 'rgba(124,200,255,0.75)'; g.lineWidth = 1.2 * d; g.lineJoin = 'round'; g.stroke();
+  const last = use[use.length - 1];
+  g.fillStyle = token('--blue'); g.beginPath(); g.arc(X(last[0]), Y(last[idx]), 2.2 * d, 0, 2 * Math.PI); g.fill();
+}
+const bytes = n => n >= 1e9 ? [(n / 1e9).toFixed(2), 'GB'] : n >= 1e6 ? [(n / 1e6).toFixed(1), 'MB'] : [(n / 1e3).toFixed(0), 'kB'];
+const val = (v, unit) => `${v}<small>${unit}</small>`;
+
+function errorsEndToEnd(rx, tx, cm5, view) {
+  const parts = [rx && [rx.failed, rx.crc8, rx.cc, rx.eth_dropped], tx && [tx.input_rejected, tx.input_lost, tx.input_overruns, tx.late_fills],
+    cm5 && [cm5.ready_timeouts, cm5.dropped], view && [view.corrupt, view.gaps]].filter(Boolean).flat();
+  return parts.length ? parts.reduce((a, b) => a + (b || 0), 0) : undefined;
 }
 
 // ---- Rows ------------------------------------------------------------------------------------
-const DASH = '–';
 const fmt = v => v === undefined || v === null ? DASH : typeof v === 'number' ? nf.format(v) : v;
 const zeroish = (v, errors) => ({ text: fmt(v), cls: v === undefined || v === null ? '' : v ? (errors ? 'bad' : '') : 'zero' });
 function meter(pct) {
@@ -454,58 +442,52 @@ function fill(id, list) {
     b.className = value.cls || '';
   });
 }
-
-const MODCODS = { 4: 'QPSK 1/2', 5: 'QPSK 3/5', 6: 'QPSK 2/3', 7: 'QPSK 3/4', 8: 'QPSK 4/5', 9: 'QPSK 5/6', 10: 'QPSK 8/9',
-  11: 'QPSK 9/10', 12: '8PSK 3/5', 13: '8PSK 2/3', 14: '8PSK 3/4', 15: '8PSK 5/6', 16: '8PSK 8/9', 17: '8PSK 9/10' };
 const modeName = s => s ? `${MODCODS[s.modcod] || 'MODCOD ' + s.modcod}${s.short ? ' short' : ''}` : DASH;
-function duration(s) {
-  if (s < 60) return `${Math.floor(s)} s`;
-  const m = Math.floor(s / 60);
-  return m < 60 ? `${m} min ${Math.floor(s % 60)} s` : `${Math.floor(m / 60)} h ${m % 60} min`;
-}
+const hms = ms => { const s = Math.max(0, Math.floor(ms / 1000)); return [Math.floor(s / 3600), Math.floor(s / 60) % 60, s % 60].map(v => String(v).padStart(2, '0')).join(':'); };
+const dot = (id, on, bad) => { $(id).dataset.s = bad ? 'bad' : on ? 'good' : 'idle'; };
 
 function render() {
   const rx = fresh('rx') ? state.rx : null, tx = fresh('tx', 3500) ? state.tx : null;
   const cm5 = fresh('cm5', 3500) ? state.cm5 : null, view = fresh('viewer', 3500) ? state.viewer : null;
-  const s = state.rx;
+  const s = state.rx || state.tx;
 
-  if (s && s.freq_mhz) $('freq').textContent = `${s.freq_mhz.toFixed(3)} MHz`;
-  if (s) $('mode').textContent = `${modeName(s)}, ${s.rate === '5m' ? '5' : '1'} Msym/s`;
-  const st = $('state');
-  if (!rx) { st.dataset.s = 'idle'; $('stateText').textContent = s ? 'Receiver silent' : 'No data yet'; }
-  else if (rx.state === 'track') { st.dataset.s = 'good'; $('stateText').textContent = `Locked for ${duration((Date.now() - state.lockedAt) / 1000)}`; }
-  else { st.dataset.s = 'warn'; $('stateText').textContent = 'Searching for the signal'; }
+  // Header
+  if (state.rx && state.rx.freq_mhz) $('freq').textContent = `${state.rx.freq_mhz.toFixed(3)} MHz`;
+  else if (state.tx && state.tx.freq_mhz) $('freq').textContent = `${Number(state.tx.freq_mhz).toFixed(3)} MHz`;
+  if (s) $('mode').textContent = `${modeName(s)}, ${state.rx ? (state.rx.rate === '5m' ? 5 : 1) : (s.symbol_rate || 0) / 1e6} Msym/s`;
+  const clock = $('clock'), locked = rx && rx.state === 'track';
+  if (locked) {
+    if (!state.aos) state.aos = Date.now();
+    state.los = null;
+    clock.dataset.s = 'good'; $('clockTag').textContent = 'AOS'; $('clockTime').textContent = hms(Date.now() - state.aos);
+  } else if (state.aos || state.los) {
+    if (!state.los) state.los = Date.now();
+    state.aos = null;
+    clock.dataset.s = 'warn'; $('clockTag').textContent = 'LOS'; $('clockTime').textContent = hms(Date.now() - state.los);
+  } else { clock.dataset.s = 'idle'; $('clockTag').textContent = 'AOS'; $('clockTime').textContent = '--:--:--'; }
 
-  const node = (id, on, bad) => { $(id).dataset.s = bad ? 'bad' : on ? 'good' : 'idle'; };
-  const viewFps = view && view.fps ? Object.values(view.fps).filter(v => typeof v === 'number') : [];
-  node('nCam', cm5 && cm5.lifecycle !== 'stopped', cm5 && cm5.failed);
-  $('nCamHow').textContent = cm5 ? `${mbps(cm5.mbps)} of video and metadata` : 'no status from pv-capture';
-  $('lSpiRate').textContent = tx && typeof tx.input_mbps === 'number' ? mbps(tx.input_mbps) : cm5 ? mbps(cm5.mbps) : DASH;
-  $('lSpi').dataset.on = (tx && tx.input_mbps > 0) || (cm5 && cm5.mbps > 0) ? 1 : 0;
-  node('nTx', !!tx, tx && (tx.late_fills || tx.late_switches || tx.input_lost || tx.input_overruns));
-  $('nTxWhat').textContent = tx ? `${modeName(tx)}, ${(tx.symbol_rate / 1e6).toFixed(tx.symbol_rate % 1e6 ? 2 : 0)} Msym/s` : (s ? modeName(s) : DASH);
-  $('nTxHow').textContent = tx ? `${nf.format(tx.frames_encoded ?? tx.frames ?? 0)} frames encoded` : 'no status yet';
-  $('lRfMedium').textContent = s && s.freq_mhz ? `Radio, ${s.freq_mhz.toFixed(0)} MHz` : 'Radio, coax';
-  const mer = rx ? (rx.mer_med_db ?? rx.mer_db) : undefined;
-  $('lRfRate').textContent = rx ? (rx.state === 'track' && typeof mer === 'number' ? `${mer.toFixed(1)} dB MER` : 'searching') : DASH;
-  $('lRf').dataset.on = rx && rx.state === 'track' ? 1 : 0;
-  node('nRx', rx && rx.state === 'track', rx && (rx.failed || rx.crc8 || rx.cc || rx.eth_dropped));
-  $('nRxWhat').textContent = rx ? (rx.state === 'track' ? 'Locked' : 'Searching') : DASH;
-  $('nRxHow').textContent = rx && typeof rx.frames === 'number' ? `${nf.format(rx.frames)} frames exact` : 'no reports yet';
-  $('lEthMedium').textContent = rx && rx.eth_mbps_link ? `Ethernet, ${rx.eth_mbps_link} Mb/s link` : 'Ethernet, UDP';
-  $('lEthRate').textContent = rx ? mbps(rx.mbps) : DASH;
-  $('lEth').dataset.on = rx && rx.mbps > 0 ? 1 : 0;
-  node('nView', viewFps.some(v => v > 0), view && (view.corrupt || view.gaps));
-  $('nViewWhat').textContent = view ? 'PigeonVision, stitched' : 'PigeonVision';
-  $('nViewHow').textContent = viewFps.length ? `${viewFps.map(v => v.toFixed(0)).join(' + ')} fps decoded` : 'pv view not answering';
+  // Readouts
+  const mer = rx ? (rx.mer_med_db ?? rx.mer_db) : undefined, th = rx ? THRESHOLD[rx.modcod] : undefined;
+  $('kRate').innerHTML = rx && typeof rx.mbps === 'number' ? val(rx.mbps.toFixed(2), 'Mb/s') : DASH;
+  $('kMer').innerHTML = typeof mer === 'number' ? val(mer.toFixed(1), 'dB') : DASH;
+  $('kMargin').innerHTML = typeof mer === 'number' && th !== undefined ? val(`${mer - th >= 0 ? '+' : '−'}${Math.abs(mer - th).toFixed(1)}`, 'dB') : DASH;
+  $('kFrames').textContent = rx && typeof rx.frames === 'number' ? nf.format(rx.frames) : DASH;
+  if (rx && typeof rx.packets === 'number') { const [v, u] = bytes(rx.packets * 188); $('kBytes').innerHTML = val(v, u); } else $('kBytes').textContent = DASH;
+  const errs = errorsEndToEnd(rx, tx, cm5, view), ke = $('kErrors');
+  ke.textContent = errs === undefined ? DASH : nf.format(errs);
+  ke.className = errs === undefined ? '' : errs ? 'bad' : 'good';
 
-  $('tRate').innerHTML = rx && typeof rx.mbps === 'number' ? `${rx.mbps.toFixed(2)}<small>Mb/s</small>` : '&ndash;';
-  $('tMer').innerHTML = typeof mer === 'number' ? `${mer.toFixed(1)}<small>dB</small>` : '&ndash;';
-
-  const wire = tx && tx.input_wire ? ` over ${tx.input_wire === 'usb' ? 'USB' : 'SPI'}` : '';
-  $('txMeta').textContent = tx ? `ESP32-S3, ${tx.input === 'synthetic' ? 'test payload' : (tx.input || '').toUpperCase() + wire}, ${duration(tx.elapsed_s || 0)}` : 'ESP32-S3, no status yet';
+  // Devices
+  dot('dCam', cm5 && cm5.lifecycle !== 'stopped', cm5 && cm5.failed);
+  fill('camRows', [
+    ['Transport stream out', mbps(cm5 && cm5.mbps)],
+    ['SPI messages', cm5 && cm5.messages],
+    ['READY timeouts', cm5 ? zeroish(cm5.ready_timeouts, true) : undefined],
+    ['Queue age', cm5 && typeof cm5.queue_age_ms === 'number' ? `${cm5.queue_age_ms.toFixed(0)} ms` : DASH],
+  ]);
   const busy = pct => typeof pct === 'number' ? 100 - pct : undefined;
   const inErrors = tx && tx.input_bytes !== undefined ? (tx.input_rejected || 0) + (tx.input_lost || 0) + (tx.input_overruns || 0) : undefined;
+  dot('dTx', !!tx, tx && (inErrors || tx.late_fills || tx.late_switches));
   fill('txRows', [
     ['Input', mbps(tx && tx.input_mbps)],
     ['Frames encoded', tx && tx.frames_encoded],
@@ -515,46 +497,40 @@ function render() {
     ['Encoder, core 0', meter(busy(tx && tx.encoder_spare_pct))],
     ['Bank fill, core 1', meter(busy(tx && tx.fill_spare_pct))],
   ]);
-  $('rxMeta').textContent = rx ? `ESP32-S3, gain ${rx.gain ?? DASH} dB` : 'ESP32-S3, no reports yet';
+  dot('dRx', locked, rx && (rx.failed || rx.crc8 || rx.cc));
   fill('rxRows', [
-    ['Frames exact', rx && rx.frames],
+    ['Gain', rx && typeof rx.gain === 'number' ? `${rx.gain} dB` : DASH],
     ['Failed / LDPC repaired', rx ? pair(rx.failed, rx.ldpc) : undefined],
     ['TS packets', rx && rx.packets],
     ['CRC-8 / continuity errors', rx ? pair(rx.crc8, rx.cc) : undefined],
-    ['Carrier offset / clock', rx && typeof rx.cfo_hz === 'number' ? `${(rx.cfo_hz / 1000).toFixed(1)} kHz / ${(rx.clock_ppm ?? 0).toFixed(1)} ppm` : DASH],
+    ['Carrier offset', rx && typeof rx.cfo_hz === 'number' ? `${(rx.cfo_hz / 1000).toFixed(1)} kHz` : DASH],
+    ['Clock offset', rx && typeof rx.clock_ppm === 'number' ? `${rx.clock_ppm.toFixed(1)} ppm` : DASH],
     ['Core 0', meter(rx && rx.core0_pct)],
   ]);
+  const viewFps = view && view.fps ? Object.values(view.fps).filter(v => typeof v === 'number') : [];
+  dot('dView', rx && rx.eth_sent > 0 && viewFps.some(v => v > 0), (rx && rx.eth_dropped) || (view && (view.corrupt || view.gaps)));
   fill('viewRows', [
+    ['Link', rx && rx.eth_mbps_link ? `${rx.eth_mbps_link} Mb/s` : DASH],
     ['Datagrams sent / packets dropped', rx && rx.eth_sent !== undefined
       ? { text: `${fmt(rx.eth_sent)} / ${fmt(rx.eth_dropped ?? 0)}`, cls: rx.eth_dropped ? 'bad' : '' } : undefined],
-    ['Frames decoded, A / B', view && view.frames ? `${fmt(view.frames.A)} / ${fmt(view.frames.B)}` : DASH],
+    ['Decoded, A / B', viewFps.length ? `${viewFps.map(v => v.toFixed(0)).join(' / ')} fps` : DASH],
     ['Corrupt packets / gaps', view ? pair(view.corrupt, view.gaps) : undefined],
   ]);
-  fill('camRows', [
-    ['Transport stream out', mbps(cm5 && cm5.mbps)],
-    ['SPI messages', cm5 && cm5.messages],
-    ['READY timeouts', cm5 ? zeroish(cm5.ready_timeouts, true) : undefined],
-    ['Queue age', cm5 && typeof cm5.queue_age_ms === 'number' ? `${cm5.queue_age_ms.toFixed(0)} ms` : DASH],
-  ]);
+
+  if (rx) state.history.push([Date.now() / 1000, rx.mbps, mer, typeof mer === 'number' && th !== undefined ? mer - th : undefined, rx.frames, rx.packets, errs]);
+  if (state.history.length > 2400) state.history.shift();
+  ['sRate', 'sMer', 'sMargin', 'sFrames', 'sBytes', 'sErrors'].forEach((id, k) => spark(id, k + 1));
 }
 
 // ---- Events ----------------------------------------------------------------------------------
 const decode = b64 => { const raw = atob(b64), out = new Int8Array(raw.length); for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i) << 24 >> 24; return out; };
-function onRx(s) {
-  if (s.state === 'track' && !state.lockedAt) state.lockedAt = Date.now();
-  if (s.state !== 'track') state.lockedAt = null;
-  state.rx = s; seen.rx = performance.now();
-  state.history.push([Date.now() / 1000, s.mer_med_db ?? s.mer_db, s.mbps]);
-  if (state.history.length > 3000) state.history.shift();
-}
 const events = new EventSource('/events');
 events.addEventListener('hello', e => {
   const h = JSON.parse(e.data);
   state.rate = h.rate;
-  state.history = h.history.map(p => [p[0], p[1], p[2]]);
   for (const [k, v] of Object.entries(h.latest || {})) state[k] = v;
 });
-events.addEventListener('rx', e => onRx(JSON.parse(e.data)));
+events.addEventListener('rx', e => { state.rx = JSON.parse(e.data); seen.rx = performance.now(); });
 for (const name of ['tx', 'cm5', 'viewer']) events.addEventListener(name, e => { state[name] = JSON.parse(e.data); seen[name] = performance.now(); });
 events.addEventListener('spectrum', e => { const m = JSON.parse(e.data); addSpectrum(m.db, m.rate); });
 events.addEventListener('samples', e => { const m = JSON.parse(e.data); addSamples(decode(m.iq), m.rate); });
@@ -563,7 +539,7 @@ events.addEventListener('symbols', e => { const m = JSON.parse(e.data); addSymbo
 let last = 0;
 function frame(t) {
   drawConstellation(); drawSpectrum(); drawWaterfall(); drawWaveform(); drawAxis();
-  if (t - last > 250) { render(); area('rateSpark', 2, 'Mb/s', 2); area('merSpark', 1, 'dB', 1); last = t; }
+  if (t - last > 250) { render(); last = t; }
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
