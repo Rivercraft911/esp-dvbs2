@@ -184,7 +184,7 @@ static void sender(void *arg)
             continue;
         }
         s->phy = w5500_phy(w);
-        const uint32_t underflows = w5500_eth_underflows();
+        const uint32_t underflows = w5500_eth_underflows(), recoveries = w5500_eth_recoveries();
         uint8_t *const buf[2] = {pair, pair + W5500_TS_DATAGRAM};
         w5500_ts_sender_init(&e.t, w, 0, &e.q, buf, cycles);
         xSemaphoreGive(e.done);
@@ -200,6 +200,7 @@ static void sender(void *arg)
         s->cmd_pending = so->cmd_pending;
         s->esp_err = w5500_eth_error();
         s->underflows = w5500_eth_underflows() - underflows;
+        s->recoveries = w5500_eth_recoveries() - recoveries;
         const w5500_stats *st = w5500_udp_stats(w, 0);
         s->sent = st->sent;
         s->resends = st->resends;
@@ -267,7 +268,8 @@ void eth_egress_print(const eth_egress_stats_t *s)
     printf(",\"backlog_ms\":%.1f,\"backlog_datagrams\":%lu,\"drain_mbps\":%.3f",
            s->backlog_us / 1000.0, (unsigned long)s->backlog_datagrams,
            s->backlog_us ? s->backlog_datagrams * 8.0 * W5500_TS_DATAGRAM / s->backlog_us : 0.0);
-    printf(",\"resends\":%lu", (unsigned long)s->resends);
+    printf(",\"resends\":%lu,\"recoveries\":%lu", (unsigned long)s->resends,
+           (unsigned long)s->recoveries);
     printf(",\"datagrams\":%lu,\"sent\":%lu,\"packets\":%lu,\"partial\":%lu,\"dropped\":%lu,"
            "\"peak\":%lu,\"queue\":%lu,\"full\":%lu,\"arp_dropped\":%lu,\"max_send_cycles\":%lu,"
            "\"send_cycles\":%llu,\"stack_free\":%lu,\"underflows\":%lu",

@@ -61,6 +61,8 @@ esp_err_t w5500_eth_error(void);
 /* Payload writes whose DMA underran and were written again, since the port started (direct
  * backend; 0 with spi_master). */
 uint32_t w5500_eth_underflows(void);
+/* GP-SPI2 and GDMA resets after a write underran REWRITES times in a row (direct backend). */
+uint32_t w5500_eth_recoveries(void);
 /* The wait that failed a frame, for a "spi" error (direct backend), or "". */
 const char *w5500_eth_why(void);
 /* A w5500.h result as a word for JSON: "ok", "full", "spi", "chip", ... */

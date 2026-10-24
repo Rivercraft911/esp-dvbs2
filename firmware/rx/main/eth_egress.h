@@ -34,6 +34,7 @@ typedef struct {
     uint32_t stack_free;            /* the sender's least free stack, bytes */
     int esp_err;                    /* the ESP-IDF error behind a "spi" status */
     uint32_t underflows;            /* payload writes the SPI DMA underran, written again */
+    uint32_t recoveries;            /* ... ten times in a row: GP-SPI2 and the GDMA reset */
     int64_t backlog_us;             /* time with two datagrams' worth or more waiting */
     uint32_t backlog_datagrams;     /* sent meanwhile: their rate is the sender's drain rate */
     /* When the run ended badly: the chip's socket registers and the driver's view of them. */

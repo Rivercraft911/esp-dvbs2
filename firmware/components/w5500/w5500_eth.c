@@ -71,6 +71,11 @@ uint32_t w5500_eth_underflows(void)
     return w5500_port.underflows;
 }
 
+uint32_t w5500_eth_recoveries(void)
+{
+    return w5500_port.recoveries;
+}
+
 const char *w5500_eth_why(void)
 {
     return w5500_port.why ? w5500_port.why : "";

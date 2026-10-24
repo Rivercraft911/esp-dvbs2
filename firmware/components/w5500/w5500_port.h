@@ -15,6 +15,8 @@ typedef struct {
     uint32_t sleeps;            /* waits that slept on the SPI interrupt (direct backend) */
     uint32_t underflows;        /* payload writes the GDMA underran, written again (direct) */
     const char *why;            /* the wait that failed a frame (direct), or NULL */
+    uint32_t recoveries;        /* GP-SPI2 and GDMA reset after REWRITES underflows in a row */
+    uint32_t prefill_waits;     /* writes whose first data took over PREFILL_US to arrive */
     int khz;                    /* SPI clock */
     size_t heap_bytes;          /* internal RAM taken at start */
 } w5500_port_info;

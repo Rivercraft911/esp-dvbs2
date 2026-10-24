@@ -134,6 +134,9 @@
 #define OUT_CONF0_OFF 0x36u
 #define OUT_EOF_MODE (1u << 3)            /* EOF once the last byte has left the GDMA */
 #define OUT_BURST (3u << 4)               /* GDMA_OUTDSCR_BURST_EN, GDMA_OUT_DATA_BURST_EN */
+#define OUT_FIFO 0x78u                    /* GDMA_OUTFIFO_STATUS_CHn */
+#define OUT_FIFO_EMPTY 0x2Au              /* GDMA_OUTFIFO_EMPTY_L1, _L2, _L3_CHn */
+#define PREFILL_US 10                     /* the longest a write waits for its first data */
 #define LINK_ADDR 0xFFFFFu
 #define DMA_RAM_LOW 0x3FC88000u           /* internal RAM the GDMA reaches (TRM 3.4.8, p.364) */
 #define DMA_RAM_HIGH 0x3FD00000u
@@ -217,7 +220,10 @@ _Static_assert(GDMA_IN_CONF1_CH0_REG == GDMA_BASE + IN_CONF1 &&
                OUT_CONF0_OFF == (GDMA_OUT_LOOP_TEST_CH0 | GDMA_OUT_AUTO_WRBACK_CH0 |
                                  GDMA_OUTDSCR_BURST_EN_CH0 | GDMA_OUT_DATA_BURST_EN_CH0) &&
                GDMA_OUT_EOF_MODE_CH0 == OUT_EOF_MODE &&
-               OUT_BURST == (GDMA_OUTDSCR_BURST_EN_CH0 | GDMA_OUT_DATA_BURST_EN_CH0),
+               OUT_BURST == (GDMA_OUTDSCR_BURST_EN_CH0 | GDMA_OUT_DATA_BURST_EN_CH0) &&
+               GDMA_OUTFIFO_STATUS_CH0_REG == GDMA_BASE + OUT_FIFO &&
+               OUT_FIFO_EMPTY == (GDMA_OUTFIFO_EMPTY_L1_CH0 | GDMA_OUTFIFO_EMPTY_L2_CH0 |
+                                  GDMA_OUTFIFO_EMPTY_L3_CH0),
                "GDMA channel configuration");
 _Static_assert(SYSTEM_PERIP_CLK_EN0_REG == PERIP_CLK_EN0 &&
                SYSTEM_PERIP_RST_EN0_REG == PERIP_RST_EN0 && SYSTEM_SPI2_CLK_EN == SYS_SPI2 &&
@@ -258,7 +264,10 @@ static struct {
     uint32_t end;            /* CPU cycle count at which the transfer in flight should end */
     uint32_t cycles_per_byte;
     uint32_t len;            /* bytes of the DMA transfer in flight */
+    uint32_t addr, user;     /* its SPI_ADDR and SPI_USER, for a recovery */
+    bool burst;              /* its GDMA burst setting */
     unsigned rewrites;       /* of the write in flight, after underflows */
+    bool recovered;          /* ... and whether GP-SPI2 and the GDMA were reset for it */
     int8_t pins[4];          /* sclk, mosi, miso, cs */
     bool claimed;            /* GP-SPI2 is ours (spicommon_bus_alloc) */
     bool bus_clock_was_on;   /* SYSTEM_SPI2_CLK_EN before we started */
@@ -342,6 +351,23 @@ static int fail(esp_err_t err)
 }
 
 static bool start_transfer(void);
+static bool configure(void);
+static void dma_configure(void);
+
+/* Before SPI_USR: wait (up to PREFILL_US) until the GDMA holds the write's first data at every
+ * FIFO level, so the SPI does not start shifting from an empty FIFO. Under the receiver's
+ * internal-RAM traffic, writes started without it underran at their start: zeros, then the
+ * payload's first byte repeated. */
+static void prefill(void)
+{
+    const uint32_t t0 = esp_cpu_get_cycle_count();
+    const uint32_t limit = PREFILL_US * (uint32_t)CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
+    while (get(d.ch + OUT_FIFO) & OUT_FIFO_EMPTY)
+        if (esp_cpu_get_cycle_count() - t0 > limit) {
+            w5500_port.prefill_waits++;
+            return;
+        }
+}
 
 /* The payload write in flight again, from the same descriptor to the same W5500 offset (SPI_ADDR
  * and SPI_USER still hold its header and phases). */
@@ -349,8 +375,10 @@ static bool rewrite(void)
 {
     put(G_DMA_CONF, DMA_TX_ENA | FIFO_RST);
     put(G_DMA_CONF, DMA_TX_ENA);
+    put(d.ch + OUT_CONF0, (get(d.ch + OUT_CONF0) & ~OUT_BURST) | (d.burst ? OUT_BURST : 0));
     dma_reset(OUT_CONF0);
     put(d.ch + OUT_LINK, ((uint32_t)&d.desc & LINK_ADDR) | OUTLINK_START);
+    prefill();
     if (!start_transfer()) return false;
     d.end = esp_cpu_get_cycle_count() + (3u + d.len) * d.cycles_per_byte;
     return true;
@@ -371,11 +399,26 @@ static bool finish(void)
      * bytes yet (a SEND comes only after this), so they are written again. */
     if (!d.reading && (get(G_INT_RAW) & OUTFIFO_EMPTY)) {
         w5500_port.underflows++;
-        if (++d.rewrites > REWRITES) return w5500_port.why = "underflows", false;
+        if (++d.rewrites > REWRITES) {
+            /* Still underrunning: GP-SPI2 and the GDMA channel from reset, as at start (no heap),
+             * then once more. */
+            if (d.recovered) return w5500_port.why = "underflows", false;
+            d.recovered = true;
+            abort_all();
+            dma_configure();
+            if (!configure()) return w5500_port.why = "recovery", false;
+            put(G_ADDR, d.addr);
+            put(G_MS_DLEN, 8u * d.len - 1u);
+            put(G_USER, d.user);
+            d.busy = true;
+            d.rewrites = 0;
+            w5500_port.recoveries++;
+        }
         if (!rewrite()) return w5500_port.why = "rewrite", false;
         return finish();
     }
     d.rewrites = 0;
+    d.recovered = false;
     if (d.reading) {
         const uint32_t t0 = esp_cpu_get_cycle_count();
         const uint32_t limit = DMA_FRAME_US * (uint32_t)CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
@@ -441,18 +484,23 @@ static int frame(void *ctx, uint16_t offset, uint8_t control, const uint8_t *tx,
          * loads internal RAM; they need a word-aligned buffer and length (TRM 3.4.x), which TS
          * datagrams have (188 = 4 x 47). Others go a word at a time. */
         const bool burst = !(((uintptr_t)buf | n) & 3u);
+        d.burst = burst;
         put(d.ch + OUT_CONF0, (get(d.ch + OUT_CONF0) & ~OUT_BURST) | (burst ? OUT_BURST : 0));
         dma_reset(OUT_CONF0);
         put(d.ch + OUT_LINK, ((uint32_t)&d.desc & LINK_ADDR) | OUTLINK_START);
+        prefill();
     } else {
         dma_reset(IN_CONF0);
         put(d.ch + IN_INT_CLR, IN_SUC_EOF | IN_DSCR_ERR);
         put(d.ch + IN_LINK, ((uint32_t)&d.desc & LINK_ADDR) | INLINK_START);
     }
     put(G_USER, user);
+    d.addr = w5500_gpspi_addr(offset, control);
+    d.user = user;
     if (!start_transfer()) return fail(ESP_ERR_TIMEOUT);
     d.len = (uint32_t)n;
     d.rewrites = 0;
+    d.recovered = false;
     d.end = esp_cpu_get_cycle_count() + (3u + d.len) * d.cycles_per_byte;
     w5500_port.queued++;
     if (post && tx) return 0;
