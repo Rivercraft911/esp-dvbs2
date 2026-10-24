@@ -404,9 +404,6 @@ function drawWaterfall() {
     const visible = Math.max(1, Math.min(rows, ROWS, Math.round(h / d)));
     g.imageSmoothingEnabled = true;
     g.drawImage(fallOff, 0, 0, BINS, visible, gx, 0, w - gx, h);
-    // The write head: where each new row enters.
-    glow(g, true, d); g.strokeStyle = 'rgba(138,212,255,0.85)'; g.lineWidth = d;
-    g.beginPath(); g.moveTo(gx, 0.5 * d); g.lineTo(w, 0.5 * d); g.stroke(); glow(g, false, d);
     const secs = visible / 10, step = secs > 40 ? 10 : secs > 16 ? 5 : secs > 6 ? 2 : 1;
     g.font = font(d); g.fillStyle = token('--ink-3'); g.textAlign = 'right'; g.lineWidth = d;
     for (const t of niceTicks(0, secs, step)) {

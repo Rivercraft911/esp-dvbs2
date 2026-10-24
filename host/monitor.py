@@ -273,9 +273,19 @@ def listen(monitor: Monitor, port: int):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 20)
-    sock.bind(('0.0.0.0', port))
+    while True:                          # another listener may hold the port for a while
+        try:
+            sock.bind(('0.0.0.0', port))
+            break
+        except OSError as e:
+            print(f'UDP {port}: {e}; retrying', flush=True)
+            time.sleep(2)
+    print(f'listening on UDP {port}', flush=True)
     while True:
-        monitor.datagram(sock.recv(2048))
+        try:
+            monitor.datagram(sock.recv(2048))
+        except (ValueError, KeyError, TypeError):
+            monitor.bad += 1             # a malformed datagram never stops the listener
 
 
 def poll_cm5(monitor: Monitor, target: str, key: str | None):
