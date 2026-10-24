@@ -482,8 +482,8 @@ function spark(id, idx) {
 }
 const fmt = v => v === undefined || v === null ? DASH : typeof v === 'number' ? nf.format(v) : v;
 const zeroish = v => ({ text: fmt(v), cls: v === undefined || v === null ? '' : v ? 'bad' : 'zero' });
-const pair = (a, b) => (a === undefined && b === undefined) ? { text: DASH }
-  : { text: `${fmt(a)} / ${fmt(b)}`, cls: (a || 0) + (b || 0) ? 'bad' : 'zero' };
+const pair = (a, b, key) => (a === undefined && b === undefined) ? { text: DASH }
+  : { text: `${fmt(a)} / ${fmt(b)}`, cls: rising(key || `${a}`, (a || 0) + (b || 0)) ? 'bad' : (a || 0) + (b || 0) ? '' : 'zero' };
 const mbps = v => typeof v === 'number' ? `${v.toFixed(2)} Mb/s` : DASH;
 function segments(pct) {
   if (typeof pct !== 'number') return { text: DASH };
@@ -507,6 +507,15 @@ const val = (v, unit) => `${v}<small>${unit}</small>`;
 const modeName = s => s ? `${MODCODS[s.modcod] || 'MODCOD ' + s.modcod}${s.short ? ' short' : ''}` : DASH;
 const hms = ms => { const s = Math.max(0, Math.floor(ms / 1000)); return [Math.floor(s / 3600), Math.floor(s / 60) % 60, s % 60].map(v => String(v).padStart(2, '0')).join(':'); };
 const on = (el, live, bad) => { el.dataset.on = bad ? 'bad' : live ? '1' : '0'; };
+const counts = {};                                    // per counter: [time, value] samples, 30 s back
+function rising(key, value) {                         // did this counter grow in the last 30 s?
+  if (typeof value !== 'number') return false;
+  const now = Date.now(), h = counts[key] || (counts[key] = []);
+  h.push([now, value]);
+  while (h.length > 1 && now - h[1][0] > 30000) h.shift();
+  return value > h[0][1];
+}
+const sum = (...v) => v.some(x => typeof x === 'number') ? v.reduce((a, b) => a + (b || 0), 0) : undefined;
 
 function carrier() {                                  // a sine wave for the radio hop, 12 cycles
   const pts = [];
@@ -539,20 +548,25 @@ function render() {
   const busy = pct => typeof pct === 'number' ? 100 - pct : undefined;
   const viewFps = view && view.fps ? Object.values(view.fps).filter(v => typeof v === 'number') : [];
   const inErrors = tx && tx.input_bytes !== undefined ? (tx.input_rejected || 0) + (tx.input_lost || 0) + (tx.input_overruns || 0) : undefined;
-  on($('cCam'), cm5 && cm5.lifecycle !== 'stopped', cm5 && cm5.failed);
+  const camBad = rising('cam', cm5 && sum(cm5.ready_timeouts, cm5.dropped)) || (cm5 && cm5.failed);
+  const txBad = rising('tx', tx && sum(inErrors, tx.late_fills, tx.late_switches));
+  const rxBad = rising('rx', rx && sum(rx.failed, rx.crc8, rx.cc, rx.frames_dropped));
+  const ethBad = rising('eth', rx && rx.eth_dropped);
+  const viewBad = rising('view', view && sum(view.corrupt, view.gaps));
+  on($('cCam'), cm5 && cm5.lifecycle !== 'stopped', camBad);
   $('vCam').textContent = cm5 && typeof cm5.mbps === 'number' ? `${cm5.mbps.toFixed(2)} Mb/s` : DASH;
   on($('wSpi'), tx && tx.input_mbps > 0, false);
-  on($('cTx'), !!tx, tx && (inErrors || tx.late_fills));
+  on($('cTx'), !!tx, txBad);
   $('vTx').textContent = tx ? `${modeName(tx)}` : DASH;
   $('vHz').textContent = s && (s.freq_mhz) ? `${Number(s.freq_mhz).toFixed(0)} MHz` : '';
   on($('wRf'), locked, false);
-  on($('cRx'), locked, rx && (rx.failed || rx.crc8 || rx.cc));
+  on($('cRx'), locked, rxBad);
   $('vRx').textContent = rx ? (locked && typeof mer === 'number' ? `${mer.toFixed(1)} dB` : 'SEARCH') : DASH;
   on($('wEth'), rx && rx.mbps > 0, false);
-  on($('cEth'), rx && rx.eth_sent > 0, rx && rx.eth_dropped);
+  on($('cEth'), rx && rx.eth_sent > 0, ethBad);
   $('vEth').textContent = rx && typeof rx.mbps === 'number' ? `${rx.mbps.toFixed(2)} Mb/s` : DASH;
   on($('wView'), viewFps.some(v => v > 0), false);
-  on($('cView'), viewFps.some(v => v > 0), view && (view.corrupt || view.gaps));
+  on($('cView'), viewFps.some(v => v > 0), viewBad);
   $('vView').textContent = viewFps.length ? `${viewFps.map(v => v.toFixed(0)).join(' + ')} fps` : DASH;
 
   // Telemetry
@@ -561,51 +575,52 @@ function render() {
       cm5 && [cm5.ready_timeouts, cm5.dropped], view && [view.corrupt, view.gaps]].filter(Boolean).flat();
     return parts.length ? parts.reduce((a, b) => a + (b || 0), 0) : undefined;
   })();
-  on($('gLink'), locked, errs);
-  $('gLinkState').textContent = locked ? (errs ? 'anomaly' : 'nominal') : rx ? 'acquiring' : 'no data';
+  const fresh30 = camBad || txBad || rxBad || ethBad || viewBad;
+  on($('gLink'), locked, fresh30);
+  $('gLinkState').textContent = locked ? (fresh30 ? 'anomaly' : 'nominal') : rx ? 'acquiring' : 'no data';
   $('kRate').innerHTML = rx && typeof rx.mbps === 'number' ? val(rx.mbps.toFixed(2), 'Mb/s') : DASH;
   $('kMer').innerHTML = typeof mer === 'number' ? val(mer.toFixed(1), 'dB') : DASH;
   fill('linkRows', [
     ['Margin over QEF', typeof mer === 'number' && th !== undefined ? `${mer - th >= 0 ? '+' : '−'}${Math.abs(mer - th).toFixed(1)} dB` : DASH],
     ['Frames exact', rx && rx.frames],
     ['Delivered', rx && typeof rx.packets === 'number' ? bytes(rx.packets * 188) : DASH],
-    ['Errors, end to end', errs === undefined ? undefined : zeroish(errs)],
+    ['Errors, end to end', errs === undefined ? undefined : { text: fmt(errs), cls: fresh30 ? 'bad' : errs ? '' : 'zero' }],
   ]);
-  on($('gCam'), cm5 && cm5.lifecycle !== 'stopped', cm5 && cm5.failed);
+  on($('gCam'), cm5 && cm5.lifecycle !== 'stopped', camBad);
   fill('camRows', [
     ['TS out', mbps(cm5 && cm5.mbps)],
     ['SPI messages', cm5 && cm5.messages],
     ['READY timeouts', cm5 ? zeroish(cm5.ready_timeouts) : undefined],
     ['Queue age', cm5 && typeof cm5.queue_age_ms === 'number' ? `${cm5.queue_age_ms.toFixed(0)} ms` : DASH],
   ]);
-  on($('gTx'), !!tx, tx && (inErrors || tx.late_fills || tx.late_switches));
+  on($('gTx'), !!tx, txBad);
   fill('txRows', [
     ['Input', mbps(tx && tx.input_mbps)],
     ['Frames encoded', tx && tx.frames_encoded],
     ['Filler frames', tx && tx.dummies],
     ['Input errors', tx ? zeroish(inErrors) : undefined],
-    ['Late fills / switches', tx ? pair(tx.late_fills, tx.late_switches) : undefined],
+    ['Late fills / switches', tx ? pair(tx.late_fills, tx.late_switches, 'p-tx-late') : undefined],
     ['Core 0, encoder', segments(busy(tx && tx.encoder_spare_pct))],
     ['Core 1, bank fill', segments(busy(tx && tx.fill_spare_pct))],
   ]);
-  on($('gRx'), locked, rx && (rx.failed || rx.crc8 || rx.cc || rx.frames_dropped));
+  on($('gRx'), locked, rxBad);
   fill('rxRows', [
     ['Gain', rx && typeof rx.gain === 'number' ? `${rx.gain} dB` : DASH],
-    ['Failed / LDPC', rx ? pair(rx.failed, rx.ldpc) : undefined],
-    ['Dropped runs / frames', rx && (rx.runs_dropped !== undefined || rx.frames_dropped !== undefined) ? pair(rx.runs_dropped, rx.frames_dropped) : DASH],
+    ['Failed / LDPC', rx ? pair(rx.failed, rx.ldpc, 'p-rx-failed') : undefined],
+    ['Dropped runs / frames', rx && (rx.runs_dropped !== undefined || rx.frames_dropped !== undefined) ? pair(rx.runs_dropped, rx.frames_dropped, 'p-rx-drop') : DASH],
     ['TS packets', rx && rx.packets],
-    ['CRC-8 / continuity', rx ? pair(rx.crc8, rx.cc) : undefined],
+    ['CRC-8 / continuity', rx ? pair(rx.crc8, rx.cc, 'p-rx-cc') : undefined],
     ['Carrier offset', rx && typeof rx.cfo_hz === 'number' ? `${(rx.cfo_hz / 1000).toFixed(2)} kHz` : DASH],
     ['Clock offset', rx && typeof rx.clock_ppm === 'number' ? `${rx.clock_ppm.toFixed(2)} ppm` : DASH],
     ['Core 0, check', segments(rx && rx.core0_pct)],
   ]);
-  on($('gEth'), rx && rx.eth_sent > 0, (rx && rx.eth_dropped) || (view && (view.corrupt || view.gaps)));
+  on($('gEth'), rx && rx.eth_sent > 0, ethBad || viewBad);
   fill('viewRows', [
     ['Link', rx && rx.eth_mbps_link ? `${rx.eth_mbps_link} Mb/s` : DASH],
     ['Datagrams / dropped', rx && rx.eth_sent !== undefined
       ? { text: `${fmt(rx.eth_sent)} / ${fmt(rx.eth_dropped ?? 0)}`, cls: rx.eth_dropped ? 'bad' : '' } : undefined],
     ['Decoded, A / B', viewFps.length ? `${viewFps.map(v => v.toFixed(0)).join(' / ')} fps` : DASH],
-    ['Corrupt / gaps', view ? pair(view.corrupt, view.gaps) : undefined],
+    ['Corrupt / gaps', view ? pair(view.corrupt, view.gaps, 'p-view') : undefined],
   ]);
 
   if (rx) state.history.push([Date.now() / 1000, rx.mbps, mer]);
