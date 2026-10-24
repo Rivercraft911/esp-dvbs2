@@ -63,6 +63,7 @@ size_t mon_stats(uint8_t *out, uint16_t seq, uint32_t t_us, const mon_stats_t *s
     if (s->eth)
         ADD(",\"eth_sent\":%lu,\"eth_dropped\":%lu,\"eth_q_peak\":%lu",
             (unsigned long)s->eth_sent, (unsigned long)s->eth_dropped, (unsigned long)s->eth_q_peak);
+    if (s->eth && s->link_mbps) ADD(",\"eth_mbps_link\":%u", s->link_mbps);
     ADD(",\"mon_dropped\":%lu", (unsigned long)s->mon_dropped);
     if (s->core0_pmil >= 0) ADD(",\"core0_pct\":%d.%d", s->core0_pmil / 10, s->core0_pmil % 10);
     if (s->core1_pmil >= 0) ADD(",\"core1_pct\":%d.%d", s->core1_pmil / 10, s->core1_pmil % 10);

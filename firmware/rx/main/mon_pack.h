@@ -39,6 +39,7 @@ typedef struct {
     uint32_t packets, crc8, cc, tei;
     bool eth;
     uint32_t eth_sent, eth_dropped, eth_q_peak, mon_dropped;
+    uint16_t link_mbps;             /* the W5500's link: 10 or 100; 0 not known */
     int16_t core0_pmil, core1_pmil; /* busy, per mille; negative: not known */
     uint32_t capture_drops, heap_after_boot;
 } mon_stats_t;

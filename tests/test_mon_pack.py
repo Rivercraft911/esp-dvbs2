@@ -28,6 +28,7 @@ size_t demo_stats(uint8_t *out, int full)
                      .mer_cdb = 2504, .mer_med_cdb = -5, .cfo_hz = -3479, .clock_ppb = -3091,
                      .ts = full, .packets = 1816705, .crc8 = 0, .cc = 46, .tei = 0,
                      .eth = full, .eth_sent = 259529, .eth_dropped = 510, .eth_q_peak = 256,
+                     .link_mbps = 10,
                      .mon_dropped = 7, .core0_pmil = full ? 664 : -1, .core1_pmil = -1,
                      .capture_drops = 0, .heap_after_boot = 0};
     return mon_stats(out, 0x1234, 0xDEADBEEF, &s);
@@ -72,7 +73,7 @@ def main():
                 "lost", "relocks", "dummies", "ldpc", "runs_dropped", "frames_dropped", "mer_db",
                 "mer_med_db", "cfo_hz", "clock_ppm",
                 "packets", "crc8", "cc", "tei", "eth_sent", "eth_dropped", "eth_q_peak",
-                "mon_dropped", "core0_pct", "capture_drops", "heap_after_boot"]
+                "eth_mbps_link", "mon_dropped", "core0_pct", "capture_drops", "heap_after_boot"]
         check(list(s) == want, f"keys {list(s)}")
         check(s["state"] == "track" and s["rate"] == "5m" and s["mer_db"] == 25.04 and
               s["mer_med_db"] == -0.05 and s["clock_ppm"] == -3.091 and s["cfo_hz"] == -3479 and

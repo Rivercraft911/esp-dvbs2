@@ -5,11 +5,12 @@
 #include <string.h>
 
 #include "esp_attr.h"
-#include "esp_cpu.h"
-#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "esp_cpu.h"
+#include "esp_freertos_hooks.h"
+#include "esp_timer.h"
 
 #include "mon_pack.h"
 #include "run_arena.h"
@@ -61,7 +62,23 @@ static struct {
     unsigned mer_n, mer_at;
     uint32_t mer_frames;
     uint16_t port;              /* the monitor's UDP port (eth mon) */
+    uint32_t load_idle, load_at;   /* idle cycles and the cycle count at the last stats record */
 } ms;
+
+/* Core 0's load for the stats: an idle hook, registered for the run, keeps the idle task
+ * spinning (it returns false) and adds up the gaps between its calls under IDLE_GAP; a longer
+ * gap means something else ran. 32-bit counts: the 200 ms between records is far below their
+ * 17.9 s wrap. */
+#define IDLE_GAP (10 * CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ)
+static volatile uint32_t idle_cycles, idle_last;
+
+static bool idle_hook(void)
+{
+    const uint32_t now = esp_cpu_get_cycle_count(), gap = now - idle_last;
+    idle_last = now;
+    if (gap < IDLE_GAP) idle_cycles += gap;
+    return false;
+}
 
 static struct {
     w5500_ts_queue q;
@@ -169,6 +186,14 @@ static void mon_stats_now(mon_stats_t *st)
         st->tei = t.crc_errors;     /* the deframer marks exactly the CRC-8 failures */
     }
     st->eth = true;
+    st->link_mbps = (uint16_t)e.link_mbps;
+    const uint32_t idle = idle_cycles, at = esp_cpu_get_cycle_count();
+    if (at != ms.load_at && ms.load_at) {
+        const uint32_t span = at - ms.load_at, quiet = idle - ms.load_idle;
+        st->core0_pmil = quiet >= span ? 0 : (int16_t)(1000 - (uint64_t)quiet * 1000 / span);
+    }
+    ms.load_idle = idle;
+    ms.load_at = at;
     st->eth_sent = e.t.st.datagrams;
     st->eth_dropped = e.q.dropped;
     st->eth_q_peak = e.q.peak;
@@ -381,6 +406,10 @@ static void sender(void *arg)
         ms.port = set.mon_port;
         ms.on = set.mon_port != 0;
         s->mon = ms.on;
+        if (ms.on) {
+            idle_last = esp_cpu_get_cycle_count();
+            esp_register_freertos_idle_hook_for_cpu(idle_hook, 0);
+        }
         xSemaphoreGive(e.done);
         e.link_mbps = s->phy >= 0 && !(s->phy & W5500_PHY_100M) ? 10 : 100;
         s->status = pump();
@@ -405,6 +434,7 @@ static void sender(void *arg)
         s->stack_free = uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t);
         s->mon_copies = ms.snapshots;
         s->mon_copy_max = ms.refused;
+        if (ms.on) esp_deregister_freertos_idle_hook_for_cpu(idle_hook, 0);
         ms.on = false;
         e.running = false;
         xSemaphoreGive(e.done);
