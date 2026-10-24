@@ -336,7 +336,8 @@ static int pump(void)
             if (now - end > DRAIN) return W5500_FULL;
         }
         const bool busy = waiting || staged > 0 || e.t.held || ending;
-        ulTaskNotifyTake(pdTRUE, busy ? 1 : portMAX_DELAY);
+        /* The monitor needs a turn now and then even without frames (acquiring): every 20 ms. */
+        ulTaskNotifyTake(pdTRUE, busy ? 1 : ms.on ? pdMS_TO_TICKS(20) : portMAX_DELAY);
     }
 }
 
