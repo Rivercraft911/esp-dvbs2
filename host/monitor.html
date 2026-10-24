@@ -321,7 +321,7 @@ function drawWaveform() {
 }
 
 // ---- Spectrum and waterfall ------------------------------------------------------------------
-const ROWS = 600, BINS = 512;
+const ROWS = 600, BINS = 512, FALL_S = 30, ROW_HZ = 10;     // the waterfall always shows 30 s
 const fallOff = new OffscreenCanvas(BINS, ROWS), fallCtx = fallOff.getContext('2d');
 fallCtx.fillStyle = RAMP[0]; fallCtx.fillRect(0, 0, BINS, ROWS);
 const rowImg = new ImageData(BINS, 1);
@@ -400,11 +400,10 @@ function drawWaterfall() {
   g.clearRect(0, 0, w, h);
   const gx = gutter() * d;
   if (rows) {
-    // Always fill the panel: a young waterfall stretches its rows until there is one per pixel.
-    const visible = Math.max(1, Math.min(rows, ROWS, Math.round(h / d)));
+    // A fixed time scale: the newest row at the top, FALL_S seconds down to the bottom edge.
     g.imageSmoothingEnabled = true;
-    g.drawImage(fallOff, 0, 0, BINS, visible, gx, 0, w - gx, h);
-    const secs = visible / 10, step = secs > 40 ? 10 : secs > 16 ? 5 : secs > 6 ? 2 : 1;
+    g.drawImage(fallOff, 0, 0, BINS, FALL_S * ROW_HZ, gx, 0, w - gx, h);
+    const secs = FALL_S, step = 5;
     g.font = font(d); g.fillStyle = token('--ink-3'); g.textAlign = 'right'; g.lineWidth = d;
     for (const t of niceTicks(0, secs, step)) {
       const yy = t / secs * h, major = t % (step * 2) === 0;
@@ -454,7 +453,7 @@ const freqAt = fx => {
   return center ? `${(center + off).toFixed(3)} MHz` : `${off >= 0 ? '+' : ''}${off.toFixed(3)} MHz`;
 };
 hover('specWell', 'specRead', fx => avg && `${freqAt(fx)}  ${(10 * Math.log10(avg[Math.min(BINS - 1, fx * BINS | 0)])).toFixed(1)} dBFS`);
-hover('fallWell', 'fallRead', (fx, fy) => rows && `${freqAt(fx)}  T−${(fy * Math.min(rows, ROWS, $('waterfall').clientHeight) / 10).toFixed(1)} s`);
+hover('fallWell', 'fallRead', (fx, fy) => rows && fy * FALL_S * ROW_HZ <= rows && `${freqAt(fx)}  T−${(fy * FALL_S).toFixed(1)} s`);
 
 // ---- Telemetry -------------------------------------------------------------------------------
 function spark(id, idx) {
