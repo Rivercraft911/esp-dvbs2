@@ -157,6 +157,7 @@ class Native:
                                             ct.c_uint, ct.POINTER(TsQueue),
                                             ct.POINTER(ct.c_void_p), p]),
             "w5500_ts_send": (ct.c_int, [ct.POINTER(TsSender), ct.c_bool]),
+            "w5500_ts_send_other": (ct.c_int, [ct.POINTER(TsSender), b, ct.c_size_t, u16]),
         }
         for name, (result, arguments) in api.items():
             fn = getattr(lib, name)
@@ -419,7 +420,7 @@ def test_phy(native):
 def test_open(native):
     chip = Chip(native, open_ptr=0xFFF0, cmd_us=50)
     check(chip.init(tx0=8, rx0=8) == OK, "init")
-    check(chip.open(3, 1) == ERR_ARG, "only sockets 0 to 2")
+    check(chip.open(2, 1) == ERR_ARG, "only sockets 0 and 1")
     check(chip.open(0, 5004) == OK, "open with slow command acceptance")
     check(chip.peek(reg(0), SN_MR) == 0x02 and chip.peek16(0, SN_PORT) == 5004 and
           chip.peek(reg(0), SN_SR) == 0x22, "UDP mode, port, SOCK_UDP")
@@ -1018,6 +1019,41 @@ def test_ts(native):
         print(f"  two sockets: 40 datagrams in {finish[2]:.1f} wire times, one socket {finish[1]:.1f}"
               f" ({'posted' if mode else 'blocking'} writes)")
 
+    # Other datagrams (the receiver's monitor) take a turn on the TS sockets, to their own port,
+    # and the TS goes on to its port in order: the chip never holds two SENDs behind the wire.
+    for mode in ({}, DIRECT):
+        chip = Chip(native, wire_bps=10e6, **mode)
+        check(chip.init(tx0=8, tx1=8) == OK and chip.open(0, 5004) == OK and
+              chip.open(1, 5005) == OK, "two sockets")
+        chip.dest(0, LAPTOP, 1234)
+        chip.dest(1, LAPTOP, 1234)
+        link = TsLink(native, chip, 1024, socks=(0, 1))
+        want, n = [], 0
+        for step in range(60):
+            for _ in range(5):
+                link.push(ts_packet(n))
+                n += 1
+            link.send()
+            if step % 3 == 0:
+                mon = bytes([0x50, step]) * 40
+                r = native.lib.w5500_ts_send_other(ct.byref(link.t), mon, len(mon), 1235)
+                check(r in (OK, FULL), f"other: {r}")
+                if r == OK:
+                    want.append(mon)
+            chip.lib.fake_advance(chip.f, 700.0)
+        link.send(partial=True)
+        for s in (0, 1):
+            while chip.poll(s) > 0:
+                chip.lib.fake_advance(chip.f, 50.0)
+        out = []
+        while (d := chip.take()) is not None:
+            out.append(d)
+        ts = [d[3] for d in out if d[1] == 1234]
+        other = [d[3] for d in out if d[1] == 1235]
+        check(b"".join(ts) == b"".join(ts_packet(k) for k in range(n)), "TS in order on its port")
+        check(other == want and len(want) >= 10, f"others in order on theirs: {len(other)}")
+        chip.close()
+
     chip = sender(native)
     link = TsLink(native, chip, 16)
     for k in range(14):
@@ -1181,7 +1217,7 @@ def test_settings(native):
 def main():
     with Native() as native:
         size = native.lib.fake_driver_size()
-        check(size <= 400, f"driver state {size} bytes")
+        check(size <= 300, f"driver state {size} bytes")
         test_fake(native)
         test_gpspi(native)
         test_frame_format(native)

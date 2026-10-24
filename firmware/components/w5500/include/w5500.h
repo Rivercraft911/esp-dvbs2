@@ -115,7 +115,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define W5500_SOCKETS 3      /* sockets 0 to 2; sockets 3-7 get no buffer memory */
+#define W5500_SOCKETS 2      /* sockets 0 and 1; sockets 2-7 get no buffer memory */
 #define W5500_UDP_MAX 1472   /* 1500-byte MTU - 20 IP - 8 UDP: no IP fragmentation (DS p.2) */
 #define W5500_UDP_HEADER 8   /* peer IP, peer port, payload length, in front of each datagram */
 #define W5500_TXQ 16         /* datagrams staged in the TX buffer, at most */

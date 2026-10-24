@@ -36,7 +36,6 @@ static uint8_t pair[2 * W5500_TS_DATAGRAM] __attribute__((aligned(4)));
 /* The monitor stream, all copied here on core 0: a sample snapshot from the demodulator's ring,
  * the release's raw tap of corrected symbols (scaled here), one internal datagram buffer for the
  * SPI DMA. */
-#define MON_SOCK 2
 #define MON_SAMPLES_N RX_SNAPSHOT_MAX               /* 1,024 samples: two datagrams */
 #define MON_SAMPLE_CHUNKS (MON_SAMPLES_N / MON_CHUNK)
 #define MON_TAP 320                                 /* symbols per tap */
@@ -61,7 +60,7 @@ static struct {
     int16_t mer[MON_MER];
     unsigned mer_n, mer_at;
     uint32_t mer_frames;
-    int64_t mon_done;           /* when the monitor datagram in flight should be out */
+    uint16_t port;              /* the monitor's UDP port (eth mon) */
 } ms;
 
 static struct {
@@ -227,12 +226,10 @@ static int mon_step(w5500 *w)
         if (ms.stats_due) s->mon_dropped++;
         ms.stats_due = true;
     }
-    if (w5500_ts_waiting(&e.q) >= W5500_TS_GROUP || e.t.held) return 0;   /* TS first */
-    if (busy_socket(w, MON_SOCK)) {
-        if (now < ms.mon_done) return 0;    /* still going: no SPI frames to find that out */
-        const int p = w5500_udp_poll(w, MON_SOCK);
-        if (p) return p < 0 ? p : 0;
-    }
+    /* TS first; the monitor takes the next turn on the TS sockets (w5500_ts_send_other), once
+     * that socket is free. */
+    if (w5500_ts_waiting(&e.q) >= W5500_TS_GROUP || e.t.held) return 0;
+    if (busy_socket(w, e.t.sock[e.t.next])) return 0;
     /* The monitor runs below the checker (11) and the decoder (5): only on time they leave. */
     vTaskPrioritySet(NULL, MON_PRIORITY);
     const uint32_t t0 = esp_cpu_get_cycle_count();
@@ -255,20 +252,15 @@ static int mon_step(w5500 *w)
                         mon_sym);
         ms.tap_armed = false;
     }
-    const int r = n ? w5500_udp_send(w, MON_SOCK, mon_buf, n) : 0;
-    const int p = n && r == W5500_OK ? w5500_udp_poll(w, MON_SOCK) : 0;   /* SEND now; buffer free */
+    const int r = n ? w5500_ts_send_other(&e.t, mon_buf, n, ms.port) : 0;
     vTaskPrioritySet(NULL, PRIORITY);
     if (!n) return 0;
     const uint32_t c = esp_cpu_get_cycle_count() - t0;
     s->mon_cycles += c;
     if (c > s->mon_max_cycles) s->mon_max_cycles = c;
-    if (r < 0 || p < 0) return r < 0 ? r : p;
-    if (r == W5500_FULL) {
-        s->mon_dropped++;
-    } else {
-        s->mon_sent++;
-        ms.mon_done = now + 2 * ((int64_t)n + 66) * 8 / e.link_mbps;   /* behind a TS datagram */
-    }
+    if (r < 0) return r;
+    if (r == W5500_FULL) s->mon_dropped++;
+    else s->mon_sent++;
     return 0;
 }
 
@@ -384,7 +376,10 @@ static void sender(void *arg)
         uint8_t *const buf[2] = {pair, pair + W5500_TS_DATAGRAM};
         static const unsigned socks[2] = {0, 1};
         w5500_ts_sender_init(&e.t, w, socks, 2, &e.q, buf, cycles);
-        ms.on = w->sock[MON_SOCK].open;
+        w5500_settings set;
+        w5500_eth_settings(&set);
+        ms.port = set.mon_port;
+        ms.on = set.mon_port != 0;
         s->mon = ms.on;
         xSemaphoreGive(e.done);
         e.link_mbps = s->phy >= 0 && !(s->phy & W5500_PHY_100M) ? 10 : 100;

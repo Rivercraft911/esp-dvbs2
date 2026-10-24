@@ -61,6 +61,31 @@ static void note(w5500_ts_sender *t, unsigned k, uint32_t at)
     t->wr_at[k] = at;
 }
 
+int w5500_ts_send_other(w5500_ts_sender *t, const uint8_t *buf, size_t n, uint16_t port)
+{
+    if (t->st.error) return t->st.error;
+    if (t->socks != 2 || t->held) return t->socks != 2 ? W5500_ERR_ARG : W5500_FULL;
+    const unsigned k = t->next, s = t->sock[k];
+    w5500_socket *so = &t->chip->sock[s];
+    if (so->flight || so->q_count) {
+        const int e = w5500_udp_poll(t->chip, s);
+        note(t, k, t->clock ? t->clock() : 0);
+        if (e < 0) return t->st.error = e;
+        if (e) return W5500_FULL;
+    }
+    uint8_t ip[4];
+    const uint16_t back = so->dest_port;
+    memcpy(ip, so->dest, 4);
+    w5500_udp_dest(t->chip, s, ip, port);
+    int e = w5500_udp_send(t->chip, s, buf, n);
+    if (e == W5500_OK) e = w5500_udp_poll(t->chip, s);   /* its SEND now, with this port */
+    note(t, k, t->clock ? t->clock() : 0);
+    w5500_udp_dest(t->chip, s, ip, back);               /* applied before the socket's next SEND */
+    if (e < 0) return t->st.error = e;
+    t->next ^= 1;
+    return W5500_OK;
+}
+
 int w5500_ts_send(w5500_ts_sender *t, bool partial)
 {
     if (t->st.error) return t->st.error;

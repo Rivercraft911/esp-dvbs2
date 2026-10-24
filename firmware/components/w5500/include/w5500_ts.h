@@ -69,5 +69,11 @@ void w5500_ts_sender_init(w5500_ts_sender *t, w5500 *chip, const unsigned *socks
  * error, after which nothing more is sent. Call w5500_udp_poll on each socket when the queue is
  * empty, so the last datagrams' SENDs start and finish. */
 int w5500_ts_send(w5500_ts_sender *t, bool partial);
+/* Two sockets only: another datagram (n bytes from buf, which follows w5500_udp_send's DMA rule)
+ * in the sockets' turn, to port on the sockets' destination address, which is then set back. In
+ * the turn, the chip still holds at most one SEND behind the frame on the wire, as for TS; a
+ * third socket let the W5500 lose whole TS datagrams. W5500_OK, W5500_FULL (the socket in turn
+ * is still sending, or a TS datagram is held: try later) or an error. */
+int w5500_ts_send_other(w5500_ts_sender *t, const uint8_t *buf, size_t n, uint16_t port);
 
 #endif
