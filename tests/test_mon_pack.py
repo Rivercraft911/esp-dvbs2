@@ -66,7 +66,7 @@ def main():
         magic, version, kind, seq, t_us = HEADER.unpack_from(out.raw)
         check((magic, version, kind, seq, t_us) == (b"PVMN", 1, 1, 0x1234, 0xDEADBEEF), "header")
         body = out.raw[12:n]
-        check(len(body) <= 1400, f"stats {len(body)} bytes")
+        check(len(body) <= 1400 and n % 4 == 0, f"stats {len(body)} bytes, a whole number of words")
         s = json.loads(body.decode())
         want = ["run", "state", "freq_mhz", "rate", "modcod", "short", "gain", "frames", "failed",
                 "lost", "relocks", "dummies", "ldpc", "runs_dropped", "frames_dropped", "mer_db",

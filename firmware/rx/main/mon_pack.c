@@ -69,7 +69,9 @@ size_t mon_stats(uint8_t *out, uint16_t seq, uint32_t t_us, const mon_stats_t *s
     ADD(",\"capture_drops\":%lu,\"heap_after_boot\":%lu}", (unsigned long)s->capture_drops,
         (unsigned long)s->heap_after_boot);
 #undef ADD
-    return MON_HEADER + (n < cap ? n : cap - 1);
+    if (n >= cap) n = cap - 1;
+    while ((MON_HEADER + n) % 4 && n + 1 < cap) j[n++] = ' ';   /* word length: the SPI DMA bursts */
+    return MON_HEADER + n;
 }
 
 size_t mon_samples(uint8_t *out, uint16_t seq, uint32_t t_us, uint16_t snapshot, unsigned chunk,

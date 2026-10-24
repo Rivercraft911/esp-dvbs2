@@ -22,6 +22,7 @@
 #define SAT_US 20000            /* a SEND unfinished this long, 18 wire times: give it again */
 #define STACK 3072U
 #define PRIORITY 13             /* below the release (14), above the checker: eth_egress.h */
+#define MON_PRIORITY 3          /* the monitor's datagrams: below the checker and the decoder */
 #if CONFIG_W5500_DIRECT_SPI
 #define SPI "direct"
 #else
@@ -232,6 +233,8 @@ static int mon_step(w5500 *w)
         const int p = w5500_udp_poll(w, MON_SOCK);
         if (p) return p < 0 ? p : 0;
     }
+    /* The monitor runs below the checker (11) and the decoder (5): only on time they leave. */
+    vTaskPrioritySet(NULL, MON_PRIORITY);
     const uint32_t t0 = esp_cpu_get_cycle_count();
     const uint32_t t_us = (uint32_t)now;
     size_t n = 0;
@@ -252,9 +255,10 @@ static int mon_step(w5500 *w)
                         mon_sym);
         ms.tap_armed = false;
     }
+    const int r = n ? w5500_udp_send(w, MON_SOCK, mon_buf, n) : 0;
+    const int p = n && r == W5500_OK ? w5500_udp_poll(w, MON_SOCK) : 0;   /* SEND now; buffer free */
+    vTaskPrioritySet(NULL, PRIORITY);
     if (!n) return 0;
-    const int r = w5500_udp_send(w, MON_SOCK, mon_buf, n);
-    const int p = r == W5500_OK ? w5500_udp_poll(w, MON_SOCK) : 0;   /* SEND now; mon_buf free */
     const uint32_t c = esp_cpu_get_cycle_count() - t0;
     s->mon_cycles += c;
     if (c > s->mon_max_cycles) s->mon_max_cycles = c;
