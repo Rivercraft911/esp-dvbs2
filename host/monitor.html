@@ -321,7 +321,8 @@ function drawWaveform() {
 }
 
 // ---- Spectrum and waterfall ------------------------------------------------------------------
-const ROWS = 600, BINS = 512, FALL_S = 30, ROW_HZ = 10;     // the waterfall always shows 30 s
+const ROWS = 600, BINS = 512, FALL_S = 30;     // the waterfall always shows 30 s, whatever the row rate
+const rowTimes = [];                              // arrival time of each row, newest first
 const fallOff = new OffscreenCanvas(BINS, ROWS), fallCtx = fallOff.getContext('2d');
 fallCtx.fillStyle = RAMP[0]; fallCtx.fillRect(0, 0, BINS, ROWS);
 const rowImg = new ImageData(BINS, 1);
@@ -343,6 +344,8 @@ function addSpectrum(db, rate) {
   }
   fallCtx.drawImage(fallOff, 0, 1);
   fallCtx.putImageData(rowImg, 0, 0);
+  rowTimes.unshift(performance.now());
+  if (rowTimes.length > ROWS) rowTimes.pop();
   rows++;
   $('emptySpec').hidden = true;
 }
@@ -400,9 +403,16 @@ function drawWaterfall() {
   g.clearRect(0, 0, w, h);
   const gx = gutter() * d;
   if (rows) {
-    // A fixed time scale: the newest row at the top, FALL_S seconds down to the bottom edge.
-    g.imageSmoothingEnabled = true;
-    g.drawImage(fallOff, 0, 0, BINS, FALL_S * ROW_HZ, gx, 0, w - gx, h);
+    // A fixed time scale: the newest row at the top, FALL_S seconds down to the bottom edge. Rows
+    // are placed by when they arrived, so the scale holds whatever rate the receiver sends.
+    const now = performance.now();
+    let n = 0;
+    while (n < rowTimes.length && now - rowTimes[n] <= FALL_S * 1000) n++;
+    if (n > 1) {
+      const span = (rowTimes[0] - rowTimes[n - 1]) / (n - 1), oldest = (now - rowTimes[n - 1] + span) / 1000;
+      g.imageSmoothingEnabled = true;
+      g.drawImage(fallOff, 0, 0, BINS, n, gx, 0, w - gx, Math.min(h, h * oldest / FALL_S));
+    }
     const secs = FALL_S, step = 5;
     g.font = font(d); g.fillStyle = token('--ink-3'); g.textAlign = 'right'; g.lineWidth = d;
     for (const t of niceTicks(0, secs, step)) {
@@ -453,7 +463,7 @@ const freqAt = fx => {
   return center ? `${(center + off).toFixed(3)} MHz` : `${off >= 0 ? '+' : ''}${off.toFixed(3)} MHz`;
 };
 hover('specWell', 'specRead', fx => avg && `${freqAt(fx)}  ${(10 * Math.log10(avg[Math.min(BINS - 1, fx * BINS | 0)])).toFixed(1)} dBFS`);
-hover('fallWell', 'fallRead', (fx, fy) => rows && fy * FALL_S * ROW_HZ <= rows && `${freqAt(fx)}  T−${(fy * FALL_S).toFixed(1)} s`);
+hover('fallWell', 'fallRead', (fx, fy) => rowTimes.length && performance.now() - rowTimes[rowTimes.length - 1] >= fy * FALL_S * 1000 && `${freqAt(fx)}  T−${(fy * FALL_S).toFixed(1)} s`);
 
 // ---- Telemetry -------------------------------------------------------------------------------
 function spark(id, idx) {

@@ -13,11 +13,11 @@ Then open http://127.0.0.1:8770/. Four sources feed it:
   sender's microsecond clock.
 
       type 1, receiver stats      JSON, five times a second
-      type 2, receiver samples    2,048 consecutive int8 I/Q samples of the 16 MS/s capture, ten
-                                  times a second, in 4 chunks: u16 snapshot, u8 chunk, u8
-                                  chunks, u32 sample rate
+      type 2, receiver samples    1,024 or 2,048 consecutive int8 I/Q samples of the 16 MS/s
+                                  capture, a few times a second, in chunks of 512: u16
+                                  snapshot, u8 chunk, u8 chunks, u32 sample rate
       type 3, receiver symbols    up to 640 demodulator output symbols, int8 I/Q at radius 64,
-                                  ten times a second: u16 count, u8 bits per symbol, u8 0
+                                  a few times a second: u16 count, u8 bits per symbol, u8 0
       type 4, transmitter stats   JSON, the transmitter's `status` records, once a second
 
 - `--cm5 USER@HOST:PATH`: pv-capture's status file, read once a second over ssh. A PATH ending
@@ -64,10 +64,12 @@ WINDOW = blackman_harris(FFT).astype(np.float32)
 
 
 def spectrum(iq: bytes, bins: int = BINS) -> np.ndarray:
-    """Power per bin in dBFS, lowest frequency first: a full-scale complex tone reads 0 dB."""
+    """Power per bin in dBFS, lowest frequency first: a full-scale complex tone reads 0 dB.
+    A snapshot of any power-of-two length from `bins` to FFT samples gets its own window."""
     v = np.frombuffer(iq, np.int8).astype(np.float32) / 128
     x = (v[0::2] + 1j * v[1::2])[:FFT]
-    power = np.abs(np.fft.fftshift(np.fft.fft(x * WINDOW[:len(x)]))) ** 2 / WINDOW[:len(x)].sum() ** 2
+    w = WINDOW if len(x) == FFT else blackman_harris(len(x)).astype(np.float32)
+    power = np.abs(np.fft.fftshift(np.fft.fft(x * w))) ** 2 / w.sum() ** 2
     return 10 * np.log10(power.reshape(bins, -1).mean(1) + 1e-12)
 
 

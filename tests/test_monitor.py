@@ -42,6 +42,11 @@ def main():
     total = 10 * math.log10((10 ** (db / 10)).sum() * monitor.FFT / monitor.BINS / enbw)
     assert abs(total - 20 * math.log10(0.5 * 127 / 128)) < 0.05, total
     assert db.max() - np.median(db) > 60
+    # A 1,024-sample snapshot gets its own window and the same calibration, two FFT bins a bin.
+    half = monitor.spectrum(tone(256)[:2048])
+    w = monitor.blackman_harris(1024)
+    total = 10 * math.log10((10 ** (half / 10)).sum() * 1024 / monitor.BINS / (1024 * (w ** 2).sum() / w.sum() ** 2))
+    assert len(half) == monitor.BINS and abs(total - 20 * math.log10(0.5 * 127 / 128)) < 0.05, total
 
     m = monitor.Monitor()
     q = m.subscribe()
