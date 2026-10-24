@@ -317,7 +317,7 @@ static esp_err_t start(void *ctx)
     /* Static stacks: never in slow RTC FAST memory. */
     static StackType_t stacks[3][STACK / sizeof(StackType_t)];
     static StaticTask_t tasks[3];
-    r->release = xTaskCreateStaticPinnedToCore(releaser, "release", STACK, r, 12, stacks[0], &tasks[0], 0);
+    r->release = xTaskCreateStaticPinnedToCore(releaser, "release", STACK, r, 14, stacks[0], &tasks[0], 0);
     r->checker = xTaskCreateStaticPinnedToCore(checker, "check", STACK, r, 11, stacks[1], &tasks[1], 0);
     r->decoder = xTaskCreateStaticPinnedToCore(decoder, "decode", STACK, r, 5, stacks[2], &tasks[2], 0);
     if (!r->release || !r->checker || !r->decoder) return ESP_ERR_NO_MEM;

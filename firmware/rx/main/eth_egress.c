@@ -19,7 +19,7 @@
 #define DRAIN pdMS_TO_TICKS(3000)   /* at the end; a chip ARP gives up after 1.8 s (w5500.h) */
 #define SAT_US 20000            /* a SEND unfinished this long, 18 wire times: give it again */
 #define STACK 3072U
-#define PRIORITY 13             /* above the release (12): see eth_egress.h */
+#define PRIORITY 13             /* below the release (14), above the checker: eth_egress.h */
 #if CONFIG_W5500_DIRECT_SPI
 #define SPI "direct"
 #else
