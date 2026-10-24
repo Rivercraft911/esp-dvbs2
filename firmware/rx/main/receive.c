@@ -25,7 +25,6 @@
 #include "capture.h"
 #include "dvbs2rx.h"
 #include "ingress_pattern.h"
-#include "mon_pack.h"
 
 #define SLOTS 3U
 #define PIECE 3072U             /* words per push: the release starts within ~1,000 symbols */
@@ -81,16 +80,6 @@ static esp_err_t IRAM_ATTR consume(const uint32_t *words, size_t count, uint64_t
     }
     if (s->pushes < RECEIVE_LOG) s->log[s->pushes] = cycles;
     ++s->pushes;
-    rx_monitor_t *m = r->options.mon;
-    if (m && m->want_samples) {     /* after the unit, off the push path */
-        const uint32_t t0 = esp_cpu_get_cycle_count();
-        m->have_samples = rx_demod_snapshot(r->demod, m->si, m->sq, MON_SNAPSHOT) >= 0;
-        m->want_samples = false;
-        const uint32_t c = esp_cpu_get_cycle_count() - t0;
-        m->copies++;
-        m->copy_cycles += c;
-        if (c > m->copy_max) m->copy_max = c;
-    }
     return ESP_OK;
 }
 

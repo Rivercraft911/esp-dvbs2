@@ -190,8 +190,9 @@ struct rx_demod {
     uint32_t emitted;
 
     /* monitor tap (rx_demod_tap): armed by another task, filled and disarmed by the release */
-    int8_t *tap;
+    int16_t *tap, *tap_q;
     unsigned tap_max, tap_have, tap_done;
+    int16_t tap_gain;
 };
 
 /* ---------------------------------------------------------------- small integer helpers */
@@ -856,29 +857,38 @@ static void queue_run(rx_demod_t *d, unsigned n, unsigned nblock, int32_t inc, i
 }
 
 /* Release one run into frame f (core 0): in place in the ring, then out by codeword position. */
-/* The tap: corrected data symbols as the demapper gets them (still PL-scrambled, which turns the
- * constellation by quarter turns only), at a constellation radius of 64. A soft bit is
- * mul14(x, gain) = 32 d / d0 with d0 = a / sqrt(2) (QPSK) or a sin(pi/8) (8PSK, whose points sit
- * pi/8 below their place here and are turned back), so x 64 / a = mul14(x, gain) sqrt(2) or
- * mul14(x, gain) 2 sin(pi/8). */
-static void tap_run(rx_demod_t *d, int8_t *tap, const int16_t *yi, const int16_t *yq, uint32_t n,
+/* The tap: a copy of the corrected data symbols as the demapper gets them, and their run's gain
+ * (rx_demod_tap_scale scales them elsewhere). */
+static void tap_run(rx_demod_t *d, int16_t *tap, const int16_t *yi, const int16_t *yq, uint32_t n,
                     int16_t gain)
 {
-    const int16_t scale = d->psk8 ? 12540 : 23170;   /* 2 sin(pi/8), sqrt(2), Q14 */
-    uint32_t k = 0;
-    for (; k < n && d->tap_have < d->tap_max; ++k, ++d->tap_have) {
-        int16_t x = mul14(mul14(yi[k], gain), scale), y = mul14(mul14(yq[k], gain), scale);
-        if (d->psk8) {                                 /* + pi/8: cos 15137, sin 6270, Q14 */
+    const uint32_t k = n < d->tap_max - d->tap_have ? n : d->tap_max - d->tap_have;
+    if (!d->tap_have) d->tap_gain = gain;
+    memcpy(tap + d->tap_have, yi, 2 * k);
+    memcpy(d->tap_q + d->tap_have, yq, 2 * k);
+    d->tap_have += k;
+    if (d->tap_have == d->tap_max) {
+        d->tap = NULL;
+        __atomic_store_n(&d->tap_done, d->tap_have, __ATOMIC_RELEASE);
+    }
+}
+
+/* x 64 / a for the radius a: a soft bit is mul14(x, gain) = 32 d / d0 with d0 = a / sqrt(2)
+ * (QPSK) or a sin(pi/8) (8PSK, whose points sit pi/8 below their place here and are turned
+ * back), so x 64 / a = mul14(x, gain) sqrt(2) or mul14(x, gain) 2 sin(pi/8). */
+void rx_demod_tap_scale(const int16_t *i, const int16_t *q, unsigned n, int16_t gain, int psk8,
+                        int8_t *iq)
+{
+    const int16_t scale = psk8 ? 12540 : 23170;      /* 2 sin(pi/8), sqrt(2), Q14 */
+    for (unsigned k = 0; k < n; ++k) {
+        int16_t x = mul14(mul14(i[k], gain), scale), y = mul14(mul14(q[k], gain), scale);
+        if (psk8) {                                   /* + pi/8: cos 15137, sin 6270, Q14 */
             const int16_t u = sat16((int32_t)mul14(x, 15137) - mul14(y, 6270));
             y = sat16((int32_t)mul14(x, 6270) + mul14(y, 15137));
             x = u;
         }
-        tap[2 * d->tap_have] = clip8(x);
-        tap[2 * d->tap_have + 1] = clip8(y);
-    }
-    if (d->tap_have == d->tap_max) {
-        d->tap = NULL;
-        __atomic_store_n(&d->tap_done, d->tap_have, __ATOMIC_RELEASE);
+        iq[2 * k] = clip8(x);
+        iq[2 * k + 1] = clip8(y);
     }
 }
 
@@ -892,7 +902,7 @@ static void release_run(rx_demod_t *d, const run_t *r, rx_frame_t *f)
         n = n < HOLD - at ? n : HOLD - at;           /* runs start 8-aligned, HOLD is 8k */
         uint32_t d0 = r->d0 + done;
         demod_turn(d->yi + at, d->yq + at, (n + 7) / 8, r->phase + r->inc * done, 8 * r->inc, &k);
-        int8_t *tap = __atomic_load_n(&d->tap, __ATOMIC_ACQUIRE);
+        int16_t *tap = __atomic_load_n(&d->tap, __ATOMIC_ACQUIRE);
         if (tap) tap_run(d, tap, d->yi + at, d->yq + at, n, r->gain);
         demod_out_t o = {{0}, {0}, {0}};
         if (d->psk8) {
@@ -1634,29 +1644,45 @@ size_t rx_demod_size(void)
     return sizeof(rx_demod_t);
 }
 
-void rx_demod_tap(rx_demod_t *d, int8_t *iq, unsigned max)
+void rx_demod_tap(rx_demod_t *d, int16_t *i, int16_t *q, unsigned max)
 {
     d->tap_have = 0;
     d->tap_max = max;
+    d->tap_q = q;
     __atomic_store_n(&d->tap_done, 0, __ATOMIC_RELAXED);
-    __atomic_store_n(&d->tap, iq, __ATOMIC_RELEASE);
+    __atomic_store_n(&d->tap, i, __ATOMIC_RELEASE);
 }
 
-unsigned rx_demod_tapped(const rx_demod_t *d)
+unsigned rx_demod_tapped(const rx_demod_t *d, int16_t *gain)
 {
-    return __atomic_load_n(&d->tap_done, __ATOMIC_ACQUIRE);
+    const unsigned n = __atomic_load_n(&d->tap_done, __ATOMIC_ACQUIRE);
+    if (n && gain) *gain = d->tap_gain;
+    return n;
+}
+
+/* A push of up to 3,072 words rewrites ring positions of samples at least RING - 3,072 older than
+ * the newest, so the newest RX_SNAPSHOT_MAX stay put while it runs. */
+_Static_assert(RX_SNAPSHOT_MAX + 3072u <= RING, "snapshot window");
+
+/* A 64-bit counter core 1 writes, read whole from another core: until two reads agree. */
+static uint64_t stable(const volatile uint64_t *p)
+{
+    uint64_t a = *p, b;
+    while ((b = *p) != a) a = b;
+    return a;
 }
 
 int64_t rx_demod_snapshot(const rx_demod_t *d, int8_t *i, int8_t *q, size_t n)
 {
-    if (n > RING || d->written < d->valid + n) return -1;
-    const uint64_t first = d->written - n;
+    const uint64_t written = stable(&d->written), valid = stable(&d->valid);
+    if (n > RX_SNAPSHOT_MAX || written < valid + n) return -1;
+    const uint64_t first = written - n;
     const unsigned at = (unsigned)(first & (RING - 1)), k = RING - at < n ? RING - at : (unsigned)n;
     memcpy(i, d->ri + at, k);
     memcpy(q, d->rq + at, k);
     memcpy(i + k, d->ri, n - k);
     memcpy(q + k, d->rq, n - k);
-    return (int64_t)first;
+    return stable(&d->written) == written ? (int64_t)first : -1;
 }
 
 int rx_demod_init(rx_demod_t *d, const rx_config_t *config, void *ring)

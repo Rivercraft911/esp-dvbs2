@@ -32,17 +32,21 @@ static EXT_RAM_BSS_ATTR uint8_t slots[QUEUE * W5500_TS_PACKET] __attribute__((al
 /* Internal RAM for the SPI DMA; also `eth send` and `eth recv`'s buffers between runs. */
 static uint8_t pair[2 * W5500_TS_DATAGRAM] __attribute__((aligned(4)));
 
-/* The monitor stream: snapshots in PSRAM, one internal datagram buffer for the SPI DMA. */
+/* The monitor stream, all copied here on core 0: a sample snapshot from the demodulator's ring,
+ * the release's raw tap of corrected symbols (scaled here), one internal datagram buffer for the
+ * SPI DMA. */
 #define MON_SOCK 2
+#define MON_SAMPLES_N RX_SNAPSHOT_MAX               /* 1,024 samples: two datagrams */
+#define MON_SAMPLE_CHUNKS (MON_SAMPLES_N / MON_CHUNK)
+#define MON_TAP 320                                 /* symbols per tap */
 /* Rates per second (`mon`), 0 for off: sample snapshots, symbol taps, stats records. */
-static unsigned mon_hz[3] = {10, 10, 5};
+static unsigned mon_hz[3] = {5, 5, 5};
 #define MON_MER 50              /* the last frame's MER every 20 ms: the last second */
-/* Internal RAM: core 1 copies into these after a unit, and a PSRAM write through the cache there
- * cost the receiver frames (core 1 has a few percent of slack at 5 Msym/s). */
-static int8_t mon_si[MON_SNAPSHOT], mon_sq[MON_SNAPSHOT];
-static EXT_RAM_BSS_ATTR int8_t mon_sym[2 * MON_SYMBOLS_MAX];
+static int8_t mon_si[MON_SAMPLES_N], mon_sq[MON_SAMPLES_N];
+static int16_t tap_i[MON_TAP], tap_q[MON_TAP];    /* the release copies into these */
+static EXT_RAM_BSS_ATTR int8_t mon_sym[2 * MON_TAP];
 static uint8_t mon_buf[MON_HEADER + MON_STATS_MAX] __attribute__((aligned(4)));
-static rx_monitor_t monitor = {.si = mon_si, .sq = mon_sq};
+static rx_monitor_t monitor;
 
 static struct {
     bool on;
@@ -51,7 +55,8 @@ static struct {
     int64_t next_samples, next_symbols, next_stats, next_mer;
     uint16_t seq[4], snapshot;
     unsigned chunk;             /* the next of the snapshot's chunks to send */
-    bool tap_armed, stats_due;
+    bool want_samples, have_samples, tap_armed, stats_due;
+    uint32_t snapshots, refused;   /* snapshots taken, and refused for a push meanwhile */
     int16_t mer[MON_MER];
     unsigned mer_n, mer_at;
     uint32_t mer_frames;
@@ -190,20 +195,29 @@ static int mon_step(w5500 *w)
             if (ms.mer_n < MON_MER) ms.mer_n++;
         }
     }
+    rx_demod_t *dm = monitor.demod;
     if (mon_hz[0] && now >= ms.next_samples) {
         ms.next_samples = now + 1000000 / mon_hz[0];
-        if (monitor.have_samples && ms.chunk < MON_CHUNKS) s->mon_dropped += MON_CHUNKS - ms.chunk;
-        monitor.have_samples = false;   /* core 1 overwrites the planes only after this */
-        ms.chunk = 0;
-        ms.snapshot++;
-        monitor.want_samples = true;
+        if (ms.have_samples && ms.chunk < MON_SAMPLE_CHUNKS) s->mon_dropped += MON_SAMPLE_CHUNKS - ms.chunk;
+        ms.have_samples = false;
+        ms.want_samples = true;
+    }
+    if (ms.want_samples && dm) {    /* refused while a push completes: again on the next wake */
+        if (rx_demod_snapshot(dm, mon_si, mon_sq, MON_SAMPLES_N) >= 0) {
+            ms.want_samples = false;
+            ms.have_samples = true;
+            ms.chunk = 0;
+            ms.snapshot++;
+            ms.snapshots++;
+        } else {
+            ms.refused++;
+        }
     }
     if (mon_hz[1] && now >= ms.next_symbols) {
         ms.next_symbols = now + 1000000 / mon_hz[1];
-        rx_demod_t *d = monitor.demod;
-        if (d && ms.tap_armed && rx_demod_tapped(d)) s->mon_dropped++;   /* filled, unsent */
-        if (d && (!ms.tap_armed || rx_demod_tapped(d))) {   /* never while the release fills */
-            rx_demod_tap(d, mon_sym, MON_SYMBOLS_MAX);
+        if (dm && ms.tap_armed && rx_demod_tapped(dm, NULL)) s->mon_dropped++;   /* filled, unsent */
+        if (dm && (!ms.tap_armed || rx_demod_tapped(dm, NULL))) {   /* never while the release fills */
+            rx_demod_tap(dm, tap_i, tap_q, MON_TAP);
             ms.tap_armed = true;
         }
     }
@@ -227,12 +241,15 @@ static int mon_step(w5500 *w)
         mon_stats_now(&st);
         n = mon_stats(mon_buf, ms.seq[MON_STATS]++, t_us, &st);
         ms.stats_due = false;
-    } else if (monitor.have_samples && ms.chunk < MON_CHUNKS) {
+    } else if (ms.have_samples && ms.chunk < MON_SAMPLE_CHUNKS) {
         n = mon_samples_planes(mon_buf, ms.seq[MON_SAMPLES]++, t_us, ms.snapshot, ms.chunk++,
-                               mon_si, mon_sq);
-    } else if (d && ms.tap_armed && rx_demod_tapped(d)) {
-        n = mon_symbols(mon_buf, ms.seq[MON_SYMBOLS]++, t_us, MON_SYMBOLS_MAX,
-                        ms.run.modcod >= 12 ? 3 : 2, mon_sym);
+                               MON_SAMPLE_CHUNKS, mon_si, mon_sq);
+    } else if (d && ms.tap_armed && rx_demod_tapped(d, NULL)) {
+        int16_t gain = 0;
+        rx_demod_tapped(d, &gain);
+        rx_demod_tap_scale(tap_i, tap_q, MON_TAP, gain, ms.run.modcod >= 12, mon_sym);
+        n = mon_symbols(mon_buf, ms.seq[MON_SYMBOLS]++, t_us, MON_TAP, ms.run.modcod >= 12 ? 3 : 2,
+                        mon_sym);
         ms.tap_armed = false;
     }
     if (!n) return 0;
@@ -387,9 +404,8 @@ static void sender(void *arg)
         }
         w5500_eth_stop();
         s->stack_free = uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t);
-        s->mon_copies = monitor.copies;
-        s->mon_copy_cycles = monitor.copy_cycles;
-        s->mon_copy_max = monitor.copy_max;
+        s->mon_copies = ms.snapshots;
+        s->mon_copy_max = ms.refused;
         ms.on = false;
         e.running = false;
         xSemaphoreGive(e.done);
@@ -422,8 +438,8 @@ const ts_egress_t *eth_egress_begin(eth_egress_stats_t *s, const eth_run_t *run,
     memset(s, 0, sizeof *s);
     const int64_t now = esp_timer_get_time();
     ms = (typeof(ms)){.run = *run, .runs = ms.runs + 1, .next_samples = now, .next_symbols = now,
-                      .next_stats = now, .next_mer = now, .chunk = MON_CHUNKS};
-    monitor = (rx_monitor_t){.si = mon_si, .sq = mon_sq};
+                      .next_stats = now, .next_mer = now, .chunk = MON_SAMPLE_CHUNKS};
+    monitor = (rx_monitor_t){0};
     s->phy = -1;
     s->queue = QUEUE;
     w5500_ts_queue_init(&e.q, slots, QUEUE);
@@ -478,13 +494,12 @@ void eth_egress_print(const eth_egress_stats_t *s)
            (unsigned long)s->max_send_cycles, (unsigned long long)s->send_cycles,
            (unsigned long)s->stack_free, (unsigned long)s->underflows);
     if (s->mon) {
-        const uint32_t sent = s->mon_sent ? s->mon_sent : 1, copies = s->mon_copies ? s->mon_copies : 1;
-        printf(",\"mon\":{\"sent\":%lu,\"dropped\":%lu,\"copies\":%lu,\"copy_cycles\":%llu,"
-               "\"copy_max\":%lu,\"cycles_per_datagram\":%llu,\"max_cycles\":%lu}",
+        const uint32_t sent = s->mon_sent ? s->mon_sent : 1;
+        printf(",\"mon\":{\"sent\":%lu,\"dropped\":%lu,\"snapshots\":%lu,\"refused\":%lu,"
+               "\"wall_cycles_per_datagram\":%llu,\"max_wall_cycles\":%lu}",
                (unsigned long)s->mon_sent, (unsigned long)s->mon_dropped,
-               (unsigned long)s->mon_copies, (unsigned long long)(s->mon_copy_cycles / copies),
-               (unsigned long)s->mon_copy_max, (unsigned long long)(s->mon_cycles / sent),
-               (unsigned long)s->mon_max_cycles);
+               (unsigned long)s->mon_copies, (unsigned long)s->mon_copy_max,
+               (unsigned long long)(s->mon_cycles / sent), (unsigned long)s->mon_max_cycles);
     }
     if (s->stuck)
         printf(",\"stuck\":{\"sn_cr\":%u,\"sn_ir\":%u,\"sn_sr\":%u,\"sn_tx_fsr\":%u,"

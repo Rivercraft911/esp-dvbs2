@@ -73,24 +73,24 @@ size_t mon_stats(uint8_t *out, uint16_t seq, uint32_t t_us, const mon_stats_t *s
 }
 
 size_t mon_samples(uint8_t *out, uint16_t seq, uint32_t t_us, uint16_t snapshot, unsigned chunk,
-                   const int8_t *iq)
+                   unsigned chunks, const int8_t *iq)
 {
     uint8_t *p = out + mon_header(out, MON_SAMPLES, seq, t_us);
     put16(p, snapshot);
     p[2] = (uint8_t)chunk;
-    p[3] = MON_CHUNKS;
+    p[3] = (uint8_t)chunks;
     put32(p + 4, 16000000u);
     memcpy(p + 8, iq, 2u * MON_CHUNK);
     return MON_SAMPLES_BYTES;
 }
 
 size_t mon_samples_planes(uint8_t *out, uint16_t seq, uint32_t t_us, uint16_t snapshot,
-                          unsigned chunk, const int8_t *i, const int8_t *q)
+                          unsigned chunk, unsigned chunks, const int8_t *i, const int8_t *q)
 {
     uint8_t *p = out + mon_header(out, MON_SAMPLES, seq, t_us);
     put16(p, snapshot);
     p[2] = (uint8_t)chunk;
-    p[3] = MON_CHUNKS;
+    p[3] = (uint8_t)chunks;
     put32(p + 4, 16000000u);
     int8_t *iq = (int8_t *)(p + 8);
     i += chunk * MON_CHUNK;

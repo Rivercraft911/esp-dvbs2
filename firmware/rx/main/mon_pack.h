@@ -8,8 +8,8 @@
  * Portable, so tests/test_mon_pack.py checks the bytes. Little endian, each datagram:
  *   header, 12 bytes: "PVMN", u8 version 1, u8 type, u16 sequence (per type), u32 time (us)
  *   type 1 STATS:   UTF-8 JSON, at most MON_STATS_MAX bytes; unknown values are left out
- *   type 2 SAMPLES: u16 snapshot, u8 chunk 0..3, u8 4, u32 sample rate, then 512 complex int8
- *                   samples (I, Q): one quarter of 2,048 consecutive dump samples
+ *   type 2 SAMPLES: u16 snapshot, u8 chunk, u8 chunks, u32 sample rate, then 512 complex int8
+ *                   samples (I, Q): one chunk of 512 x chunks consecutive dump samples
  *   type 3 SYMBOLS: u16 count, u8 bits per symbol (2 or 3), u8 0, then count int8 I, Q pairs,
  *                   corrected symbols at a nominal constellation radius of 64 */
 
@@ -18,9 +18,7 @@
 #define MON_SAMPLES 2u
 #define MON_SYMBOLS 3u
 #define MON_STATS_MAX 1400u
-#define MON_SNAPSHOT 2048u           /* samples per snapshot */
-#define MON_CHUNKS 4u
-#define MON_CHUNK (MON_SNAPSHOT / MON_CHUNKS)
+#define MON_CHUNK 512u              /* complex samples per samples datagram */
 #define MON_SAMPLES_BYTES (MON_HEADER + 8u + 2u * MON_CHUNK)    /* 1,044 */
 #define MON_SYMBOLS_MAX 640u
 #define MON_SYMBOLS_BYTES(n) (MON_HEADER + 4u + 2u * (n))
@@ -49,10 +47,10 @@ typedef struct {
 size_t mon_header(uint8_t *out, unsigned type, uint16_t seq, uint32_t t_us);
 size_t mon_stats(uint8_t *out, uint16_t seq, uint32_t t_us, const mon_stats_t *s);
 size_t mon_samples(uint8_t *out, uint16_t seq, uint32_t t_us, uint16_t snapshot, unsigned chunk,
-                   const int8_t *iq);
-/* The same from I and Q planes of the whole snapshot (MON_SNAPSHOT each), interleaved here. */
+                   unsigned chunks, const int8_t *iq);
+/* The same from I and Q planes of the whole snapshot (512 x chunks each), interleaved here. */
 size_t mon_samples_planes(uint8_t *out, uint16_t seq, uint32_t t_us, uint16_t snapshot,
-                          unsigned chunk, const int8_t *i, const int8_t *q);
+                          unsigned chunk, unsigned chunks, const int8_t *i, const int8_t *q);
 size_t mon_symbols(uint8_t *out, uint16_t seq, uint32_t t_us, unsigned count, unsigned bits,
                    const int8_t *iq);
 /* Dump words (I in bits 19:10, Q in 9:0, signed 10-bit) to int8 I, Q: floor(s10 / 4). */

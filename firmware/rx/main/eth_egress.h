@@ -39,10 +39,12 @@ typedef struct {
     uint32_t underflows;            /* payload writes the SPI DMA underran, written again */
     uint32_t recoveries;            /* ... ten times in a row: GP-SPI2 and the GDMA reset */
     /* The monitor stream (mon_pack.h) on socket 2: datagrams sent and dropped (not sent within
-     * their period, TS first), core 1's sample copies and the sender's cost per datagram. */
+     * their period, TS first), sample snapshots, and the wall time per datagram (its sends
+     * sleep while the payload's DMA runs). */
     bool mon;
-    uint32_t mon_sent, mon_dropped, mon_copies, mon_copy_max, mon_max_cycles;
-    uint64_t mon_copy_cycles, mon_cycles;
+    uint32_t mon_sent, mon_dropped, mon_max_cycles;
+    uint32_t mon_copies, mon_copy_max;      /* sample snapshots taken, and refused */
+    uint64_t mon_cycles;
     int64_t backlog_us;             /* time with two datagrams' worth or more waiting */
     uint32_t backlog_datagrams;     /* sent meanwhile: their rate is the sender's drain rate */
     /* When the run ended badly: the chip's socket registers and the driver's view of them. */
@@ -69,7 +71,7 @@ const ts_egress_t *eth_egress_begin(eth_egress_stats_t *stats, const eth_run_t *
 /* After the run, once the checker has stopped: send what is left, close the socket, count. */
 void eth_egress_end(eth_egress_stats_t *stats);
 /* The monitor stream's rates per second, 0 to 10 each (0: off): sample snapshots, symbol taps
- * and stats records. Default 10, 10, 5. */
+ * and stats records. Default 5, 5, 5. */
 void eth_egress_monitor_rates(unsigned samples, unsigned symbols, unsigned stats);
 /* The summary's "eth" member, after a comma. */
 void eth_egress_print(const eth_egress_stats_t *stats);
