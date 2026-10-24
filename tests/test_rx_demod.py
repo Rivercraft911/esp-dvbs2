@@ -70,6 +70,52 @@ def fast(so):
         assert all(f["weak"].mean() < 0.001 for f, _ in pairs)
         assert all(f["modcod"] == modcod and f["type"] == 3 for f, _ in pairs)
 
+    # The monitor tap: 640 corrected symbols at radius 64 on the constellation (8PSK turned back
+    # by pi/8; PL scrambling keeps QPSK and 8PSK points on their grids), outputs unchanged.
+    so.rx_demod_tap.argtypes = [R.ct.c_void_p, R.ct.c_void_p, R.ct.c_uint]
+    so.rx_demod_tapped.restype = R.ct.c_uint
+    so.rx_demod_tapped.argtypes = [R.ct.c_void_p]
+    for modcod, points, offset in ((16, 8, 0.0), (7, 4, np.pi / 4)):
+        words, _ = T.twin(T.Link(rate=5e6, modcod=modcod, frames=6, mer_db=24, seed=modcod))
+        runs = []
+        for tap in (False, True):
+            d = R.Demod(so, modcod, rate=5e6, cfo_hint=-16600, cfo_span=40000)
+            buf = (R.ct.c_int8 * 1280)()
+            if tap:
+                so.rx_demod_tap(R.ct.c_void_p(d.ptr), buf, 640)
+            for k in range(0, len(words), R.UNIT):
+                d.feed(words[k:k + R.UNIT])
+            runs.append((d, np.array(buf, dtype=np.int8)))
+        (plain, _), (tapped, buf) = runs
+        assert so.rx_demod_tapped(R.ct.c_void_p(tapped.ptr)) == 640
+        assert len(plain.frames) == len(tapped.frames) > 0
+        assert all(np.array_equal(a["llr"], b["llr"]) for a, b in zip(plain.frames, tapped.frames))
+        z = buf[0::2].astype(float) + 1j * buf[1::2].astype(float)
+        step = 2 * np.pi / points
+        miss = (np.angle(z) - offset + step / 2) % step - step / 2
+        assert abs(np.median(np.abs(z)) - 64) < 4 and np.percentile(np.abs(miss), 95) < 0.15, \
+            (modcod, np.median(np.abs(z)), np.percentile(np.abs(miss), 95))
+
+    # The monitor's sample snapshot: the newest 2,048 samples, as rx_unpack makes them (floor(s10
+    # / 4)), wrapping the ring, after any push.
+    so.rx_demod_snapshot.restype = R.ct.c_int64
+    so.rx_demod_snapshot.argtypes = [R.ct.c_void_p, R.ct.c_void_p, R.ct.c_void_p, R.ct.c_size_t]
+    d = R.Demod(so, 16, rate=5e6, cfo_hint=-16600, cfo_span=40000)
+    si, sq = (R.ct.c_int8 * 2048)(), (R.ct.c_int8 * 2048)()
+    assert so.rx_demod_snapshot(R.ct.c_void_p(d.ptr), si, sq, 2048) == -1
+    fed = 0
+    for n in (1000, 3001, 5000, 777):
+        d.feed(words[fed:fed + n])
+        fed += n
+        first = so.rx_demod_snapshot(R.ct.c_void_p(d.ptr), si, sq, 2048)
+        if fed < 2048:
+            assert first == -1
+            continue
+        w = words[first:first + 2048].astype(np.uint32)
+        i10 = ((w << 12).astype(np.int32) >> 22) >> 2
+        q10 = ((w << 22).astype(np.int32) >> 22) >> 2
+        assert first == fed - 2048 and np.array_equal(np.array(si), i10) and np.array_equal(np.array(sq), q10)
+
     # Implementation loss against the float reference receiver at 18 dB, 8PSK 8/9 (the raw
     # hard bits then have errors for the LDPC code to correct).
     link = T.Link(rate=5e6, modcod=16, frames=8, seed=6)

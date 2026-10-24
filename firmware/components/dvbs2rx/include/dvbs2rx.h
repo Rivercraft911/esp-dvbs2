@@ -88,6 +88,17 @@ size_t rx_demod_push(rx_demod_t *d, const uint32_t *words, uint64_t first, size_
  * ones. Returns 0 when the queue is empty. */
 int rx_demod_release(rx_demod_t *d, rx_frame_t *frame);
 void rx_demod_stats(const rx_demod_t *d, rx_demod_stats_t *stats);
+/* Monitor tap, from any task: the next max data symbols the release turns (carrier and timing
+ * corrected, the demapper's input; PL scrambling still on, which keeps them on the constellation
+ * up to quarter turns) go to iq as int8 I, Q pairs at a constellation radius of 64. It costs the
+ * release a copy of max symbols; nothing else changes. rx_demod_tapped returns max once iq is
+ * full, else 0; arm again after that. */
+void rx_demod_tap(rx_demod_t *d, int8_t *iq, unsigned max);
+unsigned rx_demod_tapped(const rx_demod_t *d);
+/* Core 1, between pushes: the newest n dump samples (n <= 4,096), int8 floor(s10 / 4) as I and
+ * Q planes, from the demodulator's own sample ring (no unpacking). Returns the dump index of
+ * the first, or -1 if fewer than n have been pushed. */
+int64_t rx_demod_snapshot(const rx_demod_t *d, int8_t *i, int8_t *q, size_t n);
 
 /* FEC: re-encode check first (clean frames end here), then layered min-sum.
  * rx_fec_size bytes in internal RAM hold everything the clean path touches; the
