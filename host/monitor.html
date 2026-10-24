@@ -547,7 +547,7 @@ function render() {
 
   // Telemetry
   const errs = (() => {
-    const parts = [rx && [rx.failed, rx.crc8, rx.cc, rx.eth_dropped], tx && [tx.input_rejected, tx.input_lost, tx.input_overruns, tx.late_fills],
+    const parts = [rx && [rx.failed, rx.crc8, rx.cc, rx.eth_dropped, rx.frames_dropped], tx && [tx.input_rejected, tx.input_lost, tx.input_overruns, tx.late_fills],
       cm5 && [cm5.ready_timeouts, cm5.dropped], view && [view.corrupt, view.gaps]].filter(Boolean).flat();
     return parts.length ? parts.reduce((a, b) => a + (b || 0), 0) : undefined;
   })();
@@ -578,10 +578,11 @@ function render() {
     ['Core 0, encoder', segments(busy(tx && tx.encoder_spare_pct))],
     ['Core 1, bank fill', segments(busy(tx && tx.fill_spare_pct))],
   ]);
-  on($('gRx'), locked, rx && (rx.failed || rx.crc8 || rx.cc));
+  on($('gRx'), locked, rx && (rx.failed || rx.crc8 || rx.cc || rx.frames_dropped));
   fill('rxRows', [
     ['Gain', rx && typeof rx.gain === 'number' ? `${rx.gain} dB` : DASH],
     ['Failed / LDPC', rx ? pair(rx.failed, rx.ldpc) : undefined],
+    ['Dropped runs / frames', rx && (rx.runs_dropped !== undefined || rx.frames_dropped !== undefined) ? pair(rx.runs_dropped, rx.frames_dropped) : DASH],
     ['TS packets', rx && rx.packets],
     ['CRC-8 / continuity', rx ? pair(rx.crc8, rx.cc) : undefined],
     ['Carrier offset', rx && typeof rx.cfo_hz === 'number' ? `${(rx.cfo_hz / 1000).toFixed(2)} kHz` : DASH],
