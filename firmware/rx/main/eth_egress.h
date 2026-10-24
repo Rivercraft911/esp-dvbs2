@@ -8,16 +8,16 @@
  * of seven TS packets to the eth settings' destination (sdkconfig.defaults: the laptop,
  * 192.168.77.1:1234).
  *
- * The checker task copies each packet into a queue of 4,096 in PSRAM (0.74 s at 8.3 Mb/s, for
+ * The checker task copies each packet into a queue of 4,096 in PSRAM (0.68 s at 8.8 Mb/s, for
  * the bursts of a camera mux) and never waits: a packet that finds it full is dropped and
- * counted. A sender task on core 0 drains it at priority 13,
- * above the release (12) and the checker (11): at 10 Mb/s the chip needs its next SEND within
- * microseconds of the last one ending, and below them, which keep core 0 about 70% busy at
- * 8PSK 5 Msym/s, the sender ran late and the egress topped out near 6.9 Mb/s. Each wake is short
- * (a status read, a SEND, a 1,316-byte copy; posted writes sleep). It wakes after each frame (ts_egress_t.flush), and when the datagram on the wire
- * should be out (an esp_timer: the chip starts its next SEND only when called), sends every full
- * datagram, and sends what is left as a shorter datagram once it has waited 10 ms, or at the
- * end. Everything is static or made at boot: no heap after boot. */
+ * counted. A sender task on core 0 drains it at priority 13: above the checker (11), which keeps
+ * core 0 busy for long stretches at 8PSK 5 Msym/s (below it the egress topped out near 6.9 Mb/s),
+ * and below the release (14), whose ring core 1 fills (above it, a saturated egress cost the
+ * demodulator 356 to 484 runs in 20 s). It sends on sockets 0 and 1 in turn (w5500_ts.h), so the
+ * chip holds the next datagram while one is on the wire. It wakes after each frame
+ * (ts_egress_t.flush) and, by an esp_timer, when the socket it waits for should be free; sends
+ * every full datagram, and sends what is left as a shorter datagram once it has waited 10 ms, or
+ * at the end. Everything is static or made at boot: no heap after boot. */
 
 typedef struct {
     int status;                     /* w5500.h result of the start, or the error that stopped it */

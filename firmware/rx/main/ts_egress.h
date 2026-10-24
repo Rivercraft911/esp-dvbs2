@@ -12,7 +12,7 @@
  * flush: optional, after the last packet of each frame (every 1.1 to 1.7 ms at 5 Msym/s, 5.6 to
  *   8.4 ms at 1 Msym/s), so a datagram sender can send a partial datagram rather than hold it.
  *
- * Both run in the checker task on core 0 (priority 11; the release task, priority 12, preempts
+ * Both run in the checker task on core 0 (priority 11; the release task, priority 14, preempts
  * it), after the frame's record has gone to USB, and nowhere else. Budget, estimated from the
  * runs without an egress (results/2026-10-23-ts-link): at 8PSK 8/9, 5 Msym/s (12.64 Mb/s,
  * 8,400 packets/s) core 0 is about half idle, which leaves about 40 us per packet (9,600
