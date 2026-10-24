@@ -55,6 +55,11 @@ jobs:
           python tests/test_udp_ts.py
           python tests/test_mon_pack.py
 
+      - name: Live monitor (dashboard and the transmitter's status lines)
+        run: |
+          python tests/test_monitor.py
+          python tests/test_board_monitor.py
+
       - name: USB payload input (no hardware)
         run: |
           python tests/test_usb_input.py

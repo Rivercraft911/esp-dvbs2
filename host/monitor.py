@@ -2,7 +2,7 @@
 """Live window on the whole link: cameras, CM5, transmitting S3, radio, receiving S3, viewer.
 
     python3 host/monitor.py              # listen on UDP 1235, poll pv view on 127.0.0.1:8768
-    python3 host/monitor.py --cm5 pigeon@pigeonvision.local:esp-dvbs2-ota/live-20261023/
+    python3 host/monitor.py --cm5 USER@HOST:SESSIONS/   # newest */status.json under SESSIONS
     python3 host/monitor.py --demo       # every source synthetic, no hardware
 
 Then open http://127.0.0.1:8770/. Four sources feed it:
