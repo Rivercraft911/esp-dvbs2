@@ -359,6 +359,8 @@ void app_main(void)
             printf("]}\n");
         } else if (fields >= 1 && !strcmp(cmd, "eth")) {
             w5500_eth_command(line + 3);
+        } else if (fields == 4 && !strcmp(cmd, "mon")) {
+            eth_egress_monitor_rates(mhz, gain, seconds);   /* mon SAMPLES SYMBOLS STATS, per second */
         } else if (fields == 4 && !strcmp(cmd, "dump")) {
             dump(mhz, gain, seconds);
         } else if (fields >= 3 && !strcmp(cmd, "membench")) {
@@ -372,7 +374,7 @@ void app_main(void)
             print_capture(&s);
             printf("}\n");
         } else {
-            printf("@{\"error\":\"use info, rxprobe MHz gain seconds, rx MHz gain seconds MODCOD [5m] [ts [pattern] [nonull] [eth]], dump MHz gain pairs, upload bytes, replay MODCOD [skip] [5m] [ts [pattern] [nonull] [eth]], membench MHz gain, eth [...]\"}\n");
+            printf("@{\"error\":\"use info, rxprobe MHz gain seconds, rx MHz gain seconds MODCOD [5m] [ts [pattern] [nonull] [eth]], dump MHz gain pairs, upload bytes, replay MODCOD [skip] [5m] [ts [pattern] [nonull] [eth]], membench MHz gain, eth [...], mon SAMPLES SYMBOLS STATS\"}\n");
         }
         printf("@{\"done\":true}\n");
     }

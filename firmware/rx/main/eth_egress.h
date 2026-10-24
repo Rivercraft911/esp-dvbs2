@@ -68,5 +68,8 @@ const ts_egress_t *eth_egress_begin(eth_egress_stats_t *stats, const eth_run_t *
                                     rx_monitor_t **mon);
 /* After the run, once the checker has stopped: send what is left, close the socket, count. */
 void eth_egress_end(eth_egress_stats_t *stats);
+/* The monitor stream's rates per second, 0 to 10 each (0: off): sample snapshots, symbol taps
+ * and stats records. Default 10, 10, 5. */
+void eth_egress_monitor_rates(unsigned samples, unsigned symbols, unsigned stats);
 /* The summary's "eth" member, after a comma. */
 void eth_egress_print(const eth_egress_stats_t *stats);

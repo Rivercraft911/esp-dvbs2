@@ -34,8 +34,8 @@ static uint8_t pair[2 * W5500_TS_DATAGRAM] __attribute__((aligned(4)));
 
 /* The monitor stream: snapshots in PSRAM, one internal datagram buffer for the SPI DMA. */
 #define MON_SOCK 2
-#define MON_SAMPLE_US 100000    /* a sample snapshot and a symbol tap ten times a second */
-#define MON_STATS_US 200000     /* stats five times a second */
+/* Rates per second (`mon`), 0 for off: sample snapshots, symbol taps, stats records. */
+static unsigned mon_hz[3] = {10, 10, 5};
 #define MON_MER 50              /* the last frame's MER every 20 ms: the last second */
 /* Internal RAM: core 1 copies into these after a unit, and a PSRAM write through the cache there
  * cost the receiver frames (core 1 has a few percent of slack at 5 Msym/s). */
@@ -190,13 +190,16 @@ static int mon_step(w5500 *w)
             if (ms.mer_n < MON_MER) ms.mer_n++;
         }
     }
-    if (now >= ms.next_samples) {
-        ms.next_samples = now + MON_SAMPLE_US;
+    if (mon_hz[0] && now >= ms.next_samples) {
+        ms.next_samples = now + 1000000 / mon_hz[0];
         if (monitor.have_samples && ms.chunk < MON_CHUNKS) s->mon_dropped += MON_CHUNKS - ms.chunk;
         monitor.have_samples = false;   /* core 1 overwrites the planes only after this */
         ms.chunk = 0;
         ms.snapshot++;
         monitor.want_samples = true;
+    }
+    if (mon_hz[1] && now >= ms.next_symbols) {
+        ms.next_symbols = now + 1000000 / mon_hz[1];
         rx_demod_t *d = monitor.demod;
         if (d && ms.tap_armed && rx_demod_tapped(d)) s->mon_dropped++;   /* filled, unsent */
         if (d && (!ms.tap_armed || rx_demod_tapped(d))) {   /* never while the release fills */
@@ -204,8 +207,8 @@ static int mon_step(w5500 *w)
             ms.tap_armed = true;
         }
     }
-    if (now >= ms.next_stats) {
-        ms.next_stats = now + MON_STATS_US;
+    if (mon_hz[2] && now >= ms.next_stats) {
+        ms.next_stats = now + 1000000 / mon_hz[2];
         if (ms.stats_due) s->mon_dropped++;
         ms.stats_due = true;
     }
@@ -391,6 +394,15 @@ static void sender(void *arg)
         e.running = false;
         xSemaphoreGive(e.done);
     }
+}
+
+void eth_egress_monitor_rates(unsigned samples, unsigned symbols, unsigned stats)
+{
+    mon_hz[0] = samples > 10 ? 10 : samples;
+    mon_hz[1] = symbols > 10 ? 10 : symbols;
+    mon_hz[2] = stats > 10 ? 10 : stats;
+    printf("@{\"cmd\":\"mon\",\"samples_hz\":%u,\"symbols_hz\":%u,\"stats_hz\":%u}\n",
+           mon_hz[0], mon_hz[1], mon_hz[2]);
 }
 
 void eth_egress_init(void)
