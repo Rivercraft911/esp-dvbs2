@@ -21,9 +21,7 @@ carry the live 9 Mb/s mux.
 
 ## ESP32-S3 to ESP32-S3
 
-![The bench: the transmitting S3 beside the 360 camera, coax and a 30 dB attenuator to the
-receiving S3 and its W5500, the link dashboard on both monitors and the received video on the
-laptop](bench.jpg)
+<p align="center"><img src="bench.jpg" alt="The bench: the transmitting S3 beside the 360 camera, coax and a 30 dB attenuator to the receiving S3 and its W5500, the link dashboard on both monitors and the received video on the laptop" width="480"></p>
 
 A second S3 can take the B200's place. On 2026-10-23 the CM5 sent the two-camera mux over SPI
 to the transmitting XIAO, which sent 8PSK 3/4 short frames at 5 Msym/s (10.39 Mb/s) at

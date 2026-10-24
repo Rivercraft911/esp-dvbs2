@@ -17,81 +17,12 @@ channel its Wi-Fi radio was ever built for, and a second one receives **12.64 Mb
 decodes every byte of it. Read [How it got here](docs/story.md) to learn about the tumultuous
 journey.
 
-![40 MHz QPSK spectrum and spectrogram transmitted by an ESP32-S3, captured by a B200](docs/img/rf-40mhz.png)
+<p align="center"><img src="docs/img/rf-40mhz.png" alt="40 MHz QPSK spectrum and spectrogram transmitted by an ESP32-S3, captured by a B200" width="600"></p>
 
 QPSK 9/10 at 33.33 Msym/s from one ESP32-S3, captured by a B200 at 2420 MHz through coax and
 attenuation: 41.94 ms, 40 exact frames from a prepared payload
 ([capture details](results/2026-10-21-rf-figures/README.md)). The same mode has since been keyed
 with a payload that never repeats ([keyed table](results/2026-10-23-tx-table/README.md)).
-
-## Live video, one S3 to another
-
-<!-- The clip: on GitHub, edit this file and drag esp-dvbs2-live-link.mp4 onto the next line. -->
-
-
-Remember the goal this all started with? Here it is, with no PC anywhere in the radio path. A
-CM5 encodes two fisheye cameras into an 8 Mb/s MPEG transport stream and clocks it over SPI
-into one S3, which sends it as 8PSK 3/4 at 5 Msym/s on 2420 MHz. Coax and 30 dB of attenuation
-carry it to a second S3, which demodulates and decodes it on the chip and pushes the packets out of
-a W5500 Ethernet module to a laptop, where PigeonVision stitches the two cameras into one 360°
-view. A dashboard, `host/monitor.py`, watches every stage at once, from the cameras to the viewer.
-
-For the live demo it ran 16 back-to-back 540 s runs, 2.4 hours on air: 5,725,408 frames decoded
-with none failed, median pilot MER about 25.5 dB, no relocks, 6.1 million datagrams out of the
-W5500 with none dropped, and both cameras at 30.0 frames/s
-([live demo](results/2026-10-23-live-demo/README.md)). Not quite perfect... the receiver dropped
-11 frames when its release task fell behind, about one every 13 minutes, and some datagrams go
-missing between the W5500 and the laptop. Each loss breaks the picture until the next keyframe.
-
-![The bench, labeled: the transmitting S3 by the cameras, the coax and attenuator, the receiving S3 and its W5500](examples/live-video/bench.jpg)
-
-The bench: the dashboard on both monitors, the stitched view on the laptop. The W5500 runs at
-10 Mb/s, which carries up to 9.46 Mb/s of transport stream; at 100 Mb/s it kept losing its link on
-the XIAO's 3.3 V supply ([bring-up](results/2026-10-23-eth-bringup/README.md),
-[full quality](results/2026-10-23-eth-full-quality/README.md)).
-[How to run it](examples/live-video/README.md#esp32-s3-to-esp32-s3).
-
-## Receiving on an S3
-
-The second S3 captures 16 MS/s through its own radio, matched-filters it, finds and follows the
-frames, and checks every one by encoding it again. LDPC decoding (low-density parity check, the
-heavy error correction in DVB-S2) only runs when a frame fails that check. On a clean coax link
-it never had to. Every short-frame mode the transmitter sends decodes live:
-
-| Modes | Symbol rate | Payload | Frames, all exact | Pilot MER, median | Core 1 / core 0 |
-|---|---:|---:|---:|---:|---:|
-| QPSK 1/2 to 8/9 | 1 Msym/s | 0.83 to 1.69 Mb/s | 19,705 | 30.2 to 30.3 dB | 43% / 7 to 8% |
-| QPSK 1/2 to 8/9 | 5 Msym/s | 4.15 to 8.45 Mb/s | 98,213 | 29.7 to 29.8 dB | 61% / 39 to 43% |
-| 8PSK 3/5 to 8/9 | 5 Msym/s | 8.46 to 12.64 Mb/s | 105,235 | 29.6 to 29.8 dB | 63% / 60 to 63% |
-
-Nineteen live 30 s runs, 223,153 frames, none lost, none failed, no relocks
-([sweep](results/2026-10-23-rx-sweep/README.md)). Full-length 540 s runs held up too: 997,605 frames
-and 4.4 million TS packets exact, with the median MER steady within 0.1 dB from the first minute to
-the last ([long runs](results/2026-10-23-rx-long/README.md)). MER (modulation error ratio) is how far the
-received points sit from where they should be: 30 dB is a clean link. The core columns are the
-demodulator's mean share of core 1, and the release and check tasks' share of core 0.
-
-![What the receiving S3 sees at 12.64 Mb/s: spectrum, spectrogram and constellation](docs/img/rx-5m.png)
-
-That is the receiver's own 16 MS/s capture of 8PSK 8/9 at 5 Msym/s, and the constellation its
-demodulator produced from it: 164 of 164 frames exact
-([figures](results/2026-10-23-rx-figures/README.md)). The receiver never starts Wi-Fi: it
-calibrates the PHY directly, and after boot it never touches the heap
-([no Wi-Fi](results/2026-10-23-rx-no-wifi-ab/README.md)). It also speaks MPEG transport stream:
-1,738,344 TS packets crossed the S3 link with every one exact, and the receiver rode through
-95,810 filler frames from a transmitter starved of input without losing lock
-([TS link](results/2026-10-23-ts-link/README.md)).
-
-```sh
-(. ~/.espressif/tools/activate_idf_v6.1.sh && cd firmware/rx && idf.py build flash)
-python3 host/rx.py 16 --rate 5m --mhz 2420 --gain 32 --seconds 45 --port RX_PORT --callsign YOURCALL
-python3 host/board.py "dvb 2420 16 5m 55 0 128 --short" --port TX_PORT --timeout 90   # keys the transmitter
-```
-
-`YOURCALL` must match the callsign stored on the transmitter: the receiver's check rebuilds the
-transmitter's payload, station header included.
-
-![Receiver load per core in the live runs](docs/img/rx-load.png)
 
 ## What it transmits
 
@@ -128,7 +59,76 @@ The encoder also keeps up with payload arriving through the real SPI input code:
 spare ([fill confirmation](results/2026-10-23-tx-fill-keyed/README.md)). That is a capacity test; the fastest live
 input so far is a CM5's 9 Mb/s camera mux.
 
-![36 MHz 8PSK spectrum and spectrogram transmitted by an ESP32-S3](docs/img/rf-36mhz.png)
+<p align="center"><img src="docs/img/rf-36mhz.png" alt="36 MHz 8PSK spectrum and spectrogram transmitted by an ESP32-S3" width="600"></p>
+
+## Receiving on an S3
+
+The second S3 captures 16 MS/s through its own radio, matched-filters it, finds and follows the
+frames, and checks every one by encoding it again. LDPC decoding (low-density parity check, the
+heavy error correction in DVB-S2) only runs when a frame fails that check. On a clean coax link
+it never had to. Every short-frame mode the transmitter sends decodes live:
+
+| Modes | Symbol rate | Payload | Frames, all exact | Pilot MER, median | Core 1 / core 0 |
+|---|---:|---:|---:|---:|---:|
+| QPSK 1/2 to 8/9 | 1 Msym/s | 0.83 to 1.69 Mb/s | 19,705 | 30.2 to 30.3 dB | 43% / 7 to 8% |
+| QPSK 1/2 to 8/9 | 5 Msym/s | 4.15 to 8.45 Mb/s | 98,213 | 29.7 to 29.8 dB | 61% / 39 to 43% |
+| 8PSK 3/5 to 8/9 | 5 Msym/s | 8.46 to 12.64 Mb/s | 105,235 | 29.6 to 29.8 dB | 63% / 60 to 63% |
+
+Nineteen live 30 s runs, 223,153 frames, none lost, none failed, no relocks
+([sweep](results/2026-10-23-rx-sweep/README.md)). Full-length 540 s runs held up too: 997,605 frames
+and 4.4 million TS packets exact, with the median MER steady within 0.1 dB from the first minute to
+the last ([long runs](results/2026-10-23-rx-long/README.md)). MER (modulation error ratio) is how far the
+received points sit from where they should be: 30 dB is a clean link. The core columns are the
+demodulator's mean share of core 1, and the release and check tasks' share of core 0.
+
+<p align="center"><img src="docs/img/rx-5m.png" alt="What the receiving S3 sees at 12.64 Mb/s: spectrum, spectrogram and constellation" width="600"></p>
+
+That is the receiver's own 16 MS/s capture of 8PSK 8/9 at 5 Msym/s, and the constellation its
+demodulator produced from it: 164 of 164 frames exact
+([figures](results/2026-10-23-rx-figures/README.md)). The receiver never starts Wi-Fi: it
+calibrates the PHY directly, and after boot it never touches the heap
+([no Wi-Fi](results/2026-10-23-rx-no-wifi-ab/README.md)). It also speaks MPEG transport stream:
+1,738,344 TS packets crossed the S3 link with every one exact, and the receiver rode through
+95,810 filler frames from a transmitter starved of input without losing lock
+([TS link](results/2026-10-23-ts-link/README.md)).
+
+```sh
+(. ~/.espressif/tools/activate_idf_v6.1.sh && cd firmware/rx && idf.py build flash)
+python3 host/rx.py 16 --rate 5m --mhz 2420 --gain 32 --seconds 45 --port RX_PORT --callsign YOURCALL
+python3 host/board.py "dvb 2420 16 5m 55 0 128 --short" --port TX_PORT --timeout 90   # keys the transmitter
+```
+
+`YOURCALL` must match the callsign stored on the transmitter: the receiver's check rebuilds the
+transmitter's payload, station header included.
+
+<p align="center"><img src="docs/img/rx-load.png" alt="Receiver load per core in the live runs" width="600"></p>
+
+## Live video, one S3 to another
+
+<!-- The clip: on GitHub, edit this file and drag esp-dvbs2-live-link.mp4 onto the next line. -->
+
+
+Remember the goal this all started with? Here it is, with no PC anywhere in the radio path. A
+CM5 encodes two fisheye cameras into an 8 Mb/s MPEG transport stream and clocks it over SPI
+into one S3, which sends it as 8PSK 3/4 at 5 Msym/s on 2420 MHz. Coax and 30 dB of attenuation
+carry it to a second S3, which demodulates and decodes it on the chip and pushes the packets out of
+a W5500 Ethernet module to a laptop, where PigeonVision stitches the two cameras into one 360°
+view. A dashboard, `host/monitor.py`, watches every stage at once, from the cameras to the viewer.
+
+For the live demo it ran 16 back-to-back 540 s runs, 2.4 hours on air: 5,725,408 frames decoded
+with none failed, median pilot MER about 25.5 dB, no relocks, 6.1 million datagrams out of the
+W5500 with none dropped, and both cameras at 30.0 frames/s
+([live demo](results/2026-10-23-live-demo/README.md)). Not quite perfect... the receiver dropped
+11 frames when its release task fell behind, about one every 13 minutes, and some datagrams go
+missing between the W5500 and the laptop. Each loss breaks the picture until the next keyframe.
+
+<p align="center"><img src="examples/live-video/bench.jpg" alt="The bench, labeled: the transmitting S3 by the cameras, the coax and attenuator, the receiving S3 and its W5500" width="480"></p>
+
+The bench: the dashboard on both monitors, the stitched view on the laptop. The W5500 runs at
+10 Mb/s, which carries up to 9.46 Mb/s of transport stream; at 100 Mb/s it kept losing its link on
+the XIAO's 3.3 V supply ([bring-up](results/2026-10-23-eth-bringup/README.md),
+[full quality](results/2026-10-23-eth-full-quality/README.md)).
+[How to run it](examples/live-video/README.md#esp32-s3-to-esp32-s3).
 
 ## How it works
 

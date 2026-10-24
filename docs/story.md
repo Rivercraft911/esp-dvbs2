@@ -18,7 +18,7 @@ Three words come up a lot:
 Every run used ESP32-S3s at 240 MHz. Links into `archive/dev-2026-10-17` point at the
 preserved development archive, where the raw records of the first two days live.
 
-![Payload rate at each development milestone, with its mode and symbol rate](img/rate-history.png)
+<p align="center"><img src="img/rate-history.png" alt="Payload rate at each development milestone, with its mode and symbol rate" width="600"></p>
 
 The history figures use [recorded points with per-point provenance](measurements/plot-data.json).
 
@@ -162,7 +162,7 @@ into a lead of 32,155 queued symbols.
 ([radio off](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/results/2026-10-17-qpsk-goal/README.md),
 [keyed](https://github.com/Rivercraft911/esp-dvbs2/blob/archive/dev-2026-10-17/results/2026-10-17-keyed-qpsk/README.md))
 
-![Encoder cycles across the 8PSK optimisation rounds and the later keyed QPSK reserve work](img/encoder-history.png)
+<p align="center"><img src="img/encoder-history.png" alt="Encoder cycles across the 8PSK optimisation rounds and the later keyed QPSK reserve work" width="600"></p>
 
 ## 40 MHz
 
@@ -194,7 +194,7 @@ powered changed the keyed encoder mean by two cycles and handed back 15,304 byte
 during playback. It returns later in this story with a much better reason to exist.
 ([records](measurements.md#40-mhz))
 
-![Longest bank-fill time and its deadline at the development milestones, including the failed 10 Msym/s attempt](img/fill-history.png)
+<p align="center"><img src="img/fill-history.png" alt="Longest bank-fill time and its deadline at the development milestones, including the failed 10 Msym/s attempt" width="600"></p>
 
 ## 8PSK at 36 MHz
 
@@ -268,7 +268,7 @@ on the first refill after the opening station ID. A third slot, 8,352 bytes, fix
 runs had zero underruns and gave 32, 31 and 32 exact frames in their captures.
 ([startup](../results/2026-10-20-qpsk-startup/README.md))
 
-![36 MHz 8PSK spectrum and waterfall captured by a B200](img/rf-36mhz.png)
+<p align="center"><img src="img/rf-36mhz.png" alt="36 MHz 8PSK spectrum and waterfall captured by a B200" width="600"></p>
 
 8PSK 9/10 at 26.67 Msym/s, 69.8 Mb/s during data: one 41.94 ms B200 capture with 47 exact
 frames, from a prepared, repeated payload. These short captures prove exact payload recovery,
@@ -408,7 +408,7 @@ Then the qualification: three 38.3 s runs, with the receiver listening 2 s befor
 keyed. 4,581, 4,578 and 4,577 frames, every one exact, none missing, no capture unit dropped.
 ([qualification](../results/2026-10-22-rx-continuous/README.md))
 
-![QPSK 3/4 at 1 Msym/s as the receiving S3 sees it: spectrum, spectrogram and constellation](img/rx-1m.png)
+<p align="center"><img src="img/rx-1m.png" alt="QPSK 3/4 at 1 Msym/s as the receiving S3 sees it: spectrum, spectrogram and constellation" width="600"></p>
 
 QPSK 3/4 at 1 Msym/s, captured by the receiving S3 through its own radio (with the final receiver
 firmware) and drawn from its own demodulator's output: 21 of 21 frames exact, data MER 28.8 dB.
@@ -489,7 +489,7 @@ The result: three 38.3 s runs of 8PSK 8/9, 34,232, 34,199 and 34,196 frames, eve
 exact too. No frame failed the re-encode check, so the LDPC decoder never ran.
 ([5 Msym/s with margin](../results/2026-10-23-rx-5m-margin/README.md))
 
-![8PSK 8/9 at 5 Msym/s as the receiving S3 sees it: spectrum, spectrogram and constellation](img/rx-5m.png)
+<p align="center"><img src="img/rx-5m.png" alt="8PSK 8/9 at 5 Msym/s as the receiving S3 sees it: spectrum, spectrogram and constellation" width="600"></p>
 
 8PSK 8/9 at 5 Msym/s, 12.64 Mb/s: 164 of 164 frames exact in this 187.5 ms capture by the
 receiving S3, data MER 28.9 dB. [Capture details](../results/2026-10-23-rx-figures/README.md).
@@ -497,7 +497,7 @@ receiving S3, data MER 28.9 dB. [Capture details](../results/2026-10-23-rx-figur
 Core 1 now spends 120.8k of the 184,320 cycles in each unit. On core 0, turning symbols into bits
 takes about 30% and the re-encode check about 24%.
 
-![Share of each receiver core during 45 s runs at 1 and 5 Msym/s](img/rx-load.png)
+<p align="center"><img src="img/rx-load.png" alt="Share of each receiver core during 45 s runs at 1 and 5 Msym/s" width="600"></p>
 
 The shares cover whole 45 s receive runs, including the time before keying and the Morse IDs.
 [Records](../results/2026-10-23-rx-5m-margin/README.md).

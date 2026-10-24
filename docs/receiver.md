@@ -256,7 +256,7 @@ when the host stops reading; four later runs with a host that logs its read gaps
 so the cause is not established
 ([Wi-Fi A/B](../results/2026-10-23-rx-no-wifi-ab/README.md#not-settled)).
 
-![What the receiving S3 sees at 12.64 Mb/s: spectrum, spectrogram and constellation](img/rx-5m.png)
+<p align="center"><img src="img/rx-5m.png" alt="What the receiving S3 sees at 12.64 Mb/s: spectrum, spectrogram and constellation" width="600"></p>
 
 8PSK 8/9 at 5 Msym/s, captured by the receiving S3 itself and drawn from its demodulator's
 output: 164 of 164 frames exact, data MER 28.9 dB ([figures](../results/2026-10-23-rx-figures/README.md)).
