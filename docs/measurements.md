@@ -183,9 +183,9 @@ fills each, none late, longest fills 38,810 and 36,620 of 47,220 cycles
 exact QPSK 9/10 frames from a 16-frame dump at 26.67 Msym/s, digital MER 37.98 dB, before any RF
 ([decode](measurements/2026-10-17-qpsk-fill-board-decodes.jsonl)).
 
-<p align="center"><img src="img/payload.png" alt="Payload rate of the selected keyed records" width="600"></p>
+<p align="center"><img src="img/payload.png" alt="Payload rate of the selected keyed records" width="760"></p>
 
-<p align="center"><img src="img/fill.png" alt="Longest bank fill of the selected keyed records against the deadline" width="600"></p>
+<p align="center"><img src="img/fill.png" alt="Longest bank fill of the selected keyed records against the deadline" width="760"></p>
 
 ### Receiver experiments
 

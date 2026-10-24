@@ -17,7 +17,7 @@ channel its Wi-Fi radio was ever built for, and a second one receives **12.64 Mb
 decodes every byte of it. Read [How it got here](docs/story.md) to learn about the tumultuous
 journey.
 
-<p align="center"><img src="docs/img/rf-40mhz.png" alt="40 MHz QPSK spectrum and spectrogram transmitted by an ESP32-S3, captured by a B200" width="600"></p>
+<p align="center"><img src="docs/img/rf-40mhz.png" alt="40 MHz QPSK spectrum and spectrogram transmitted by an ESP32-S3, captured by a B200" width="760"></p>
 
 QPSK 9/10 at 33.33 Msym/s from one ESP32-S3, captured by a B200 at 2420 MHz through coax and
 attenuation: 41.94 ms, 40 exact frames from a prepared payload
@@ -59,7 +59,7 @@ The encoder also keeps up with payload arriving through the real SPI input code:
 spare ([fill confirmation](results/2026-10-23-tx-fill-keyed/README.md)). That is a capacity test; the fastest live
 input so far is a CM5's 9 Mb/s camera mux.
 
-<p align="center"><img src="docs/img/rf-36mhz.png" alt="36 MHz 8PSK spectrum and spectrogram transmitted by an ESP32-S3" width="600"></p>
+<p align="center"><img src="docs/img/rf-36mhz.png" alt="36 MHz 8PSK spectrum and spectrogram transmitted by an ESP32-S3" width="760"></p>
 
 ## Receiving on an S3
 
@@ -81,7 +81,7 @@ the last ([long runs](results/2026-10-23-rx-long/README.md)). MER (modulation er
 received points sit from where they should be: 30 dB is a clean link. The core columns are the
 demodulator's mean share of core 1, and the release and check tasks' share of core 0.
 
-<p align="center"><img src="docs/img/rx-5m.png" alt="What the receiving S3 sees at 12.64 Mb/s: spectrum, spectrogram and constellation" width="600"></p>
+<p align="center"><img src="docs/img/rx-5m.png" alt="What the receiving S3 sees at 12.64 Mb/s: spectrum, spectrogram and constellation" width="760"></p>
 
 That is the receiver's own 16 MS/s capture of 8PSK 8/9 at 5 Msym/s, and the constellation its
 demodulator produced from it: 164 of 164 frames exact
@@ -101,7 +101,7 @@ python3 host/board.py "dvb 2420 16 5m 55 0 128 --short" --port TX_PORT --timeout
 `YOURCALL` must match the callsign stored on the transmitter: the receiver's check rebuilds the
 transmitter's payload, station header included.
 
-<p align="center"><img src="docs/img/rx-load.png" alt="Receiver load per core in the live runs" width="600"></p>
+<p align="center"><img src="docs/img/rx-load.png" alt="Receiver load per core in the live runs" width="760"></p>
 
 ## Live video, one S3 to another
 
@@ -122,7 +122,7 @@ W5500 with none dropped, and both cameras at 30.0 frames/s
 11 frames when its release task fell behind, about one every 13 minutes, and some datagrams go
 missing between the W5500 and the laptop. Each loss breaks the picture until the next keyframe.
 
-<p align="center"><img src="examples/live-video/bench.jpg" alt="The bench, labeled: the transmitting S3 by the cameras, the coax and attenuator, the receiving S3 and its W5500" width="480"></p>
+<p align="center"><img src="examples/live-video/bench.jpg" alt="The bench, labeled: the transmitting S3 by the cameras, the coax and attenuator, the receiving S3 and its W5500" width="600"></p>
 
 The bench: the dashboard on both monitors, the stitched view on the laptop. The W5500 runs at
 10 Mb/s, which carries up to 9.46 Mb/s of transport stream; at 100 Mb/s it kept losing its link on
