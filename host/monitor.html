@@ -507,12 +507,12 @@ const val = (v, unit) => `${v}<small>${unit}</small>`;
 const modeName = s => s ? `${MODCODS[s.modcod] || 'MODCOD ' + s.modcod}${s.short ? ' short' : ''}` : DASH;
 const hms = ms => { const s = Math.max(0, Math.floor(ms / 1000)); return [Math.floor(s / 3600), Math.floor(s / 60) % 60, s % 60].map(v => String(v).padStart(2, '0')).join(':'); };
 const on = (el, live, bad) => { el.dataset.on = bad ? 'bad' : live ? '1' : '0'; };
-const counts = {};                                    // per counter: [time, value] samples, 30 s back
-function rising(key, value) {                         // did this counter grow in the last 30 s?
+const counts = {}, HOLD_MS = 10000;                   // per counter: [time, value] samples, HOLD_MS back
+function rising(key, value) {                         // did this counter grow in the last HOLD_MS?
   if (typeof value !== 'number') return false;
   const now = Date.now(), h = counts[key] || (counts[key] = []);
   h.push([now, value]);
-  while (h.length > 1 && now - h[1][0] > 30000) h.shift();
+  while (h.length > 1 && now - h[1][0] > HOLD_MS) h.shift();
   return value > h[0][1];
 }
 const sum = (...v) => v.some(x => typeof x === 'number') ? v.reduce((a, b) => a + (b || 0), 0) : undefined;
