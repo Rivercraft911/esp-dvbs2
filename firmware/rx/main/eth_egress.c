@@ -68,55 +68,51 @@ static void kick(void *arg)
     xTaskNotifyGive(e.task);
 }
 
-/* The chip sends one datagram at a time and starts the next only when the driver is called
- * (w5500.h). At 10 Mb/s a 1,316-byte datagram is 1.106 ms on the wire, longer than a tick, so
- * the sender is woken when it should be done: its bytes plus 66 of UDP, IP, Ethernet, preamble
- * and gap, at the link rate, from when its SEND was given. */
+/* The wire's schedule as the sender sees it: the chip sends one frame at a time, each SEND as
+ * soon as the frame before has left, so a SEND given at t leaves at max(t, the last one's end)
+ * plus its bytes and 66 more (UDP, IP, Ethernet, preamble, gap) at the link rate. */
 typedef struct {
-    uint16_t wr;                /* Sn_TX_WR at the last SEND seen */
-    uint32_t started;           /* CPU cycle count just after the call that gave it */
-} send_clock;
+    uint16_t wr[2];             /* each socket's Sn_TX_WR at its last SEND seen */
+    int64_t done[2];            /* when that SEND should be out, us */
+    int64_t end;                /* when the last SEND should be out */
+} wire_t;
 
-/* After every driver call: a new SEND moved Sn_TX_WR. With a posting backend a later call first
- * waits out a payload write (about 400 us), so the sender notes it inside w5500_ts_send. */
-static void note_send(const w5500_socket *so, send_clock *c)
+static void track(const w5500 *w, wire_t *m)
 {
-    if (e.t.wr != c->wr && e.t.wr == so->tx_wr) {
-        c->wr = e.t.wr;
-        c->started = e.t.wr_at;
-    } else if (so->tx_wr != c->wr) {
-        c->wr = so->tx_wr;
-        c->started = esp_cpu_get_cycle_count();
+    const int64_t now = esp_timer_get_time();
+    for (unsigned s = 0; s < 2; ++s) {
+        const w5500_socket *so = &w->sock[s];
+        if (so->tx_wr == m->wr[s]) continue;
+        m->wr[s] = so->tx_wr;
+        m->end = (m->end > now ? m->end : now) + (so->flight + 66) * 8 / e.link_mbps;
+        m->done[s] = m->end;
     }
 }
 
-static void wake_after_send(const w5500_socket *so, const send_clock *c)
+static bool busy_socket(const w5500 *w, unsigned s)
 {
-    if (!so->flight) return;
-    const int32_t since = (int32_t)(esp_cpu_get_cycle_count() - c->started) /
-                          CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
-    int64_t due = (so->flight + 66) * 8 / e.link_mbps + 10 - since;
-    if (due < 20) due = 20;
-    esp_timer_stop(e.kick);
-    esp_timer_start_once(e.kick, (uint64_t)due);
+    return w->sock[s].flight || w->sock[s].q_count;
 }
 
-/* One run: full datagrams as they fill, the rest once it has waited HOLD or at the end, then
- * w5500_udp_poll until the chip has sent everything (bounded by DRAIN). The last error. */
+/* One run on sockets 0 and 1 in turn (w5500_ts.h): full datagrams as they fill, the rest once
+ * it has waited HOLD or at the end, then w5500_udp_poll until the chip has sent everything
+ * (bounded by DRAIN). The sender wakes on each frame and, by the kick, when the socket it waits
+ * for should be free; the other socket's datagram keeps the wire busy meanwhile. The last
+ * error. */
 static int pump(void)
 {
     w5500 *w = w5500_eth();
     TickType_t since = 0, end = 0;
     bool waiting = false;       /* fewer than seven packets wait */
-    int staged = 0;             /* datagrams in the chip not yet sent */
+    int staged = 0;             /* sockets with a datagram not yet out */
     /* Drain rate: datagrams sent while at least two datagrams' worth waited, over that time. */
     bool backlog = false;
     int64_t mark = esp_timer_get_time();
     uint32_t marked = 0;
-    uint32_t sent = w->sock[0].st.sent;   /* the chip's last progress, and when */
-    uint16_t sent_wr = w->sock[0].tx_wr;
-    int64_t moved = mark;
-    send_clock clock = {w->sock[0].tx_wr, 0};
+    wire_t m = {{w->sock[0].tx_wr, w->sock[1].tx_wr}, {0, 0}, 0};
+    uint32_t sent[2] = {w->sock[0].st.sent, w->sock[1].st.sent};   /* progress, per socket */
+    uint16_t sent_wr[2] = {w->sock[0].tx_wr, w->sock[1].tx_wr};
+    int64_t moved[2] = {mark, mark};
     for (;;) {
         const bool ending = e.ending;   /* read first: every packet was pushed before it was set */
         const uint32_t before = e.t.st.datagrams;
@@ -129,7 +125,7 @@ static int pump(void)
         mark = t;
         marked = before;
         int r = w5500_ts_send(&e.t, false);
-        note_send(&w->sock[0], &clock);
+        track(w, &m);
         const TickType_t now = xTaskGetTickCount();
         if (e.t.st.datagrams != before) waiting = false;
         if (r == W5500_OK && w5500_ts_waiting(&e.q)) {
@@ -137,28 +133,44 @@ static int pump(void)
             waiting = true;
             if (ending || now - since >= HOLD) {
                 r = w5500_ts_send(&e.t, true);
-                note_send(&w->sock[0], &clock);
+                track(w, &m);
                 waiting = false;
             }
         }
         if (r < 0) return r;
-        if (r == W5500_FULL || e.t.st.datagrams != before || staged > 0) {
-            staged = w5500_udp_poll(w, 0);   /* starts the last datagram's SEND */
-            note_send(&w->sock[0], &clock);
+        if (r == W5500_OK) {            /* nothing left to give: let the chip finish */
+            for (unsigned s = 0; s < 2; ++s) {
+                if (!busy_socket(w, s)) continue;
+                const int p = w5500_udp_poll(w, s);
+                if (p < 0) return p;
+            }
+            track(w, &m);
         }
-        if (staged < 0) return staged;
+        staged = busy_socket(w, 0) + busy_socket(w, 1);
         const int64_t now_us = esp_timer_get_time();
-        if (w->sock[0].st.sent != sent || w->sock[0].tx_wr != sent_wr) {
-            sent = w->sock[0].st.sent;
-            sent_wr = w->sock[0].tx_wr;
-            moved = now_us;
-        } else if (staged > 0 && now_us - moved > SAT_US) {
-            const int again = w5500_udp_resend(w, 0);   /* w5500.h: the chip sat on it */
-            if (again < 0) return again;
-            if (again) clock.started = esp_cpu_get_cycle_count();
-            moved = now_us;
+        int64_t wake = INT64_MAX;
+        for (unsigned s = 0; s < 2; ++s) {
+            if (w->sock[s].st.sent != sent[s] || w->sock[s].tx_wr != sent_wr[s]) {
+                sent[s] = w->sock[s].st.sent;
+                sent_wr[s] = w->sock[s].tx_wr;
+                moved[s] = now_us;
+            } else if (busy_socket(w, s) && now_us - moved[s] > SAT_US) {
+                const int again = w5500_udp_resend(w, s);   /* w5500.h: the chip sat on it */
+                if (again < 0) return again;
+                if (again) m.done[s] = now_us + (w->sock[s].flight + 66) * 8 / e.link_mbps;
+                moved[s] = now_us;
+            }
+            /* Wake for the socket the next datagram waits for, or, when all is given, for the
+             * first to finish. */
+            const bool wanted = r == W5500_FULL ? s == e.t.next : busy_socket(w, s);
+            if (wanted && busy_socket(w, s) && m.done[s] < wake) wake = m.done[s];
         }
-        if (staged > 0) wake_after_send(&w->sock[0], &clock);
+        if (wake != INT64_MAX) {
+            int64_t due = wake + 10 - now_us;
+            if (due < 20) due = 20;
+            esp_timer_stop(e.kick);
+            esp_timer_start_once(e.kick, (uint64_t)due);
+        }
         if (ending) {
             if (!staged && !e.t.held && !w5500_ts_waiting(&e.q)) return W5500_OK;
             if (!end) end = now | 1;
@@ -186,7 +198,8 @@ static void sender(void *arg)
         s->phy = w5500_phy(w);
         const uint32_t underflows = w5500_eth_underflows(), recoveries = w5500_eth_recoveries();
         uint8_t *const buf[2] = {pair, pair + W5500_TS_DATAGRAM};
-        w5500_ts_sender_init(&e.t, w, 0, &e.q, buf, cycles);
+        static const unsigned socks[2] = {0, 1};
+        w5500_ts_sender_init(&e.t, w, socks, 2, &e.q, buf, cycles);
         xSemaphoreGive(e.done);
         e.link_mbps = s->phy >= 0 && !(s->phy & W5500_PHY_100M) ? 10 : 100;
         s->status = pump();
@@ -201,10 +214,12 @@ static void sender(void *arg)
         s->esp_err = w5500_eth_error();
         s->underflows = w5500_eth_underflows() - underflows;
         s->recoveries = w5500_eth_recoveries() - recoveries;
-        const w5500_stats *st = w5500_udp_stats(w, 0);
-        s->sent = st->sent;
-        s->resends = st->resends;
-        s->arp_dropped = st->dropped;
+        for (unsigned k = 0; k < 2; ++k) {
+            const w5500_stats *st = w5500_udp_stats(w, k);
+            s->sent += st->sent;
+            s->resends += st->resends;
+            s->arp_dropped += st->dropped;
+        }
         w5500_eth_stop();
         s->stack_free = uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t);
         e.running = false;

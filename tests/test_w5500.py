@@ -72,10 +72,10 @@ class TsStats(ct.Structure):
 
 
 class TsSender(ct.Structure):
-    _fields_ = [("chip", ct.c_void_p), ("sock", ct.c_uint), ("q", ct.POINTER(TsQueue)),
-                ("buf", ct.c_void_p * 2), ("clock", ct.c_void_p), ("next", ct.c_uint),
-                ("held", ct.c_uint16), ("wr", ct.c_uint16), ("wr_at", ct.c_uint32),
-                ("st", TsStats)]
+    _fields_ = [("chip", ct.c_void_p), ("sock", ct.c_uint * 2), ("socks", ct.c_uint),
+                ("q", ct.POINTER(TsQueue)), ("buf", ct.c_void_p * 2), ("clock", ct.c_void_p),
+                ("next", ct.c_uint), ("held", ct.c_uint16), ("wr", ct.c_uint16 * 2),
+                ("wr_at", ct.c_uint32 * 2), ("st", TsStats)]
 
 
 CLOCK = ct.CFUNCTYPE(ct.c_uint32)
@@ -153,8 +153,9 @@ class Native:
             "w5500_ts_queue_init": (None, [ct.POINTER(TsQueue), p, ct.c_uint32]),
             "w5500_ts_push": (ct.c_bool, [ct.POINTER(TsQueue), b]),
             "w5500_ts_waiting": (ct.c_uint32, [ct.POINTER(TsQueue)]),
-            "w5500_ts_sender_init": (None, [ct.POINTER(TsSender), p, ct.c_uint,
-                                            ct.POINTER(TsQueue), ct.POINTER(ct.c_void_p), p]),
+            "w5500_ts_sender_init": (None, [ct.POINTER(TsSender), p, ct.POINTER(ct.c_uint),
+                                            ct.c_uint, ct.POINTER(TsQueue),
+                                            ct.POINTER(ct.c_void_p), p]),
             "w5500_ts_send": (ct.c_int, [ct.POINTER(TsSender), ct.c_bool]),
         }
         for name, (result, arguments) in api.items():
@@ -885,7 +886,7 @@ def test_diag(native):
 class TsLink:
     """A TS queue of `size` packets and a datagram sender on socket 0 of `chip`."""
 
-    def __init__(self, native, chip, size, clock=None):
+    def __init__(self, native, chip, size, clock=None, socks=(0,)):
         self.lib, self.chip = native.lib, chip
         self.slots = ct.create_string_buffer(188 * size)
         self.bufs = [ct.create_string_buffer(TS_DATAGRAM) for _ in range(2)]
@@ -893,8 +894,9 @@ class TsLink:
         self.lib.w5500_ts_queue_init(ct.byref(self.q), self.slots, size)
         pair = (ct.c_void_p * 2)(*(ct.addressof(b) for b in self.bufs))
         self.clock = clock
-        self.lib.w5500_ts_sender_init(ct.byref(self.t), chip.w, 0, ct.byref(self.q), pair,
-                                      ct.cast(clock, ct.c_void_p) if clock else None)
+        ids = (ct.c_uint * 2)(*socks, *([0] * (2 - len(socks))))
+        self.lib.w5500_ts_sender_init(ct.byref(self.t), chip.w, ids, len(socks), ct.byref(self.q),
+                                      pair, ct.cast(clock, ct.c_void_p) if clock else None)
 
     def push(self, packet):
         return self.lib.w5500_ts_push(ct.byref(self.q), packet)
@@ -965,7 +967,7 @@ def test_ts(native):
               "second datagram refused and held")
         # The first datagram's SEND, and the clock just after the call that gave it: its own call,
         # or with posting the next one (w5500_udp_send).
-        check(link.t.wr == chip.peek16(0, 0x24) and link.t.wr_at == (150 if mode else 50),
+        check(link.t.wr[0] == chip.peek16(0, 0x24) and link.t.wr_at[0] == (150 if mode else 50),
               "when the first datagram's SEND was given")
         check(link.send() == FULL and link.t.st.full == 2, "still no room")
         chip.lib.fake_advance(chip.f, 2000.0)
@@ -979,6 +981,42 @@ def test_ts(native):
         check(st.datagrams == 3 and st.max_send_cycles == 50 and st.send_cycles == 150,
               f"send times: {st.max_send_cycles} {st.send_cycles}")
         chip.close()
+
+    # Two sockets in turn (the receiver's egress at 10 Mb/s): datagram k on socket k mod 2, its
+    # SEND given as soon as k - 2 is out, so the chip holds the next datagram while one is on
+    # the wire. A sender that comes back every 1.0 ms, a little less than a datagram's 1.106 ms
+    # on a 10 Mb/s wire, keeps it full; with one socket each datagram waits for the next call.
+    wire = (1316 + 66) * 8 / 10.0               # us per datagram at 10 Mb/s
+    for mode in ({}, DIRECT):
+        finish = {}
+        for socks in ((0,), (0, 1)):
+            chip = Chip(native, wire_bps=10e6, **mode)
+            check(chip.init(tx0=8, tx1=8) == OK and chip.open(0, 5004) == OK and
+                  chip.open(1, 5005) == OK, "two sockets")
+            chip.dest(0, BROADCAST, 1234)
+            chip.dest(1, BROADCAST, 1234)
+            link = TsLink(native, chip, 1024, socks=socks)
+            for k in range(7 * 40):
+                link.push(ts_packet(k))
+            t0 = chip.fake()["now_us"]
+            while link.waiting() or link.t.held:
+                link.send()
+                chip.lib.fake_advance(chip.f, 1000.0)
+            for s in socks:
+                while chip.poll(s) > 0:
+                    chip.lib.fake_advance(chip.f, 50.0)
+            out = []
+            while (d := chip.take()) is not None:
+                out.append(d)
+            check(b"".join(d[3] for d in out) == b"".join(ts_packet(k) for k in range(7 * 40)),
+                  f"{len(socks)} socket(s): every packet in order")
+            check({d[2] for d in out} == {5004 + s for s in socks}, "the sockets used in turn")
+            finish[len(socks)] = (chip.fake()["now_us"] - t0) / wire
+            chip.close()
+        check(finish[2] < 40 * 1.08 and finish[1] > 40 * 1.2,
+              f"two sockets keep the wire busy: {finish[2]:.1f} vs {finish[1]:.1f} wire times")
+        print(f"  two sockets: 40 datagrams in {finish[2]:.1f} wire times, one socket {finish[1]:.1f}"
+              f" ({'posted' if mode else 'blocking'} writes)")
 
     chip = sender(native)
     link = TsLink(native, chip, 16)

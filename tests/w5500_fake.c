@@ -61,6 +61,7 @@ typedef struct {
     uint16_t committed[8];      /* Sn_RX_RD as of the last RECV */
     int sending[8];             /* 0 idle, 1 on the wire, 2 ARP that will time out */
     double send_done[8], cmd_done[8];
+    double wire_free;      /* the one wire: a SEND starts when the last one has left */
     int state_to[8];            /* Sn_SR after a pending OPEN or CLOSE, -1 if none */
     double state_at[8];
     double publish_at;          /* a datagram's second part appears in Sn_RX_WR */
@@ -271,10 +272,16 @@ static void land(fake *f)
 static void update(fake *f)
 {
     if (f->posted.on && f->st.now_us >= f->posted.done) land(f);
-    for (unsigned s = 0; s < 8; ++s) {
-        if (f->sending[s] && f->st.now_us >= f->send_done[s]) complete(f, s);
-        if (f->state_to[s] >= 0 && f->st.now_us >= f->state_at[s]) settle_state(f, s);
+    for (;;) {             /* finished SENDs in the order they left the wire */
+        int first = -1;
+        for (unsigned s = 0; s < 8; ++s)
+            if (f->sending[s] && f->st.now_us >= f->send_done[s] &&
+                (first < 0 || f->send_done[s] < f->send_done[first])) first = (int)s;
+        if (first < 0) break;
+        complete(f, (unsigned)first);
     }
+    for (unsigned s = 0; s < 8; ++s)
+        if (f->state_to[s] >= 0 && f->st.now_us >= f->state_at[s]) settle_state(f, s);
     if (f->publish_sock >= 0 && f->st.now_us >= f->publish_at) {
         w16(f->reg[f->publish_sock] + 0x2A, f->publish_wr);
         f->publish_sock = -1;
@@ -341,12 +348,14 @@ static void command(fake *f, unsigned s, uint8_t v)
         f->sending[s] = 1;
         if (!memcmp(r + 0x0C, all, 4) ||
             (f->arp_valid[s] && !memcmp(f->arp_ip[s], r + 0x0C, 4))) {
-            f->send_done[s] = f->st.now_us + wire;
+            const double start = f->st.now_us > f->wire_free ? f->st.now_us : f->wire_free;
+            f->send_done[s] = f->wire_free = start + wire;
         } else if (f->arp_reply) {
             f->st.arp_requests++;
             memcpy(f->arp_ip[s], r + 0x0C, 4);
             f->arp_valid[s] = true;
-            f->send_done[s] = f->st.now_us + f->arp_us + wire;
+            const double ready = f->st.now_us + f->arp_us;
+            f->send_done[s] = f->wire_free = (ready > f->wire_free ? ready : f->wire_free) + wire;
         } else {
             f->st.arp_requests++;
             f->sending[s] = 2;

@@ -41,29 +41,55 @@ static unsigned take(w5500_ts_queue *q, uint8_t *out, unsigned n)
     return n;
 }
 
-void w5500_ts_sender_init(w5500_ts_sender *t, w5500 *chip, unsigned sock, w5500_ts_queue *q,
-                          uint8_t *const buf[2], uint32_t (*clock)(void))
+void w5500_ts_sender_init(w5500_ts_sender *t, w5500 *chip, const unsigned *socks, unsigned n,
+                          w5500_ts_queue *q, uint8_t *const buf[2], uint32_t (*clock)(void))
 {
-    *t = (w5500_ts_sender){.chip = chip, .sock = sock, .q = q, .buf = {buf[0], buf[1]},
-                           .clock = clock, .wr = chip->sock[sock].tx_wr};
+    *t = (w5500_ts_sender){.chip = chip, .socks = n == 2 ? 2 : 1, .q = q,
+                           .buf = {buf[0], buf[1]}, .clock = clock};
+    for (unsigned k = 0; k < 2; ++k) {
+        t->sock[k] = socks[k < t->socks ? k : 0];
+        t->wr[k] = chip->sock[t->sock[k]].tx_wr;
+    }
+}
+
+/* A call that moved the socket's Sn_TX_WR gave a SEND: note when. */
+static void note(w5500_ts_sender *t, unsigned k, uint32_t at)
+{
+    const uint16_t wr = t->chip->sock[t->sock[k]].tx_wr;
+    if (wr == t->wr[k]) return;
+    t->wr[k] = wr;
+    t->wr_at[k] = at;
 }
 
 int w5500_ts_send(w5500_ts_sender *t, bool partial)
 {
     if (t->st.error) return t->st.error;
     for (;;) {
+        const unsigned k = t->socks == 2 ? t->next : 0, s = t->sock[k];
+        const w5500_socket *so = &t->chip->sock[s];
         unsigned n = t->held;
         if (!n) {
             const uint32_t waiting = w5500_ts_waiting(t->q);
             if (!waiting || (waiting < W5500_TS_GROUP && !partial)) return W5500_OK;
-            n = W5500_TS_PACKET * take(t->q, t->buf[t->next], W5500_TS_GROUP);
         }
+        if (t->socks == 2 && (so->flight || so->q_count)) {   /* datagram k - 2 still going */
+            const int e = w5500_udp_poll(t->chip, s);
+            note(t, k, t->clock ? t->clock() : 0);
+            if (e < 0) return t->st.error = e;
+            if (e) {
+                t->st.full++;
+                return W5500_FULL;
+            }
+        }
+        if (!n) n = W5500_TS_PACKET * take(t->q, t->buf[t->next], W5500_TS_GROUP);
         const uint32_t start = t->clock ? t->clock() : 0;
-        const int e = w5500_udp_send(t->chip, t->sock, t->buf[t->next], n);
+        int e = w5500_udp_send(t->chip, s, t->buf[t->next], n);
         const uint32_t after = t->clock ? t->clock() : 0, cycles = after - start;
-        if (t->chip->sock[t->sock].tx_wr != t->wr) {   /* this call started a SEND */
-            t->wr = t->chip->sock[t->sock].tx_wr;
-            t->wr_at = after;
+        note(t, k, after);
+        if (t->socks == 2 && e == W5500_OK) {   /* the SEND now, so the chip holds it ready */
+            e = w5500_udp_poll(t->chip, s);
+            note(t, k, t->clock ? t->clock() : 0);
+            e = e < 0 ? e : W5500_OK;
         }
         if (e == W5500_FULL) {
             t->held = (uint16_t)n;

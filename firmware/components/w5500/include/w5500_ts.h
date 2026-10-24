@@ -43,25 +43,31 @@ typedef struct {
 
 typedef struct {
     w5500 *chip;
-    unsigned sock;
+    unsigned sock[2], socks;        /* the sockets used in turn: one, or two */
     w5500_ts_queue *q;
     uint8_t *buf[2];                /* W5500_TS_DATAGRAM bytes each, DMA capable (w5500_udp_send) */
     uint32_t (*clock)(void);        /* a cycle counter for the send times, or NULL */
-    unsigned next;                  /* the buffer the next datagram is built in */
+    unsigned next;                  /* the buffer (and with two sockets, the socket) next */
     uint16_t held;                  /* bytes in buf[next] that the chip refused, 0 if none */
-    uint16_t wr;                    /* the socket's Sn_TX_WR after the last SEND seen to start */
-    uint32_t wr_at;                 /* clock() just after that call: about when the SEND began */
+    uint16_t wr[2];                 /* each socket's Sn_TX_WR after the last SEND seen to start */
+    uint32_t wr_at[2];              /* clock() just after that call: about when the SEND began */
     w5500_ts_stats st;
 } w5500_ts_sender;
 
-/* Consumer side, on an open socket with a destination. The two buffers alternate because a
- * posted payload may still be clocking out of the last one (w5500_udp_send). */
-void w5500_ts_sender_init(w5500_ts_sender *t, w5500 *chip, unsigned sock, w5500_ts_queue *q,
-                          uint8_t *const buf[2], uint32_t (*clock)(void));
+/* Consumer side, on open sockets with a destination. The two buffers alternate because a posted
+ * payload may still be clocking out of the last one (w5500_udp_send).
+ * With one socket the chip sends a datagram, and the next starts only when the sender next
+ * calls the driver. With two, datagram k goes to socket k mod 2 once that socket's datagram
+ * k - 2 has its SEND_OK, and gets its SEND at once: the chip holds it while k - 1 is on the
+ * wire and sends it straight after (the W5500 sends one frame at a time), so the wire never waits
+ * for the sender. The order on the wire is the order of the SENDs, which is k. */
+void w5500_ts_sender_init(w5500_ts_sender *t, w5500 *chip, const unsigned *socks, unsigned n,
+                          w5500_ts_queue *q, uint8_t *const buf[2], uint32_t (*clock)(void));
 /* Send every full datagram waiting, and with partial the rest as one shorter datagram too.
- * W5500_OK when that is done, W5500_FULL when the chip has no room (the datagram is held and goes
- * first next time), or the driver error, after which nothing more is sent. Call w5500_udp_poll
- * when the queue is empty, so the last datagram's SEND starts and finishes. */
+ * W5500_OK when that is done, W5500_FULL when the chip has no room or, with two sockets, the
+ * next socket is still sending (the datagram is held and goes first next time), or the driver
+ * error, after which nothing more is sent. Call w5500_udp_poll on each socket when the queue is
+ * empty, so the last datagrams' SENDs start and finish. */
 int w5500_ts_send(w5500_ts_sender *t, bool partial);
 
 #endif

@@ -37,7 +37,8 @@
 #include "w5500.h"
 
 typedef enum {
-    W5500_ETH_SEND,   /* socket 0 gets the 16 KB TX memory and the stored destination */
+    W5500_ETH_SEND,   /* sockets 0 and 1 (the port and the next) get 8 KB of TX memory each
+                       * and the destination, for w5500_ts's two sockets in turn */
     W5500_ETH_RECV,   /* socket 0 gets the 16 KB RX memory */
 } w5500_eth_role;
 

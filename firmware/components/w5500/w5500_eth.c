@@ -198,7 +198,8 @@ int w5500_eth_reserve(uint8_t *buffers)
 void w5500_eth_stop(void)
 {
     if (owner != xTaskGetCurrentTaskHandle()) return;   /* only the owner stops the chip */
-    if (chip.sock[0].open) w5500_udp_close(&chip, 0);
+    for (unsigned s = 0; s < W5500_SOCKETS; ++s)
+        if (chip.sock[s].open) w5500_udp_close(&chip, s);
     if (!reserved) port_stop();
     disown();
 }
@@ -208,7 +209,8 @@ int w5500_eth_start(w5500_eth_role role)
     w5500 *w = &chip;
     w5500_settings s;
     if (!own()) return W5500_ERR_BUSY;
-    if (port_up && chip.sock[0].open) w5500_udp_close(w, 0);
+    for (unsigned k = 0; port_up && k < W5500_SOCKETS; ++k)
+        if (chip.sock[k].open) w5500_udp_close(w, k);
     w5500_eth_settings(&s);
     /* A reserved port starts again only after a bus error or for new pins or clock. */
     if (port_up && (chip.bus_errors || !same_port(&s, &port_settings))) port_stop();
@@ -222,7 +224,7 @@ int w5500_eth_start(w5500_eth_role role)
     memcpy(c.ip, s.ip, 4);
     memcpy(c.mask, s.mask, 4);
     memcpy(c.gateway, s.gateway, 4);
-    if (role == W5500_ETH_SEND) c.tx_kb[0] = 16;
+    if (role == W5500_ETH_SEND) c.tx_kb[0] = c.tx_kb[1] = 8;   /* two sockets in turn */
     else c.rx_kb[0] = 16;
     int e = w5500_init(w, &bus, &c);
     if (!e && phy_mode) {
@@ -236,7 +238,11 @@ int w5500_eth_start(w5500_eth_role role)
         if (phy < 0) e = phy;
     }
     if (!e) e = w5500_udp_open(w, 0, s.port);
-    if (!e && role == W5500_ETH_SEND) w5500_udp_dest(w, 0, s.dest, s.dest_port);
+    if (!e && role == W5500_ETH_SEND) e = w5500_udp_open(w, 1, (uint16_t)(s.port + 1));
+    if (!e && role == W5500_ETH_SEND) {
+        w5500_udp_dest(w, 0, s.dest, s.dest_port);
+        w5500_udp_dest(w, 1, s.dest, s.dest_port);
+    }
     if (e) w5500_eth_stop();
     return e;
 }
