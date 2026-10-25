@@ -636,14 +636,24 @@ static HOT int syndrome_ok(rx_fec_t *f)
     return !odd;
 }
 
-/* Codeword bit i as a two-level belief: RX_LMAX, or WEAK where the demodulator found the
- * received point less than half its nominal distance from the bit's boundary. */
-static int8_t two_level(const rx_frame_t *frame, unsigned i)
+/* Two-level beliefs: a codeword bit becomes RX_LMAX, or WEAK where the demodulator found
+ * the received point less than half its nominal distance from the bit's boundary, negated
+ * where its hard bit is set. two_level4 makes four at once from nibbles of hard and weak
+ * bits, as a little-endian word: byte k from bit 3 - k. Negation is (v ^ 0xff) + 1 in each
+ * byte, which never carries since v is WEAK or RX_LMAX. */
+#define SPREAD4(n) (((n) >> 3 & 1u) | ((n) >> 2 & 1u) << 8 | ((n) >> 1 & 1u) << 16 | ((n) & 1u) << 24)
+static const uint32_t spread4[16] = {
+    SPREAD4(0u), SPREAD4(1u), SPREAD4(2u), SPREAD4(3u), SPREAD4(4u), SPREAD4(5u), SPREAD4(6u),
+    SPREAD4(7u), SPREAD4(8u), SPREAD4(9u), SPREAD4(10u), SPREAD4(11u), SPREAD4(12u), SPREAD4(13u),
+    SPREAD4(14u), SPREAD4(15u)};
+static inline uint32_t two_level4(unsigned hard, unsigned weak)
 {
-    const unsigned bit = 7 - (i & 7);
-    const int v = (frame->weak[i >> 3] >> bit & 1) ? WEAK : RX_LMAX;
-    return (int8_t)((frame->hard[i >> 3] >> bit & 1) ? -v : v);
+    const uint32_t neg = spread4[hard], v = RX_LMAX * 0x01010101u - (RX_LMAX - WEAK) * spread4[weak];
+    return (v ^ neg * 0xffu) + neg;
 }
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
+#error "two_level4 writes little-endian words"
+#endif
 
 /* Channel LLRs into the slots, each in its starting frame. Then a gain in sixteenths
  * that aims at RX_UNITS integer units per natural LLR whatever the demodulator's scale
@@ -660,10 +670,28 @@ static HOT void load(rx_fec_t *f, const rx_frame_t *in)
         if (g < groups && llr) {
             memcpy(slot + frame, llr + 360 * g, 360 - frame);
             memcpy(slot, llr + 360 * g + 360 - frame, frame);
+        } else if (g < groups) {
+            /* Two levels, an information group's 45 bytes four beliefs a word into the
+             * layer scratch (free until the first layer), then into the slot as above. */
+            const uint8_t *h = in->hard + 45 * g, *w = in->weak + 45 * g;
+            int8_t *row = __builtin_assume_aligned(f->r, 16);
+            for (unsigned b = 0; b < 45; ++b) {
+                const uint32_t v[2] = {two_level4(h[b] >> 4, w[b] >> 4), two_level4(h[b] & 15u, w[b] & 15u)};
+                memcpy(row + 8 * b, v, 8);
+            }
+            memcpy(slot + frame, row, 360 - frame);
+            memcpy(slot, row + 360 - frame, frame);
+        } else if (llr) {
+            for (unsigned t = 0, i = f->nbch + (g - groups), at = frame; t < 360; ++t, i += q, at = at == 359 ? 0 : at + 1) {
+                slot[at] = llr[i];
+            }
         } else {
-            const unsigned first = g < groups ? 360 * g : f->nbch + (g - groups), stride = g < groups ? 1 : q;
-            for (unsigned t = 0, i = first, at = frame; t < 360; ++t, i += stride, at = at == 359 ? 0 : at + 1) {
-                slot[at] = llr ? llr[i] : two_level(in, i);
+            /* Two levels, a parity group: every q-th bit. The pointers stay in registers (a
+             * char store may alias the frame's fields) and the belief is branch-free. */
+            const uint8_t *h = in->hard, *w = in->weak;
+            for (unsigned t = 0, i = f->nbch + (g - groups), at = frame; t < 360; ++t, i += q, at = at == 359 ? 0 : at + 1) {
+                const unsigned s = 7 - (i & 7), hb = h[i >> 3] >> s & 1, v = RX_LMAX - (RX_LMAX - WEAK) * (w[i >> 3] >> s & 1);
+                slot[at] = (int8_t)((v ^ (0u - hb)) + hb);
             }
         }
         memcpy(slot + 360, slot, 16);
