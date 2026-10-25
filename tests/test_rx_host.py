@@ -87,6 +87,16 @@ def main():
                                    cc_errors=0, resyncs=0, late=0, not_ts=0,
                                    pattern=dict(checked=231, bad=0, jumps=0, wraps=0)))
     assert rx.ts_verdict([good], False, ok)["passed"]
+    # Queued repairs now reach the TS in order. Older summaries still subtract every repair;
+    # a repair given up by the ordering buffer stays a good USB record but cannot fill the TS.
+    repaired = dict(good, decoded=3, order=dict(held=8, max_held=5, repaired=3, given_up=0))
+    verdict = rx.ts_verdict([repaired], False, ok)
+    assert verdict["passed"] and verdict["expected_frames"] == 30, verdict
+    assert not rx.ts_verdict([dict(good, decoded=3)], False, ok)["passed"]
+    late = dict(repaired, order=dict(held=8, max_held=5, repaired=2, given_up=1),
+                ts=dict(good["ts"], frames=29))
+    verdict = rx.ts_verdict([late], False, ok)
+    assert not verdict["passed"] and verdict["expected_frames"] == 29, verdict
     for taken, packets in ((1, 1), (30, 230), (29, 231), (30, 232)):
         bad = dict(good, ts=dict(good["ts"], frames=taken, packets=packets,
                                  pattern=dict(good["ts"]["pattern"], checked=packets)))
