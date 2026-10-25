@@ -77,8 +77,9 @@ The transmitter encoded 5,725,502 data frames and filled the rest of its 10.39 M
 - **The transmitter's input.** In run 21 the transmitter missed 27 SPI messages from the CM5
   (10 skipped, 17 short); with its 2 dropped frames that gave 11 continuity errors. Of the 23
   continuity errors in all, 22 fall in the five runs with dropped frames. The one in run 31
-  matches no counter on either board, like the source-stream errors in
-  [full quality](../2026-10-23-eth-full-quality/README.md#where-the-remaining-stutter-comes-from).
+  is the frame the LDPC decoder repaired there (`decoded` 1, 2 iterations): in TS mode a repaired
+  frame arrives too late for the stream and its packets are dropped
+  ([receiver](../../docs/receiver.md#transport-streams)).
 - **The cameras.** `pv-capture` dropped 2 to 19 frames per camera per run as
   `capture_queue_full`, 274 of about 499,200, plus one `camera_frame_error` per camera as each
   run started.
