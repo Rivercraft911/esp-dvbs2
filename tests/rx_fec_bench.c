@@ -496,7 +496,8 @@ static void bench(void)
  * 8PSK turned back by pi/8: b1 = x < 0, b2 = y < 0, b0 = |y| > |x|, bit i of symbol k from
  * column i of the interleaver, reversed for 3/5, as release_run reads them), complex Gaussian
  * noise at the given Es/N0, then the receiver's PIE demappers into hard and weak bits. The
- * decoder gets no soft bits, as on the board, and its work area is in PSRAM, as in receive.c.
+ * decoder gets no soft bits, as on the board, and everything it touches is in PSRAM, as in
+ * receive.c: its state (rx_fec_size), its work area and its copy of the frame.
  * Symbols carry no carrier, timing or amplitude error: this is the decoder, not the
  * synchronization. One summary per call; cycles are rx_fec_frame's, check included, and
  * setup_cycles the first frame's check and belief load with no iteration allowed. */
@@ -509,7 +510,6 @@ static uint32_t curve_cycles[CURVE_FRAMES];
 static int16_t sym_i[RX_SHORT_BITS / 2] __attribute__((aligned(16)));
 static int16_t sym_q[RX_SHORT_BITS / 2] __attribute__((aligned(16)));
 static uint8_t no_scrambling[RX_SHORT_BITS / 8] __attribute__((aligned(16)));
-static uint8_t weak_bits[RX_HARD_BYTES] __attribute__((aligned(16)));
 
 static void gaussian2(float *a, float *b)
 {
@@ -540,10 +540,11 @@ static void curve(unsigned modcod, int esn0_cdb, unsigned frames)
         return;
     }
     const unsigned psk8 = modcod >= 12, bytes = (mode->kbch - 80) / 8;
-    rx_fec_t *f = (rx_fec_t *)alloc(rx_fec_size(modcod));
+    rx_fec_t *f = heap_caps_aligned_alloc(16, rx_fec_size(modcod), MALLOC_CAP_SPIRAM);
     void *work = heap_caps_aligned_alloc(16, rx_fec_work_size(modcod), MALLOC_CAP_SPIRAM);
-    uint8_t *hard = alloc(RX_HARD_BYTES), *payload = alloc(2048);
-    if (!f || !work || !hard || !payload || rx_fec_init(f, modcod, work)) {
+    uint8_t *hard = heap_caps_aligned_alloc(16, RX_HARD_BYTES, MALLOC_CAP_SPIRAM);
+    uint8_t *weak = heap_caps_aligned_alloc(16, RX_HARD_BYTES, MALLOC_CAP_SPIRAM), *payload = alloc(2048);
+    if (!f || !work || !hard || !weak || !payload || rx_fec_init(f, modcod, work)) {
         printf("@{\"cmd\":\"curve\",\"error\":\"setup\"}\n");
         goto out;
     }
@@ -552,11 +553,11 @@ static void curve(unsigned modcod, int esn0_cdb, unsigned frames)
     demod_run_t k;
     demod_run_init(&k, 0, 0, 0, 0, 0, (int16_t)((psk8 ? LLR8_UNIT : LLR_UNIT) / 4 / CURVE_A));
     const unsigned n = psk8 ? RX_SHORT_BITS / 3 : RX_SHORT_BITS / 2, rev = modcod == 12;
-    demod_out_t o = {{hard}, {weak_bits}, {NULL}};
+    demod_out_t o = {{hard}, {weak}, {NULL}};
     if (psk8) {
         for (unsigned p = 0; p < 3; ++p) {
             o.hard[p] = hard + (rev ? 2 - p : p) * (n / 8);
-            o.weak[p] = weak_bits + (rev ? 2 - p : p) * (n / 8);
+            o.weak[p] = weak + (rev ? 2 - p : p) * (n / 8);
         }
     }
     unsigned ok = 0, wrong = 0, failed = 0, hist[9] = {0};
@@ -586,7 +587,7 @@ static void curve(unsigned modcod, int esn0_cdb, unsigned frames)
         }
         (psk8 ? demod_8psk_pie : demod_qpsk_pie)(sym_i, sym_q, n, no_scrambling, &k, &o);
         for (unsigned b = 0; b < RX_SHORT_BITS / 8; ++b) bit_errors += __builtin_popcount(hard[b] ^ c[b]);
-        rx_frame_t frame = {.hard = hard, .weak = weak_bits, .modcod = (uint8_t)modcod, .type = 3};
+        rx_frame_t frame = {.hard = hard, .weak = weak, .modcod = (uint8_t)modcod, .type = 3};
         const uint8_t *p = NULL;
         rx_fec_stats_t st = {0};
         if (!j) {                   /* no iteration allowed: the check and the belief load alone */
@@ -621,7 +622,7 @@ static void curve(unsigned modcod, int esn0_cdb, unsigned frames)
     for (unsigned i = 0; i < 9; ++i) printf("%s%" PRIu64, i ? "," : "", hist[i] ? by_iter[i] / hist[i] : 0);
     printf("]}\n");
 out:
-    heap_caps_free(f); heap_caps_free(work); heap_caps_free(hard); heap_caps_free(payload);
+    heap_caps_free(f); heap_caps_free(work); heap_caps_free(hard); heap_caps_free(weak); heap_caps_free(payload);
 }
 
 /* "setup MODCOD": what a decode costs before its first iteration, with the work area in PSRAM
@@ -634,49 +635,61 @@ __attribute__((unused)) static void setup_costs(unsigned modcod)
         printf("@{\"cmd\":\"setup\",\"error\":\"setup MODCOD 4-10|12-16\"}\n");
         return;
     }
+    /* Placements of the decoder's state, work area and frame copy: as receive.c (all PSRAM),
+     * the work area alone in PSRAM, all internal. */
+    static const char *const names[3] = {"live", "work_psram", "internal"};
+    static const uint32_t caps[3][3] = {{MALLOC_CAP_SPIRAM, MALLOC_CAP_SPIRAM, MALLOC_CAP_SPIRAM},
+                                        {INTERNAL, MALLOC_CAP_SPIRAM, INTERNAL},
+                                        {INTERNAL, INTERNAL, INTERNAL}};
     const size_t size = rx_fec_size(modcod), work_size = rx_fec_work_size(modcod);
-    rx_fec_t *f = (rx_fec_t *)alloc(size), *check = (rx_fec_t *)alloc(size);
-    void *areas[2] = {heap_caps_aligned_alloc(16, work_size, MALLOC_CAP_SPIRAM),
-                      heap_caps_aligned_alloc(16, work_size, INTERNAL)};
-    uint8_t *hard = alloc(RX_HARD_BYTES);
+    rx_fec_t *check = (rx_fec_t *)alloc(size);
+    uint8_t *frame_bits = alloc(2 * RX_HARD_BYTES);
     evictor = heap_caps_malloc(EVICT_BYTES, MALLOC_CAP_SPIRAM);
-    if (!f || !check || !areas[0] || !areas[1] || !hard || rx_fec_init(check, modcod, NULL)) {
+    uint32_t t[1 + 3 * 3] = {0};
+    if (!check || !frame_bits || rx_fec_init(check, modcod, NULL)) {
         printf("@{\"cmd\":\"setup\",\"error\":\"allocation\"}\n");
         goto out;
     }
-    memset(weak_bits, 0x21, RX_HARD_BYTES);
-    rx_frame_t frame = {.hard = hard, .weak = weak_bits, .modcod = (uint8_t)modcod, .type = 3};
     const uint8_t *p;
     rx_fec_stats_t st;
-    uint32_t t[7];
-    memset(hard, 0x5a, RX_HARD_BYTES);
+    memset(frame_bits, 0x5a, RX_HARD_BYTES);
+    memset(frame_bits + RX_HARD_BYTES, 0x21, RX_HARD_BYTES);
+    rx_frame_t frame = {.hard = frame_bits, .weak = frame_bits + RX_HARD_BYTES, .modcod = (uint8_t)modcod, .type = 3};
     t[0] = now();
     rx_fec_frame(check, &frame, &p, &st);
     t[0] = now() - t[0];
-    for (unsigned w = 0; w < 2; ++w) {
-        rx_fec_init(f, modcod, areas[w]);
-        f->max_iterations = 0;
-        memset(hard, 0x5a, RX_HARD_BYTES);
-        evict();
-        uint32_t a = now();
-        rx_fec_frame(f, &frame, &p, &st);
-        t[1 + 3 * w] = now() - a;
-        evict();
-        a = now();
-        memset(f->packed, 0, f->packed_bytes);
-        t[2 + 3 * w] = now() - a;
-        evict();
-        a = now();
-        memset(f->belief, 0x11, RX_GROUPS * RX_SLOT);
-        t[3 + 3 * w] = now() - a;
+    for (unsigned k = 0; k < 3; ++k) {
+        rx_fec_t *f = heap_caps_aligned_alloc(16, size, caps[k][0]);
+        void *work = heap_caps_aligned_alloc(16, work_size, caps[k][1]);
+        uint8_t *bits = heap_caps_aligned_alloc(16, 2 * RX_HARD_BYTES, caps[k][2]);
+        if (f && work && bits && !rx_fec_init(f, modcod, work)) {
+            f->max_iterations = 0;
+            memset(bits, 0x5a, RX_HARD_BYTES);
+            memset(bits + RX_HARD_BYTES, 0x21, RX_HARD_BYTES);
+            rx_frame_t x = {.hard = bits, .weak = bits + RX_HARD_BYTES, .modcod = (uint8_t)modcod, .type = 3};
+            evict();
+            uint32_t a = now();
+            rx_fec_frame(f, &x, &p, &st);
+            t[1 + 3 * k] = now() - a;
+            evict();
+            a = now();
+            memset(f->packed, 0, f->packed_bytes);
+            t[2 + 3 * k] = now() - a;
+            evict();
+            a = now();
+            memset(f->belief, 0x11, RX_GROUPS * RX_SLOT);
+            t[3 + 3 * k] = now() - a;
+        }
+        heap_caps_free(f); heap_caps_free(work); heap_caps_free(bits);
     }
-    printf("@{\"cmd\":\"setup\",\"modcod\":%u,\"check\":%" PRIu32 ",\"psram\":{\"setup\":%" PRIu32
-           ",\"memset_packed\":%" PRIu32 ",\"memset_slots\":%" PRIu32 "},\"internal\":{\"setup\":%" PRIu32
-           ",\"memset_packed\":%" PRIu32 ",\"memset_slots\":%" PRIu32 "},\"packed_bytes\":%u}\n", modcod, t[0],
-           t[1], t[2], t[3], t[4], t[5], t[6], (unsigned)f->packed_bytes);
+    printf("@{\"cmd\":\"setup\",\"modcod\":%u,\"check\":%" PRIu32, modcod, t[0]);
+    for (unsigned k = 0; k < 3; ++k) {
+        printf(",\"%s\":{\"setup\":%" PRIu32 ",\"memset_packed\":%" PRIu32 ",\"memset_slots\":%" PRIu32 "}",
+               names[k], t[1 + 3 * k], t[2 + 3 * k], t[3 + 3 * k]);
+    }
+    printf("}\n");
 out:
-    heap_caps_free(f); heap_caps_free(check); heap_caps_free(areas[0]); heap_caps_free(areas[1]);
-    heap_caps_free(hard); heap_caps_free((void *)evictor);
+    heap_caps_free(check); heap_caps_free(frame_bits); heap_caps_free((void *)evictor);
     evictor = NULL;
 }
 
