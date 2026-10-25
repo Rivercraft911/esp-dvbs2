@@ -367,7 +367,7 @@ static esp_err_t start(void *ctx)
         /* Four levels for the decoder at 1 Msym/s only: the fine plane doubles the release's
          * demap cost, which core 0 can spare there (8% busy) but not at 5 Msym/s (39 to 63%),
          * where the decoder's time is the limit (results/2026-10-24-rx-fec-curve). */
-        r->slot[i].fine = four ? arena_take(&arena_fast, RX_HARD_BYTES) : NULL;
+        r->slot[i].fine = four ? arena_take(&arena_fine, RX_HARD_BYTES) : NULL;
         ok = r->slot[i].hard && r->slot[i].weak && (r->slot[i].fine || !four);
         uint8_t n = i;
         if (ok && i) xQueueSend(r->empty, &n, 0);   /* the release starts on slot 0 */

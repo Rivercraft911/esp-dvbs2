@@ -263,7 +263,7 @@ int main(void)
         for (unsigned j = 0; j < 3; ++j) {
             CHECK(arena_take(&arena_high, RX_HARD_BYTES));
             CHECK(arena_take(&arena_high, RX_HARD_BYTES));
-            CHECK(arena_take(&arena_fast, RX_HARD_BYTES));     /* fine, at 1 Msym/s */
+            CHECK(arena_take(&arena_fine, RX_HARD_BYTES));     /* fine, at 1 Msym/s */
         }
         CHECK(arena_take(&arena_psram, rx_fec_size(m)));
         CHECK(arena_take(&arena_psram, rx_fec_work_size(m)));
@@ -276,8 +276,8 @@ int main(void)
         }
         CHECK(arena_take(&arena_psram, rx_order_size(ORDER_FRAMES)));
         CHECK(arena_take(&arena_psram, 1024));
-        printf("%u: low %zu, high %zu, psram %zu, fast %zu\n", m, arena_low.used, arena_high.used,
-               arena_psram.used, arena_fast.used);
+        printf("%u: low %zu, high %zu, psram %zu, fast %zu, fine %zu\n", m, arena_low.used,
+               arena_high.used, arena_psram.used, arena_fast.used, arena_fine.used);
     }
     return 0;
 }
