@@ -28,8 +28,8 @@
 #define demod_mf demod_mf_pie
 #define demod_sum demod_sum_pie
 #define demod_turn demod_turn_pie
-#define demod_qpsk(o) ((o)->llr[0] ? demod_qpsk_c : demod_qpsk_pie)
-#define demod_8psk(o) ((o)->llr[0] ? demod_8psk_c : demod_8psk_pie)
+#define demod_qpsk(o) ((o)->llr[0] ? demod_qpsk_c : (o)->fine[0] ? demod_qpsk4_pie : demod_qpsk_pie)
+#define demod_8psk(o) ((o)->llr[0] ? demod_8psk_c : (o)->fine[0] ? demod_8psk4_pie : demod_8psk_pie)
 #else
 #define demod_halves demod_halves_c
 #define demod_signs demod_signs_c
@@ -44,9 +44,12 @@
 
 /* Offsets demod_pie.S relies on. */
 _Static_assert(offsetof(demod_run_t, sel) == 96 && offsetof(demod_run_t, gain) == 128 &&
-               offsetof(demod_run_t, weak) == 192 && offsetof(demod_run_t, table) == 256,
+               offsetof(demod_run_t, weak) == 192 && offsetof(demod_run_t, table) == 256 &&
+               offsetof(demod_run_t, level8) == 272 && offsetof(demod_run_t, level32) == 288,
                "demod_run_t layout");
-_Static_assert(offsetof(demod_out_t, weak) == 3 * sizeof(uint8_t *), "demod_out_t layout");
+_Static_assert(offsetof(demod_out_t, weak) == 3 * sizeof(uint8_t *) &&
+               offsetof(demod_out_t, llr) == 6 * sizeof(uint8_t *) &&
+               offsetof(demod_out_t, fine) == 9 * sizeof(uint8_t *), "demod_out_t layout");
 
 #ifndef RX_DEMOD_NORMAL
 #define RX_DEMOD_NORMAL 0         /* 1: also 64,800-bit frames (host tests on the corpus) */
@@ -693,6 +696,8 @@ void demod_run_init(demod_run_t *k, uint32_t inc, int16_t lr, int16_t li, int16_
         k->weight[0][j] = (int16_t)(0x8000u >> j);
         k->weight[1][j] = (int16_t)(0x80u >> j);
         k->one[j] = 1;
+        k->level8[j] = 8;
+        k->level32[j] = 32;
     }
     k->table = rx_sin;
 }
@@ -737,13 +742,19 @@ static inline unsigned weak16(int16_t s)
     return s < 16 && s > -16;
 }
 
+static inline unsigned fine16(int16_t s)
+{
+    const int a = s < 0 ? -(int)s : s;
+    return (a >= 8 && a < 16) || a >= 32;
+}
+
 void demod_qpsk_c(const int16_t *yi, const int16_t *yq, unsigned n, const uint8_t *scr,
                   const demod_run_t *k, const demod_out_t *o)
 {
     uint8_t *hard = o->hard[0], *weak = o->weak[0];
     int8_t *llr = o->llr[0];
     for (unsigned g = 0; 8 * g < n; ++g, yi += 8, yq += 8, hard += 2, weak += 2) {
-        unsigned w = scr[2 * g] | (unsigned)scr[2 * g + 1] << 8, h = 0, v = 0;
+        unsigned w = scr[2 * g] | (unsigned)scr[2 * g + 1] << 8, h = 0, v = 0, f = 0;
         for (unsigned j = 0; j < 8; ++j) {
             int16_t x, y;
             descramble(yi[j], yq[j], w, j, &x, &y);
@@ -754,12 +765,15 @@ void demod_qpsk_c(const int16_t *yi, const int16_t *yq, unsigned n, const uint8_
             }
             h = h << 2 | (unsigned)(sa < 0) << 1 | (unsigned)(sb < 0);
             v = v << 2 | weak16(sa) << 1 | weak16(sb);
+            if (o->fine[0]) f = f << 2 | fine16(sa) << 1 | fine16(sb);
         }
         hard[0] = (uint8_t)(h >> 8);
         weak[0] = (uint8_t)(v >> 8);
+        if (o->fine[0]) o->fine[0][2 * g] = (uint8_t)(f >> 8);
         if (8 * g + 8 <= n) {
             hard[1] = (uint8_t)h;
             weak[1] = (uint8_t)v;
+            if (o->fine[0]) o->fine[0][2 * g + 1] = (uint8_t)f;
         }
     }
 }
@@ -771,7 +785,7 @@ void demod_8psk_c(const int16_t *yi, const int16_t *yq, unsigned n, const uint8_
                   const demod_run_t *k, const demod_out_t *o)
 {
     for (unsigned g = 0; 8 * g < n; ++g, yi += 8, yq += 8) {
-        unsigned w = scr[2 * g] | (unsigned)scr[2 * g + 1] << 8, h[3] = {0}, v[3] = {0};
+        unsigned w = scr[2 * g] | (unsigned)scr[2 * g + 1] << 8, h[3] = {0}, v[3] = {0}, f[3] = {0};
         for (unsigned j = 0; j < 8; ++j) {
             int16_t x, y;
             descramble(yi[j], yq[j], w, j, &x, &y);
@@ -784,11 +798,13 @@ void demod_8psk_c(const int16_t *yi, const int16_t *yq, unsigned n, const uint8_
                 }
                 h[p] = h[p] << 1 | (s[p] < 0);
                 v[p] = v[p] << 1 | weak16(s[p]);
+                if (o->fine[p]) f[p] = f[p] << 1 | fine16(s[p]);
             }
         }
         for (unsigned p = 0; p < 3; ++p) {
             o->hard[p][g] = (uint8_t)h[p];
             o->weak[p][g] = (uint8_t)v[p];
+            if (o->fine[p]) o->fine[p][g] = (uint8_t)f[p];
         }
     }
 }
@@ -904,19 +920,21 @@ static void release_run(rx_demod_t *d, const run_t *r, rx_frame_t *f)
         demod_turn(d->yi + at, d->yq + at, (n + 7) / 8, r->phase + r->inc * done, 8 * r->inc, &k);
         int16_t *tap = __atomic_load_n(&d->tap, __ATOMIC_ACQUIRE);
         if (tap) tap_run(d, tap, d->yi + at, d->yq + at, n, r->gain);
-        demod_out_t o = {{0}, {0}, {0}};
+        demod_out_t o = {0};
         if (d->psk8) {
             for (unsigned p = 0; p < 3; ++p) {
                 unsigned at_p = (rev ? 2 - p : p) * plane;
                 o.hard[p] = f->hard + at_p + d0 / 8;
                 o.weak[p] = f->weak + at_p + d0 / 8;
                 o.llr[p] = f->llr ? f->llr + 8 * at_p + d0 : NULL;
+                o.fine[p] = f->fine ? f->fine + at_p + d0 / 8 : NULL;
             }
             demod_8psk(&o)(d->yi + at, d->yq + at, n, d->scr + d0 / 4, &k, &o);
         } else {
             o.hard[0] = f->hard + d0 / 4;
             o.weak[0] = f->weak + d0 / 4;
             o.llr[0] = f->llr ? f->llr + 2 * d0 : NULL;
+            o.fine[0] = f->fine ? f->fine + d0 / 4 : NULL;
             demod_qpsk(&o)(d->yi + at, d->yq + at, n, d->scr + d0 / 4, &k, &o);
         }
         done += n;

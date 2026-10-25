@@ -33,7 +33,8 @@ class Pid(ct.Structure):
 
 class Frame(ct.Structure):
     _fields_ = [("llr", ct.POINTER(ct.c_int8)), ("hard", ct.POINTER(ct.c_uint8)),
-                ("weak", ct.POINTER(ct.c_uint8)), ("header_sample", ct.c_uint64), ("sequence", ct.c_uint32),
+                ("weak", ct.POINTER(ct.c_uint8)), ("fine", ct.POINTER(ct.c_uint8)),
+                ("header_sample", ct.c_uint64), ("sequence", ct.c_uint32),
                 ("cfo_hz", ct.c_int32), ("clock_ppb", ct.c_int32), ("mer_cdb", ct.c_int16),
                 ("modcod", ct.c_uint8), ("type", ct.c_uint8)]
 
@@ -363,7 +364,7 @@ def test_link(so, folder):
     for f in demod.frames:
         hard = (ct.c_uint8 * 2048)()
         ct.memmove(hard, np.packbits(f["hard"]).tobytes(), 2025)
-        frame = Frame(None, hard, None, 0, f["sequence"], 0, 0, 0, f["modcod"], f["type"])
+        frame = Frame(None, hard, None, None, 0, f["sequence"], 0, 0, 0, f["modcod"], f["type"])
         payload = ct.POINTER(ct.c_uint8)()
         n = so.rx_fec_frame(fec, ct.byref(frame), ct.byref(payload), None)
         assert n == dfl, n

@@ -16,6 +16,76 @@ import rx_demod as R  # noqa: E402
 import rx_twin as T  # noqa: E402
 
 
+def fine_bits(soft):
+    a = np.abs(soft.astype(int))
+    return ((a >= 8) & (a < 16)) | (a >= 32)
+
+
+def four_levels(so):
+    """Fine planes from the C kernels' own soft bits, thresholds and clipping included.
+    Also check NULL planes, packed tails and untouched bytes past each output."""
+    ct = R.ct
+
+    class Out(ct.Structure):
+        _fields_ = [(name, ct.c_void_p * 3) for name in ("hard", "weak", "llr", "fine")]
+
+    rng = np.random.default_rng(2026)
+    mem = np.zeros(512 + 16, np.uint8)
+    run = ct.c_void_p((mem.ctypes.data + 15) & ~15)
+    so.demod_run_init.argtypes = [ct.c_void_p, ct.c_uint32] + [ct.c_int16] * 5
+    scr = rng.integers(0, 256, 400, dtype=np.uint8)
+    edges = [-32768, -32767, -128, -127, -33, -32, -31, -17, -16, -15, -9, -8, -7,
+             -1, 0, 1, 7, 8, 9, 15, 16, 17, 31, 32, 33, 127, 128, 32767]
+    for gain in (16384, 8148, 256):
+        so.demod_run_init(run, 0, 0, 0, 0, 0, gain)
+        yi, yq = [rng.integers(-32768, 32768, 1448, dtype=np.int16) for _ in range(2)]
+        yi[:len(edges)] = edges
+        yq[:len(edges)] = edges[::-1]
+        for psk8 in (False, True):
+            kernel = so.demod_8psk_c if psk8 else so.demod_qpsk_c
+            kernel.argtypes = [ct.c_void_p, ct.c_void_p, ct.c_uint, ct.c_void_p,
+                               ct.c_void_p, ct.POINTER(Out)]
+            for n in ((0, 8, 16, 536, 1440) if psk8 else (0, 4, 8, 12, 900, 1440)):
+                baseline = None
+                for planes in ((), (0, 1, 2), (1,)):
+                    hard, weak, fine = [np.full((3, 400), 0x55, np.uint8) for _ in range(3)]
+                    llr = np.full((3, 2888), 85, np.int8)
+                    out = Out(*[(ct.c_void_p * 3)(*[a[p].ctypes.data for p in range(3)])
+                                for a in (hard, weak, llr)],
+                              (ct.c_void_p * 3)(*[fine[p].ctypes.data if p in planes else None
+                                                  for p in range(3)]))
+                    kernel(yi.ctypes.data, yq.ctypes.data, n, scr.ctypes.data, run, ct.byref(out))
+                    if baseline is None:
+                        baseline = (hard.copy(), weak.copy(), llr.copy())
+                    assert all(np.array_equal(a, b) for a, b in zip((hard, weak, llr), baseline))
+                    for p in range(3 if psk8 else 1):
+                        bits = n if psk8 else 2 * n
+                        soft = llr[p, :bits]
+                        assert np.array_equal(np.unpackbits(hard[p, :bits // 8]), soft < 0)
+                        assert np.array_equal(np.unpackbits(weak[p, :bits // 8]), np.abs(soft.astype(int)) < 16)
+                        if p in planes:
+                            assert np.array_equal(np.unpackbits(fine[p, :bits // 8]), fine_bits(soft))
+                        else:
+                            assert (fine[p] == 0x55).all()
+                        assert (fine[p, bits // 8:] == 0x55).all()
+                        assert (hard[p, bits // 8:] == 0x55).all() and (weak[p, bits // 8:] == 0x55).all()
+                        assert (llr[p, bits:] == 85).all()
+    # Full release: codeword offsets and 8PSK 3/5's reversed columns, with llr and fine
+    # requested together. A second demodulator asks for no fine; existing outputs agree.
+    for modcod in (7, 12, 16):
+        words, _ = T.twin(T.Link(rate=5e6, modcod=modcod, frames=5, mer_db=18, seed=modcod))
+        demods = [R.Demod(so, modcod, rate=5e6, cfo_hint=-16600, cfo_span=40000, fine=f)
+                  for f in (False, True)]
+        for demod in demods:
+            for k in range(0, len(words), R.UNIT):
+                demod.feed(words[k:k + R.UNIT])
+        assert len(demods[0].frames) == len(demods[1].frames) == 4
+        for plain, fine in zip(demods[0].frames, demods[1].frames):
+            assert all(np.array_equal(plain[key], fine[key]) for key in ("hard", "weak", "llr"))
+            assert np.array_equal(fine["fine"], fine_bits(fine["llr"]))
+    print("four-level C demappers: thresholds, NULL planes, tails, QPSK and reversed 8PSK columns: ok")
+
+
 def matched(demod, truth):
     """Frames paired with the twin's truth by header time: (frame, truth) list."""
     out = []
@@ -289,6 +359,7 @@ def main():
         pairs = matched(d, truth)
         assert len(pairs) == 2 and all(np.array_equal(f["hard"], t["codeword"]) for f, t in pairs)
 
+        four_levels(so)
         loss5 = fast(so)
         wrong = mf5_plan(so)
 

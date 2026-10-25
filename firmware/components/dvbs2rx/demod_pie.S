@@ -18,10 +18,13 @@
     .set GAIN, 128
     .set WEAK, 192
     .set TABLE, 256
+    .set LEVEL8, 272
+    .set LEVEL32, 288
 
 /* demod_out_t offsets: hard[3], weak[3] */
     .set HARD0, 0
     .set WEAK0, 12
+    .set FINE0, 36
 
     .set STRIDE, 4352                        /* DEMOD_STRIDE: rq - ri */
     .set MF5_SHIFT, 2                        /* RX_MF5_SHIFT */
@@ -537,3 +540,138 @@ demod_8psk_pie:
 1:
     retw
     .size demod_8psk_pie, . - demod_8psk_pie
+
+/* The four-level kernels run from flash: the receiver uses them only at 1 Msym/s, where core 0
+ * has time to spare (they cost twice the two-level ones), and IRAM shares the SRAM that static
+ * DRAM must end below the capture banks in. */
+    .section .text.demod_four, "ax"
+
+/* Add the fine plane without changing the two-level kernels. q4 stays zero and q6/q7
+ * keep their soft bits. Saturating abs(-32768) to 32767 leaves all thresholds unchanged.
+ * fine = NOT((|s| < 8) XOR (|s| < 16) XOR (|s| < 32)). Clobbers q0..q3, a10, a14;
+ * adds the weighted fine bits to ACCX, preserving q5 (16 for plane8). */
+    .macro fine_bits8 sa, weight
+    ee.vsubs.s16 q1, q4, \sa
+    ee.vmax.s16 q1, q1, \sa
+    movi a10, LEVEL8
+    add a10, a6, a10
+    ee.vld.128.ip q2, a10, 16                /* 8 */
+    ee.vld.128.ip q3, a10, 0                 /* 32 */
+    ee.vcmp.lt.s16 q0, q1, q2
+    ee.vcmp.lt.s16 q2, q1, q3
+    movi a10, WEAK
+    add a10, a6, a10
+    ee.vld.128.ip q3, a10, 0                 /* 16 */
+    ee.vcmp.lt.s16 q1, q1, q3
+    ee.xorq q0, q0, q1
+    ee.xorq q0, q0, q2
+    ee.notq q0, q0
+    movi a14, \weight
+    add a14, a6, a14
+    ee.vld.128.ip q2, a14, 240 - \weight     /* weights; a14 to ones */
+    ee.vld.128.ip q3, a14, 0
+    ee.andq q0, q0, q2
+    ee.vmulas.u16.accx q0, q3
+    .endm
+
+/* One loop includes the padded four-symbol tail; only its high output bytes are stored.
+ * a11 is free after loopnez loads LCOUNT, so it holds the packed fine bits. */
+    .align 4
+    .global demod_qpsk4_pie
+    .type demod_qpsk4_pie, @function
+demod_qpsk4_pie:
+    entry a1, 32
+    l32i a8, a7, HARD0
+    l32i a9, a7, WEAK0
+    l32i a12, a7, FINE0
+    movi a7, WEAK
+    add a7, a6, a7
+    movi a10, 14
+    wsr.sar a10
+    ee.zero.q q4
+    addi a11, a4, 7
+    srli a11, a11, 3
+    loopnez a11, 1f
+    qpsk_group
+    ee.zero.accx
+    fine_bits8 q6, 208
+    fine_bits8 q7, 224
+    rur.accx_0 a11
+    srli a14, a13, 8
+    s8i a14, a8, 0
+    srli a14, a15, 8
+    s8i a14, a9, 0
+    srli a14, a11, 8
+    s8i a14, a12, 0
+    bltui a4, 8, 2f
+    s8i a13, a8, 1
+    s8i a15, a9, 1
+    s8i a11, a12, 1
+2:
+    addi a8, a8, 2
+    addi a9, a9, 2
+    addi a12, a12, 2
+    addi a4, a4, -8
+1:
+    retw
+    .size demod_qpsk4_pie, . - demod_qpsk4_pie
+
+/* a7..a9 hard, a11..a13 weak as before; the output descriptor and byte index live
+ * on the stack because the fine planes need three more pointers than fit in registers. They
+ * sit in the frame's own 16 bytes at a1: with call8 the 32 above it are the save areas of
+ * this window's a4..a7 and the caller's a0..a3, which a window spill overwrites. */
+    .macro plane4 sa, hard, weak, offset
+    movi a14, 208
+    add a14, a6, a14
+    plane8 \sa, \hard, \weak
+    ee.zero.accx
+    fine_bits8 \sa, 224
+    rur.accx_0 a15
+    l32i a10, a1, 0
+    l32i a10, a10, FINE0 + \offset
+    l32i a14, a1, 4
+    add a10, a10, a14
+    s8i a15, a10, 0
+    .endm
+
+    .align 4
+    .global demod_8psk4_pie
+    .type demod_8psk4_pie, @function
+demod_8psk4_pie:
+    entry a1, 48
+    s32i a7, a1, 0
+    movi a10, 0
+    s32i a10, a1, 4
+    l32i a11, a7, WEAK0
+    l32i a12, a7, WEAK0 + 4
+    l32i a13, a7, WEAK0 + 8
+    l32i a8, a7, HARD0 + 4
+    l32i a9, a7, HARD0 + 8
+    l32i a7, a7, HARD0
+    movi a10, 14
+    wsr.sar a10
+    ee.zero.q q4
+    srli a4, a4, 3
+    loopnez a4, 1f
+    addi a10, a6, SEL
+    descramble8
+    ee.vsubs.s16 q0, q4, q6
+    ee.vmax.s16 q0, q0, q6
+    ee.vsubs.s16 q1, q4, q7
+    ee.vmax.s16 q1, q1, q7
+    ee.vsubs.s16 q0, q0, q1
+    ee.vld.128.ip q2, a10, 16
+    ee.vmul.s16 q6, q6, q2
+    ee.vmul.s16 q7, q7, q2
+    ee.vld.128.ip q2, a10, 48
+    ee.vmul.s16 q0, q0, q2
+    ee.vld.128.ip q5, a10, 0
+    plane4 q0, a7, a11, 0
+    plane4 q6, a8, a12, 4
+    plane4 q7, a9, a13, 8
+    l32i a10, a1, 4
+    addi a10, a10, 1
+    s32i a10, a1, 4
+1:
+    retw
+    .size demod_8psk4_pie, . - demod_8psk4_pie

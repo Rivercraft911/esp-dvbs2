@@ -672,6 +672,16 @@ static inline uint32_t two_level4(unsigned hard, unsigned weak)
     const uint32_t neg = spread4[hard], v = RX_LMAX * 0x01010101u - (RX_LMAX - WEAK) * spread4[weak];
     return (v ^ neg * 0xffu) + neg;
 }
+
+/* REP = {4, 12, 24, 48}: weak selects the lower pair, fine the odd level. All
+ * arithmetic stays within each byte, including the same sign expansion as above. */
+static inline uint32_t four_level4(unsigned hard, unsigned weak, unsigned fine)
+{
+    const uint32_t neg = spread4[hard];
+    const uint32_t v = 24 * 0x01010101u - 20 * spread4[weak] + 24 * spread4[fine] -
+                       16 * spread4[weak & fine];
+    return (v ^ neg * 0xffu) + neg;
+}
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
 #error "two_level4 writes little-endian words"
 #endif
@@ -680,7 +690,8 @@ static inline uint32_t two_level4(unsigned hard, unsigned weak)
  * that aims at RX_UNITS integer units per natural LLR whatever the demodulator's scale
  * K: if x / K ~ N(+-1, s^2), the natural LLR is 2 x / (K s^2) = 2 m x / v with m and v
  * the mean and variance of |x| (|x| rarely folds over zero above about 1 dB Es/N0).
- * The gain is at most 4. Without soft bits the two levels are already at that scale. */
+ * The gain is at most 4. Four levels use REP as soft values and the same gain;
+ * two levels are already at that scale. */
 static HOT void load(rx_fec_t *f, const rx_frame_t *in)
 {
     const unsigned groups = f->groups, q = f->q;
@@ -692,19 +703,36 @@ static HOT void load(rx_fec_t *f, const rx_frame_t *in)
             memcpy(slot + frame, llr + 360 * g, 360 - frame);
             memcpy(slot, llr + 360 * g + 360 - frame, frame);
         } else if (g < groups) {
-            /* Two levels, an information group's 45 bytes four beliefs a word into the
+            /* An information group's 45 bytes four beliefs a word into the
              * layer scratch (free until the first layer), then into the slot as above. */
             const uint8_t *h = in->hard + 45 * g, *w = in->weak + 45 * g;
             int8_t *row = __builtin_assume_aligned(f->r, 16);
-            for (unsigned b = 0; b < 45; ++b) {
-                const uint32_t v[2] = {two_level4(h[b] >> 4, w[b] >> 4), two_level4(h[b] & 15u, w[b] & 15u)};
-                memcpy(row + 8 * b, v, 8);
+            if (in->fine) {
+                const uint8_t *fine = in->fine + 45 * g;
+                for (unsigned b = 0; b < 45; ++b) {
+                    const uint32_t v[2] = {four_level4(h[b] >> 4, w[b] >> 4, fine[b] >> 4),
+                                           four_level4(h[b] & 15u, w[b] & 15u, fine[b] & 15u)};
+                    memcpy(row + 8 * b, v, 8);
+                }
+            } else {
+                for (unsigned b = 0; b < 45; ++b) {
+                    const uint32_t v[2] = {two_level4(h[b] >> 4, w[b] >> 4), two_level4(h[b] & 15u, w[b] & 15u)};
+                    memcpy(row + 8 * b, v, 8);
+                }
             }
             memcpy(slot + frame, row, 360 - frame);
             memcpy(slot, row + 360 - frame, frame);
         } else if (llr) {
             for (unsigned t = 0, i = f->nbch + (g - groups), at = frame; t < 360; ++t, i += q, at = at == 359 ? 0 : at + 1) {
                 slot[at] = llr[i];
+            }
+        } else if (in->fine) {
+            const uint8_t *h = in->hard, *w = in->weak, *fine = in->fine;
+            for (unsigned t = 0, i = f->nbch + (g - groups), at = frame; t < 360; ++t, i += q, at = at == 359 ? 0 : at + 1) {
+                const unsigned s = 7 - (i & 7), hb = h[i >> 3] >> s & 1;
+                const unsigned wb = w[i >> 3] >> s & 1, fb = fine[i >> 3] >> s & 1;
+                const unsigned v = 24 - 20 * wb + (24 - 16 * wb) * fb;
+                slot[at] = (int8_t)((v ^ (0u - hb)) + hb);
             }
         } else {
             /* Two levels, a parity group: every q-th bit. The pointers stay in registers (a
@@ -718,11 +746,24 @@ static HOT void load(rx_fec_t *f, const rx_frame_t *in)
         memcpy(slot + 360, slot, 16);
     }
     memset(f->packed, 0, f->packed_bytes);
-    if (!llr) {
+    if (!llr && !in->fine) {
         return;
     }
     uint32_t sums[2];
-    KERNEL(f, rx_moments)(llr, RX_STAT_VECTORS, sums);
+    if (llr) {
+        KERNEL(f, rx_moments)(llr, RX_STAT_VECTORS, sums);
+    } else {
+        unsigned counts[4] = {0};
+        for (unsigned b = 0; b < 2 * RX_STAT_VECTORS; ++b) {
+            const unsigned w = in->weak[b], fine = in->fine[b];
+            counts[0] += popcount8(w & ~fine);
+            counts[1] += popcount8(w & fine);
+            counts[2] += popcount8((~w & ~fine) & 255u);
+            counts[3] += popcount8(~w & fine);
+        }
+        sums[0] = 4 * counts[0] + 12 * counts[1] + 24 * counts[2] + 48 * counts[3];
+        sums[1] = 16 * counts[0] + 144 * counts[1] + 576 * counts[2] + 2304 * counts[3];
+    }
     const uint64_t n = 16 * RX_STAT_VECTORS, s1 = sums[0], s2 = sums[1];
     const uint64_t den = n * s2 - s1 * s1;
     const uint64_t gain = den ? (32u * RX_UNITS * s1 * n + den / 2) / den : 64;
