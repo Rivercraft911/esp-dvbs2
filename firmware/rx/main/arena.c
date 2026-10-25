@@ -5,16 +5,18 @@
 #include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "heap_memory_layout.h"
+#include "receive_buffers.h"
 
 /* What a run takes, at its largest mode (sizes from rx_*_size):
- *   low:   demodulator (15.1 KB) + clean-path FEC (10.0 to 12.3 KB) + TS deframer (0.8 KB)
+ *   low:   demodulator (15.1 KB) + clean-path FEC (10.0 to 12.3 KB) + TS deframer (2.4 KB)
  *   high:  symbol ring (16 KB) + three frame slots of hard and weak bits (11.9 KB); membench
  *          borrows 16 KB of it
- *   psram: decoder state and work (66 to 81 KB) + the decoder's frame (4 KB) + CRC-32 table */
+ *   psram: decoder state and work (66 to 81 KB) + three jobs (12 KB) + ordering (32 KB) +
+ *          CRC-32 table (1 KB); exact rounded sizes checked for every mode below */
 #define LOW_BYTES (30U << 10)
 #define HIGH_BASE 0x3fce0000U       /* the first internal RAM above the banks (capture.h) */
 #define HIGH_BYTES (28U << 10)
-#define PSRAM_BYTES (96U << 10)
+#define PSRAM_BYTES (128U << 10)
 
 static uint8_t low[LOW_BYTES] __attribute__((aligned(16)));
 SOC_RESERVE_MEMORY_REGION(HIGH_BASE, HIGH_BASE + HIGH_BYTES, rx_arena);
@@ -39,8 +41,9 @@ int arena_check(void)
     for (unsigned k = 0; k < sizeof modcods; ++k) {
         const unsigned m = modcods[k];
         bad |= round16(rx_demod_size()) + round16(rx_fec_check_size(m)) + round16(rx_ts_size()) > LOW_BYTES;
-        bad |= round16(rx_fec_size(m)) + round16(rx_fec_work_size(m)) + 2 * round16(RX_HARD_BYTES) +
-               1024 > PSRAM_BYTES;
+        bad |= round16(rx_fec_size(m)) + round16(rx_fec_work_size(m)) +
+               round16(JOBS * sizeof(decode_job_t)) + round16(rx_order_size(ORDER_FRAMES)) +
+               round16(1024) > PSRAM_BYTES;
     }
     return bad;
 }

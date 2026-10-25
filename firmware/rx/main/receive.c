@@ -4,8 +4,8 @@
 // re-encode check and streams one binary record per frame over USB; the decoder runs the LDPC
 // decoder on frames that fail the check, one at a time, in PSRAM. A replay drives the same
 // receiver from a recorded capture instead of the radio (capture_replay). In TS mode the checker
-// then deframes each good frame into TS packets for the egress (ts_egress.h); frames the decoder
-// repairs come too late for the stream and are only recorded.
+// then deframes good and repaired frames in sequence order for the egress (ts_egress.h), holding
+// later frames behind decodes until the ordering buffer fills. USB records may be out of order.
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -25,6 +25,7 @@
 #include "capture.h"
 #include "dvbs2rx.h"
 #include "ingress_pattern.h"
+#include "receive_buffers.h"
 
 #define SLOTS 3U
 #define PIECE 3072U             /* words per push: the release starts within ~1,000 symbols */
@@ -33,15 +34,23 @@
 #define INTERNAL (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)
 
 typedef struct {
+    uint8_t index;
+    int length;
+    const uint8_t *payload;    /* within the job, which the checker frees after taking the result */
+} decode_result_t;
+
+typedef struct {
     rx_demod_t *demod;
     void *ring, *work;
     rx_fec_t *check, *decode;   /* the clean path (internal); the decoder (PSRAM) */
     rx_config_t config;
     bool crc;
     rx_frame_t slot[SLOTS];
-    rx_frame_t job;             /* the decoder's frame, copied to PSRAM */
-    volatile bool busy, stop;
-    QueueHandle_t full, empty;
+    decode_job_t *job;          /* JOBS frames and their bit planes, in PSRAM */
+    rx_order_t *order;          /* TS frames behind outstanding decodes, also in PSRAM */
+    unsigned free_jobs, pending; /* owned by the checker, including results not taken yet */
+    volatile bool stop;
+    QueueHandle_t full, empty, jobs, results;
     SemaphoreHandle_t done, usb;
     TaskHandle_t release, checker, decoder;
     uint32_t *crc_table;        /* 5 Msym/s: the record's CRC-32 by bytes (PSRAM) */
@@ -200,11 +209,16 @@ static void emit(void *ctx, const uint8_t *packet)
     if (e) e->packet(e->ctx, packet);
 }
 
-static void deframe(receiver_t *r, rx_frame_t *f, int length)
+static void deframe(void *ctx, uint32_t sequence, uint8_t *bbframe, int length)
 {
+    receiver_t *r = ctx;
+    assert(xTaskGetCurrentTaskHandle() == r->checker);
+    /* A gap has no bytes. The next good frame's sequence makes rx_ts_frame resync, exactly
+     * as on the direct path; rx_ts_flush handles a gap at the end of the run. */
+    if (!bbframe) return;
     receive_stats_t *s = r->stats;
     uint32_t start = esp_cpu_get_cycle_count();
-    rx_ts_frame(r->ts, f->hard, (unsigned)length, f->sequence);
+    rx_ts_frame(r->ts, bbframe, (unsigned)length, sequence);
     const ts_egress_t *e = r->options.egress;
     if (e && e->flush) e->flush(e->ctx);
     uint32_t cycles = esp_cpu_get_cycle_count() - start;
@@ -212,14 +226,31 @@ static void deframe(receiver_t *r, rx_frame_t *f, int length)
     if (cycles > s->max_ts_cycles) s->max_ts_cycles = cycles;
 }
 
-/* The clean path for every frame; a frame that fails its parity checks goes to the decoder
- * if it is free, or out as failed. */
+static void completed(receiver_t *r, const decode_result_t *result)
+{
+    if (r->order) {
+        const rx_frame_t *f = &r->job[result->index].frame;
+        rx_order_result(r->order, f->sequence,
+                        result->length >= 0 ? result->payload - 10 : NULL, result->length);
+    }
+    r->free_jobs |= 1U << result->index;
+    --r->pending;
+    if (r->order) rx_order_drain(r->order);
+}
+
+/* The clean path for every frame; failed parity checks go to the FIFO decoder while a job
+ * is free. Only this task takes decode results and hands TS frames to the deframer. */
 static void checker(void *arg)
 {
     receiver_t *r = arg;
     receive_stats_t *s = r->stats;
     uint8_t i;
-    while (xQueueReceive(r->full, &i, portMAX_DELAY) == pdTRUE && i != STOP) {
+    for (;;) {
+        decode_result_t result;
+        while (xQueueReceive(r->results, &result, 0) == pdTRUE) completed(r, &result);
+        /* One tick lets an idle receiver service results too, without starving the decoder. */
+        if (xQueueReceive(r->full, &i, 1) != pdTRUE) continue;
+        if (i == STOP) break;
         rx_frame_t *f = &r->slot[i];
         const uint8_t *payload = NULL;
         rx_fec_stats_t fec = {0};
@@ -228,20 +259,35 @@ static void checker(void *arg)
         uint32_t cycles = esp_cpu_get_cycle_count() - start;
         s->fec_cycles += cycles;
         if (cycles > s->max_fec_cycles) s->max_fec_cycles = cycles;
-        if (length < 0 && fec.failed_checks && !r->busy) {
-            uint8_t *hard = r->job.hard, *weak = r->job.weak;
-            r->job = *f;
-            r->job.hard = hard;
-            r->job.weak = weak;
-            memcpy(hard, f->hard, RX_HARD_BYTES);
-            memcpy(weak, f->weak, RX_HARD_BYTES);
-            r->busy = true;
-            xTaskNotifyGive(r->decoder);
+        if (length < 0 && fec.failed_checks && r->free_jobs) {
+            uint8_t j = 0;
+            while (!(r->free_jobs & (1U << j))) ++j;
+            decode_job_t *job = &r->job[j];
+            job->frame = *f;
+#define COPY(name) job->frame.name = job->name; memcpy(job->name, f->name, RX_HARD_BYTES);
+            JOB_PLANES(COPY)
+#undef COPY
+            r->free_jobs &= ~(1U << j);
+            ++r->pending;
+            if (r->order) rx_order_wait(r->order, f->sequence);
+            BaseType_t sent = xQueueSend(r->jobs, &j, 0);
+            assert(sent == pdTRUE);
         } else {
             record(r, f, length, payload, &fec);
-            if (r->ts && length >= 0) deframe(r, f, length);
+            if (r->order) rx_order_frame(r->order, f->sequence,
+                                        length >= 0 ? f->hard : NULL, length);
         }
         xQueueSend(r->empty, &i, portMAX_DELAY);
+    }
+    /* The checker must remain alive until every result is taken and deframed. */
+    while (r->pending) {
+        decode_result_t result;
+        xQueueReceive(r->results, &result, portMAX_DELAY);
+        completed(r, &result);
+    }
+    if (r->order) {
+        rx_order_drain(r->order);
+        rx_order_stats(r->order, &s->order);
     }
     if (r->ts) {                /* the end: a packet waiting for its CRC-8 goes on unchecked */
         rx_ts_flush(r->ts);
@@ -255,36 +301,40 @@ static void decoder(void *arg)
 {
     receiver_t *r = arg;
     receive_stats_t *s = r->stats;
-    for (;;) {
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        if (!r->busy) break;                    /* the stop */
+    uint8_t i;
+    while (xQueueReceive(r->jobs, &i, portMAX_DELAY) == pdTRUE && i != STOP) {
+        rx_frame_t *f = &r->job[i].frame;
         const uint8_t *payload = NULL;
         rx_fec_stats_t fec = {0};
-        int length = rx_fec_frame(r->decode, &r->job, &payload, &fec);
+        int length = rx_fec_frame(r->decode, f, &payload, &fec);
         s->decoded += length >= 0;
-        record(r, &r->job, length, payload, &fec);
-        r->busy = false;
+        record(r, f, length, payload, &fec);
+        decode_result_t result = {.index = i, .length = length, .payload = payload};
+        xQueueSend(r->results, &result, portMAX_DELAY);
     }
     quit(r, &s->decode_stack_free);
 }
 
 /* The queues and semaphores, made once at boot from static storage (receive_init). */
-static QueueHandle_t full_q, empty_q;
+static QueueHandle_t full_q, empty_q, jobs_q, results_q;
 static SemaphoreHandle_t done_sem, usb_sem;
 
 void receive_init(void)
 {
-    static StaticQueue_t full_s, empty_s;
+    static StaticQueue_t full_s, empty_s, jobs_s, results_s;
     static StaticSemaphore_t done_s, usb_s;
     static uint8_t full_items[SLOTS + 1], empty_items[SLOTS];
+    static uint8_t jobs_items[JOBS + 1], results_items[JOBS * sizeof(decode_result_t)];
     full_q = xQueueCreateStatic(SLOTS + 1, 1, full_items, &full_s);
     empty_q = xQueueCreateStatic(SLOTS, 1, empty_items, &empty_s);
+    jobs_q = xQueueCreateStatic(JOBS + 1, 1, jobs_items, &jobs_s);
+    results_q = xQueueCreateStatic(JOBS, sizeof(decode_result_t), results_items, &results_s);
     done_sem = xSemaphoreCreateCountingStatic(3, 0, &done_s);
     usb_sem = xSemaphoreCreateMutexStatic(&usb_s);
 }
 
 /* Every run's memory, from the arenas (internal RAM for what core 1 and the release touch, PSRAM
- * for the decoder), the core 0 tasks and the stream header. */
+ * for the decoder jobs and ordering buffer), the core 0 tasks and the stream header. */
 static esp_err_t start(void *ctx)
 {
     receiver_t *r = ctx;
@@ -296,13 +346,15 @@ static esp_err_t start(void *ctx)
     r->ring = arena_take(&arena_high, RX_DEMOD_RING_BYTES);
     r->decode = arena_take(&arena_psram, rx_fec_size(modcod));
     r->work = arena_take(&arena_psram, rx_fec_work_size(modcod));
-    r->job.hard = arena_take(&arena_psram, RX_HARD_BYTES);
-    r->job.weak = arena_take(&arena_psram, RX_HARD_BYTES);
+    r->job = arena_take(&arena_psram, JOBS * sizeof *r->job);
+    if (r->ts) r->order = arena_take(&arena_psram, rx_order_size(ORDER_FRAMES));
     if (r->crc) r->crc_table = arena_take(&arena_psram, 1024);
-    bool ok = r->demod && r->ring && r->check && r->decode && r->work && r->job.hard &&
-              r->job.weak && (r->ts || !r->options.ts) && (r->crc_table || !r->crc);
+    bool ok = r->demod && r->ring && r->check && r->decode && r->work && r->job &&
+              (r->ts || !r->options.ts) && (r->order || !r->options.ts) && (r->crc_table || !r->crc);
     xQueueReset(full_q);
     xQueueReset(empty_q);
+    xQueueReset(jobs_q);
+    xQueueReset(results_q);
     xQueueReset(done_sem);
     for (unsigned i = 0; ok && i < SLOTS; ++i) {
         r->slot[i].hard = arena_take(&arena_high, RX_HARD_BYTES);
@@ -321,6 +373,7 @@ static esp_err_t start(void *ctx)
         rx_fec_init(r->decode, modcod, r->work))
         return ESP_ERR_INVALID_ARG;
     if (r->ts) rx_ts_init(r->ts, r->options.drop_null, emit, r);
+    if (r->order) rx_order_init(r->order, ORDER_FRAMES, deframe, r);
     if (r->options.mon) {
         r->options.mon->ts = r->ts;
         r->options.mon->demod = r->demod;
@@ -366,8 +419,7 @@ static void finish(receiver_t *r)
         uint8_t stop = STOP;
         xQueueSend(r->full, &stop, portMAX_DELAY);
         xSemaphoreTake(r->done, portMAX_DELAY);
-        while (r->busy) vTaskDelay(1);
-        xTaskNotifyGive(r->decoder);
+        xQueueSend(r->jobs, &stop, portMAX_DELAY);
         xSemaphoreTake(r->done, portMAX_DELAY);
         receive_record_t end = {RECEIVE_MAGIC, 0, 0, 0, RECEIVE_END, 0, 0};
         receive_write(&end, sizeof end);
@@ -389,6 +441,7 @@ static void setup(receiver_t *r, unsigned modcod, unsigned rate, unsigned mhz,
     memset(s, 0, sizeof *s);
     *r = (receiver_t){.stats = s, .crc = rate == 5000000, .options = *options,
                       .last = -1, .full = full_q, .empty = empty_q, .done = done_sem, .usb = usb_sem,
+                      .jobs = jobs_q, .results = results_q, .free_jobs = (1U << JOBS) - 1,
                       .config = {.modcod = modcod, .symbol_rate = rate, .cfo_hint_hz = -10000,
                                  .cfo_span_hz = 30000, .carrier_khz = mhz * 1000U}};
 }

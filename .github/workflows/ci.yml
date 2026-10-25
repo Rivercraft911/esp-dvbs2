@@ -38,6 +38,7 @@ jobs:
       - run: python tests/test_rx_demod.py
       - run: python tests/test_rx_fec.py
       - run: python tests/test_rx_ts.py
+      - run: python tests/test_rx_order.py
       - run: python tests/test_run_arena.py
       - run: python tests/test_run_memory.py
       - run: python tests/test_ts_crc.py

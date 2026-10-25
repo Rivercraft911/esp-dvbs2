@@ -22,8 +22,8 @@ typedef struct __attribute__((packed)) {
     uint16_t iterations, failed_checks;
 } receive_record_t;
 
-/* TS mode: each good frame's data field also goes through the deframer (dvbs2rx.h rx_ts) after its
- * record, and the packets to the egress. pattern: check every packet against the transmitter's
+/* TS mode: good and repaired frames go through the deframer (dvbs2rx.h rx_ts) in sequence order,
+ * after their records, and the packets to the egress. pattern: check against the transmitter's
  * test input (firmware/components/ingress/ingress_pattern.c: seven packets per sequence number,
  * which counts on, or loops 0..7 in `spiinput ... ts replay`). */
 typedef struct {
@@ -48,6 +48,7 @@ typedef struct {
     uint64_t max_push_at;
     rx_demod_stats_t demod;
     rx_ts_stats_t ts;
+    rx_order_stats_t order;
     rx_ts_pid_t pids[RX_TS_PIDS];
     uint32_t ts_pids, max_ts_cycles;    /* per frame: deframer, pattern check and egress */
     uint64_t ts_cycles;

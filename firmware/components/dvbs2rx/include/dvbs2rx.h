@@ -133,6 +133,33 @@ int rx_fec_init(rx_fec_t *f, unsigned modcod, void *work);
 int rx_fec_frame(rx_fec_t *f, rx_frame_t *frame, const uint8_t **payload,
                  rx_fec_stats_t *stats);
 
+/* BBFRAME ordering, owned by one task. New frames/waits must arrive in sequence order;
+ * sequence gaps and uint32_t wrap are allowed. Results may arrive in any order. A gap is
+ * handed on with bbframe NULL and length -1. Otherwise length is the data field's bytes and
+ * bbframe holds its 10-byte BBHEADER followed by that field (at most RX_HARD_BYTES total).
+ * The callback may modify the bytes, as rx_ts_frame does; they are valid only during it. */
+typedef void (*rx_order_emit_fn)(void *ctx, uint32_t sequence, uint8_t *bbframe, int length);
+typedef struct {
+    uint32_t held;               /* total frames stored, waits included; direct frames excluded */
+    uint32_t max_held;           /* most stored at once */
+    uint32_t repaired;           /* repaired frames handed on in order */
+    uint32_t given_up;           /* waits too late for the full buffer, handed on as gaps */
+} rx_order_stats_t;
+
+typedef struct rx_order rx_order_t;
+/* Caller-provided storage, suitably aligned, no allocation. frames must be at least 1. */
+size_t rx_order_size(unsigned frames);
+void rx_order_init(rx_order_t *o, unsigned frames, rx_order_emit_fn emit, void *ctx);
+/* A ready frame or gap. Drains first; with nothing held, hands on without a copy. */
+void rx_order_frame(rx_order_t *o, uint32_t sequence, uint8_t *bbframe, int length);
+/* A frame queued for decoding. Full storage gives up the oldest wait, then drains. */
+void rx_order_wait(rx_order_t *o, uint32_t sequence);
+/* Copy a decode result into its wait. 0: no longer waiting (late or duplicate result).
+ * Does not drain: the caller can release the result's storage before calling drain. */
+int rx_order_result(rx_order_t *o, uint32_t sequence, const uint8_t *bbframe, int length);
+void rx_order_drain(rx_order_t *o);
+void rx_order_stats(const rx_order_t *o, rx_order_stats_t *stats);
+
 /* TS deframer: single transport stream BBFRAMEs (EN 302 307-1 5.1.4 to 5.1.6) back into
  * 188-byte packets, in order, each checked by the CRC-8 that the next packet's sync position
  * carries. Packets that straddle frames are carried over. A packet whose CRC-8 fails goes on
