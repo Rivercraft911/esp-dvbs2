@@ -151,7 +151,8 @@ class Config(ct.Structure):
 
 class Frame(ct.Structure):
     _fields_ = [("llr", ct.POINTER(ct.c_int8)), ("hard", ct.POINTER(ct.c_uint8)),
-                ("weak", ct.POINTER(ct.c_uint8)), ("header_sample", ct.c_uint64),
+                ("weak", ct.POINTER(ct.c_uint8)), ("fine", ct.POINTER(ct.c_uint8)),
+                ("header_sample", ct.c_uint64),
                 ("sequence", ct.c_uint32), ("cfo_hz", ct.c_int32), ("clock_ppb", ct.c_int32),
                 ("mer_cdb", ct.c_int16), ("modcod", ct.c_uint8), ("type", ct.c_uint8)]
 
@@ -185,8 +186,9 @@ class Demod:
     the queued runs after each, as core 0 would."""
 
     def __init__(self, so, modcod, normal=False, carrier_khz=2420000, cfo_hint=-10000, cfo_span=30000,
-                 quick_lock=False, rate=1e6):
+                 quick_lock=False, rate=1e6, fine=False):
         self.so, self.bits, self.rate = so, 64800 if normal else 16200, rate
+        self.want_fine = fine
         self.mem = np.zeros(so.rx_demod_size() + 16, np.uint8)
         self.ptr = (self.mem.ctypes.data + 15) & ~15
         self.ring = np.zeros(RING_BYTES + 16, np.uint8)
@@ -200,9 +202,11 @@ class Demod:
         self.llr = np.zeros(self.bits, np.int8)
         self.hard = np.zeros((self.bits // 8 + 16) // 16 * 16, np.uint8)
         self.weak = np.zeros_like(self.hard)
+        self.fine = np.zeros_like(self.hard) if self.want_fine else None
         self.out = Frame(self.llr.ctypes.data_as(ct.POINTER(ct.c_int8)),
                          self.hard.ctypes.data_as(ct.POINTER(ct.c_uint8)),
-                         self.weak.ctypes.data_as(ct.POINTER(ct.c_uint8)))
+                         self.weak.ctypes.data_as(ct.POINTER(ct.c_uint8)),
+                         None if self.fine is None else self.fine.ctypes.data_as(ct.POINTER(ct.c_uint8)))
 
     def release(self):
         while self.so.rx_demod_release(ct.c_void_p(self.ptr), ct.byref(self.out)):
@@ -211,7 +215,8 @@ class Demod:
                                     cfo_hz=o.cfo_hz, clock_ppb=o.clock_ppb, mer_db=o.mer_cdb / 100,
                                     modcod=o.modcod, type=o.type, llr=self.llr,
                                     hard=np.unpackbits(self.hard[:self.bits // 8]),
-                                    weak=np.unpackbits(self.weak[:self.bits // 8])))
+                                    weak=np.unpackbits(self.weak[:self.bits // 8]),
+                                    fine=None if self.fine is None else np.unpackbits(self.fine[:self.bits // 8])))
             self._new_buffers()
 
     def feed(self, words, first=None):

@@ -34,6 +34,7 @@ typedef struct {
                              * is about llr * 10^(MER/10) / 16 */
     uint8_t *hard;          /* RX_HARD_BYTES, codeword order, MSB first, bit = soft bit < 0 */
     uint8_t *weak;          /* optional: RX_HARD_BYTES, as hard, set where |soft bit| < 16 */
+    uint8_t *fine;          /* optional: as weak, set where 8 <= |soft bit| < 16 or >= 32 */
     uint64_t header_sample; /* dump index of the PLHEADER's first symbol centre */
     uint32_t sequence;      /* frames since lock; a jump means frames were lost */
     int32_t cfo_hz;         /* carrier offset estimate */
@@ -52,7 +53,7 @@ typedef struct {
     uint32_t carrier_khz;   /* RF carrier: both radios run from 40 MHz crystals, so the symbol
                              * clock offset is CFO / carrier (0: track it from timing alone) */
     uint8_t normal;         /* 64,800-bit frames (host tests on the normal-frame corpus): llr
-                             * then holds 64,800, hard and weak 8,100 bytes */
+                             * then holds 64,800, hard, weak and fine 8,100 bytes */
     uint8_t quick_lock;     /* lock on the PLHEADER found rather than the next one: one more
                              * frame per acquisition, but the search and the lock then share
                              * a call (for recorded captures) */
@@ -83,7 +84,7 @@ int rx_demod_init(rx_demod_t *d, const rx_config_t *config, void *ring);
  * no blocking; if the release falls behind, frames are dropped. Acquisition runs inline. */
 size_t rx_demod_push(rx_demod_t *d, const uint32_t *words, uint64_t first, size_t count);
 /* Core 0, concurrently with push (one thread each). Releases queued runs into frame: hard
- * bits (and weak bits, soft bits where the pointers are set) written in place as runs
+ * bits (and weak, fine and soft bits where the pointers are set) written in place as runs
  * arrive, so keep frame's buffers until it returns 1 with a complete frame, then set fresh
  * ones. Returns 0 when the queue is empty. */
 int rx_demod_release(rx_demod_t *d, rx_frame_t *frame);
@@ -110,7 +111,8 @@ int64_t rx_demod_snapshot(const rx_demod_t *d, int8_t *i, int8_t *q, size_t n);
  * rx_fec_size bytes in internal RAM hold everything the clean path touches; the
  * decoder's rx_fec_work_size bytes may live anywhere, PSRAM included. Both 16-byte
  * aligned. With work NULL, frames that fail the check return -1 undecoded. The decoder
- * reads the frame's soft bits, or without them two levels from its hard and weak bits.
+ * reads the frame's soft bits, or without them two levels from its hard and weak bits,
+ * or four levels when fine is also set.
  * 8PSK MODCODs use the code of the QPSK MODCOD with the same rate. */
 typedef struct {
     uint16_t iterations;    /* 0: the received hard bits were already a codeword */
