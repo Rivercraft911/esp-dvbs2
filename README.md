@@ -65,8 +65,9 @@ input so far is a CM5's 9 Mb/s camera mux.
 
 The second S3 captures 16 MS/s through its own radio, matched-filters it, finds and follows the
 frames, and checks every one by encoding it again. LDPC decoding (low-density parity check, the
-heavy error correction in DVB-S2) only runs when a frame fails that check. On a clean coax link
-it never had to. Every short-frame mode the transmitter sends decodes live:
+heavy error correction in DVB-S2) only runs when a frame fails that check, and on a clean coax
+link that is rare: in the 2.4-hour live demo it repaired one frame of 5.7 million. Every
+short-frame mode the transmitter sends decodes live:
 
 | Modes | Symbol rate | Payload | Frames, all exact | Pilot MER, median | Core 1 / core 0 |
 |---|---:|---:|---:|---:|---:|

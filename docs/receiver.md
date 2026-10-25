@@ -147,8 +147,12 @@ Three tasks share core 0:
   for at most 8 iterations with an early stop. 8PSK MODCODs use the code of the QPSK MODCOD with
   the same rate.
 
-On a clean link the decoder never runs. In the 19-mode sweep no frame failed its check
-([sweep](../results/2026-10-23-rx-sweep/README.md)).
+On a clean link the decoder rarely runs. In the 19-mode sweep no frame failed its check
+([sweep](../results/2026-10-23-rx-sweep/README.md)). In the 2.4-hour live demo one frame of
+5,725,408 did, in run 31, and the decoder repaired it in 2 iterations; in TS mode a repaired frame
+arrives too late for the stream, which is that run's one continuity error
+([live demo](../results/2026-10-23-live-demo/README.md)). No record yet measures the decoder near
+threshold, where it would do most of its work.
 
 **Records.** Each frame becomes a 20-byte record over USB: sequence, carrier offset, MER, length,
 LDPC iterations and failing checks (`firmware/rx/main/receive.h`). At 1 Msym/s the payload follows.
