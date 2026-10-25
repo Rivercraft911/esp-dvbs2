@@ -13,9 +13,9 @@ for the tests. The overview and checks are in [How it works](how-it-works.md).
 ```
 core 1: dump banks, 16 MS/s -> int8 I/Q -> matched filter at each symbol time
         -> header and pilot blocks: timing, carrier, DC, leak -> raw data symbols -> symbol ring
-core 0: release: DC, derotation, leak, PL descrambling, demapping -> hard and weak bits
+core 0: release: DC, derotation, leak, PL descrambling, demapping -> hard, weak (and fine) bits
         check: re-encode -> BCH and BBHEADER -> USB record (-> TS deframer -> egress)
-        decode (frames that fail the check): layered min-sum LDPC, state in PSRAM
+        decode (frames that fail the check, three queued): layered min-sum LDPC
 ```
 
 ## The radio, without Wi-Fi
@@ -130,9 +130,13 @@ Three tasks share core 0:
   sign, and a weak bit, set when it lies less than half the noise-free distance from its decision
   boundary. For 8PSK it writes each symbol's three bits to three bit planes, which undoes the
   column interleaver. A frame of hard and weak bits needs 4 KB instead of 16 KB, so frames stay
-  in internal RAM. The cost, measured on the host against the same decoder fed int8 soft values,
-  is 0.5 dB at QPSK 3/4 and 8/9 and over 2 dB at 1/2
-  ([decoder near threshold](../results/2026-10-24-rx-fec-curve/README.md#where-the-db-go)).
+  in internal RAM. Against int8 soft values those two levels cost 0.5 dB at QPSK 3/4 and 8/9 and
+  over 2 dB at 1/2 ([decoder near threshold](../results/2026-10-24-rx-fec-curve/README.md#where-the-db-go)),
+  so at 1 Msym/s the release also writes a fine bit, set where 8 <= |s| < 16 or |s| >= 32: four
+  levels, which recover all but about 0.25 dB at 3/4 and 8/9 and 1 to 2 dB at 1/2. The fine plane
+  doubles the demapper's cost (20.9k against 11.4k cycles for 1,440 QPSK symbols), which core 0
+  can spare at 1 Msym/s but not at 5 Msym/s, so those kernels run from flash and only there
+  ([speedups](../results/2026-10-24-rx-decoder-speedups/README.md)).
 - **Check** re-encodes each frame's hard bits with the transmitter's own fast BCH and LDPC encoder
   and compares parity: 31.6k cycles for a clean QPSK 3/4 frame
   ([commit](https://github.com/Rivercraft911/esp-dvbs2/commit/32990841d2ad3f8822499dd570fe7ecc2c9cc52e)).
@@ -140,9 +144,14 @@ Three tasks share core 0:
   frame, because the first frames after a lock arrive in a burst while the first check runs with
   cold caches.
 - **Decode** (lowest priority) runs a layered normalized min-sum LDPC decoder in int8 on frames
-  that fail the check, one at a time. It uses the code's 360-column structure, 16 checks per PIE
-  vector, and builds two-level beliefs from the hard and weak bits. For QPSK 3/4 short frames
-  (MODCOD 7), with the 48 KB work area in PSRAM, an iteration takes 393k cycles; other MODCODs
+  that fail the check. A failed frame is copied into one of three PSRAM jobs and waits there if
+  the decoder is busy; with all three taken it is lost. It uses the code's 360-column structure,
+  16 checks per PIE vector, and builds two-level beliefs from the hard and weak bits, or four
+  levels where the fine bit is there: the beliefs the soft-value path would build from 4, 12, 24
+  or 48. Its state and work area are in PSRAM but for the per-layer scratch, which every layer
+  reads and writes and which sits in 13.6 KB of internal RAM taken at boot; in PSRAM it made a
+  decode 1.1 to 2.2 times slower. For QPSK 3/4 short frames (MODCOD 7), with the 48 KB work area
+  in PSRAM, an iteration takes 393k cycles; other MODCODs
   need different amounts of decoder memory
   ([commit](https://github.com/Rivercraft911/esp-dvbs2/commit/d2c33ea94fa3ab788602c8cf5d83ea9cca9ab1bb)),
   for at most 8 iterations with an early stop. 8PSK MODCODs use the code of the QPSK MODCOD with
@@ -150,19 +159,20 @@ Three tasks share core 0:
 
 On a clean link the decoder rarely runs. In the 19-mode sweep no frame failed its check
 ([sweep](../results/2026-10-23-rx-sweep/README.md)). In the 2.4-hour live demo one frame of
-5,725,408 did, in run 31, and the decoder repaired it in 2 iterations; in TS mode a repaired frame
-arrives too late for the stream, which is that run's one continuity error
-([live demo](../results/2026-10-23-live-demo/README.md)).
+5,725,408 did, in run 31, and the decoder repaired it in 2 iterations; in TS mode that firmware
+had no way to put a repaired frame back into the stream, which is that run's one continuity
+error ([live demo](../results/2026-10-23-live-demo/README.md)).
 
 Near threshold, measured radio off with noisy frames demapped by the receiver's own kernels, the
 decoder reaches 1% frame errors about 1 dB above the DVB-S2 ideal threshold (Table 13) for QPSK
 3/4 to 8/9 and 8PSK 8/9, and 1.5 to 3.5 dB above it for the lower rates, with no wrong payload in
-72,000 frames. Speed limits it first. Everything the decoder touches is in PSRAM, so a frame with
-any bit error takes at least 2 iterations and 7.4 to 9.4 ms, and a damaged frame that arrives
-while the decoder is busy is lost. Replaying noisy QPSK 3/4 captures through the receiver, 43% of
-frames were lost at 8 dB and none at 14 dB at 1 Msym/s, 38% at 12 dB and none at 14 dB at
-5 Msym/s; the code alone decodes from about 5 dB
-([decoder near threshold](../results/2026-10-24-rx-fec-curve/README.md)).
+72,000 frames. Speed limited it first: with everything the decoder touched in PSRAM and no queue,
+replayed noisy QPSK 3/4 lost 43% of frames at 8 dB at 1 Msym/s and 38% at 12 dB at 5 Msym/s,
+where the code alone decodes from about 5 dB
+([decoder near threshold](../results/2026-10-24-rx-fec-curve/README.md)). With the scratch
+internal, four levels and the queue, the same captures lose none at 8 dB at 1 Msym/s (18 of 23
+good at 6 dB) and none at 13 dB at 5 Msym/s, where the decoder still has only about 1 ms a
+frame ([speedups](../results/2026-10-24-rx-decoder-speedups/README.md)).
 
 **Records.** Each frame becomes a 20-byte record over USB: sequence, carrier offset, MER, length,
 LDPC iterations and failing checks (`firmware/rx/main/receive.h`). At 1 Msym/s the payload follows.
@@ -180,8 +190,12 @@ data fields without regard to packet boundaries, so the deframer carries a packe
 checks each packet when the next one's first byte arrives, sets the transport_error_indicator on
 a mismatch, restarts at SYNCD after a lost frame, and checks continuity counters for up to 16
 PIDs. Packets go to a TS egress (`firmware/rx/main/ts_egress.h`); with `pattern`, each is checked
-against the transmitter's test input on the chip instead. Frames the LDPC decoder repairs arrive
-too late for the stream and count as lost.
+against the transmitter's test input on the chip instead. A frame waiting for the LDPC decoder
+holds the stream back: the frames after it are copied into an ordering buffer in PSRAM
+(`dvbs2rx/rx_order.c`, 16 frames) and handed on in sequence once it is repaired, or with a gap
+if it is not. In a replayed 9 dB TS capture all 24 frames needed the decoder and all 24 went into
+the stream in order, every packet checked
+([speedups](../results/2026-10-24-rx-decoder-speedups/README.md)).
 
 Over the S3 link 1,738,344 packets crossed in 10 runs at up to 12.64 Mb/s, every one exact, with no
 CRC-8 errors and no lost packets. The deframer costs 1.88k cycles per packet at QPSK 3/4 and 2.72k
@@ -237,7 +251,8 @@ reserved when the firmware links and gives it back when the next run starts
 |---|---|---:|
 | Internal RAM below the capture banks | demodulator, clean-path FEC, TS deframer | 29,760 of 30,720 B |
 | Internal RAM just above the banks | symbol ring, three frame slots | 28,576 of 28,672 B |
-| Static PSRAM | LDPC decoder state and work, the decoder's frame, the CRC-32 table | 71,488 of 98,304 B |
+| Internal RAM taken at boot | the decoder's per-layer scratch; at 1 Msym/s the slots' fine planes | 13,648 and 6,096 B |
+| Static PSRAM | LDPC decoder state and work, three decode jobs, the TS ordering buffer, the CRC-32 table | 132,800 of 147,456 B (host build, QPSK and 8PSK 3/5) |
 | Static PSRAM store | a replay's capture or a dump | 7 MB |
 
 Queues, semaphores, the capture task's stack and the capture timer are made once at boot from
@@ -245,7 +260,9 @@ static storage; the timer is made on core 1, where its interrupt must run. Throu
 runs, a dump and `membench`, ESP-IDF's heap hooks counted no heap call after boot, and 51,482
 bytes of heap stayed free for ESP-IDF throughout. The hooks see successful allocations,
 reallocations and frees of non-null pointers, and a callback counts failed allocations; zero-size
-calls and direct `multi_heap` calls are not seen.
+calls and direct `multi_heap` calls are not seen. Since the decoder's scratch and the fine
+planes moved to internal RAM (two blocks taken once at boot, after the radio's calibration),
+15.0 KB of heap stays free after boot.
 
 ## Measured
 

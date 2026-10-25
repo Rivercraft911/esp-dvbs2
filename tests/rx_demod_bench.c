@@ -189,8 +189,8 @@ static void bench(void)
     int16_t *yi = heap_caps_aligned_alloc(16, 2 * N + 32, INTERNAL), *yq = heap_caps_aligned_alloc(16, 2 * N + 32, INTERNAL);
     int16_t *xi = heap_caps_aligned_alloc(16, 2 * N + 32, INTERNAL), *xq = heap_caps_aligned_alloc(16, 2 * N + 32, INTERNAL);
     int16_t *ci = heap_caps_aligned_alloc(16, 2 * N + 32, INTERNAL), *cq = heap_caps_aligned_alloc(16, 2 * N + 32, INTERNAL);
-    uint8_t *hard[2] = {heap_caps_aligned_alloc(16, 4 * (N / 4 + 16), INTERNAL),
-                        heap_caps_aligned_alloc(16, 4 * (N / 4 + 16), INTERNAL)};
+    uint8_t *hard[2] = {heap_caps_aligned_alloc(16, 6 * (N / 4 + 16), INTERNAL),
+                        heap_caps_aligned_alloc(16, 6 * (N / 4 + 16), INTERNAL)};
     uint8_t *scr = heap_caps_aligned_alloc(16, N / 4 + 16, INTERNAL);
     demod_run_t *k = heap_caps_aligned_alloc(16, sizeof *k, INTERNAL);
     if (!yi || !yq || !xi || !xq || !ci || !cq || !hard[0] || !hard[1] || !scr || !k) {
@@ -228,28 +228,39 @@ static void bench(void)
         for (unsigned i = 0; i < N; ++i) diff += (xi[i] != ci[i]) + (xq[i] != cq[i]);
         report("demod_turn", N, best[0], best[1], diff);
         for (unsigned psk8 = 0; psk8 < 2; ++psk8) {
-            for (unsigned n = N; n >= 900; n -= 540) {
+            const unsigned lengths[] = {N, 900, 904, 8, 4};
+            for (unsigned j = 0; j < sizeof lengths / sizeof *lengths; ++j) {
+                const unsigned n = lengths[j];
                 if (psk8 && n % 8) continue;
-                best[0] = best[1] = UINT32_MAX;
-                for (int pie = 0; pie < 2; ++pie) {
-                    for (unsigned r = 0; r < RUNS; ++r) {
-                        memset(hard[pie], 0x55, 4 * (N / 4 + 16));
-                        demod_out_t o = {{hard[pie], hard[pie] + N / 8, hard[pie] + N / 4},
-                                         {hard[pie] + N / 2, hard[pie] + 5 * N / 8, hard[pie] + 3 * N / 4},
-                                         {NULL, NULL, NULL}};
-                        uint32_t t = now();
-                        if (psk8)
-                            (pie ? demod_8psk_pie : demod_8psk_c)(ci, cq, n, scr, k, &o);
-                        else
-                            (pie ? demod_qpsk_pie : demod_qpsk_c)(ci, cq, n, scr, k, &o);
-                        t = now() - t;
-                        best[pie] = t < best[pie] ? t : best[pie];
+                for (unsigned levels = 2; levels <= 4; levels += 2) {
+                    best[0] = best[1] = UINT32_MAX;
+                    for (int pie = 0; pie < 2; ++pie) {
+                        for (unsigned r = 0; r < RUNS; ++r) {
+                            memset(hard[pie], 0x55, 6 * (N / 4 + 16));
+                            demod_out_t o = {{hard[pie], hard[pie] + N / 8, hard[pie] + N / 4},
+                                             {hard[pie] + N / 2, hard[pie] + 5 * N / 8, hard[pie] + 3 * N / 4},
+                                             {NULL, NULL, NULL},
+                                             {levels == 4 ? hard[pie] + N : NULL,
+                                              levels == 4 ? hard[pie] + 9 * N / 8 : NULL,
+                                              levels == 4 ? hard[pie] + 5 * N / 4 : NULL}};
+                            uint32_t t = now();
+                            if (psk8)
+                                (pie ? (levels == 4 ? demod_8psk4_pie : demod_8psk_pie) : demod_8psk_c)(ci, cq, n, scr, k, &o);
+                            else
+                                (pie ? (levels == 4 ? demod_qpsk4_pie : demod_qpsk_pie) : demod_qpsk_c)(ci, cq, n, scr, k, &o);
+                            t = now() - t;
+                            best[pie] = t < best[pie] ? t : best[pie];
+                        }
                     }
+                    diff = 0;
+                    for (unsigned i = 0; i < 6 * (N / 4 + 16); ++i) diff += hard[0][i] != hard[1][i];
+                    const char *name = levels == 4 ?
+                        (psk8 ? (n == N ? "demod_8psk4" : "demod_8psk4_tail") :
+                                (n == N ? "demod_qpsk4" : "demod_qpsk4_tail")) :
+                        (psk8 ? (n == N ? "demod_8psk" : "demod_8psk_tail") :
+                                (n == N ? "demod_qpsk" : "demod_qpsk_tail"));
+                    report(name, n, best[0], best[1], diff);
                 }
-                diff = 0;
-                for (unsigned i = 0; i < 4 * (N / 4 + 16); ++i) diff += hard[0][i] != hard[1][i];
-                report(psk8 ? (n == N ? "demod_8psk" : "demod_8psk_tail") : (n == N ? "demod_qpsk" : "demod_qpsk_tail"),
-                       n, best[0], best[1], diff);
             }
         }
     }

@@ -34,6 +34,7 @@ typedef struct {
                              * is about llr * 10^(MER/10) / 16 */
     uint8_t *hard;          /* RX_HARD_BYTES, codeword order, MSB first, bit = soft bit < 0 */
     uint8_t *weak;          /* optional: RX_HARD_BYTES, as hard, set where |soft bit| < 16 */
+    uint8_t *fine;          /* optional: as weak, set where 8 <= |soft bit| < 16 or >= 32 */
     uint64_t header_sample; /* dump index of the PLHEADER's first symbol centre */
     uint32_t sequence;      /* frames since lock; a jump means frames were lost */
     int32_t cfo_hz;         /* carrier offset estimate */
@@ -52,7 +53,7 @@ typedef struct {
     uint32_t carrier_khz;   /* RF carrier: both radios run from 40 MHz crystals, so the symbol
                              * clock offset is CFO / carrier (0: track it from timing alone) */
     uint8_t normal;         /* 64,800-bit frames (host tests on the normal-frame corpus): llr
-                             * then holds 64,800, hard and weak 8,100 bytes */
+                             * then holds 64,800, hard, weak and fine 8,100 bytes */
     uint8_t quick_lock;     /* lock on the PLHEADER found rather than the next one: one more
                              * frame per acquisition, but the search and the lock then share
                              * a call (for recorded captures) */
@@ -83,7 +84,7 @@ int rx_demod_init(rx_demod_t *d, const rx_config_t *config, void *ring);
  * no blocking; if the release falls behind, frames are dropped. Acquisition runs inline. */
 size_t rx_demod_push(rx_demod_t *d, const uint32_t *words, uint64_t first, size_t count);
 /* Core 0, concurrently with push (one thread each). Releases queued runs into frame: hard
- * bits (and weak bits, soft bits where the pointers are set) written in place as runs
+ * bits (and weak, fine and soft bits where the pointers are set) written in place as runs
  * arrive, so keep frame's buffers until it returns 1 with a complete frame, then set fresh
  * ones. Returns 0 when the queue is empty. */
 int rx_demod_release(rx_demod_t *d, rx_frame_t *frame);
@@ -110,7 +111,8 @@ int64_t rx_demod_snapshot(const rx_demod_t *d, int8_t *i, int8_t *q, size_t n);
  * rx_fec_size bytes in internal RAM hold everything the clean path touches; the
  * decoder's rx_fec_work_size bytes may live anywhere, PSRAM included. Both 16-byte
  * aligned. With work NULL, frames that fail the check return -1 undecoded. The decoder
- * reads the frame's soft bits, or without them two levels from its hard and weak bits.
+ * reads the frame's soft bits, or without them two levels from its hard and weak bits,
+ * or four levels when fine is also set.
  * 8PSK MODCODs use the code of the QPSK MODCOD with the same rate. */
 typedef struct {
     uint16_t iterations;    /* 0: the received hard bits were already a codeword */
@@ -124,6 +126,13 @@ typedef struct rx_fec rx_fec_t;
 size_t rx_fec_size(unsigned modcod);
 size_t rx_fec_check_size(unsigned modcod);  /* enough when work is NULL */
 size_t rx_fec_work_size(unsigned modcod);
+/* The decoder's per-layer scratch (messages expanded for a layer, the repeats' old messages, the
+ * check state) is part of rx_fec_size's block, and every layer reads and writes it. After
+ * rx_fec_init with a work area, rx_fec_set_scratch moves it to a block of its own of
+ * rx_fec_scratch_size bytes (16-byte aligned), so it can sit in internal RAM while the rest
+ * is in PSRAM. */
+size_t rx_fec_scratch_size(unsigned modcod);
+int rx_fec_set_scratch(rx_fec_t *f, void *scratch);
 int rx_fec_init(rx_fec_t *f, unsigned modcod, void *work);
 /* Returns the data field length in bytes and points payload at it (valid
  * until the frame's buffers are reused), or -1 if the frame fails. The BBHEADER, descrambled,
@@ -132,6 +141,33 @@ int rx_fec_init(rx_fec_t *f, unsigned modcod, void *work);
  * field or 65,535), single stream, ISSY and null-packet deletion off for TS. */
 int rx_fec_frame(rx_fec_t *f, rx_frame_t *frame, const uint8_t **payload,
                  rx_fec_stats_t *stats);
+
+/* BBFRAME ordering, owned by one task. New frames/waits must arrive in sequence order;
+ * sequence gaps and uint32_t wrap are allowed. Results may arrive in any order. A gap is
+ * handed on with bbframe NULL and length -1. Otherwise length is the data field's bytes and
+ * bbframe holds its 10-byte BBHEADER followed by that field (at most RX_HARD_BYTES total).
+ * The callback may modify the bytes, as rx_ts_frame does; they are valid only during it. */
+typedef void (*rx_order_emit_fn)(void *ctx, uint32_t sequence, uint8_t *bbframe, int length);
+typedef struct {
+    uint32_t held;               /* total frames stored, waits included; direct frames excluded */
+    uint32_t max_held;           /* most stored at once */
+    uint32_t repaired;           /* repaired frames handed on in order */
+    uint32_t given_up;           /* waits too late for the full buffer, handed on as gaps */
+} rx_order_stats_t;
+
+typedef struct rx_order rx_order_t;
+/* Caller-provided storage, suitably aligned, no allocation. frames must be at least 1. */
+size_t rx_order_size(unsigned frames);
+void rx_order_init(rx_order_t *o, unsigned frames, rx_order_emit_fn emit, void *ctx);
+/* A ready frame or gap. Drains first; with nothing held, hands on without a copy. */
+void rx_order_frame(rx_order_t *o, uint32_t sequence, uint8_t *bbframe, int length);
+/* A frame queued for decoding. Full storage gives up the oldest wait, then drains. */
+void rx_order_wait(rx_order_t *o, uint32_t sequence);
+/* Copy a decode result into its wait. 0: no longer waiting (late or duplicate result).
+ * Does not drain: the caller can release the result's storage before calling drain. */
+int rx_order_result(rx_order_t *o, uint32_t sequence, const uint8_t *bbframe, int length);
+void rx_order_drain(rx_order_t *o);
+void rx_order_stats(const rx_order_t *o, rx_order_stats_t *stats);
 
 /* TS deframer: single transport stream BBFRAMEs (EN 302 307-1 5.1.4 to 5.1.6) back into
  * 188-byte packets, in order, each checked by the CRC-8 that the next packet's sync position

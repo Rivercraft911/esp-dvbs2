@@ -20,6 +20,7 @@ typedef struct {
     int16_t weight[2][8];   /* lane k: bit 15 - k and 7 - k */
     int16_t one[8];
     const int16_t *table;   /* sin(2 pi k / 1024), Q14 */
+    int16_t level8[8] __attribute__((aligned(16))), level32[8];  /* four-level thresholds */
 } __attribute__((aligned(16))) demod_run_t;  /* the PIE code relies on this layout */
 
 /* Matched filter at the tracked times, into planar int16 outputs.
@@ -96,16 +97,18 @@ void demod_turn_pie(int16_t *yi, int16_t *yq, unsigned groups, uint32_t phase, u
 
 /* Where the soft kernels write, at the run's first symbol: hard and weak bits MSB first, and
  * soft bits (C only, NULL for none). QPSK uses plane 0, two bits a symbol; 8PSK writes symbol
- * bit i to plane i, one bit a symbol. */
+ * bit i to plane i, one bit a symbol. fine is optional, packed like weak. */
 typedef struct {
     uint8_t *hard[3], *weak[3];
     int8_t *llr[3];
+    uint8_t *fine[3];
 } demod_out_t;
 
 /* n derotated symbols (QPSK: a multiple of 4; 8PSK: of 8, rotated a further -pi/8):
  * PL descrambling by the 2-bit codes in scr (8 symbols per 16 bits, 2-byte aligned), soft bits
  * s = mul(distance, gain) as in rx_frame_t, hard bit s < 0, weak bit |s| < 16, soft bits
- * clip(s, +-127). Descrambling multiplies by j^-R. 8PSK: s1 from x, s2 from y, s0 from
+ * clip(s, +-127), fine bit (8 <= |s| < 16) or |s| >= 32. Descrambling multiplies by j^-R.
+ * 8PSK: s1 from x, s2 from y, s0 from
  * |x| - |y| with gain0. */
 void demod_qpsk_c(const int16_t *yi, const int16_t *yq, unsigned n, const uint8_t *scr,
                   const demod_run_t *k, const demod_out_t *o);
@@ -115,5 +118,9 @@ void demod_8psk_c(const int16_t *yi, const int16_t *yq, unsigned n, const uint8_
                   const demod_run_t *k, const demod_out_t *o);
 void demod_8psk_pie(const int16_t *yi, const int16_t *yq, unsigned n, const uint8_t *scr,
                     const demod_run_t *k, const demod_out_t *o);
+void demod_qpsk4_pie(const int16_t *yi, const int16_t *yq, unsigned n, const uint8_t *scr,
+                     const demod_run_t *k, const demod_out_t *o);
+void demod_8psk4_pie(const int16_t *yi, const int16_t *yq, unsigned n, const uint8_t *scr,
+                     const demod_run_t *k, const demod_out_t *o);
 
 #endif

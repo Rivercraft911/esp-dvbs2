@@ -27,7 +27,8 @@ A = 1 / np.sqrt(2)          # QPSK amplitude per axis, unit symbol energy
 
 class Frame(ct.Structure):
     _fields_ = [("llr", ct.POINTER(ct.c_int8)), ("hard", ct.POINTER(ct.c_uint8)),
-                ("weak", ct.POINTER(ct.c_uint8)), ("header_sample", ct.c_uint64), ("sequence", ct.c_uint32),
+                ("weak", ct.POINTER(ct.c_uint8)), ("fine", ct.POINTER(ct.c_uint8)),
+                ("header_sample", ct.c_uint64), ("sequence", ct.c_uint32),
                 ("cfo_hz", ct.c_int32), ("clock_ppb", ct.c_int32), ("mer_cdb", ct.c_int16),
                 ("modcod", ct.c_uint8), ("type", ct.c_uint8)]
 
@@ -44,52 +45,72 @@ class Native:
                        check=True)
         self.tmp = tempfile.TemporaryDirectory(prefix="rx-fec-")
         library = pathlib.Path(self.tmp.name) / "rx_fec.so"
+        wrapper = pathlib.Path(self.tmp.name) / "load.c"
+        wrapper.write_text('#include "rx_fec.c"\n'
+                           'void test_load(rx_fec_t *f, const rx_frame_t *in, int8_t *out) {\n'
+                           '    load(f, in);\n'
+                           '    for (unsigned g = 0; g < RX_GROUPS; ++g)\n'
+                           '        memcpy(out + 376 * g, f->belief + RX_SLOT * g, 376);\n'
+                           '}\n')  # 360 beliefs and their 16-byte wrap, excluding unused slot padding
         encoder = ROOT / "firmware/components/dvbs2"
         subprocess.run(shlex.split(os.environ.get("CC", "cc")) + [
             "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-fPIC", "-shared",
             "-I", str(COMPONENT / "include"), "-I", str(COMPONENT), "-I", str(encoder / "include"),
-            str(COMPONENT / "rx_fec.c"), str(encoder / "dvbs2.c"), str(encoder / "fast.c"),
+            str(wrapper), str(encoder / "dvbs2.c"), str(encoder / "fast.c"),
             "-o", str(library)], check=True)
         self.lib = ct.CDLL(str(library))
-        for name in ("rx_fec_size", "rx_fec_work_size"):
+        for name in ("rx_fec_size", "rx_fec_work_size", "rx_fec_scratch_size"):
             getattr(self.lib, name).restype = ct.c_size_t
             getattr(self.lib, name).argtypes = [ct.c_uint]
         self.lib.rx_fec_init.argtypes = [ct.c_void_p, ct.c_uint, ct.c_void_p]
+        self.lib.rx_fec_set_scratch.argtypes = [ct.c_void_p, ct.c_void_p]
         self.lib.rx_fec_frame.argtypes = [ct.c_void_p, ct.POINTER(Frame),
                                           ct.POINTER(ct.POINTER(ct.c_uint8)), ct.POINTER(Stats)]
+        self.lib.test_load.argtypes = [ct.c_void_p, ct.POINTER(Frame), ct.c_void_p]
         self.decoders = {}
         return self
 
     def __exit__(self, *args):
         self.tmp.cleanup()
 
-    def decoder(self, modcod, work=True):
-        if (modcod, work) not in self.decoders:
+    def decoder(self, modcod, work=True, scratch=False):
+        if (modcod, work, scratch) not in self.decoders:
             buffers = [ct.create_string_buffer(self.lib.rx_fec_size(modcod) + 16),
-                       ct.create_string_buffer(self.lib.rx_fec_work_size(modcod) + 16)]
-            ws, area = (ct.addressof(b) + (-ct.addressof(b) % 16) for b in buffers)
+                       ct.create_string_buffer(self.lib.rx_fec_work_size(modcod) + 16),
+                       ct.create_string_buffer(self.lib.rx_fec_scratch_size(modcod) + 16)]
+            ws, area, own = (ct.addressof(b) + (-ct.addressof(b) % 16) for b in buffers)
             assert self.lib.rx_fec_init(ws, modcod, area if work else None) == 0
-            self.decoders[modcod, work] = (buffers, ws)
-        return self.decoders[modcod, work][1]
+            if scratch:
+                assert self.lib.rx_fec_set_scratch(ws, own) == 0
+            self.decoders[modcod, work, scratch] = (buffers, ws)
+        return self.decoders[modcod, work, scratch][1]
 
     def frame(self, modcod, llr, hard_bits=None, frame_modcod=None, frame_type=3, work=True,
-              weak_bits=None):
-        """Decode one frame; returns (payload bytes or None, stats). With llr None, the hard
-        and weak bits alone, as the board hands them over."""
+              weak_bits=None, fine_bits=None, beliefs=None, scratch=False):
+        """Decode one frame; returns (payload bytes or None, stats). With llr None, use the
+        hard and weak bits (and fine if supplied), as the board hands them over. beliefs captures
+        the initial slot values; scratch moves the decoder's per-layer scratch to its own block."""
         hard = np.zeros(2032, np.uint8)
         hard[:2025] = np.packbits(llr < 0 if hard_bits is None else hard_bits)
         weak = None
         if weak_bits is not None:
             weak = np.zeros(2032, np.uint8)
             weak[:2025] = np.packbits(weak_bits)
+        fine = None
+        if fine_bits is not None:
+            fine = np.zeros(2032, np.uint8)
+            fine[:2025] = np.packbits(fine_bits)
         if llr is not None:
             llr = np.ascontiguousarray(llr, np.int8)
         frame = Frame(None if llr is None else llr.ctypes.data_as(ct.POINTER(ct.c_int8)),
                       hard.ctypes.data_as(ct.POINTER(ct.c_uint8)),
                       None if weak is None else weak.ctypes.data_as(ct.POINTER(ct.c_uint8)),
+                      None if fine is None else fine.ctypes.data_as(ct.POINTER(ct.c_uint8)),
                       0, 0, 0, 0, 0, modcod if frame_modcod is None else frame_modcod, frame_type)
+        if beliefs is not None:
+            self.lib.test_load(self.decoder(modcod), ct.byref(frame), beliefs.ctypes.data)
         payload, stats = ct.POINTER(ct.c_uint8)(), Stats()
-        n = self.lib.rx_fec_frame(self.decoder(modcod, work), ct.byref(frame), ct.byref(payload),
+        n = self.lib.rx_fec_frame(self.decoder(modcod, work, scratch), ct.byref(frame), ct.byref(payload),
                                   ct.byref(stats))
         if n >= 0:
             start = ct.cast(payload, ct.c_void_p).value - hard.ctypes.data
@@ -99,7 +120,7 @@ class Native:
 
 
 def rate_of(modcod):
-    return d.RATES[modcod - 1]
+    return d.PSK8_RATES[modcod - 12] if modcod >= 12 else d.RATES[modcod - 1]
 
 
 def codeword(modcod, data):
@@ -318,6 +339,70 @@ def test_two_level(native):
           f"decoded and {seen['failed']} failed frames: ok")
 
 
+def test_scratch(native):
+    """rx_fec_set_scratch: the per-layer scratch in a block of its own (internal RAM on the board,
+    the rest in PSRAM) decodes every frame exactly as before."""
+    rng = np.random.default_rng(9)
+    for modcod, esn0 in ((4, 3.0), (7, 4.75), (10, 6.75)):
+        c = d.code(rate_of(modcod), True)
+        assert native.lib.rx_fec_scratch_size(modcod) > 0
+        data = rng.integers(0, 2, c.kbch - 80, dtype=np.uint8)
+        cw = codeword(modcod, data)
+        for _ in range(6):
+            soft, _ = demodulate(cw, esn0, rng, k=32)
+            hard, weak = soft < 0, np.abs(soft.astype(int)) < 16
+            a = native.frame(modcod, None, hard_bits=hard, weak_bits=weak)
+            b = native.frame(modcod, None, hard_bits=hard, weak_bits=weak, scratch=True)
+            assert a[0] == b[0] and a[1].iterations == b[1].iterations, (modcod, esn0)
+    print("scratch: the per-layer scratch moved to its own block decodes identically: ok")
+
+
+def test_four_level(native):
+    """Packed four levels must load exactly the soft path's beliefs, including wrap tails,
+    and decode with the same stats and payload as sign * REP and the integer model."""
+    rng = np.random.default_rng(8)
+    rep = np.array([4, 12, 24, 48], np.int8)
+    seen = {"decoded": 0, "failed": 0}
+    for modcod, points in ((4, (1.5, 2.5, 4.0)), (7, (3.5, 4.75, 6.0)),
+                           (10, (5.5, 6.75, 8.0)), (12, (2.0, 4.0, 6.0)), (16, (5.5, 6.75, 8.0))):
+        c = d.code(rate_of(modcod), True)
+        data = rng.integers(0, 2, c.kbch - 80, dtype=np.uint8)
+        cw, want = codeword(modcod, data), np.packbits(data).tobytes()
+        for esn0 in points:
+            for _ in range(3):
+                soft, _ = demodulate(cw, esn0, rng, k=32)
+                level = np.searchsorted([8, 16, 32], np.abs(soft.astype(int)), side="right")
+                hard, weak, fine = soft < 0, level < 2, (level & 1) != 0
+                llr = np.where(hard, -rep[level], rep[level]).astype(np.int8)
+                slots, soft_slots = np.empty((45, 376), np.int8), np.empty((45, 376), np.int8)
+                payload, st = native.frame(modcod, None, hard_bits=hard, weak_bits=weak,
+                                           fine_bits=fine, beliefs=slots)
+                other, other_st = native.frame(modcod, llr, beliefs=soft_slots)
+                assert np.array_equal(slots, soft_slots), (modcod, esn0, "beliefs")
+                assert payload == other and bytes(st) == bytes(other_st), (modcod, esn0)
+                model, iterations = int_model(llr, modcod)
+                assert st.failed_checks and st.iterations == iterations, (modcod, esn0)
+                assert (payload == want) == (model is not None and np.array_equal(model, cw))
+                assert payload in (want, None)
+                seen["decoded" if payload == want else "failed"] += 1
+    # Zero variance chooses gain 64 for every representative, with both signs and mixed
+    # nibbles. Nonuniform cases also exercise the last statistics byte and
+    # the final eight code bits, which must be loaded but excluded from the moments.
+    for level in [np.full(16200, k) for k in range(4)] + [rng.integers(0, 4, 16200)]:
+        hard = rng.integers(0, 2, 16200).astype(bool)
+        for tail in (0, 3):
+            level[-8:] = tail
+            llr = np.where(hard, -rep[level], rep[level]).astype(np.int8)
+            slots, soft_slots = np.empty((45, 376), np.int8), np.empty((45, 376), np.int8)
+            native.frame(7, None, hard_bits=hard, weak_bits=level < 2,
+                         fine_bits=(level & 1) != 0, beliefs=slots)
+            native.frame(7, llr, beliefs=soft_slots)
+            assert np.array_equal(slots, soft_slots), (level[0], tail)
+    assert seen["decoded"] and seen["failed"], seen
+    print(f"four levels: beliefs and stats equal sign * REP; Python model exact on "
+          f"{seen['decoded']} decoded and {seen['failed']} failed frames: ok")
+
+
 def test_int8_edges(native):
     rng = np.random.default_rng(4)
     modcod = 7
@@ -462,6 +547,6 @@ def test_ts(native):
 
 if __name__ == "__main__":
     with Native() as native:
-        for test in (test_clean, test_failed_checks, test_awgn, test_two_level, test_int8_edges, test_damage,
-                     test_false_accepts, test_ts):
+        for test in (test_clean, test_failed_checks, test_awgn, test_two_level, test_four_level,
+                     test_scratch, test_int8_edges, test_damage, test_false_accepts, test_ts):
             test(native)
