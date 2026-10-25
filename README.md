@@ -27,11 +27,10 @@ with a payload that never repeats ([keyed table](results/2026-10-23-tx-table/REA
 ## What it transmits
 
 Every row was keyed for 30 s with a payload that never repeats and decoded by LeanDVB, an
-independent receiver, from four short B200 captures per run: every recovered frame was exact
+independent receiver, from B200 captures for each run. Every recovered frame was bit-exact!
 ([keyed table](results/2026-10-23-tx-table/README.md), [8PSK re-key](results/2026-10-23-tx-table-8psk-rekey/README.md),
-[80 MS/s fill confirmation](results/2026-10-23-tx-fill-keyed/README.md)). Spare is the share of each core left
-over: the encoder on core 0 against the frame period, the bank fill on core 1 against its
-deadline.
+[80 MS/s fill confirmation](results/2026-10-23-tx-fill-keyed/README.md)). Spare is the % of each core left
+over.
 
 | Mode | Symbol rate | Bandwidth | Payload | Exact frames | Spare, encoder / fill |
 |---|---:|---:|---:|---:|---:|
@@ -53,21 +52,17 @@ deadline.
 | QPSK 1/2 | 1 Msym/s | 1.35 MHz | 0.97 Mb/s | 111 | 91.6% / 51.4% |
 
 Roll-off is 0.35 unless noted. Rates use normal frames with pilots, except the short-frame row,
-and leave out the Morse ID. The B200 listened through coax and attenuation on its TX/RX port.
-The encoder also keeps up with payload arriving through the real SPI input code: QPSK 9/10 at
+and leave out the Morse ID. The encoder also keeps up with payload arriving through the real SPI input code: QPSK 9/10 at
 40 MHz ran at full rate with TS input replayed on the chip, keeping 15.5% encoder and 16.2% fill
-spare ([fill confirmation](results/2026-10-23-tx-fill-keyed/README.md)). That is a capacity test; the fastest live
-input so far is a CM5's 9 Mb/s camera mux.
+spare ([fill confirmation](results/2026-10-23-tx-fill-keyed/README.md)).
 
 <p align="center"><img src="docs/img/rf-36mhz.png" alt="36 MHz 8PSK spectrum and spectrogram transmitted by an ESP32-S3" width="760"></p>
 
 ## Receiving on an S3
 
 The second S3 captures 16 MS/s through its own radio, matched-filters it, finds and follows the
-frames, and checks every one by encoding it again. LDPC decoding (low-density parity check, the
-heavy error correction in DVB-S2) only runs when a frame fails that check, and on a clean coax
-link that is rare: in the 2.4-hour live demo it repaired one frame of 5.7 million. Every
-short-frame mode the transmitter sends decodes live:
+frames, and checks every one by encoding it again. LDPC decoding only runs when a frame fails that check.
+Every short-frame mode the transmitter sends decodes live:
 
 | Modes | Symbol rate | Payload | Frames, all exact | Pilot MER, median | Core 1 / core 0 |
 |---|---:|---:|---:|---:|---:|
@@ -75,20 +70,15 @@ short-frame mode the transmitter sends decodes live:
 | QPSK 1/2 to 8/9 | 5 Msym/s | 4.15 to 8.45 Mb/s | 98,213 | 29.7 to 29.8 dB | 61% / 39 to 43% |
 | 8PSK 3/5 to 8/9 | 5 Msym/s | 8.46 to 12.64 Mb/s | 105,235 | 29.6 to 29.8 dB | 63% / 60 to 63% |
 
-Nineteen live 30 s runs, 223,153 frames, none lost, none failed, no relocks
-([sweep](results/2026-10-23-rx-sweep/README.md)). Full-length 540 s runs held up too: 997,605 frames
-and 4.4 million TS packets exact, with the median MER steady within 0.1 dB from the first minute to
-the last ([long runs](results/2026-10-23-rx-long/README.md)). MER (modulation error ratio) is how far the
-received points sit from where they should be: 30 dB is a clean link. The core columns are the
-demodulator's mean share of core 1, and the release and check tasks' share of core 0.
+For 19 live 30 s runs, 223,153 frames, none lost, none failed, no relocks
+([sweep](results/2026-10-23-rx-sweep/README.md)).
 
 <p align="center"><img src="docs/img/rx-5m.png" alt="What the receiving S3 sees at 12.64 Mb/s: spectrum, spectrogram and constellation" width="760"></p>
 
 That is the receiver's own 16 MS/s capture of 8PSK 8/9 at 5 Msym/s, and the constellation its
 demodulator produced from it: 164 of 164 frames exact
-([figures](results/2026-10-23-rx-figures/README.md)). The receiver never starts Wi-Fi: it
-calibrates the PHY directly, and after boot it never touches the heap
-([no Wi-Fi](results/2026-10-23-rx-no-wifi-ab/README.md)). It also speaks MPEG transport stream:
+([figures](results/2026-10-23-rx-figures/README.md)). The receiver never starts Wi-Fi; it
+calibrates the PHY directly ([no Wi-Fi](results/2026-10-23-rx-no-wifi-ab/README.md)). It also speaks MPEG transport stream:
 1,738,344 TS packets crossed the S3 link with every one exact, and the receiver rode through
 95,810 filler frames from a transmitter starved of input without losing lock
 ([TS link](results/2026-10-23-ts-link/README.md)).
@@ -106,22 +96,21 @@ transmitter's payload, station header included.
 
 ## Live video, one S3 to another
 
-<!-- The clip: on GitHub, edit this file and drag esp-dvbs2-live-link.mp4 onto the next line. -->
-
+https://github.com/user-attachments/assets/d9fcb80d-3431-469d-b2b3-6987c60373bc
 
 Remember the goal this all started with? Here it is, with no PC anywhere in the radio path. A
-CM5 encodes two fisheye cameras into an 8 Mb/s MPEG transport stream and clocks it over SPI
+CM5 encodes two 200-degree fisheye cameras into an 8 Mb/s MPEG transport stream and clocks it over SPI
 into one S3, which sends it as 8PSK 3/4 at 5 Msym/s on 2420 MHz. Coax and 30 dB of attenuation
 carry it to a second S3, which demodulates and decodes it on the chip and pushes the packets out of
 a W5500 Ethernet module to a laptop, where PigeonVision stitches the two cameras into one 360°
-view. A dashboard, `host/monitor.py`, watches every stage at once, from the cameras to the viewer.
+view. A dashboard, `host/monitor.py`, watches the link.
 
-For the live demo it ran 16 back-to-back 540 s runs, 2.4 hours on air: 5,725,408 frames decoded
+For the live demo, it ran 16 back-to-back 540 s runs, 2.4 hours on air: 5,725,408 frames decoded
 with none failed, median pilot MER about 25.5 dB, no relocks, 6.1 million datagrams out of the
 W5500 with none dropped, and both cameras at 30.0 frames/s
 ([live demo](results/2026-10-23-live-demo/README.md)). Not quite perfect... the receiver dropped
 11 frames when its release task fell behind, about one every 13 minutes, and some datagrams go
-missing between the W5500 and the laptop. Each loss breaks the picture until the next keyframe.
+missing between the W5500 and the laptop.
 
 <p align="center"><img src="examples/live-video/bench.jpg" alt="The bench, labeled: the transmitting S3 by the cameras, the coax and attenuator, the receiving S3 and its W5500" width="600"></p>
 
