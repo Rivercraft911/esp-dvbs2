@@ -496,8 +496,8 @@ static void bench(void)
  * 8PSK turned back by pi/8: b1 = x < 0, b2 = y < 0, b0 = |y| > |x|, bit i of symbol k from
  * column i of the interleaver, reversed for 3/5, as release_run reads them), complex Gaussian
  * noise at the given Es/N0, then the receiver's PIE demappers into hard and weak bits. The
- * decoder gets no soft bits, as on the board, and everything it touches is in PSRAM, as in
- * receive.c: its state (rx_fec_size), its work area and its copy of the frame.
+ * decoder gets no soft bits, as on the board, and its memory is placed as in receive.c: its state
+ * (rx_fec_size), work area and copy of the frame in PSRAM, its per-layer scratch internal.
  * Symbols carry no carrier, timing or amplitude error: this is the decoder, not the
  * synchronization. One summary per call; cycles are rx_fec_frame's, check included, and
  * setup_cycles the first frame's check and belief load with no iteration allowed. */
@@ -544,7 +544,9 @@ static void curve(unsigned modcod, int esn0_cdb, unsigned frames)
     void *work = heap_caps_aligned_alloc(16, rx_fec_work_size(modcod), MALLOC_CAP_SPIRAM);
     uint8_t *hard = heap_caps_aligned_alloc(16, RX_HARD_BYTES, MALLOC_CAP_SPIRAM);
     uint8_t *weak = heap_caps_aligned_alloc(16, RX_HARD_BYTES, MALLOC_CAP_SPIRAM), *payload = alloc(2048);
-    if (!f || !work || !hard || !weak || !payload || rx_fec_init(f, modcod, work)) {
+    void *scratch = alloc(rx_fec_scratch_size(modcod));
+    if (!f || !work || !hard || !weak || !payload || !scratch || rx_fec_init(f, modcod, work) ||
+        rx_fec_set_scratch(f, scratch)) {
         printf("@{\"cmd\":\"curve\",\"error\":\"setup\"}\n");
         goto out;
     }
@@ -623,6 +625,7 @@ static void curve(unsigned modcod, int esn0_cdb, unsigned frames)
     printf("]}\n");
 out:
     heap_caps_free(f); heap_caps_free(work); heap_caps_free(hard); heap_caps_free(weak); heap_caps_free(payload);
+    heap_caps_free(scratch);
 }
 
 /* "setup MODCOD": what a decode costs before its first iteration, with the work area in PSRAM
@@ -635,17 +638,19 @@ __attribute__((unused)) static void setup_costs(unsigned modcod)
         printf("@{\"cmd\":\"setup\",\"error\":\"setup MODCOD 4-10|12-16\"}\n");
         return;
     }
-    /* Placements of the decoder's state, work area and frame copy: as receive.c (all PSRAM),
-     * the work area alone in PSRAM, all internal. */
-    static const char *const names[3] = {"live", "work_psram", "internal"};
-    static const uint32_t caps[3][3] = {{MALLOC_CAP_SPIRAM, MALLOC_CAP_SPIRAM, MALLOC_CAP_SPIRAM},
-                                        {INTERNAL, MALLOC_CAP_SPIRAM, INTERNAL},
-                                        {INTERNAL, INTERNAL, INTERNAL}};
+    /* Placements of the decoder's state, work area, frame copy and per-layer scratch: as
+     * receive.c (PSRAM, scratch internal), all PSRAM (receive.c before 2026-10-25), the work area
+     * alone in PSRAM, all internal. */
+    static const char *const names[4] = {"live", "psram", "work_psram", "internal"};
+    static const uint32_t caps[4][4] = {{MALLOC_CAP_SPIRAM, MALLOC_CAP_SPIRAM, MALLOC_CAP_SPIRAM, INTERNAL},
+                                        {MALLOC_CAP_SPIRAM, MALLOC_CAP_SPIRAM, MALLOC_CAP_SPIRAM, 0},
+                                        {INTERNAL, MALLOC_CAP_SPIRAM, INTERNAL, 0},
+                                        {INTERNAL, INTERNAL, INTERNAL, 0}};
     const size_t size = rx_fec_size(modcod), work_size = rx_fec_work_size(modcod);
     rx_fec_t *check = (rx_fec_t *)alloc(size);
     uint8_t *frame_bits = alloc(2 * RX_HARD_BYTES);
     evictor = heap_caps_malloc(EVICT_BYTES, MALLOC_CAP_SPIRAM);
-    uint32_t t[1 + 3 * 3] = {0};
+    uint32_t t[1 + 4 * 3] = {0};
     if (!check || !frame_bits || rx_fec_init(check, modcod, NULL)) {
         printf("@{\"cmd\":\"setup\",\"error\":\"allocation\"}\n");
         goto out;
@@ -658,11 +663,12 @@ __attribute__((unused)) static void setup_costs(unsigned modcod)
     t[0] = now();
     rx_fec_frame(check, &frame, &p, &st);
     t[0] = now() - t[0];
-    for (unsigned k = 0; k < 3; ++k) {
+    for (unsigned k = 0; k < 4; ++k) {
         rx_fec_t *f = heap_caps_aligned_alloc(16, size, caps[k][0]);
         void *work = heap_caps_aligned_alloc(16, work_size, caps[k][1]);
         uint8_t *bits = heap_caps_aligned_alloc(16, 2 * RX_HARD_BYTES, caps[k][2]);
-        if (f && work && bits && !rx_fec_init(f, modcod, work)) {
+        void *scratch = caps[k][3] ? heap_caps_aligned_alloc(16, rx_fec_scratch_size(modcod), caps[k][3]) : NULL;
+        if (f && work && bits && !rx_fec_init(f, modcod, work) && (!caps[k][3] || !rx_fec_set_scratch(f, scratch))) {
             f->max_iterations = 0;
             memset(bits, 0x5a, RX_HARD_BYTES);
             memset(bits + RX_HARD_BYTES, 0x21, RX_HARD_BYTES);
@@ -680,10 +686,10 @@ __attribute__((unused)) static void setup_costs(unsigned modcod)
             memset(f->belief, 0x11, RX_GROUPS * RX_SLOT);
             t[3 + 3 * k] = now() - a;
         }
-        heap_caps_free(f); heap_caps_free(work); heap_caps_free(bits);
+        heap_caps_free(f); heap_caps_free(work); heap_caps_free(bits); heap_caps_free(scratch);
     }
     printf("@{\"cmd\":\"setup\",\"modcod\":%u,\"check\":%" PRIu32, modcod, t[0]);
-    for (unsigned k = 0; k < 3; ++k) {
+    for (unsigned k = 0; k < 4; ++k) {
         printf(",\"%s\":{\"setup\":%" PRIu32 ",\"memset_packed\":%" PRIu32 ",\"memset_slots\":%" PRIu32 "}",
                names[k], t[1 + 3 * k], t[2 + 3 * k], t[3 + 3 * k]);
     }

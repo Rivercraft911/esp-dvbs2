@@ -163,6 +163,27 @@ size_t rx_fec_work_size(unsigned modcod)
     return mode ? layout(mode).work : 0;
 }
 
+size_t rx_fec_scratch_size(unsigned modcod)
+{
+    const dvbs2_mode *mode = short_mode(modcod);
+    return mode ? layout(mode).scratch : 0;
+}
+
+int rx_fec_set_scratch(rx_fec_t *f, void *scratch)
+{
+    const dvbs2_mode *mode = f ? short_mode(f->modcod) : NULL;
+    if (!mode || !f->belief || !scratch || ((uintptr_t)scratch & 15)) {
+        return -1;
+    }
+    const layout_t l = layout(mode);
+    uint8_t *s = scratch;
+    memset(s, 0, l.scratch);
+    f->r = (int8_t *)s;
+    f->saved = (int8_t *)(s + (l.saved - l.r));
+    f->state = (int8_t *)(s + (l.state - l.r));
+    return 0;
+}
+
 /* ---------------------------------------------------------------- init */
 
 /* Row group r's edges from the table: first occurrences, then repeats, each in table

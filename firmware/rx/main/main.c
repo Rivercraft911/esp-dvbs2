@@ -282,6 +282,7 @@ void app_main(void)
     receive_init();
     const esp_err_t radio = capture_init();
     eth_egress_init();
+    arena_init();
     const int fits = !arena_check();
     arena_booted();
     char line[96];

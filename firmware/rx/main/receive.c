@@ -35,7 +35,8 @@
 typedef struct {
     rx_demod_t *demod;
     void *ring, *work;
-    rx_fec_t *check, *decode;   /* the clean path (internal); the decoder (PSRAM) */
+    rx_fec_t *check, *decode;   /* the clean path (internal); the decoder (PSRAM, but for scratch) */
+    void *scratch;              /* the decoder's per-layer scratch (internal) */
     rx_config_t config;
     bool crc;
     rx_frame_t slot[SLOTS];
@@ -284,7 +285,7 @@ void receive_init(void)
 }
 
 /* Every run's memory, from the arenas (internal RAM for what core 1 and the release touch, PSRAM
- * for the decoder), the core 0 tasks and the stream header. */
+ * for the decoder but its per-layer scratch), the core 0 tasks and the stream header. */
 static esp_err_t start(void *ctx)
 {
     receiver_t *r = ctx;
@@ -296,10 +297,11 @@ static esp_err_t start(void *ctx)
     r->ring = arena_take(&arena_high, RX_DEMOD_RING_BYTES);
     r->decode = arena_take(&arena_psram, rx_fec_size(modcod));
     r->work = arena_take(&arena_psram, rx_fec_work_size(modcod));
+    r->scratch = arena_take(&arena_fast, rx_fec_scratch_size(modcod));
     r->job.hard = arena_take(&arena_psram, RX_HARD_BYTES);
     r->job.weak = arena_take(&arena_psram, RX_HARD_BYTES);
     if (r->crc) r->crc_table = arena_take(&arena_psram, 1024);
-    bool ok = r->demod && r->ring && r->check && r->decode && r->work && r->job.hard &&
+    bool ok = r->demod && r->ring && r->check && r->decode && r->work && r->scratch && r->job.hard &&
               r->job.weak && (r->ts || !r->options.ts) && (r->crc_table || !r->crc);
     xQueueReset(full_q);
     xQueueReset(empty_q);
@@ -318,7 +320,7 @@ static esp_err_t start(void *ctx)
         r->crc_table[v] = c;
     }
     if (rx_demod_init(r->demod, &r->config, r->ring) || rx_fec_init(r->check, modcod, NULL) ||
-        rx_fec_init(r->decode, modcod, r->work))
+        rx_fec_init(r->decode, modcod, r->work) || rx_fec_set_scratch(r->decode, r->scratch))
         return ESP_ERR_INVALID_ARG;
     if (r->ts) rx_ts_init(r->ts, r->options.drop_null, emit, r);
     if (r->options.mon) {

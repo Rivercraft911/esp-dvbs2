@@ -8,9 +8,14 @@
  *   arena_low:   static internal RAM below the capture banks (static DRAM must end at 0x3fcb0000)
  *   arena_high:  internal RAM just above the banks, taken from the heap at link time
  *   arena_psram: static PSRAM
- * They are sized for the largest mode (arena.c), which arena_check() confirms at boot. */
-extern arena_t arena_low, arena_high, arena_psram;
+ * They are sized for the largest mode (arena.c), which arena_check() confirms at boot.
+ *   arena_fast:  internal RAM for the decoder's per-layer scratch, taken from the heap once by
+ *                arena_init() at boot, after the radio's calibration, whose transient use of the
+ *                heap a link-time region would cut into */
+extern arena_t arena_low, arena_high, arena_psram, arena_fast;
 
+/* At boot, before arena_check(): arena_fast's block. */
+void arena_init(void);
 void arena_reset(void);
 /* Whether every mode's run fits; 0 when it does. */
 int arena_check(void);

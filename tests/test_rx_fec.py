@@ -51,10 +51,11 @@ class Native:
             str(COMPONENT / "rx_fec.c"), str(encoder / "dvbs2.c"), str(encoder / "fast.c"),
             "-o", str(library)], check=True)
         self.lib = ct.CDLL(str(library))
-        for name in ("rx_fec_size", "rx_fec_work_size"):
+        for name in ("rx_fec_size", "rx_fec_work_size", "rx_fec_scratch_size"):
             getattr(self.lib, name).restype = ct.c_size_t
             getattr(self.lib, name).argtypes = [ct.c_uint]
         self.lib.rx_fec_init.argtypes = [ct.c_void_p, ct.c_uint, ct.c_void_p]
+        self.lib.rx_fec_set_scratch.argtypes = [ct.c_void_p, ct.c_void_p]
         self.lib.rx_fec_frame.argtypes = [ct.c_void_p, ct.POINTER(Frame),
                                           ct.POINTER(ct.POINTER(ct.c_uint8)), ct.POINTER(Stats)]
         self.decoders = {}
@@ -63,17 +64,20 @@ class Native:
     def __exit__(self, *args):
         self.tmp.cleanup()
 
-    def decoder(self, modcod, work=True):
-        if (modcod, work) not in self.decoders:
+    def decoder(self, modcod, work=True, scratch=False):
+        if (modcod, work, scratch) not in self.decoders:
             buffers = [ct.create_string_buffer(self.lib.rx_fec_size(modcod) + 16),
-                       ct.create_string_buffer(self.lib.rx_fec_work_size(modcod) + 16)]
-            ws, area = (ct.addressof(b) + (-ct.addressof(b) % 16) for b in buffers)
+                       ct.create_string_buffer(self.lib.rx_fec_work_size(modcod) + 16),
+                       ct.create_string_buffer(self.lib.rx_fec_scratch_size(modcod) + 16)]
+            ws, area, own = (ct.addressof(b) + (-ct.addressof(b) % 16) for b in buffers)
             assert self.lib.rx_fec_init(ws, modcod, area if work else None) == 0
-            self.decoders[modcod, work] = (buffers, ws)
-        return self.decoders[modcod, work][1]
+            if scratch:
+                assert self.lib.rx_fec_set_scratch(ws, own) == 0
+            self.decoders[modcod, work, scratch] = (buffers, ws)
+        return self.decoders[modcod, work, scratch][1]
 
     def frame(self, modcod, llr, hard_bits=None, frame_modcod=None, frame_type=3, work=True,
-              weak_bits=None):
+              weak_bits=None, scratch=False):
         """Decode one frame; returns (payload bytes or None, stats). With llr None, the hard
         and weak bits alone, as the board hands them over."""
         hard = np.zeros(2032, np.uint8)
@@ -89,7 +93,7 @@ class Native:
                       None if weak is None else weak.ctypes.data_as(ct.POINTER(ct.c_uint8)),
                       0, 0, 0, 0, 0, modcod if frame_modcod is None else frame_modcod, frame_type)
         payload, stats = ct.POINTER(ct.c_uint8)(), Stats()
-        n = self.lib.rx_fec_frame(self.decoder(modcod, work), ct.byref(frame), ct.byref(payload),
+        n = self.lib.rx_fec_frame(self.decoder(modcod, work, scratch), ct.byref(frame), ct.byref(payload),
                                   ct.byref(stats))
         if n >= 0:
             start = ct.cast(payload, ct.c_void_p).value - hard.ctypes.data
@@ -318,6 +322,24 @@ def test_two_level(native):
           f"decoded and {seen['failed']} failed frames: ok")
 
 
+def test_scratch(native):
+    """rx_fec_set_scratch: the per-layer scratch in a block of its own (internal RAM on the board,
+    the rest in PSRAM) decodes every frame exactly as before."""
+    rng = np.random.default_rng(9)
+    for modcod, esn0 in ((4, 3.0), (7, 4.75), (10, 6.75)):
+        c = d.code(rate_of(modcod), True)
+        assert native.lib.rx_fec_scratch_size(modcod) > 0
+        data = rng.integers(0, 2, c.kbch - 80, dtype=np.uint8)
+        cw = codeword(modcod, data)
+        for _ in range(6):
+            soft, _ = demodulate(cw, esn0, rng, k=32)
+            hard, weak = soft < 0, np.abs(soft.astype(int)) < 16
+            a = native.frame(modcod, None, hard_bits=hard, weak_bits=weak)
+            b = native.frame(modcod, None, hard_bits=hard, weak_bits=weak, scratch=True)
+            assert a[0] == b[0] and a[1].iterations == b[1].iterations, (modcod, esn0)
+    print("scratch: the per-layer scratch moved to its own block decodes identically: ok")
+
+
 def test_int8_edges(native):
     rng = np.random.default_rng(4)
     modcod = 7
@@ -462,6 +484,6 @@ def test_ts(native):
 
 if __name__ == "__main__":
     with Native() as native:
-        for test in (test_clean, test_failed_checks, test_awgn, test_two_level, test_int8_edges, test_damage,
-                     test_false_accepts, test_ts):
+        for test in (test_clean, test_failed_checks, test_awgn, test_two_level, test_scratch,
+                     test_int8_edges, test_damage, test_false_accepts, test_ts):
             test(native)

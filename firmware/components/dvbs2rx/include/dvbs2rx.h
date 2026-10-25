@@ -124,6 +124,13 @@ typedef struct rx_fec rx_fec_t;
 size_t rx_fec_size(unsigned modcod);
 size_t rx_fec_check_size(unsigned modcod);  /* enough when work is NULL */
 size_t rx_fec_work_size(unsigned modcod);
+/* The decoder's per-layer scratch (messages expanded for a layer, the repeats' old messages, the
+ * check state) is part of rx_fec_size's block, and every layer reads and writes it. After
+ * rx_fec_init with a work area, rx_fec_set_scratch moves it to a block of its own of
+ * rx_fec_scratch_size bytes (16-byte aligned), so it can sit in internal RAM while the rest
+ * is in PSRAM. */
+size_t rx_fec_scratch_size(unsigned modcod);
+int rx_fec_set_scratch(rx_fec_t *f, void *scratch);
 int rx_fec_init(rx_fec_t *f, unsigned modcod, void *work);
 /* Returns the data field length in bytes and points payload at it (valid
  * until the frame's buffers are reused), or -1 if the frame fails. The BBHEADER, descrambled,
