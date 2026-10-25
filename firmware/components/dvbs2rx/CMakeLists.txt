@@ -1,4 +1,4 @@
-set(srcs "kernels.c" "demod.c" "rx_fec.c" "rx_ts.c")
+set(srcs "kernels.c" "demod.c" "rx_fec.c" "rx_ts.c" "rx_order.c")
 if(IDF_TARGET STREQUAL "esp32s3")
     list(APPEND srcs "kernels_pie.S" "rx_fec_pie.S" "demod_pie.S")
 endif()

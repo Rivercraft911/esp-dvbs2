@@ -416,8 +416,9 @@ def ts_wraps(first_frame: int, packets: int, size: int) -> int:
 
 def ts_verdict(records, replay: bool, frames: dict, pattern: bool = True) -> dict:
     """The receiver's TS counters (`rx ... ts [pattern]` summary) against the frames check():
-    every good frame went through the deframer (frames the LDPC decoder repaired come too late and
-    do not), and it handed on exactly the packets those frames hold. Then the counters are clean.
+    every good frame went through the deframer, including repairs delivered in order, and it
+    handed on exactly the packets those frames hold. Then the counters are clean. Older firmware
+    has no order counters and does not deframe repaired frames.
     Without the pattern check the replay's jumps are counted from the packets (ts_wraps)."""
     summary = next((r for r in records if isinstance(r.get("ts"), dict)), None)
     if summary is None:
@@ -425,12 +426,13 @@ def ts_verdict(records, replay: bool, frames: dict, pattern: bool = True) -> dic
     t, p = summary["ts"], summary["ts"]["pattern"]
     k0, span, size = frames.get("first_model_frame"), frames.get("sequence_span", 0), frames["frame_bytes"]
     want, want_unchecked = ts_packets_expected(k0, span, size) if k0 is not None else (None, None)
-    deframed = frames.get("decoded", 0) - summary.get("decoded", 0)
+    order = summary.get("order", {})
+    deframed = frames.get("decoded", 0) - summary.get("decoded", 0) + order.get("repaired", 0)
     jumps = (p["wraps"] if pattern else ts_wraps(k0, t["packets"], size) if k0 is not None else None) if replay else 0
     clean = (t["crc_errors"] == p["bad"] == p["jumps"] == t["resyncs"] == t["late"] == t["not_ts"] == 0
              and t["cc_errors"] == jumps and t["unchecked"] == want_unchecked
              and p["checked"] == (t["packets"] if pattern else 0) and t["packets"] == want
-             and t["frames"] == deframed > 0)
+             and t["frames"] == deframed > 0 and order.get("given_up", 0) == 0)
     return dict(packets=t["packets"], expected_packets=want, frames=t["frames"], expected_frames=deframed,
                 crc_errors=t["crc_errors"], cc_errors=t["cc_errors"], replay_wraps=p["wraps"],
                 pattern_bad=p["bad"], pattern_jumps=p["jumps"], resyncs=t["resyncs"],
