@@ -72,14 +72,22 @@ class Native:
             self.decoders[modcod, work] = (buffers, ws)
         return self.decoders[modcod, work][1]
 
-    def frame(self, modcod, llr, hard_bits=None, frame_modcod=None, frame_type=3, work=True):
-        """Decode one frame; returns (payload bytes or None, stats)."""
-        llr = np.ascontiguousarray(llr, np.int8)
+    def frame(self, modcod, llr, hard_bits=None, frame_modcod=None, frame_type=3, work=True,
+              weak_bits=None):
+        """Decode one frame; returns (payload bytes or None, stats). With llr None, the hard
+        and weak bits alone, as the board hands them over."""
         hard = np.zeros(2032, np.uint8)
         hard[:2025] = np.packbits(llr < 0 if hard_bits is None else hard_bits)
-        frame = Frame(llr.ctypes.data_as(ct.POINTER(ct.c_int8)),
-                      hard.ctypes.data_as(ct.POINTER(ct.c_uint8)), None, 0, 0, 0, 0, 0,
-                      modcod if frame_modcod is None else frame_modcod, frame_type)
+        weak = None
+        if weak_bits is not None:
+            weak = np.zeros(2032, np.uint8)
+            weak[:2025] = np.packbits(weak_bits)
+        if llr is not None:
+            llr = np.ascontiguousarray(llr, np.int8)
+        frame = Frame(None if llr is None else llr.ctypes.data_as(ct.POINTER(ct.c_int8)),
+                      hard.ctypes.data_as(ct.POINTER(ct.c_uint8)),
+                      None if weak is None else weak.ctypes.data_as(ct.POINTER(ct.c_uint8)),
+                      0, 0, 0, 0, 0, modcod if frame_modcod is None else frame_modcod, frame_type)
         payload, stats = ct.POINTER(ct.c_uint8)(), Stats()
         n = self.lib.rx_fec_frame(self.decoder(modcod, work), ct.byref(frame), ct.byref(payload),
                                   ct.byref(stats))
@@ -157,15 +165,19 @@ def float_bp(llr, modcod, iterations=50):
     return out
 
 
-def int_model(llr, modcod, iterations=8):
+def int_model(llr, modcod, iterations=8, levels=None):
     """The integer decoder of rx_fec.c in codeword order (no slots, frames or vectors),
-    with its stopping rule. Returns (hard bits or None, iterations)."""
+    with its stopping rule. Returns (hard bits or None, iterations). levels = (hard, weak)
+    bits instead of llr: the two-level beliefs, 31 or 8 (WEAK), negated where hard."""
     sat, mag = lambda x: np.clip(x, -128, 127), lambda x: np.minimum(np.abs(x), 127)
-    a = mag(llr[:16192].astype(np.int64))
-    n, s1, s2 = len(a), int(a.sum()), int((a * a).sum())
-    den = n * s2 - s1 * s1
-    gain = min(64, max(1, (96 * s1 * n + den // 2) // den)) if den else 64
-    b = np.where(llr < 0, -1, 1) * np.minimum(31, (mag(llr.astype(np.int64)) * gain) >> 4)
+    if levels is not None:
+        b = np.where(levels[0], -1, 1) * np.where(levels[1], 8, 31).astype(np.int64)
+    else:
+        a = mag(llr[:16192].astype(np.int64))
+        n, s1, s2 = len(a), int(a.sum()), int((a * a).sum())
+        den = n * s2 - s1 * s1
+        gain = min(64, max(1, (96 * s1 * n + den // 2) // den)) if den else 64
+        b = np.where(llr < 0, -1, 1) * np.minimum(31, (mag(llr.astype(np.int64)) * gain) >> 4)
     layers = structure(modcod)
     R = [np.zeros(i.shape, np.int64) for i, _, _ in layers]
     before = [None, None]
@@ -276,6 +288,34 @@ def test_awgn(native):
           f"int8 {fer_int:.3f} at {esn0 + extra} dB")
     assert fer_int <= fer_bp
     print("awgn: exact payloads above threshold, Python model bit exact, FER near float BP: ok")
+
+
+def test_two_level(native):
+    """The board's path: no soft bits, beliefs from the hard bits and the demodulator's weak
+    bits (|soft| < 16, a point under half its nominal distance from the boundary). The decoder
+    must match the Python model fed the same two levels, iteration for iteration, on frames
+    it repairs and frames it gives up on, at three parity strides (q 25, 12 and 5)."""
+    rng = np.random.default_rng(5)
+    seen = {"decoded": 0, "failed": 0}
+    for modcod, points in ((4, (1.5, 2.5, 4.0)), (7, (4.5, 5.5, 7.0)), (10, (6.5, 7.5, 9.0))):
+        c = d.code(rate_of(modcod), True)
+        for esn0 in points:
+            data = rng.integers(0, 2, c.kbch - 80, dtype=np.uint8)
+            cw, want = codeword(modcod, data), np.packbits(data).tobytes()
+            for _ in range(3):
+                soft, _ = demodulate(cw, esn0, rng, k=32)
+                hard, weak = soft < 0, np.abs(soft.astype(int)) < 16
+                payload, st = native.frame(modcod, None, hard_bits=hard, weak_bits=weak)
+                model, iterations = int_model(None, modcod, levels=(hard, weak))
+                if st.failed_checks == 0:
+                    assert payload == want and st.iterations == 0, (modcod, esn0)
+                    continue
+                assert st.iterations == iterations, (modcod, esn0, st.iterations, iterations)
+                assert (payload == want) == (model is not None and (model == cw).all()), (modcod, esn0)
+                seen["decoded" if payload == want else "failed"] += 1
+    assert seen["decoded"] and seen["failed"], seen
+    print(f"two levels: hard and weak bits only, Python model bit exact on {seen['decoded']} "
+          f"decoded and {seen['failed']} failed frames: ok")
 
 
 def test_int8_edges(native):
@@ -422,6 +462,6 @@ def test_ts(native):
 
 if __name__ == "__main__":
     with Native() as native:
-        for test in (test_clean, test_failed_checks, test_awgn, test_int8_edges, test_damage,
+        for test in (test_clean, test_failed_checks, test_awgn, test_two_level, test_int8_edges, test_damage,
                      test_false_accepts, test_ts):
             test(native)
