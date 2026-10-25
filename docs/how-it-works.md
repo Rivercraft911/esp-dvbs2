@@ -179,7 +179,7 @@ radio off and compares them with portable C or an independent oracle:
 |---|---|---|
 | [`tests/tx_pie_bench`](../tests/tx_pie_bench.c) | the transmitter's PIE kernels: encoder stages, BB inputs at every alignment, xorshift, fills, ring, axes, the 8PSK queue kernels; the slot copy in a later 128-case run; not the Morse ID's 40-sample copy (`station_repeat40`), which only the pinned ID dumps check | [82,493 cases](../results/2026-10-23-tx-pie-bench/README.md), [slot copy](../results/2026-10-23-tx-ts-input/README.md#the-slot-copy) |
 | [`tests/rx_demod_bench`](../tests/rx_demod_bench.c) | each demodulator kernel against its C version, timed | [kernel bench](../results/2026-10-22-rx-demod/README.md#board-cycles) |
-| [`tests/rx_fec_bench`](../tests/rx_fec_bench.c) | each FEC kernel against its C version, then whole MODCOD 7 frames | no recorded run yet |
+| [`tests/rx_fec_bench`](../tests/rx_fec_bench.c) | each FEC kernel against its C version, then whole MODCOD 7 frames; `curve` decodes noisy frames of any short MODCOD as the board does, `setup` times a decode before its first iteration | [decoder near threshold](../results/2026-10-24-rx-fec-curve/README.md) |
 
 ```sh
 (. ~/.espressif/tools/activate_idf_v6.1.sh && cd tests/tx_pie_bench && idf.py build flash -p PORT)

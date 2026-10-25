@@ -3,10 +3,13 @@
 // (clean, a few wrong bits, AWGN) are decoded with the PIE and the C kernels. Results are
 // @JSON lines. On the board "fecbench" on the USB console reruns and ends with
 // {"done":true}; in QEMU (UART console) it runs once and prints QEMU-END.
+// "curve MODCOD ESN0_CDB FRAMES" decodes noisy frames of any short MODCOD the way the live
+// receiver does (see curve()).
 #include <inttypes.h>
 #include <math.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "esp32s3/rom/cache.h"
@@ -20,6 +23,7 @@
 #include "driver/usb_serial_jtag_vfs.h"
 #endif
 
+#include "demod_pie.h"
 #include "dvbs2.h"
 #include "dvbs2rx.h"
 #include "rx_fec_internal.h"
@@ -485,6 +489,223 @@ static void bench(void)
     printf("@{\"cmd\":\"fecbench\",\"done\":true}\n");
 }
 
+/* ---------------------------------------------------------------- curve */
+
+/* Frames as the live receiver hands them to its decoder: a fresh GCS payload through the
+ * transmitter's encoder, mapped as the receiver labels symbols (QPSK: bit 2k on I, 2k + 1 on Q;
+ * 8PSK turned back by pi/8: b1 = x < 0, b2 = y < 0, b0 = |y| > |x|, bit i of symbol k from
+ * column i of the interleaver, reversed for 3/5, as release_run reads them), complex Gaussian
+ * noise at the given Es/N0, then the receiver's PIE demappers into hard and weak bits. The
+ * decoder gets no soft bits, as on the board, and everything it touches is in PSRAM, as in
+ * receive.c: its state (rx_fec_size), its work area and its copy of the frame.
+ * Symbols carry no carrier, timing or amplitude error: this is the decoder, not the
+ * synchronization. One summary per call; cycles are rx_fec_frame's, check included, and
+ * setup_cycles the first frame's check and belief load with no iteration allowed. */
+#define CURVE_A 512                         /* constellation radius in symbol units */
+#define CURVE_FRAMES 4000
+#define LLR_UNIT 2965821                    /* demod.c: 32 sqrt(2) 2^16 */
+#define LLR8_UNIT 5480192                   /* demod.c: 32 / sin(pi/8) 2^16 */
+
+static uint32_t curve_cycles[CURVE_FRAMES];
+static int16_t sym_i[RX_SHORT_BITS / 2] __attribute__((aligned(16)));
+static int16_t sym_q[RX_SHORT_BITS / 2] __attribute__((aligned(16)));
+static uint8_t no_scrambling[RX_SHORT_BITS / 8] __attribute__((aligned(16)));
+
+static void gaussian2(float *a, float *b)
+{
+    const float u = ((rnd() >> 8) + 1) * (1.0f / 16777217.0f), v = (rnd() >> 8) * (1.0f / 16777216.0f);
+    const float r = sqrtf(-2.0f * logf(u));
+    *a = r * cosf(6.2831853f * v);
+    *b = r * sinf(6.2831853f * v);
+}
+
+static unsigned bit(const uint8_t *c, unsigned i) { return c[i / 8] >> (7 - i % 8) & 1; }
+
+static int16_t symbol16(float v)
+{
+    return (int16_t)lrintf(v > 32767 ? 32767 : v < -32767 ? -32767 : v);
+}
+
+static int by_value(const void *a, const void *b)
+{
+    const uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
+    return (x > y) - (x < y);
+}
+
+static void curve(unsigned modcod, int esn0_cdb, unsigned frames)
+{
+    const dvbs2_mode *mode = dvbs2_find_mode_short(modcod);
+    if (!mode) {
+        printf("@{\"cmd\":\"curve\",\"error\":\"no short mode\"}\n");
+        return;
+    }
+    const unsigned psk8 = modcod >= 12, bytes = (mode->kbch - 80) / 8;
+    rx_fec_t *f = heap_caps_aligned_alloc(16, rx_fec_size(modcod), MALLOC_CAP_SPIRAM);
+    void *work = heap_caps_aligned_alloc(16, rx_fec_work_size(modcod), MALLOC_CAP_SPIRAM);
+    uint8_t *hard = heap_caps_aligned_alloc(16, RX_HARD_BYTES, MALLOC_CAP_SPIRAM);
+    uint8_t *weak = heap_caps_aligned_alloc(16, RX_HARD_BYTES, MALLOC_CAP_SPIRAM), *payload = alloc(2048);
+    if (!f || !work || !hard || !weak || !payload || rx_fec_init(f, modcod, work)) {
+        printf("@{\"cmd\":\"curve\",\"error\":\"setup\"}\n");
+        goto out;
+    }
+    const float esn0 = esn0_cdb / 100.0f, sigma = CURVE_A / sqrtf(2.0f * powf(10.0f, esn0 / 10.0f));
+    const float c8 = 0.92387953f * CURVE_A, s8 = 0.38268343f * CURVE_A, q = 0.70710678f * CURVE_A;
+    demod_run_t k;
+    demod_run_init(&k, 0, 0, 0, 0, 0, (int16_t)((psk8 ? LLR8_UNIT : LLR_UNIT) / 4 / CURVE_A));
+    const unsigned n = psk8 ? RX_SHORT_BITS / 3 : RX_SHORT_BITS / 2, rev = modcod == 12;
+    demod_out_t o = {{hard}, {weak}, {NULL}};
+    if (psk8) {
+        for (unsigned p = 0; p < 3; ++p) {
+            o.hard[p] = hard + (rev ? 2 - p : p) * (n / 8);
+            o.weak[p] = weak + (rev ? 2 - p : p) * (n / 8);
+        }
+    }
+    unsigned ok = 0, wrong = 0, failed = 0, hist[9] = {0};
+    uint32_t setup = 0;
+    uint64_t bit_errors = 0, cycles_sum = 0, by_iter[9] = {0};
+    for (unsigned j = 0; j < frames; ++j) {
+        seed = 0x9e3779b9u ^ modcod << 24 ^ (uint32_t)(esn0_cdb + 1000) << 12 ^ j;
+        fill(payload, bytes);
+        dvbs2_bb_gcs(&encoder_ws, mode, payload, mode->kbch - 80);
+        dvbs2_bb_scramble(&encoder_ws, mode);
+        dvbs2_bch(&encoder_ws, mode);
+        dvbs2_ldpc(&encoder_ws, mode);
+        const uint8_t *c = encoder_ws.bits;
+        for (unsigned s = 0; s < n; ++s) {
+            float x, y, ni, nq;
+            if (psk8) {
+                const unsigned b0 = bit(c, (rev ? 2 : 0) * n + s), b1 = bit(c, n + s), b2 = bit(c, (rev ? 0 : 2) * n + s);
+                x = (b1 ? -1.0f : 1.0f) * (b0 ? s8 : c8);
+                y = (b2 ? -1.0f : 1.0f) * (b0 ? c8 : s8);
+            } else {
+                x = bit(c, 2 * s) ? -q : q;
+                y = bit(c, 2 * s + 1) ? -q : q;
+            }
+            gaussian2(&ni, &nq);
+            sym_i[s] = symbol16(x + sigma * ni);
+            sym_q[s] = symbol16(y + sigma * nq);
+        }
+        (psk8 ? demod_8psk_pie : demod_qpsk_pie)(sym_i, sym_q, n, no_scrambling, &k, &o);
+        for (unsigned b = 0; b < RX_SHORT_BITS / 8; ++b) bit_errors += __builtin_popcount(hard[b] ^ c[b]);
+        rx_frame_t frame = {.hard = hard, .weak = weak, .modcod = (uint8_t)modcod, .type = 3};
+        const uint8_t *p = NULL;
+        rx_fec_stats_t st = {0};
+        if (!j) {                   /* no iteration allowed: the check and the belief load alone */
+            f->max_iterations = 0;
+            const uint32_t t0 = now();
+            rx_fec_frame(f, &frame, &p, &st);
+            setup = now() - t0;
+            f->max_iterations = 8;
+        }
+        const uint32_t t0 = now();
+        const int length = rx_fec_frame(f, &frame, &p, &st);
+        const uint32_t t = now() - t0;
+        if (length < 0) ++failed;
+        else if ((unsigned)length == bytes && crc(p, bytes) == crc(payload, bytes)) ++ok;
+        else ++wrong;
+        const unsigned it = st.iterations < 8 ? st.iterations : 8;
+        ++hist[it];
+        by_iter[it] += t;
+        cycles_sum += t;
+        curve_cycles[j] = t;
+    }
+    qsort(curve_cycles, frames, sizeof *curve_cycles, by_value);
+    printf("@{\"cmd\":\"curve\",\"modcod\":%u,\"esn0_cdb\":%d,\"frames\":%u,\"ok\":%u,\"wrong\":%u,"
+           "\"failed\":%u,\"bit_errors\":%" PRIu64 ",\"bits\":%" PRIu64 ",\"cycles_mean\":%" PRIu64
+           ",\"cycles_p50\":%" PRIu32 ",\"cycles_p90\":%" PRIu32 ",\"cycles_p99\":%" PRIu32
+           ",\"cycles_max\":%" PRIu32 ",\"setup_cycles\":%" PRIu32 ",\"iterations\":[", modcod, esn0_cdb,
+           frames, ok, wrong, failed, bit_errors, (uint64_t)frames * RX_SHORT_BITS, cycles_sum / frames,
+           curve_cycles[frames / 2], curve_cycles[frames * 9 / 10], curve_cycles[frames * 99 / 100],
+           curve_cycles[frames - 1], setup);
+    for (unsigned i = 0; i < 9; ++i) printf("%s%u", i ? "," : "", hist[i]);
+    printf("],\"cycles_by_iterations\":[");
+    for (unsigned i = 0; i < 9; ++i) printf("%s%" PRIu64, i ? "," : "", hist[i] ? by_iter[i] / hist[i] : 0);
+    printf("]}\n");
+out:
+    heap_caps_free(f); heap_caps_free(work); heap_caps_free(hard); heap_caps_free(weak); heap_caps_free(payload);
+}
+
+/* "setup MODCOD": what a decode costs before its first iteration, with the work area in PSRAM
+ * (as on the board) and in internal RAM: the check alone (a decoder without a work area), the
+ * check and belief load (no iteration allowed), and the two areas the load fills. Cold data
+ * cache each time; the frame's bits are a fixed pattern. */
+__attribute__((unused)) static void setup_costs(unsigned modcod)
+{
+    if (modcod < 4 || modcod == 11 || modcod > 16) {
+        printf("@{\"cmd\":\"setup\",\"error\":\"setup MODCOD 4-10|12-16\"}\n");
+        return;
+    }
+    /* Placements of the decoder's state, work area and frame copy: as receive.c (all PSRAM),
+     * the work area alone in PSRAM, all internal. */
+    static const char *const names[3] = {"live", "work_psram", "internal"};
+    static const uint32_t caps[3][3] = {{MALLOC_CAP_SPIRAM, MALLOC_CAP_SPIRAM, MALLOC_CAP_SPIRAM},
+                                        {INTERNAL, MALLOC_CAP_SPIRAM, INTERNAL},
+                                        {INTERNAL, INTERNAL, INTERNAL}};
+    const size_t size = rx_fec_size(modcod), work_size = rx_fec_work_size(modcod);
+    rx_fec_t *check = (rx_fec_t *)alloc(size);
+    uint8_t *frame_bits = alloc(2 * RX_HARD_BYTES);
+    evictor = heap_caps_malloc(EVICT_BYTES, MALLOC_CAP_SPIRAM);
+    uint32_t t[1 + 3 * 3] = {0};
+    if (!check || !frame_bits || rx_fec_init(check, modcod, NULL)) {
+        printf("@{\"cmd\":\"setup\",\"error\":\"allocation\"}\n");
+        goto out;
+    }
+    const uint8_t *p;
+    rx_fec_stats_t st;
+    memset(frame_bits, 0x5a, RX_HARD_BYTES);
+    memset(frame_bits + RX_HARD_BYTES, 0x21, RX_HARD_BYTES);
+    rx_frame_t frame = {.hard = frame_bits, .weak = frame_bits + RX_HARD_BYTES, .modcod = (uint8_t)modcod, .type = 3};
+    t[0] = now();
+    rx_fec_frame(check, &frame, &p, &st);
+    t[0] = now() - t[0];
+    for (unsigned k = 0; k < 3; ++k) {
+        rx_fec_t *f = heap_caps_aligned_alloc(16, size, caps[k][0]);
+        void *work = heap_caps_aligned_alloc(16, work_size, caps[k][1]);
+        uint8_t *bits = heap_caps_aligned_alloc(16, 2 * RX_HARD_BYTES, caps[k][2]);
+        if (f && work && bits && !rx_fec_init(f, modcod, work)) {
+            f->max_iterations = 0;
+            memset(bits, 0x5a, RX_HARD_BYTES);
+            memset(bits + RX_HARD_BYTES, 0x21, RX_HARD_BYTES);
+            rx_frame_t x = {.hard = bits, .weak = bits + RX_HARD_BYTES, .modcod = (uint8_t)modcod, .type = 3};
+            evict();
+            uint32_t a = now();
+            rx_fec_frame(f, &x, &p, &st);
+            t[1 + 3 * k] = now() - a;
+            evict();
+            a = now();
+            memset(f->packed, 0, f->packed_bytes);
+            t[2 + 3 * k] = now() - a;
+            evict();
+            a = now();
+            memset(f->belief, 0x11, RX_GROUPS * RX_SLOT);
+            t[3 + 3 * k] = now() - a;
+        }
+        heap_caps_free(f); heap_caps_free(work); heap_caps_free(bits);
+    }
+    printf("@{\"cmd\":\"setup\",\"modcod\":%u,\"check\":%" PRIu32, modcod, t[0]);
+    for (unsigned k = 0; k < 3; ++k) {
+        printf(",\"%s\":{\"setup\":%" PRIu32 ",\"memset_packed\":%" PRIu32 ",\"memset_slots\":%" PRIu32 "}",
+               names[k], t[1 + 3 * k], t[2 + 3 * k], t[3 + 3 * k]);
+    }
+    printf("}\n");
+out:
+    heap_caps_free(check); heap_caps_free(frame_bits); heap_caps_free((void *)evictor);
+    evictor = NULL;
+}
+
+__attribute__((unused)) static bool curve_command(const char *line)
+{
+    unsigned modcod, frames;
+    int cdb;
+    if (sscanf(line, "curve %u %d %u", &modcod, &cdb, &frames) != 3) return false;
+    if (modcod < 4 || modcod == 11 || modcod > 16 || cdb < -500 || cdb > 2000 || !frames ||
+        frames > CURVE_FRAMES) {
+        return false;
+    }
+    curve(modcod, cdb, frames);
+    return true;
+}
+
 #if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
 static int console_put(char c, FILE *stream)
 {
@@ -504,7 +725,13 @@ void app_main(void)
     while (true) {
         if (!fgets(line, sizeof line, stdin)) { vTaskDelay(1); continue; }
         if (!strncmp(line, "fecbench", 8)) bench();
-        else printf("@{\"error\":\"commands: fecbench\",\"done\":true}\n");
+        else if (!strncmp(line, "setup", 5)) {
+            setup_costs((unsigned)atoi(line + 5));
+            printf("@{\"done\":true}\n");
+        } else if (!strncmp(line, "curve", 5)) {
+            if (!curve_command(line)) printf("@{\"error\":\"curve MODCOD 4-10|12-16 ESN0_CDB FRAMES 1-%u\"}\n", CURVE_FRAMES);
+            printf("@{\"done\":true}\n");
+        } else printf("@{\"error\":\"commands: fecbench, curve MODCOD ESN0_CDB FRAMES, setup MODCOD\",\"done\":true}\n");
     }
 }
 #else

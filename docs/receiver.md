@@ -130,8 +130,9 @@ Three tasks share core 0:
   sign, and a weak bit, set when it lies less than half the noise-free distance from its decision
   boundary. For 8PSK it writes each symbol's three bits to three bit planes, which undoes the
   column interleaver. A frame of hard and weak bits needs 4 KB instead of 16 KB, so frames stay
-  in internal RAM. A host simulation during development put the cost against full soft bits at
-  0.3 to 0.5 dB; that simulation was not kept as a record, so treat the figure as an estimate.
+  in internal RAM. The cost, measured on the host against the same decoder fed int8 soft values,
+  is 0.5 dB at QPSK 3/4 and 8/9 and over 2 dB at 1/2
+  ([decoder near threshold](../results/2026-10-24-rx-fec-curve/README.md#where-the-db-go)).
 - **Check** re-encodes each frame's hard bits with the transmitter's own fast BCH and LDPC encoder
   and compares parity: 31.6k cycles for a clean QPSK 3/4 frame
   ([commit](https://github.com/Rivercraft911/esp-dvbs2/commit/32990841d2ad3f8822499dd570fe7ecc2c9cc52e)).
@@ -151,8 +152,17 @@ On a clean link the decoder rarely runs. In the 19-mode sweep no frame failed it
 ([sweep](../results/2026-10-23-rx-sweep/README.md)). In the 2.4-hour live demo one frame of
 5,725,408 did, in run 31, and the decoder repaired it in 2 iterations; in TS mode a repaired frame
 arrives too late for the stream, which is that run's one continuity error
-([live demo](../results/2026-10-23-live-demo/README.md)). No record yet measures the decoder near
-threshold, where it would do most of its work.
+([live demo](../results/2026-10-23-live-demo/README.md)).
+
+Near threshold, measured radio off with noisy frames demapped by the receiver's own kernels, the
+decoder reaches 1% frame errors about 1 dB above the DVB-S2 ideal threshold (Table 13) for QPSK
+3/4 to 8/9 and 8PSK 8/9, and 1.5 to 3.5 dB above it for the lower rates, with no wrong payload in
+72,000 frames. Speed limits it first. Everything the decoder touches is in PSRAM, so a frame with
+any bit error takes at least 2 iterations and 7.4 to 9.4 ms, and a damaged frame that arrives
+while the decoder is busy is lost. Replaying noisy QPSK 3/4 captures through the receiver, 43% of
+frames were lost at 8 dB and none at 14 dB at 1 Msym/s, 38% at 12 dB and none at 14 dB at
+5 Msym/s; the code alone decodes from about 5 dB
+([decoder near threshold](../results/2026-10-24-rx-fec-curve/README.md)).
 
 **Records.** Each frame becomes a 20-byte record over USB: sequence, carrier offset, MER, length,
 LDPC iterations and failing checks (`firmware/rx/main/receive.h`). At 1 Msym/s the payload follows.
