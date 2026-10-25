@@ -5,7 +5,7 @@ defined radios. People have pulled raw I/Q samples out of the Wi-Fi receiver, se
 steering the radio's test tone, played arbitrary waveforms through the transmit DAC, and put
 DVB-S on the 13 cm band from a C3 with a PC doing the encoding.
 
-Now... this repo goes for the whole thing: **a complete DVB-S2 transceiver running on the
+Now... this repo goes for the whole shebang: **a complete DVB-S2 transceiver running on the
 ESP32-S3**. One S3 frames, codes, modulates and pulse-shapes the signal and sends it out of its
 own Wi-Fi radio. A second S3 pulls it back in through its own radio and demodulates and decodes
 every frame on the chip. No PC doing the encoding or the decoding, no external DAC or ADC, no
