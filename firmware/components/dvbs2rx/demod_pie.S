@@ -541,6 +541,11 @@ demod_8psk_pie:
     retw
     .size demod_8psk_pie, . - demod_8psk_pie
 
+/* The four-level kernels run from flash: the receiver uses them only at 1 Msym/s, where core 0
+ * has time to spare (they cost twice the two-level ones), and IRAM shares the SRAM that static
+ * DRAM must end below the capture banks in. */
+    .section .text.demod_four, "ax"
+
 /* Add the fine plane without changing the two-level kernels. q4 stays zero and q6/q7
  * keep their soft bits. Saturating abs(-32768) to 32767 leaves all thresholds unchanged.
  * fine = NOT((|s| < 8) XOR (|s| < 16) XOR (|s| < 32)). Clobbers q0..q3, a10, a14;
@@ -612,7 +617,9 @@ demod_qpsk4_pie:
     .size demod_qpsk4_pie, . - demod_qpsk4_pie
 
 /* a7..a9 hard, a11..a13 weak as before; the output descriptor and byte index live
- * on the stack because the fine planes need three more pointers than fit in registers. */
+ * on the stack because the fine planes need three more pointers than fit in registers. They
+ * sit in the frame's own 16 bytes at a1: with call8 the 32 above it are the save areas of
+ * this window's a4..a7 and the caller's a0..a3, which a window spill overwrites. */
     .macro plane4 sa, hard, weak, offset
     movi a14, 208
     add a14, a6, a14
@@ -620,9 +627,9 @@ demod_qpsk4_pie:
     ee.zero.accx
     fine_bits8 \sa, 224
     rur.accx_0 a15
-    l32i a10, a1, 16
+    l32i a10, a1, 0
     l32i a10, a10, FINE0 + \offset
-    l32i a14, a1, 20
+    l32i a14, a1, 4
     add a10, a10, a14
     s8i a15, a10, 0
     .endm
@@ -631,10 +638,10 @@ demod_qpsk4_pie:
     .global demod_8psk4_pie
     .type demod_8psk4_pie, @function
 demod_8psk4_pie:
-    entry a1, 32
-    s32i a7, a1, 16
+    entry a1, 48
+    s32i a7, a1, 0
     movi a10, 0
-    s32i a10, a1, 20
+    s32i a10, a1, 4
     l32i a11, a7, WEAK0
     l32i a12, a7, WEAK0 + 4
     l32i a13, a7, WEAK0 + 8
@@ -662,9 +669,9 @@ demod_8psk4_pie:
     plane4 q0, a7, a11, 0
     plane4 q6, a8, a12, 4
     plane4 q7, a9, a13, 8
-    l32i a10, a1, 20
+    l32i a10, a1, 4
     addi a10, a10, 1
-    s32i a10, a1, 20
+    s32i a10, a1, 4
 1:
     retw
     .size demod_8psk4_pie, . - demod_8psk4_pie
